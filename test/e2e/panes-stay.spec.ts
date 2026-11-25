@@ -380,12 +380,18 @@ test("the start page lists what needs the owner in a pane beside others, and a p
   expect((await home.getByTestId("home-attention").boundingBox())!.y).toBeLessThan((await home.getByTestId("new-composer").boundingBox())!.y);
   await shoot(page, "panes-stay-05-home-pane-480");
 
-  // A row's Answer opens that session as a look; answering leads back to the list, which has one row fewer.
+  // A row's Answer opens that session as a look and begins the answering sequence.
   const answer = home.locator(`[data-testid="home-session"][data-session="${q}"]`).getByTestId("home-review");
   await expect(answer).not.toHaveAttribute("aria-disabled", "true");
   await answer.click();
   await expect(slot(page, 0)).toHaveAttribute("data-station", q);
   await pick(page, q, 0);
+  await expect(page).toHaveURL(new RegExp(`/s/${coord}$`));
+  await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
+  // Return to the start page over the reader. The answered row is gone and
+  // both remaining requests still wait.
+  await slot(page, 0).getByTestId("station-title").click();
+  await page.getByRole("button", { name: "New session" }).first().click();
   await expect(page).toHaveURL(/\/$/);
   await expect(home.getByTestId("home-session")).toHaveCount(2);
   // Escape leaves the start page: the pane shows the reader where it was read.
