@@ -29,6 +29,11 @@ const URL_ARG = /\b([A-Za-z_]\w*)\s*\(?\s*[rRbBuU]{0,2}["'`]\s*(?:https?|ftps?|s
 const SAYS = /^(?:print|printf|echo|puts|say|log|info|warn|warning|error|debug|trace|write|writeln|format|raise|throw|Error|Exception|input|prompt|sprintf|println|alert|comment|title|help|usage|doc|assert|die|exit|fail|from|href|src|url|uri|link)$/i;
 // What builds and runs code, or reaches a name through a string: no place is read from it.
 const DYNAMIC = /\b(?:__import__|importlib|__builtins__|execfile|Reflect\.(?:get|apply|construct)|runIn\w+Context|create_function|call_user_func(?:_array)?|instance_eval|class_eval|public_send|const_get|globals\s*\(|getattr\s*\(|setattr\s*\(|new\s+Function|Function\s*\()|\b(?:globalThis|window|self|global|this|Deno|Bun|process)\s*\[|(?:%x|\bqx)\s*[^\s\w]/;
+const GENERIC = /^(?:exec|eval|compile)$/;
+const GLOBAL_OBJ = /^(?:globalThis|window|self|global|this|vm|builtins|__builtins__)$/;
+const LOCAL_PROGS = "ls|cat|head|tail|wc|stat|file|du|df|pwd|echo|mkdir|touch|rm|cp|mv|chmod|diff|sort|uniq|cut|grep|rg|basename|dirname|realpath|readlink|date|whoami|id|uname|true|false";
+// `('ls', [`, `(['ls',` and `` `ls `` after the opening of a call: a local program, then arguments written as variables.
+const LOCAL_CALL = new RegExp("^(?:\\(\\s*\\[?\\s*['\"](?:" + LOCAL_PROGS + ")['\"]\\s*,|\\[\\s*['\"](?:" + LOCAL_PROGS + ")['\"]\\s*,|`(?:" + LOCAL_PROGS + ")[ \\t][^`]*`)");
 // The calls that start a program or a shell line. `exec` and `eval` are told apart below.
 const SHELL = /\b(?:system|popen[23]?|execSync|execFileSync|spawnSync|execFile|spawn|exec|exec[lv][ep]{0,2}|spawn[lv][ep]?|check_output|check_call|getoutput|getstatusoutput|subprocess|child_process|passthru|shell_exec|proc_open|pcntl_exec|capture[23]e?|Open3|create_subprocess_\w+|execa\w*|shelljs|eval|compile)\b|\bDeno\.(?:run|Command)\b|\bBun\.(?:spawn\w*|\$)/g;
 // Names that are modules, not calls: a mention is no call, the calls of the module are found by their own names.
@@ -188,6 +193,13 @@ export function readCode(code: string, fam: Family, depth = 0): CodeRead {
     if (m.index! < skip) continue;
     if (++calls > CAP) { res.opaque = true; break; }
     const name = m[0];
+    // `compile`, `exec` and `eval` are eval-like only as a bare call or on the global object: a method of some object
+    // (re.compile, db.exec, regex.exec) is not code that is built and run. A module that starts programs through such a method
+    // is a mention of the module, read below.
+    if (GENERIC.test(name) && m.index! > 0 && code[m.index! - 1] === ".") {
+      const recv = /([\w$]+)\s*\.$/.exec(code.slice(Math.max(0, m.index! - 40), m.index!));
+      if (!recv || !GLOBAL_OBJ.test(recv[1]!)) { skip = m.index! + name.length; continue; }
+    }
     tail.lastIndex = m.index! + name.length;
     tail.exec(code);
     skip = tail.lastIndex;
@@ -204,7 +216,13 @@ export function readCode(code: string, fam: Family, depth = 0): CodeRead {
       continue;
     }
     const a = argsAt(code, j, fam);
-    if (!a.ok) { res.opaque = true; continue; }
+    if (!a.ok) {
+      // A local program given by name with its arguments in a list (or a Bun.$ template, whose values are quoted as single
+      // arguments): what the arguments hold cannot make it reach an address.
+      if (!evalish && LOCAL_CALL.test(code.slice(j, j + 120)) && (name !== "Bun.$" || code[j] === "`")) { made++; continue; }
+      res.opaque = true;
+      continue;
+    }
     if (evalish) {
       // Code the call builds and runs: read as code of its own, when it is written out.
       const src = a.lits[0];

@@ -703,6 +703,8 @@ test("a program that reaches an address the gate did not read is held where a se
 
 // Code that reads a local file, runs a local program or fetches this machine stays as it was: no place in it is the web's.
 const QUIET = [
+  "python3 - <<'EOF'\nimport re, json, pathlib, subprocess\np = pathlib.Path('src/a.test.ts')\ns = p.read_text()\ns = re.sub(r'foo\\((\\d+)\\)', r'bar(\\1)', s)\nm = re.compile(pat).search(s)\np.write_text(s)\nprint(json.dumps({'a': 1}))\nsubprocess.run(['git', 'diff', '--stat'])\nEOF",
+  "node -e 'const m = /a(b)/.exec(s); db.exec(sql); console.log(m)'", "bun -e 'Bun.spawnSync([\"ls\", d])'",
   "python3 -c 'print(open(\"a\").read())'", "python3 -c 'import json,sys; print(json.load(open(\"a\")))'", "node -e 'console.log(require(\"fs\").readFileSync(\"a\",\"utf8\"))'",
   "python3 -c 'import os; os.system(\"ls -la\")'", "python3 -c 'import subprocess; print(subprocess.run([\"git\",\"status\"],capture_output=True).stdout)'", "node -e 'require(\"child_process\").execSync(\"ls\")'",
   "python3 -c 'import re; print(re.compile(\"a+\").match(\"aa\"))'", "python3 -c 'print(\"see https://example.com/doc\")'", "python3 -c 'import sqlite3; sqlite3.connect(\"a.db\")'",

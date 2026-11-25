@@ -351,27 +351,34 @@ const SHELLS = /^(?:bash|sh|zsh|dash)$/;
 // What a variable is given by the plain `name=value` parts before part `at` (null: given something the text does not say).
 // Nothing is known past a loop, a group, a read or an eval, or in a pipeline.
 const MODIFIES = /^(?:read|mapfile|readarray|eval|source|\.|declare|typeset|local|getopts|let|unset|printf|export|readonly|coproc)$/;
-function assigned(parts: Simple[], at: number): Map<string, string | null> {
-  const known = new Map<string, string | null>();
+// Incremental: parts are taken in order, so each part is read once for the whole line (a call for a part before one already read
+// starts again).
+function assignedOf(parts: Simple[]): (at: number) => Map<string, string | null> {
+  let known = new Map<string, string | null>();
   let all = false;
-  for (let k = 0; k < at && k < parts.length; k++) {
+  let done = 0;
+  const set = (n: string, v: string | null) => known.set(n, all ? null : v);
+  const step = (k: number) => {
     const p = parts[k]!;
-    if (p.nested) continue;
-    if (p.flow || p.unknown) { all = true; continue; }
-    const set = p.words.length > 0 && p.words.every((w) => /^[A-Za-z_]\w*=/.test(w));
-    if (!set) {
+    if (p.nested) return;
+    if (p.flow || p.unknown) { all = true; for (const n of known.keys()) known.set(n, null); return; }
+    const plain = p.words.length > 0 && p.words.every((w) => /^[A-Za-z_]\w*=/.test(w));
+    if (!plain) {
       const w0 = p.words[0] ?? "";
-      if (MODIFIES.test(w0) && !(w0 === "export" && p.words.slice(1).every((w) => /^[A-Za-z_]\w*=/.test(w)))) all = true;
-      if (w0 === "export") for (const w of p.words.slice(1)) { const n = /^([A-Za-z_]\w*)=/.exec(w)?.[1]; if (n) known.set(n, p.dyn?.length || p.sep === "|" ? null : w.slice(n.length + 1)); }
-      continue;
+      if (MODIFIES.test(w0) && !(w0 === "export" && p.words.slice(1).every((w) => /^[A-Za-z_]\w*=/.test(w)))) { all = true; for (const n of known.keys()) known.set(n, null); }
+      if (w0 === "export") for (const w of p.words.slice(1)) { const n = /^([A-Za-z_]\w*)=/.exec(w)?.[1]; if (n) set(n, p.dyn?.length || p.sep === "|" ? null : w.slice(n.length + 1)); }
+      return;
     }
     p.words.forEach((w, i) => {
       const n = w.slice(0, w.indexOf("="));
-      known.set(n, p.dyn?.includes(i) || p.sep === "|" || p.sep === "&" || p.sep === "|&" ? null : w.slice(n.length + 1));
+      set(n, p.dyn?.includes(i) || p.sep === "|" || p.sep === "&" || p.sep === "|&" ? null : w.slice(n.length + 1));
     });
-  }
-  if (all) for (const n of known.keys()) known.set(n, null);
-  return known;
+  };
+  return (at) => {
+    if (at < done) { known = new Map(); all = false; done = 0; }
+    while (done < at && done < parts.length) step(done++);
+    return known;
+  };
 }
 
 // The text of a shell word as a part of the line spells it, with the variables whose value is written out put in.
@@ -518,8 +525,7 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): 
   let dir = f.cwd;
   // Remotes the line itself names (`git remote add o URL && git fetch o`): the address is the one it was given.
   const lineRemotes = new Map<string, string>();
-  const assigns = new Map<number, Map<string, string | null>>();
-  const known = (at: number) => { let k = assigns.get(at); if (!k) assigns.set(at, k = assigned(parts, at)); return k; };
+  const known = assignedOf(parts);
   for (const [at, p] of parts.entries()) {
     // A socket the shell opens: /dev/tcp/HOST/PORT, in any command of the line (read as the shell reads the word: quotes taken
     // off, the variables the line gave a written-out value put in).

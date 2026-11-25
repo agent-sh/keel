@@ -17,9 +17,12 @@ test("code is read for the connections it opens, the lines it runs, and what it 
   expect(py("exec(\"import socket\")").net).toBe(true);
   expect(py("exec(code)").opaque).toBe(true);
   // What stays quiet.
-  for (const c of ["print(open('a').read())", "import os; os.system('ls -la')", "import re; re.compile('a+')", "print('see https://x.example/doc')", "import sqlite3; sqlite3.connect('a.db')"])
+  for (const c of ["print(open('a').read())", "import os; os.system('ls -la')", "import re; re.compile('a+')", "print('see https://x.example/doc')", "import sqlite3; sqlite3.connect('a.db')", "p = re.compile(var)", "pat = re.compile(r'a(b+)c', re.M)"])
     expect([c, py(c).net, py(c).opaque]).toEqual([c, false, false]);
   const js = (c: string) => readCode(c, "js");
+  // A method of an object named compile, exec or eval is no code that is built and run; the bare call and the global object's are.
+  for (const c of ["const m = /a(b)/.exec(s); console.log(m)", "db.exec(sql)", "Bun.spawnSync(['ls', d])", "Bun.$`ls ${dir}`", "obj.eval(x)"]) expect([c, js(c).net, js(c).opaque]).toEqual([c, false, false]);
+  for (const c of ["eval(x)", "globalThis.eval(x)", "spawnSync(cmd, [a])", "spawnSync('curl', [u])", "Bun.$`curl ${u}`", "Bun.spawnSync(['sh', '-c', x])", "const cp = require('child_process'); cp.exec(c)"]) expect([c, js(c).opaque]).toEqual([c, true]);
   expect(js("globalThis['fe'+'tch'](u)").opaque).toBe(true);
   expect(js("require('ht'+'tp').get(u)").net).toBe(true);
   expect(js("import('https://h.example/x.js')").net).toBe(true);
@@ -41,10 +44,10 @@ const timed = (f: () => unknown) => {
   return best;
 };
 const UNITS = [
-  "os.system('ls'); ", "os.system(", "system(system(", "subprocess.run([", "'a'+'b'+", "'a' 'b' ", "\"a\" . \"b\" . ", "\\x41", "`", "import(", "require('x'); ", "exec(", "eval('1'); ", "a.", "'", "\"", "a ", "<<< ", "$d/", "/dev/", "$X ", "-c ", "https://h.example/ ", "x=1;",
+  "ls /tmp/x; git status; ", "echo ls | bash; ", "x=$(ls); y=$x; ", "export A=1; ls $A/b; ", "os.system('ls'); ", "os.system(", "system(system(", "subprocess.run([", "'a'+'b'+", "'a' 'b' ", "\"a\" . \"b\" . ", "\\x41", "`", "import(", "require('x'); ", "exec(", "eval('1'); ", "a.", "'", "\"", "a ", "<<< ", "$d/", "/dev/", "$X ", "-c ", "https://h.example/ ", "x=1;",
 ];
 const line = (unit: string, n: number, wrap: string) => wrap.replace("%", unit.repeat(Math.ceil(n / unit.length)).slice(0, n));
-const WRAPS = ["python3 -c '%'", "node -e '%'", "perl -e '%'", "php -r '%'", "python3 <<< '%'", "echo '%' | python3", "bash -c '%'", "echo hi > %", "python3 - <<EOF\n%\nEOF", "X='%'; python3 -c \"$X\""];
+const WRAPS = ["python3 -c '%'", "node -e '%'", "perl -e '%'", "php -r '%'", "python3 <<< '%'", "echo '%' | python3", "bash -c '%'", "echo hi > %", "python3 - <<EOF\n%\nEOF", "X='%'; python3 -c \"$X\"", "%"];
 
 test("a command line of many calls, quotes or pieces is read in step with its length", () => {
   const slow: string[] = [];
