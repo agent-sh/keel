@@ -400,14 +400,14 @@ test("a work board card is one line, with its facts under a chevron, and Land he
     work: { uncommitted: null, branch: { files: 2, added: 5, removed: 1 } }, landed: { state: "no", missing: 1 }, review: null, ...extra,
   });
   const pair = { with: "keel/lane-1", with_agent: "111111111111", head, with_head: head, base_tip: head, state: "red", why: "", detail: null, checks: [{ name: "unit", tests: ["stamp keeps a provenance"] }], error: null, at: Date.now() };
-  const rows = [row(1, {}), row(2, { together: [pair] }), row(3, { checks: { state: "known", passed: [], failed: ["typecheck"], notRun: [] } })];
+  const rows = [row(1, {}), row(2, { together: [pair] }), row(3, { checks: { state: "known", passed: [], failed: ["typecheck"], notRun: [] } }), row(4, { landed: { state: "yes", how: "ff" } })];
   await page.route(`**/api/sessions/${id}/board*`, (route) => route.fulfill({ json: { session_id: id, rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: head, deploys: [] }], at: Date.now(), took_ms: 3 } }));
   try {
     await page.goto(`/s/${id}`);
     await openPanel(page, "board");
     const board = page.getByTestId("work-board");
     const card = (n: number) => board.locator(`[data-testid="board-row"][data-agent="${`${n}`.repeat(12)}"]`);
-    await expect(board.getByTestId("board-row")).toHaveCount(3);
+    await expect(board.getByTestId("board-row")).toHaveCount(4);
     const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
     for (const n of [1, 2, 3]) {
       const c = card(n);
@@ -418,6 +418,9 @@ test("a work board card is one line, with its facts under a chevron, and Land he
       await expect(c.getByTestId("board-checks")).toHaveCount(0);
       await expect(c.getByTestId("board-head")).toHaveCount(0);
     }
+    // A branch that landed has no Land to press: its card is as high as one that has, so the next Land stays where it was.
+    await expect(card(4).getByTestId("board-land")).toHaveCount(0);
+    expect((await card(4).boundingBox())!.height).toBe((await card(1).boundingBox())!.height);
     await expect(card(1).getByTestId("board-branch")).toHaveText("lane-1");
     await expect(card(1).getByTestId("board-land")).toBeEnabled();
     // A pair that fails together, and a check that failed on the head, hold the landing: Land is there, disabled, with the reason.

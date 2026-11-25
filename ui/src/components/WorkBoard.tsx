@@ -292,7 +292,8 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised px-2.5 py-2" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w} data-open={open}>
       {/* One line: the agent, its branch, what it changes, a mark a fact, its one action. The facts open under it. */}
-      <div className="flex min-w-0 items-center gap-2">
+      {/* (As high as the button it may hold: the card keeps its height when its Land goes, so the next one stays under the pointer.) */}
+      <div className="flex min-h-ctl-md min-w-0 items-center gap-2">
         <StateMark w={w} />
         {phone ? (
           // The row: the agent and its state in one control that opens its facts; the one action beside it.
