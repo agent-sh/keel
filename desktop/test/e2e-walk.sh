@@ -80,8 +80,15 @@ blank_click
 # allowed ends in "no microphone found", one it refused in "not allowed")
 read -r X Y W H _ <<< "$(geometry)"
 blank_click
-$A key --id "$WS" F12 > /dev/null 2>&1
-check "the microphone is refused when the page did not say, at the owner's press, that it asks" "wait_for 10 \"grep -aq '^PROBE MIC unsaid NotAllowedError' '$D/shell.out'\""
+# (The engine keeps a grant for the life of the page: after the microphone cases of the full check its request never
+# reaches the app again, so the refusal is tried only on a page that has been given none. The full check's own cases
+# for a request with no word first, above, cover it there.)
+if grep -aq '^PROBE PERMISSION audio_only=true given=true' "$D/shell.out"; then
+  echo "# note: this page was given the microphone earlier, so the engine asks no more; the refusal is checked by the microphone cases"
+else
+  $A key --id "$WS" F12 > /dev/null 2>&1
+  check "the microphone is refused when the page did not say, at the owner's press, that it asks" "wait_for 10 \"grep -aq '^PROBE MIC unsaid NotAllowedError' '$D/shell.out'\""
+fi
 blank_click
 $A key --id "$WS" F11 > /dev/null 2>&1
 check "the microphone is given to the page that said it, at the owner's press (it ends in no device, not in a refusal)" "wait_for 10 \"grep -aqE '^PROBE MIC said (NotFoundError|granted)' '$D/shell.out'\""
