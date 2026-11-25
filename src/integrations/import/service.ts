@@ -22,7 +22,7 @@ import * as perm from "../../server/routes/permissions.ts";
 import { filesWithAll } from "./inside.ts";
 import { MORE, moreOf } from "./more.ts";
 import { contains } from "../../core/paths.ts";
-import { wasSent } from "../../drive/sent.ts";
+import { ownerTexts } from "../../drive/sent.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
   { harness: "claude", label: "Claude Code", store: claudeRoot },
@@ -668,16 +668,25 @@ export class Imports {
     return !!this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' LIMIT 1").get(sessionId);
   }
 
+  // Where the check of a copy's prompts against the drive's sends runs: the read thread (src/server/read-tasks.ts),
+  // since a long prompt has many keys. Unset (a unit test), here. `typedHeld`: told when a paired daemon is why no
+  // prompt of a copy counts as the owner's (src/drive/sent.ts typedHeld).
+  sentOff?: (texts: string[]) => Promise<boolean[]>;
+  typedHeld?: (daemon: { id: string; name: string | null }) => void;
+  private ownerWords(events: Read["events"]): Promise<Set<string>> {
+    const texts = events.filter(typedPrompt).map((e) => String(e.data.text));
+    return ownerTexts(this.store, texts, { off: this.sentOff, held: this.typedHeld });
+  }
+
   // The source's events at the head of the copy, each at the time the source
   // gives it. One the source does not date takes the time of the one before
   // it (now, when it is the first), so the order in time stays the order of
   // the conversation.
   // `before`: the source's events an earlier import copied (an update), which
   // a compaction's kept events may reach back into.
-  // `own`: the source is the owner's own (ownStore, a session a person ran): a prompt its reader found typed keeps
-  // `typed` in its stored data, unless Keel's drive sent those words there (a model's, src/drive/sent.ts). Every
-  // event is dated no later than now, so each is before the link's `synced_ms` and read as the import's.
-  private copy(sessionId: string, events: Read["events"], before: Read["events"] = [], own = false) {
+  // `owner`: the prompts of the owner's own (ownerWords): one its reader found typed keeps `typed` in its stored
+  // data. Every event is dated no later than now, so each is before the link's `synced_ms` and read as the import's.
+  private copy(sessionId: string, events: Read["events"], before: Read["events"] = [], owner: Set<string> = new Set()) {
     let last: number | undefined;
     const ids: string[] = [];
     let prior: (string | undefined)[] | undefined;
@@ -685,7 +694,7 @@ export class Imports {
     events.forEach((e, j) => {
       if (Number.isFinite(e.ts) && e.ts > 0) last = Math.min(e.ts, now);
       const stored = filesStored(storedData(e, (n) => (j - n >= 0 ? ids[j - n] : (prior ??= this.copied(sessionId, before))[before.length + j - n])));
-      const data = own && typedPrompt(e) && !wasSent(this.store, String(e.data.text)) ? { ...stored, typed: true } : stored;
+      const data = typedPrompt(e) && owner.has(String(e.data.text)) ? { ...stored, typed: true } : stored;
       ids.push(this.store.append(sessionId, e.kind, data, undefined, last).id);
     });
   }
@@ -729,6 +738,9 @@ export class Imports {
     // A person's prompts count as the owner's only from a session the owner ran in a store of their own here, in an
     // import the owner started.
     const own = o.owner === true && !o.from && r.found.kind === "interactive" && ownStore(f) && ownStore(r.found);
+    // Of those, the ones no model sent through Keel's drive (src/drive/sent.ts), checked off the loop: of the events
+    // an update would add (from what the copy held before its read; an event outside that keeps no mark).
+    const owner = own ? await this.ownerWords(r.events.slice(prior && o.mode === "update" ? prior.items : 0)) : new Set<string>();
     // From here to the return nothing waits: what was true before the read
     // (the copies, a copy's head and link) is looked at again, and the events
     // and the link are written as one transaction or not at all.
@@ -747,7 +759,7 @@ export class Imports {
       if (r.events.length <= link.items) return { action: "opened", session: s, imported_events: 0, read: r };
       const more = r.events.slice(link.items);
       this.store.atomic(s.id, () => {
-        this.copy(s.id, more, r.events.slice(0, link.items), own);
+        this.copy(s.id, more, r.events.slice(0, link.items), owner);
         this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ?, through = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), this.store.lastSeq(s.id), s.id);
       });
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };
@@ -761,7 +773,7 @@ export class Imports {
     const id = this.store.db.transaction(() => {
       const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
       if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
-      this.copy(s.id, r.events, [], own);
+      this.copy(s.id, r.events, [], owner);
       const counts = r.counts;
       const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
       this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });

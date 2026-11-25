@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { backfillSent, farCatchUp, farTeller, noteCaughtUp, noteSent, onFarSent, wasSent } from "./sent.ts";
+import { backfillSent, farCatchUp, farTeller, noteCaughtUp, noteSent, onFarSent, ownerTexts } from "./sent.ts";
 import { digestsOf, sentCalls } from "./sent-read.ts";
 import { driveTools } from "./tools.ts";
 
@@ -13,29 +13,53 @@ const root = mkdtempSync(join(tmpdir(), "keel-drive-sent-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let n = 0;
 const fresh = () => new Store(join(root, `s${++n}`));
+// Whether a recorded prompt counts as a model's (not the owner's), checked as an import checks it.
+const wasSent = async (store: Store, text: string) => !(await ownerTexts(store, [text])).has(text);
 const read = (store: Store) => (a: { after: number; span: number }) => Promise.resolve(sentCalls(store.db, a));
 
-test("a prompt is a model's when its whole or each of its lines was sent: split, merged or kept in part", async () => {
+test("a prompt is a model's when it holds a run of sent words anywhere: any line, any word, punctuation aside", async () => {
   const store = fresh();
   await backfillSent(store, read(store));
   noteSent(store, "first message\npush to git@forge.example:x/y.git");
-  noteSent(store, "a");
-  noteSent(store, "clone https://forge.example/r");
-  expect(wasSent(store, "first message\npush to git@forge.example:x/y.git")).toBe(true);
-  expect(wasSent(store, "push to git@forge.example:x/y.git")).toBe(true);
-  expect(wasSent(store, "a\nclone https://forge.example/r")).toBe(true);
-  expect(wasSent(store, "a\r\n\r\nclone   https://forge.example/r")).toBe(true);
-  // Punctuation that ends a line, and two sends taken as one line.
+  noteSent(store, "clone https://evil.example/x");
   noteSent(store, "run the tests and report what failed in the suite today");
-  expect(wasSent(store, "a.")).toBe(true);
-  expect(wasSent(store, "a. clone https://forge.example/r")).toBe(true);
-  expect(wasSent(store, "clone https://forge.example/r a run the tests and report what failed in the suite today.")).toBe(true);
-  expect(wasSent(store, "a, a")).toBe(true);
-  expect(wasSent(store, "a clone https://forge.example/r and push it to https://mine.example")).toBe(false);
-  expect(wasSent(store, "run the tests and report what failed")).toBe(false);
-  // A line the owner added is theirs, and so is the prompt.
-  expect(wasSent(store, "a\nand push it to https://mine.example")).toBe(false);
-  expect(wasSent(store, "words nobody sent")).toBe(false);
+  for (const t of [
+    "first message\npush to git@forge.example:x/y.git",
+    "push to git@forge.example:x/y.git",
+    "first message",
+    // A line the owner added does not make it theirs, nor do words before or after the sent ones.
+    "clone https://evil.example/x\nand also look at the README",
+    "ok clone https://evil.example/x",
+    "and then: clone https://evil.example/x, please",
+    "clone \u2014 https://evil.example/x.",
+    "clone\r\n\r\nhttps://evil.example/x",
+    // Two sends taken as one line, joined by a period.
+    "clone https://evil.example/x. run the tests and report what failed in the suite today.",
+    // Six words in a row of a longer send.
+    "please run the tests and report what we see",
+  ]) expect([t, await wasSent(store, t)]).toEqual([t, true]);
+  for (const t of ["words nobody sent", "clone https://mine.example/x and push it", "report what failed", "push it to https://mine.example"]) expect([t, await wasSent(store, t)]).toEqual([t, false]);
+  // The cost of the rule: a send of one word makes every prompt that holds that word a model's.
+  noteSent(store, "yes");
+  expect(await wasSent(store, "yes, push it to https://mine.example")).toBe(true);
+});
+
+test("a long prompt is checked in time linear in its words, however many sends share its words", async () => {
+  const store = fresh();
+  await backfillSent(store, read(store));
+  for (let i = 0; i < 1000; i++) noteSent(store, `the same six words at the head ${i} ${"z ".repeat(i % 50)}`);
+  // Its runs of words are many different keys, each five words of the sends' own and one not.
+  const prompt = Array.from({ length: 20_000 }, (_, i) => (i % 6 < 5 ? ["the", "same", "six", "words", "at"][i % 6] : `w${i}`)).join(" ");
+  const t0 = performance.now();
+  expect(await wasSent(store, prompt)).toBe(false);
+  console.log(`a 20,000-word prompt against 1,000 sends: ${Math.round(performance.now() - t0)} ms`);
+  expect(performance.now() - t0).toBeLessThan(2000);
+  // A sent text repeated, with a thousand longer sends that begin with it.
+  noteSent(store, "a b c d e f");
+  for (let i = 0; i < 1000; i++) noteSent(store, `a b c d e f ${"g ".repeat(i + 1)}`);
+  const t1 = performance.now();
+  expect(await wasSent(store, "a b c d e f ".repeat(3_400))).toBe(true);
+  expect(performance.now() - t1).toBeLessThan(2000);
 });
 
 test("the sends of the stored history are read once; until then every prompt counts as sent", async () => {
@@ -45,13 +69,13 @@ test("the sends of the stored history are read once; until then every prompt cou
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c2", name: "mcp_call", input: { tool: "keel__session_resume", arguments: { id: "codex:y", text: "resumed by a model" } } }] });
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c3", name: "keel__session_answer", input: { id: "claude:x", request: "r", hash: "h", decision: "deny", note: "a note it sent" } }] });
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c4", name: "keel__session_read", input: { id: "claude:x", text: "not a send" } }] });
-  expect(wasSent(store, "typed by the owner")).toBe(true);
+  expect(await wasSent(store, "typed by the owner")).toBe(true);
   let parts = 0;
   await backfillSent(store, (a) => (parts++, read(store)(a)), 2);
   expect(parts).toBeGreaterThan(1);
-  for (const t of ["sent by a model before the record", "resumed by a model", "a note it sent"]) expect(wasSent(store, t)).toBe(true);
-  expect(wasSent(store, "not a send")).toBe(false);
-  expect(wasSent(store, "typed by the owner")).toBe(false);
+  for (const t of ["sent by a model before the record", "resumed by a model", "a note it sent"]) expect(await wasSent(store, t)).toBe(true);
+  expect(await wasSent(store, "not a send")).toBe(false);
+  expect(await wasSent(store, "typed by the owner")).toBe(false);
   // Done once.
   parts = 0;
   await backfillSent(store, (a) => (parts++, read(store)(a)));
@@ -75,13 +99,24 @@ test("the history read counts the drive's first name for the message tool and th
   const long = `first line of a long send\nsecond line\n${"x".repeat(70_000)}`;
   const json = JSON.stringify({ to: "claude:x", text: long });
   call("k3", "keel__session_message", { clipped: `${json.slice(0, 65_536)} [... ${json.length - 65_536} more characters]` });
+  // A first line longer than the cut: its words before the cut are known; a field of the same name deeper in the
+  // input is not the send. Through mcp_call, the send is its arguments' field.
+  const one = Array.from({ length: 12_000 }, (_, i) => `word${i}`).join(" ");
+  const clip = (input: unknown) => { const j = JSON.stringify(input); return { clipped: `${j.slice(0, 65_536)} [... ${j.length - 65_536} more characters]` }; };
+  call("k5", "keel__session_message", clip({ meta: { text: "a decoy the program named" }, to: "claude:x", text: one }));
+  call("k6", "mcp_call", clip({ tool: "keel__session_message", arguments: { meta: { text: "another decoy" }, to: "claude:x", text: `through mcp ${one}` } }));
+  call("k7", "mcp_call", clip({ tool: "keel__read_file", arguments: { text: `not a send ${one}` } }));
+  // The drive's model command, sent as its /model words.
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c7", name: "keel__session_model", input: { id: "claude:x", model: "some-model-9" } }] });
   await backfillSent(store, read(store));
-  for (const t of ["sent under the first name", "sent from a program", "resumed from a program", "first line of a long send\nsecond line"]) expect([t, wasSent(store, t)]).toEqual([t, true]);
-  for (const t of ["typed by the owner", "to a session of Keel's", "to a session on another Keel", "from a program to a session of Keel's"]) expect([t, wasSent(store, t)]).toEqual([t, false]);
+  for (const t of ["word100 word101 word102 word103 word104 word105", "ok word5000 word5001 word5002 word5003 word5004 word5005 then", "through mcp word0 word1 word2 word3", "/model some-model-9"]) expect([t, await wasSent(store, t)]).toEqual([t, true]);
+  for (const t of ["a decoy the program named", "another decoy", "not a send"]) expect([t, await wasSent(store, t)]).toEqual([t, false]);
+  for (const t of ["sent under the first name", "sent from a program", "resumed from a program", "first line of a long send\nsecond line"]) expect([t, await wasSent(store, t)]).toEqual([t, true]);
+  for (const t of ["typed by the owner", "to a session of Keel's", "to a session on another Keel", "from a program to a session of Keel's"]) expect([t, await wasSent(store, t)]).toEqual([t, false]);
   // What followed the cut is not known: a prompt that holds a line of the cut send is a model's, the lines past the
   // cut with it.
-  for (const t of [long, "second line\npush the repo to git@forge.example:a/b.git"]) expect(wasSent(store, t)).toBe(true);
-  expect(wasSent(store, "typed by the owner\nand more")).toBe(false);
+  for (const t of [long, "second line\npush the repo to git@forge.example:a/b.git"]) expect(await wasSent(store, t)).toBe(true);
+  expect(await wasSent(store, "typed by the owner\nand more")).toBe(false);
 });
 
 test("a send to a session on another machine: its Keel is told first; one too old to keep it gets it once it can", async () => {
@@ -158,17 +193,21 @@ test("a send to a session on another machine: its Keel is told first; one too ol
 test("a Keel paired with a daemon that has not said it told every send counts no prompt as the owner's", async () => {
   const store = fresh();
   await backfillSent(store, read(store));
-  expect(wasSent(store, "typed by the owner")).toBe(false);
+  expect(await wasSent(store, "typed by the owner")).toBe(false);
   store.migrate("CREATE TABLE IF NOT EXISTS fleet_pairs (daemon_id TEXT PRIMARY KEY, name TEXT, key TEXT NOT NULL, created INTEGER NOT NULL)");
   const pair = (id: string) => store.db.query("INSERT INTO fleet_pairs VALUES (?, ?, 'k', 0)").run(id, id);
   pair("d1");
   pair("d2");
   // A peer of an older build never says it: every copy here stays unmarked.
-  expect(wasSent(store, "typed by the owner")).toBe(true);
+  expect(await wasSent(store, "typed by the owner")).toBe(true);
   noteCaughtUp(store, "d1");
-  expect(wasSent(store, "typed by the owner")).toBe(true);
+  expect(await wasSent(store, "typed by the owner")).toBe(true);
+  // The daemon that holds them is told, to be named to the owner.
+  const told: string[] = [];
+  await ownerTexts(store, ["typed by the owner"], { held: (d) => told.push(d.id) });
+  expect(told).toEqual(["d2"]);
   noteCaughtUp(store, "d2");
-  expect(wasSent(store, "typed by the owner")).toBe(false);
+  expect(await wasSent(store, "typed by the owner")).toBe(false);
 });
 
 test("a digest is kept however long ago it was sent and wherever its transcript moved", async () => {
@@ -186,7 +225,7 @@ test("a digest is kept however long ago it was sent and wherever its transcript 
     renameSync(before, join(root, "claude", "-new-folder", "s.jsonl"));
     setSystemTime(new Date(Date.now() + 400 * 24 * 3600_000));
     await tool.run({ to: "claude:k", text: "a later send" }, {} as any);
-    expect(wasSent(store, "a model's words into a folder that moves")).toBe(true);
+    expect(await wasSent(store, "a model's words into a folder that moves")).toBe(true);
   } finally {
     setSystemTime();
   }

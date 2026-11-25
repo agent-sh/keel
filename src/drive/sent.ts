@@ -1,20 +1,22 @@
 // The words a model sent into another harness's session through the drive (src/drive/tools.ts). That harness
 // records them as typed at its prompt, the way it records the owner's own, so a copy of that session made later
-// must not count them as the owner's words (Imports.copy asks wasSent before it keeps a prompt's `typed` mark).
-// Only digests of the words are kept, never the words (src/drive/sent-read.ts): of the whole and of each line.
+// must not count them as the owner's words (Imports.import asks ownerTexts before a copy keeps a prompt's `typed` mark).
+// Only keys of the words are kept, never the words (src/drive/sent-read.ts): of each run of a few words.
 // What the owner sends from the page is theirs and is not kept here.
 //
 // The sends made before this record began are read once from the stored history, on the read thread
 // (backfillSent); until that read is done no prompt of a copy counts as typed. A send to a session on another
 // machine is told to that machine's Keel before it goes (farSent), since a copy made there reads its own record.
-// The digests are kept: a few a send, and a transcript the drive sent into can be copied for as long as it lives,
+// The keys are kept (about one a word sent): a transcript the drive sent into can be copied for as long as it lives,
 // wherever its folder moves.
 import type { Store } from "../core/store.ts";
-import { digestsOf, farDigest, sentBy, type SentAsk } from "./sent-read.ts";
+import { digestsOf, farDigest, sentOf, type SentAsk } from "./sent-read.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT PRIMARY KEY, sent_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS drive_sends_caught (daemon_id TEXT PRIMARY KEY, at INTEGER NOT NULL)`;
+// The state row that says the history's sends were read, in the keys of this build (sent-read.ts).
+const READ = "read_runs";
 
 function keep(store: Store, digests: string[]) {
   if (!digests.length) return;
@@ -43,33 +45,39 @@ export function noteCaughtUp(store: Store, daemonId: string) {
   store.db.query("INSERT OR REPLACE INTO drive_sends_caught (daemon_id, at) VALUES (?, ?)").run(daemonId, Date.now());
 }
 
-// Whether a paired daemon has not yet said it told every send (a Keel of a build before the word never does: a pair
-// with one keeps every copy here unmarked, failing closed).
-function pairNotCaughtUp(store: Store): boolean {
-  if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fleet_pairs'").get()) return false;
-  return !!store.db.query("SELECT 1 FROM fleet_pairs p WHERE NOT EXISTS (SELECT 1 FROM drive_sends_caught c WHERE c.daemon_id = p.daemon_id) LIMIT 1").get();
+// Why no prompt of a copy can count as the owner's now, if one holds: the history's sends are not read yet, or a
+// paired daemon has not said it told this Keel its sends (a Keel of a build before the word never does: a pair with
+// one keeps every copy here unmarked, failing closed). `daemon`: that daemon, and its name.
+export function typedHeld(store: Store): { daemon?: { id: string; name: string | null } } | undefined {
+  try {
+    if (!store.db.query("SELECT 1 FROM drive_sends_state WHERE k = ?").get(READ)) return {};
+  } catch {
+    return {}; // no table: the history was never read
+  }
+  if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fleet_pairs'").get()) return undefined;
+  const p = store.db.query<{ daemon_id: string; name: string | null }, []>("SELECT daemon_id, name FROM fleet_pairs p WHERE NOT EXISTS (SELECT 1 FROM drive_sends_caught c WHERE c.daemon_id = p.daemon_id) ORDER BY daemon_id LIMIT 1").get();
+  return p ? { daemon: { id: p.daemon_id, name: p.name } } : undefined;
 }
 
-// Whether a recorded prompt is words a model sent through the drive. True while the history's sends are not read
-// yet, and while a paired daemon has not said it told this Keel its sends: a prompt is the owner's only once it is
-// known that no model sent it.
-export function wasSent(store: Store, text: string): boolean {
-  try {
-    if (!store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return true;
-    if (pairNotCaughtUp(store)) return true;
-    const q = store.db.query<unknown, [string]>("SELECT 1 FROM drive_sends WHERE digest = ? LIMIT 1");
-    const heads = store.db.query<{ digest: string }, [string, string]>("SELECT digest FROM drive_sends WHERE digest >= ? AND digest < ?");
-    return sentBy(text, (d) => !!q.get(d), (h) => heads.all(`h:${h}:`, `h:${h};`).map((r) => Number(r.digest.slice(h.length + 3))));
-  } catch {
-    return true; // no table: the history was never read
-  }
+// The prompts of `texts` that are the owner's: none while typedHeld holds (`held` is told of a daemon that holds
+// it), else each that holds no run of words a model sent (sent-read.ts). `off`: where the check runs, the read thread
+// (a long prompt has many keys to look up); unset, here.
+export async function ownerTexts(store: Store, texts: string[], o: { off?: (texts: string[]) => Promise<boolean[]>; held?: (daemon: { id: string; name: string | null }) => void } = {}): Promise<Set<string>> {
+  const out = new Set<string>();
+  const list = [...new Set(texts)];
+  if (!list.length) return out;
+  const why = typedHeld(store);
+  if (why) { if (why.daemon) o.held?.(why.daemon); return out; }
+  const sent = o.off ? await o.off(list) : sentOf(store.db, { texts: list });
+  list.forEach((t, i) => { if (sent[i] === false) out.add(t); });
+  return out;
 }
 
 // The sends of the stored history, read once on the read thread a part at a time (`run`: Reads.run): the replies'
 // calls, then the calls programs made inside run_code.
 export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ digests: string[]; next: number | null }>, span = 20_000) {
   store.migrate(SCHEMA);
-  if (store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return;
+  if (store.db.query("SELECT 1 FROM drive_sends_state WHERE k = ?").get(READ)) return;
   for (const table of ["events", "code_calls"] as const) {
     for (let after = 0; ; ) {
       const r = await run({ after, span, table });
@@ -78,7 +86,7 @@ export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ 
       after = r.next;
     }
   }
-  store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES ('backfilled', ?)").run(Date.now());
+  store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES (?, ?)").run(READ, Date.now());
 }
 
 // A far machine's Keel, told the digests of a send into a session it may copy: set by the fleet
@@ -149,7 +157,7 @@ async function pushFar(store: Store, to: Far, host: string, id: string): Promise
 
 // A link to machine `id` came up (`hosts`: the names the fleet knows it by): its Keel is told what still waits for
 // it, then that nothing more does (caught up), even when nothing waited. Until every Keel paired with it has said
-// so, a Keel counts no prompt of a copy as the owner's (wasSent): a send it was not told of may be in its sessions.
+// so, a Keel counts no prompt of a copy as the owner's (typedHeld): a send it was not told of may be in its sessions.
 // Throws when that Keel is out of reach again: its next link tries.
 export async function farCatchUp(store: Store, id: string, hosts: string[]) {
   const to = far;

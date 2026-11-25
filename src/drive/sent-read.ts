@@ -1,75 +1,75 @@
-// The digests of words a model sent into another harness's session through the drive (src/drive/sent.ts), and the
-// read that finds the sends of the stored history: pure, so the read thread loads it (src/server/read-tasks.ts).
+// The keys of words a model sent into another harness's session through the drive (src/drive/sent.ts), the check of
+// a recorded prompt against them, and the read that finds the sends of the stored history: pure, so the read thread
+// loads it (src/server/read-tasks.ts).
+//
+// One broad rule: a prompt is a model's when it holds, anywhere, a run of words a model sent. A sent text is kept
+// by the keys of its runs of up to RUN words: a text of RUN words or fewer (or a line of one) by its own key, a
+// longer one by the key of each run of RUN words in it. A prompt is a model's when any run of up to RUN words of
+// it, starting at any word, has a kept key. That counts more prompts as the model's than hold a whole sent text (a
+// prompt sharing RUN words with a send, or a word with a one-word send), which only loses an owner prompt's mark:
+// the safe side.
 import type { Database } from "bun:sqlite";
 import { outsideText } from "./text.ts";
 
 // The drive's tools that put a model's words at another session's prompt, and the input that holds them
-// (keel__session_send: the message tool's name in the drive's first builds).
-export const SENDS: Record<string, string> = { keel__session_message: "text", keel__session_send: "text", keel__session_resume: "text", keel__session_answer: "note" };
+// (keel__session_send: the message tool's name in the drive's first builds). keel__session_model sends its harness's
+// `/model <name>` command (src/drive/drive.ts modelCommand), read as those words.
+export const SENDS: Record<string, string> = { keel__session_message: "text", keel__session_send: "text", keel__session_resume: "text", keel__session_answer: "note", keel__session_model: "model" };
 
-// The words as a harness records what was pasted at its prompt: spacing may differ, and the punctuation that ends
-// them (a harness that takes two sends as one prompt may join them with a period), the words do not.
-const norm = (text: string) => text.replace(/\s+/g, " ").trim().replace(/[\s.!?,;:\u2026]+$/u, "");
-const digest = (text: string) => String(Bun.hash(norm(text)));
+const RUN = 6;
+// The words as a harness records what was pasted at its prompt: spacing, line breaks and the punctuation around a
+// word may differ (a harness that takes two sends as one prompt may join them with a period), the words do not. A
+// word of punctuation alone is no word.
+const EDGE = /^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu;
+export const wordsOf = (text: string) => text.split(/[\s\u0085]+/u).map((w) => w.replace(EDGE, "")).filter(Boolean);
+const key = (w: string[]) => `w${w.length}:${Bun.hash(w.join(" "))}`;
+// The keys a far Keel may be given (noteDigests).
+export const farDigest = (d: string) => /^w[1-6]:\d{1,24}$/.test(d);
 
-// A harness can also take two sends as one line, joined by a space: each line and whole that was sent is kept too
-// by its first HEAD words and its length in words (`h:<digest>:<words>`), so a line is read as a run of sent texts
-// (sentBy) without a digest of each of its parts.
-const HEAD = 6;
-const HEAD_KEY = /^h:(\d{1,24}):(\d{1,6})$/;
-const words = (text: string) => { const t = norm(text); return t ? t.split(" ") : []; };
-function head(text: string): string | undefined {
-  const w = words(text);
-  return w.length ? `h:${digest(w.slice(0, HEAD).join(" "))}:${w.length}` : undefined;
+function keysInto(out: Set<string>, text: string) {
+  const all = wordsOf(text);
+  if (all.length <= RUN) { if (all.length) out.add(key(all)); }
+  else for (let i = 0; i + RUN <= all.length; i++) out.add(key(all.slice(i, i + RUN)));
+  // A harness may keep a line of a send alone: a short line is a sent text of its own.
+  for (const line of text.split("\n")) {
+    const w = wordsOf(line);
+    if (w.length && w.length < RUN) out.add(key(w));
+  }
 }
-// The digest kinds a far Keel may be given (noteDigests): a whole or a line, and a head.
-export const farDigest = (d: string) => /^\d{1,24}$/.test(d) || HEAD_KEY.test(d);
 
-// The words as the drive delivers them (outsideText: the characters a delivery drops are dropped here too), then
-// the digest of the whole and of each line that holds words: a harness can take two sends as one prompt, or keep a
-// part of one, and a prompt each of whose lines a model sent is the model's. Empty when nothing would be sent.
+// The keys of a send, its words as the drive delivers them (outsideText: the characters a delivery drops are
+// dropped here too). Empty when nothing would be sent.
 export function digestsOf(text: string): string[] {
   let body: string;
   try { body = outsideText(text).text; } catch { return []; }
-  const lines = body.split("\n").filter((l) => l.trim());
-  const parts = [body, ...lines];
-  return [...new Set([...parts.map(digest), ...parts.map(head).filter((h): h is string => !!h)])];
+  const out = new Set<string>();
+  keysInto(out, body);
+  return [...out];
 }
 
-// The lines of a send the history kept cut (clippedWords): under a kind of their own, since what followed them is
-// not known.
-const CUT = "cut:";
-
-// Whether a recorded prompt is words a model sent: its whole was sent, or each of its lines that holds words was or
-// is a run of sent texts, or one of its lines is a line of a send the history kept cut (the rest of that send may be
-// any of its other lines). `lengths`: the lengths in words of the sent texts a head digest starts.
-export function sentBy(text: string, known: (digest: string) => boolean, lengths: (head: string) => number[] = () => []): boolean {
-  const lines = text.split(/\r\n|[\r\n\u0085\u2028\u2029]/).filter((l) => l.trim());
-  if (known(digest(text))) return true;
-  if (lines.some((l) => known(CUT + digest(l)))) return true;
-  return lines.length > 0 && lines.every((l) => known(digest(l)) || runOfSent(words(l), known, lengths));
+// The keys of every run of up to RUN words of a recorded prompt, starting at each of its words.
+export function promptKeys(text: string): string[] {
+  const w = wordsOf(text);
+  const out = new Set<string>();
+  for (let i = 0; i < w.length; i++) for (let k = 1; k <= RUN && i + k <= w.length; k++) out.add(key(w.slice(i, i + k)));
+  return [...out];
 }
 
-// Whether the words are sent texts one after another: from the start, each sent text that begins where the run got
-// to (found by its head) moves the run on. Only the places a run reaches are looked at, so words no model sent cost
-// one look a head length.
-function runOfSent(w: string[], known: (digest: string) => boolean, lengths: (head: string) => number[]): boolean {
-  const n = w.length;
-  if (!n) return false;
-  const reach = new Uint8Array(n + 1);
-  reach[0] = 1;
-  for (let i = 0; i < n; i++) {
-    if (!reach[i]) continue;
-    for (let k = 1; k <= Math.min(HEAD, n - i); k++) {
-      for (const len of lengths(digest(w.slice(i, i + k).join(" ")))) {
-        // A text shorter than a head is its own head; a longer one is known by its first HEAD words.
-        if ((k < HEAD ? len !== k : len < HEAD) || i + len > n || reach[i + len]) continue;
-        if (known(digest(w.slice(i, i + len).join(" ")))) reach[i + len] = 1;
-      }
-    }
-    if (reach[n]) return true;
+// Whether a recorded prompt holds a run of words a model sent. `any`: whether any of the keys is kept.
+export const sentBy = (text: string, any: (keys: string[]) => boolean) => {
+  const keys = promptKeys(text);
+  return keys.length > 0 && any(keys);
+};
+
+// For each prompt, whether a model sent it (a store with no record of sends: every one). The read thread runs it
+// for an import (src/integrations/import/service.ts): a long prompt has many keys.
+export function sentOf(db: Database, a: { texts: string[] }): boolean[] {
+  try {
+    const q = db.query<unknown, [string]>("SELECT 1 FROM drive_sends WHERE digest IN (SELECT value FROM json_each(?)) LIMIT 1");
+    return a.texts.map((t) => sentBy(t, (keys) => !!q.get(JSON.stringify(keys))));
+  } catch {
+    return a.texts.map(() => true);
   }
-  return !!reach[n];
 }
 
 // The words of one call by a send tool, called by its name or through mcp_call. keel__session_send is also the
@@ -79,38 +79,69 @@ function runOfSent(w: string[], known: (digest: string) => boolean, lengths: (he
 function sentWords(name: unknown, input: any): string | undefined {
   if (name === "mcp_call") [name, input] = [input?.tool ?? input?.name, input?.arguments];
   if (name === "keel__session_send" && !(typeof input?.to === "string" && input.to.includes(":"))) return undefined;
-  const key = typeof name === "string" ? SENDS[name] : undefined;
-  const words = key && input && typeof input === "object" ? input[key] : undefined;
+  if (name === "keel__session_model") return typeof input?.model === "string" ? `/model ${input.model}` : undefined;
+  const k = typeof name === "string" ? SENDS[name] : undefined;
+  const words = k && input && typeof input === "object" ? input[k] : undefined;
   return typeof words === "string" ? words : undefined;
 }
 
-// The words of a send whose input the page's record kept cut (src/server/routes/codemode.ts clipInput: the input's
-// JSON up to a length): whole when the cut fell after them, else `cut`, each whole line before the cut (the lines
-// past it are not known, so a prompt that holds any of these is counted a model's: sentBy).
-function clippedWords(clipped: string): { whole?: string; cut: string[] } {
-  for (const key of new Set(Object.values(SENDS))) {
-    const at = clipped.indexOf(`"${key}":"`);
-    if (at < 0) continue;
-    const raw = clipped.slice(at + key.length + 4);
-    let i = 0;
-    while (i < raw.length && raw[i] !== '"') i += raw[i] === "\\" ? 2 : 1;
-    const closed = i < raw.length;
-    const body = raw.slice(0, Math.min(i, raw.length));
-    for (let cut = 0; cut < 6; cut++) {
-      try {
-        const text = JSON.parse(`"${body.slice(0, body.length - cut)}"`) as string;
-        return closed ? { whole: text, cut: [] } : { cut: text.split("\n").slice(0, -1) };
-      } catch {}
+// The string values of a JSON text cut short, each with its path of keys ("#" for an array's place), the last one
+// perhaps cut.
+function stringsOf(json: string): { path: string[]; value: string; cut: boolean }[] {
+  type Frame = { obj: boolean; key?: string; wantKey: boolean };
+  const stack: Frame[] = [];
+  const out: { path: string[]; value: string; cut: boolean }[] = [];
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i];
+    const top = stack[stack.length - 1];
+    if (c === "{") stack.push({ obj: true, wantKey: true });
+    else if (c === "[") stack.push({ obj: false, wantKey: false });
+    else if (c === "}" || c === "]") stack.pop();
+    else if (c === "," && top?.obj) { top.wantKey = true; top.key = undefined; }
+    else if (c === '"') {
+      let j = i + 1;
+      while (j < json.length && json[j] !== '"') j += json[j] === "\\" ? 2 : 1;
+      const cut = j >= json.length;
+      const raw = json.slice(i + 1, Math.min(j, json.length));
+      let value: string | undefined;
+      for (let drop = 0; drop < 6 && value === undefined; drop++) { try { value = JSON.parse(`"${raw.slice(0, raw.length - drop)}"`) as string; } catch {} }
+      i = j;
+      if (value === undefined) continue;
+      if (top?.obj && top.wantKey) { top.key = value; top.wantKey = false; }
+      else out.push({ path: stack.map((f) => (f.obj ? (f.key ?? "") : "#")), value, cut });
     }
-    return { cut: [] };
   }
-  return { cut: [] };
+  return out;
+}
+
+// The words of a send whose input the page's record kept cut (src/server/routes/codemode.ts clipInput: the input's
+// JSON up to a length, then a note of how much more): the value of the send's own input field, at the top of the
+// input (inside `arguments` for mcp_call), never a field of the same name deeper in. A value the cut fell in keeps
+// its words before the last, which may be cut.
+function clippedWords(tool: string, clipped: string): string[] {
+  const json = clipped.replace(/ \[\.\.\. \d+ more characters\]$/, "");
+  const all = stringsOf(json);
+  const at = (path: string[]) => all.filter((s) => s.path.length === path.length && s.path.every((p, i) => p === path[i]));
+  let base: string[] = [];
+  let fields = [...new Set(Object.values(SENDS))];
+  if (tool === "mcp_call") {
+    base = ["arguments"];
+    const named = [...at(["tool"]), ...at(["name"])].map((s) => s.value).find((n) => SENDS[n]);
+    if (named) fields = [SENDS[named]!];
+    else if ([...at(["tool"]), ...at(["name"])].some((s) => !s.cut)) return []; // another tool
+  } else if (SENDS[tool]) fields = [SENDS[tool]!];
+  else return [];
+  const out: string[] = [];
+  for (const f of fields) {
+    for (const s of at([...base, f])) out.push(s.cut ? s.value.replace(/\S*$/, "") : s.value);
+  }
+  return out;
 }
 
 export type SentAsk = { after: number; span: number; table?: "events" | "code_calls" };
-// The digests of every send the rows with rowid in (after, after + span] hold: the replies of the events, or the
-// calls programs made inside run_code (the code_calls the page keeps, read as src/safety/marks.ts reads them).
-// `next`: where the read goes on from, null past the last row.
+// The keys of every send the rows with rowid in (after, after + span] hold: the replies of the events, or the calls
+// programs made inside run_code (the code_calls the page keeps, read as src/safety/marks.ts reads them). `next`:
+// where the read goes on from, null past the last row.
 export function sentCalls(db: Database, a: SentAsk): { digests: string[]; next: number | null } {
   const table = a.table ?? "events";
   const needles = Object.keys(SENDS).map((n) => `"${n}"`);
@@ -135,12 +166,7 @@ export function sentCalls(db: Database, a: SentAsk): { digests: string[]; next: 
       for (const r of rows) {
         let c: any;
         try { c = JSON.parse(r.data); } catch { continue; }
-        if (typeof c?.input?.clipped === "string") {
-          const w = clippedWords(c.input.clipped);
-          add(w.whole);
-          for (const l of w.cut) if (l.trim()) digests.add(CUT + digest(l));
-          continue;
-        }
+        if (typeof c?.input?.clipped === "string") { for (const w of clippedWords(String(c.tool), c.input.clipped)) add(w); continue; }
         add(sentWords(c?.tool, c?.input));
       }
       last = db.query<{ n: number | null }, []>("SELECT MAX(rowid) AS n FROM code_calls").get()?.n ?? 0;

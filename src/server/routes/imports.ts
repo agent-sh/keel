@@ -39,6 +39,7 @@ export const importRoutes: RouteModule = (deps) => {
   // (Set again by each app: the index is one per process, the engine is the app's own.)
   imports.created = (id) => { try { deps.engine.adoptImport(id); } catch (e) { deps.errors.capture("server", e, { session: id, at: "import title" }); } };
   imports.offRead ??= (sql, params) => reads.sql(sql, params);
+  imports.sentOff ??= (texts) => reads.run("drive.sentOf", { texts });
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.
   const modelFor = (f: Found) => pickModel(providers, f);

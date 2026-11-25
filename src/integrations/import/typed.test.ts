@@ -20,7 +20,7 @@ const { ClaudeConvert } = await import("./claude.ts");
 const { CodexConvert } = await import("./codex.ts");
 const { readAgy } = await import("./agy.ts");
 const { backfillSent, noteSent } = await import("../../drive/sent.ts");
-const { sentCalls } = await import("../../drive/sent-read.ts");
+const { sentCalls, sentOf } = await import("../../drive/sent-read.ts");
 // The drive's sends of the history read (none here): until then no prompt of a copy counts as typed.
 const ready = (store: any) => backfillSent(store, (a) => Promise.resolve(sentCalls(store.db, a)));
 const { TakeOver } = await import("../../drive/takeover.ts");
@@ -180,8 +180,12 @@ test("a copy keeps the marks only for a session of the owner's own store here, a
   const own = join(root, "stores", "claude_dir", "-p", `${id}.jsonl`);
   transcript(own, id);
   expect(ownStore({ harness: "claude", path: own })).toBe(true);
+  // The prompts are checked against the sends where the daemon sends that check: its read thread, off the loop.
+  const asked: string[][] = [];
+  imports.sentOff = async (texts) => { asked.push(texts); return sentOf(store.db, { texts }); };
   const made = await imports.import(imports.byPath(own, "claude")!, { model: "m", workspace: root, owner: true });
   expect(typedOf(made.session.id)).toEqual([["push to git@forge.example:me/repo.git", true], ["words a model sent   through the drive", false]]);
+  expect(asked).toEqual([["push to git@forge.example:me/repo.git", "words a model sent   through the drive"]]);
   // Every event of the copy is dated before its link's synced_ms.
   const link = imports.link(made.session.id)!;
   expect(store.events(made.session.id).every((e) => e.ts <= link.synced_ms)).toBe(true);
