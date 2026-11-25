@@ -362,6 +362,10 @@
   --animate-pop: pop var(--dur-move) var(--ease-out);
   --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
 }
+/* A phone's bar keeps the room a finger needs for its controls at a large text size. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
+  :root { --spacing-bar: 3.5rem; }
+}
 
 @keyframes appear { from { opacity: 0; } }
 @keyframes fade-up {

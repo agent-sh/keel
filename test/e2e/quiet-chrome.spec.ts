@@ -18,7 +18,7 @@ const twoPanes = (page: Page, a: string, b: string) => page.addInitScript(([x, y
   localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [x, y], sizes: {}, active: 0 }));
 }, [a, b]);
 
-test("a pane's head shows its tools at rest, quietly, and lifts them when it is pointed at or focused", async ({ page, request }) => {
+test("a pane's head keeps its tools out of sight at rest and shows them when it is pointed at or focused", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Quiet pane head" } })).json();
   const { session: beside } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Quiet pane beside" } })).json();
   await twoPanes(page, session.id, beside.id);
@@ -27,21 +27,18 @@ test("a pane's head shows its tools at rest, quietly, and lifts them when it is 
   const tools = head.locator(".k-station-tools");
   const close = head.getByTestId("station-close");
   await expect(close).toBeAttached();
-  // Pointer away from the head: its tools are there, in the faint ink of the page's quietest controls.
-  const ink = (v: string) => page.evaluate((name) => { const p = document.createElement("span"); p.style.color = `var(${name})`; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }, v);
-  const color = () => close.evaluate((el) => getComputedStyle(el).color);
+  // Pointer away from the head: its tools keep their place, out of sight.
   await page.mouse.move(5, 900);
-  await settles(tools, 1);
-  await expect.poll(color).toBe(await ink("--faint"));
+  await settles(tools, 0);
   await shoot(page, "quiet-01-head");
-  // Pointed at, the head lifts them to the muted ink.
+  // Pointed at, the head shows them.
   await head.hover({ position: { x: 20, y: 10 } });
-  await expect.poll(color).toBe(await ink("--muted"));
+  await settles(tools, 1);
   await page.mouse.move(5, 900);
-  await expect.poll(color).toBe(await ink("--faint"));
-  // The keyboard reaches them as before, and lifts them while it is there.
+  await settles(tools, 0);
+  // The keyboard reaches them as before, and shows them while it is there.
   await head.getByTestId("station-pin").focus();
-  await expect.poll(color).toBe(await ink("--muted"));
+  await settles(tools, 1);
 });
 
 test("the head says what the session cost, once, and opens Usage", async ({ page, request }) => {

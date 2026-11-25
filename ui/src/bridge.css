@@ -1977,6 +1977,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-station .k-top-in > .k-station-head .k-station-title { font-size: var(--text-base); font-weight: 400; line-height: 1.35; color: var(--muted); letter-spacing: 0; }
   .k-station .k-station-word-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .k-station-identity .k-station-word { position: relative; cursor: default; }
+}
+/* (Only where a pointer can come to them: a touch screen keeps them in view.) */
+@media (min-width: 768px) and (hover: hover) {
   .k-station .k-top:not(:hover, :focus-within) :is(.k-station-tools, .k-session-header .k-hand, .k-station-clock, .k-station-where) { opacity: 0; }
   .k-station .k-top :is(.k-station-tools, .k-session-header .k-hand, .k-station-clock, .k-station-where) { transition: opacity var(--dur-move) var(--ease-out); }
 }
