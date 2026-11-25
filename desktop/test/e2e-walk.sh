@@ -35,6 +35,12 @@ set_theme() {
 }
 shown_here() { where "$1" | grep -q '[0-9]'; }
 
+# Notifications that are still up from before count toward the app's "more than three sessions alert together": the walk
+# starts with none (all read, so the daemon takes them down).
+api /api/alerts/read '{}' POST > /dev/null 2>&1 || true
+up_now() { gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method test.Notifications.Shown 2> /dev/null; }
+wait_for 20 'up_now | grep -q "\[\]"' || echo "# note: notifications from before were still up at the start of the walk"
+
 # Sessions in the states the rail has a dot for: at work (a plan, two agents, files changed, a command that names a file), asking, done.
 busy=$(mk_session "Walk: release notes" "$walk_ws")
 api "/api/sessions/$busy/permissions" '{"mode":"full-auto","sandbox":"off"}' PUT > /dev/null
@@ -89,6 +95,9 @@ curl -sS -m 10 -X POST -H 'content-type: image/png' --data-binary "@$D/face.png"
 if [ -n "$helper" ]; then
   api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$helper\"}" POST > /dev/null
   check "the helper's own alert is shown by the app with the helper's face as its icon" "wait_for 15 'last_note | grep -q avatar'"
+  hid=$(last_note | py 'import json,sys; print(json.loads(sys.stdin.read()[7:])["id"])')
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method test.Notifications.Click "$hid" > /dev/null 2>&1
+  check "its click opens the helper's conversation" "wait_for 15 \"last present | grep -q '/s/$helper'\""
 else
   fail "the helper did not start for the walk"
 fi
@@ -98,9 +107,15 @@ check "another session's alert carries no helper's face, the app's own icon" "wa
 api /api/helper '{"on":false}' PUT > /dev/null 2>&1 || true
 curl -fsS -m 10 -X DELETE "$URL/api/helper/avatar" > /dev/null 2>&1 || true
 
+# --- a click on the notification of a request opens the session that asks, at that request
+aid=$(grep '^NOTIFY ' "$D/notify-host.out" | grep 'Approval: Walk: asks first' | head -1 | py 'import json,sys; print(json.loads(sys.stdin.read()[7:])["id"])')
+gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method test.Notifications.Click "$aid" > /dev/null 2>&1
+check "a click on the notification of a request opens the session that asks, at its request" "wait_for 15 \"last present | grep -q '/s/$asker?approval='\""
+
 # --- the tray's list, with the sessions in their states
 walk_lines() { menu | grep -o "'label': <'[^']*'>" | sed "s/^'label': <'//; s/'>\$//" | grep -F ' · ' || true; }
-check "the tray lists the session that asks, and the one at work, each with its state word" "wait_for 20 \"walk_lines | grep -q '^Walk: asks first · Needs you\$'\" && walk_lines | grep -q '^Walk: release notes · '"
+# (The list holds five: the ones that need the owner first, so the one at work may not be among them when others wait.)
+check "the tray lists the session that asks with its state word" "wait_for 20 \"walk_lines | grep -q '^Walk: asks first · Needs you\$'\""
 
 # --- the dark theme, the same session
 set_theme true || echo "# note: the page's theme could not be set to dark for the walk"

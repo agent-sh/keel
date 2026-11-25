@@ -20,6 +20,7 @@
 #   KEEL_E2E_UNTIL=tray-list desktop/test/e2e.sh   only as far as the tray's list of sessions
 #   KEEL_E2E_UNTIL=panel desktop/test/e2e.sh       only as far as a side panel popped out and docked back
 #   KEEL_E2E_UNTIL=microphone desktop/test/e2e.sh  only as far as the microphone's cases
+#   KEEL_E2E_ONLY=walk desktop/test/e2e.sh         only the walk through the daily use (dots, status lines, microphone, notifications)
 #   KEEL_E2E_ROOT=DIR desktop/test/e2e.sh       the same, of a package unpacked in DIR (see below)
 #   KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   a native Wayland workspace (KWin): also the clipboard's
 #                                               picture and the focus a launch's activation token gives
@@ -658,6 +659,9 @@ stop_at back-from-tray
 read -r X Y W H _ <<< "$(geometry)"
 $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.5
 $A key --id "$WS" ctrl+a > /dev/null 2>&1; $A key --id "$WS" BackSpace > /dev/null 2>&1; sleep 1
+
+# --- 6c. the walk through the owner's daily use (e2e-walk.sh): it leaves the page in the dark theme
+. "$HERE/e2e-walk.sh"
 
 # --- 7. the dark theme: the title bar follows the page
 read -r X Y W H _ <<< "$(geometry)"
