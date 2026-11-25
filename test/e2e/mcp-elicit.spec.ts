@@ -48,7 +48,9 @@ async function setup(name: string, env: Record<string, string> = {}) {
   const call = (path: string, body?: unknown, method = "POST") =>
     fetch(at.d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
   for (const [server, args] of [["asker", [FIXTURE]], ["second", [FIXTURE]], ["modern", [FIXTURE, "--modern"]]] as const) {
+    // "second" runs the same program as "asker": a twin is left out of the tools unless the owner offers it.
     await call("/api/mcp/servers", { name: server, command: "bun", args, env: { ASK_MCP_LOG: log, ASK_MCP_SIDE: side, ...env } });
+    if (server === "second") await call("/api/mcp/servers/second/offer-twin", { on: true }, "PUT");
   }
   await expect.poll(async () => ((await call("/api/mcp/servers", undefined, "GET")).servers as any[]).filter((s) => s.state === "ready").map((s) => `${s.name}:${s.era}`).sort(), { timeout: 30_000 }).toEqual(["asker:legacy", "modern:modern", "second:legacy"]);
   const session = async (title: string) => {
