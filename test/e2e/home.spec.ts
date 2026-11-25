@@ -98,10 +98,12 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
     await expect(row(page, done.id)).toHaveCount(0);
     await expect(page.getByTestId("home-working").locator(`[data-session="${works.id}"]`)).toHaveAttribute("data-watch", "work");
     // A row's kind is in the row's ink, whatever its state: its dot alone says the state's colour.
-    for (const s of [asks, failed, works]) {
+    for (const s of [asks, failed]) {
       const [title, kind] = await row(page, s.id).evaluate((el) => [".k-home-row-title", '[data-testid="home-kind"]'].map((q) => getComputedStyle(el.querySelector(q)!).color));
       expect(kind, `the kind on "${s.title}"`).toBe(title);
     }
+    // Under the Working head a row says its step, not Working again.
+    await expect(page.getByTestId("home-working").locator(`[data-session="${works.id}"]`).getByTestId("home-kind")).toHaveCount(0);
     expect(fetched.filter((id) => [done.id, failed.id, asks.id, works.id].includes(id))).toEqual([]);
 
     // The place to start is on screen with them, and does not move when the lists change.

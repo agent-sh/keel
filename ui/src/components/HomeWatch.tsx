@@ -219,7 +219,8 @@ function Held({ id, stands, lead, quiet, busy, onAct, onRefused, testid, title, 
   );
 }
 
-function Row({ s, st, lead, stands, onAnswer, room }: { s: Session; st: SessionState; lead: boolean; stands: Stands; onAnswer: () => void; room?: number }) {
+// `heading`: the word the list's head says over its rows; a row whose kind is that word does not say it again.
+function Row({ s, st, lead, stands, onAnswer, room, heading }: { s: Session; st: SessionState; lead: boolean; stands: Stands; onAnswer: () => void; room?: number; heading?: string }) {
   const w = st.watch;
   const f = useFact(s, st);
   const a = f.approval;
@@ -263,7 +264,7 @@ function Row({ s, st, lead, stands, onAnswer, room }: { s: Session; st: SessionS
         <span className="k-home-row-meta"><span className="k-pane-empty-in">{folderOf(s)}</span><span className="k-pane-empty-time tabular-nums" data-testid={st.as_of ? "home-asof" : undefined} title={st.offline ? "Its machine does not answer: this is the last it told" : when(s.updated)}>{st.as_of ? `${st.offline ? `${OFFLINE}, ` : ""}${asOf(clock(st.as_of))}` : st.offline ? OFFLINE : going ? <span data-testid="home-clock">{stateClock(st, now, true)}</span> : ago(s.updated)}</span></span>
       </button>
       <div className="k-home-row-what">
-        <span className="k-home-row-word" data-testid="home-kind">{f.kind}</span>
+        {f.kind !== heading && <span className="k-home-row-word" data-testid="home-kind">{f.kind}</span>}
         {f.risk && <span className="k-home-row-risk" data-testid="home-risk" title={f.risk}>high risk</span>}
         {/* A command to be allowed here is shown whole, wrapped, in the code face. Anything else is one line, read on its card. */}
         {here
@@ -364,7 +365,7 @@ function List({ title, rows, most, testid, className, counted }: { title: string
       <div className="k-home-list">
         {still.order.map((id) => still.gone.has(id)
           ? <div key={id} className="k-home-row k-home-kept" data-testid="home-kept" data-session={id} style={{ minHeight: still.height(id) }} aria-hidden="true"><span dir="auto" className="k-home-row-title">{byId[id]?.title || "New session"}</span><span className="k-home-kept-word">Answered</span></div>
-          : byId[id] && states[id] && <Row key={id} s={byId[id]!} st={states[id]!} lead={id === still.order.find((x) => !still.gone.has(x))} stands={stands} onAnswer={still.answered} room={still.held ? still.height(id) : undefined} />)}
+          : byId[id] && states[id] && <Row key={id} s={byId[id]!} st={states[id]!} lead={id === still.order.find((x) => !still.gone.has(x))} stands={stands} onAnswer={still.answered} room={still.held ? still.height(id) : undefined} heading={counted ? undefined : title} />)}
       </div>
       {/* What did not fit, in the headline's own words, so the two counts read as one. */}
       {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => answerFromHome(next, states[next]?.child, states[next]?.why)}>{sayMore(more)}</button>}

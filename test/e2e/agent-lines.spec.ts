@@ -86,7 +86,9 @@ test("the home screen at a desk lists the sessions at work, with the step and it
   await page.goto("/");
   const row = page.getByTestId("home-working").locator(`[data-session="${id}"]`);
   await expect(row).toBeVisible({ timeout: 30_000 });
-  await expect(row.getByTestId("home-kind")).toHaveText("Working");
+  // The list's head says Working: the row does not say it again, it says the step.
+  await expect(page.getByTestId("home-working").locator("h2")).toHaveText("Working");
+  await expect(row.getByTestId("home-kind")).toHaveCount(0);
   await expect(row).toContainText("sleep 300; echo reindex");
   await expect(row.getByTestId("home-clock")).toHaveText(/^\d+s$|^\d+m/);
   await shoot(page, "agent-lines-03-home");
