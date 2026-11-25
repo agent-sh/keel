@@ -25,19 +25,21 @@ export type Checkpoint = {
   id: string;
   session_id: string;
   turn: number;               // seq of the turn_start event
-  at: "start" | "end" | "undo" | "after"; // undo: before a rewind; after: its result
+  at: "start" | "end" | "undo" | "after" | "step"; // undo: before a rewind; after: its result; step: before one call that changed files
   tree: string;               // "" once retention let it go (the row stays, so a rewind to it is refused, not redirected)
   paths: string[] | null;     // written mode: the files it covers; null = whole workspace
   skipped: string[] | null;   // files over the size cap left out of this snapshot (not captured is not absent)
   of_id: string | null;       // an "after" row: the undo checkpoint of the same operation
   outside: string[] | null;   // an "end" row: files changed between the turn's own tool calls (someone else's edits)
   workspace: string | null;   // the folder it was taken of (a session can move); its trees live in that folder's shadow
+  label: string | null;       // a "step" row: the call it stands before, in a few words (its `of_id` is the call's id)
   created: number;
 };
 
 // elsewhere: the turn ran in another folder (the session moved since); its
 // diff still reads, a rewind to it is refused. unavailable: its diff could not be read.
-export type TurnSummary = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
+export type Step = { id: string; call: string; label: string; created: number };
+export type TurnSummary = { steps?: Step[]; turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
 // merged: files changed outside the session whose turn change is taken back
 // around that edit (a clean three-way merge); conflicts: ones where the two overlap (kept as they are).
 export type RewindResult = {
@@ -51,7 +53,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, session_id TEXT NOT
 CREATE INDEX IF NOT EXISTS checkpoints_session ON checkpoints(session_id, turn, created);
 `;
 const list = (v: unknown): string[] | null => (typeof v === "string" && v ? JSON.parse(v) : null);
-const row = (r: any): Checkpoint => ({ ...r, paths: list(r.paths), skipped: list(r.skipped), outside: list(r.outside), of_id: r.of_id ?? null, workspace: r.workspace ?? null });
+const row = (r: any): Checkpoint => ({ ...r, paths: list(r.paths), skipped: list(r.skipped), outside: list(r.outside), of_id: r.of_id ?? null, workspace: r.workspace ?? null, label: r.label ?? null });
 const expired = (turn: number) => new Bad(`the snapshot from before that turn (${turn}) was let go by retention (only the newest checkpoints are kept); rewind to a later turn`, 410);
 
 // Retention: the newest KEEP checkpoints of a session (Claude Code keeps the
@@ -89,8 +91,8 @@ function sizeOf(dir: string): number {
 // (null for a shell or other call, which may write anything); `pre`: the
 // workspace as it began; `may`: every file it or a call beside it may write;
 // `blind` once a shell call ran beside it (nothing in its window can be told apart).
-type Running = { writes: Set<string> | null; pre: Promise<string | null> | null; may: Set<string>; blind: boolean };
-type Live = { turn: number; start: Promise<Checkpoint>; written: Set<string>; dirty: boolean; mark: Promise<string | null> | null; outside: Set<string>; calls: Map<string, Running> };
+type Running = { before: Promise<string | null>; writes: Set<string> | null; pre: Promise<string | null> | null; may: Set<string>; blind: boolean };
+type Live = { began: Promise<string | null>; turn: number; start: Promise<Checkpoint>; written: Set<string>; dirty: boolean; mark: Promise<string | null> | null; outside: Set<string>; calls: Map<string, Running> };
 
 export class Checkpoints {
   private shadows = new Map<string, Shadow>();
@@ -98,7 +100,7 @@ export class Checkpoints {
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, private root: string) {
     store.migrate(SCHEMA);
-    for (const col of ["skipped", "of_id", "outside", "workspace"]) if (!store.columnExists("checkpoints", col)) store.migrate(`ALTER TABLE checkpoints ADD COLUMN ${col} TEXT`);
+    for (const col of ["skipped", "of_id", "outside", "workspace", "label"]) if (!store.columnExists("checkpoints", col)) store.migrate(`ALTER TABLE checkpoints ADD COLUMN ${col} TEXT`);
   }
 
   shadow(workspace: string): Shadow {
@@ -123,11 +125,11 @@ export class Checkpoints {
     return this.list(s.id).filter((c) => !c.workspace || c.workspace === s.workspace);
   }
 
-  private save(s: Session, c: Omit<Checkpoint, "id" | "created" | "skipped" | "of_id" | "outside" | "workspace" | "session_id"> & Partial<Pick<Checkpoint, "skipped" | "of_id" | "outside">>): Checkpoint {
-    const cp: Checkpoint = { skipped: null, of_id: null, outside: null, ...c, session_id: s.id, workspace: s.workspace, id: crypto.randomUUID(), created: Date.now() };
+  private save(s: Session, c: Omit<Checkpoint, "id" | "created" | "skipped" | "of_id" | "outside" | "workspace" | "label" | "session_id"> & Partial<Pick<Checkpoint, "skipped" | "of_id" | "outside" | "label">>): Checkpoint {
+    const cp: Checkpoint = { skipped: null, of_id: null, outside: null, label: null, ...c, session_id: s.id, workspace: s.workspace, id: crypto.randomUUID(), created: Date.now() };
     const j = (v: string[] | null) => (v && v.length ? JSON.stringify(v) : null);
-    this.store.db.query("INSERT INTO checkpoints (id, session_id, turn, at, tree, paths, skipped, of_id, outside, workspace, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(cp.id, cp.session_id, cp.turn, cp.at, cp.tree, cp.paths ? JSON.stringify(cp.paths) : null, j(cp.skipped), cp.of_id, j(cp.outside), cp.workspace, cp.created);
+    this.store.db.query("INSERT INTO checkpoints (id, session_id, turn, at, tree, paths, skipped, of_id, outside, workspace, label, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(cp.id, cp.session_id, cp.turn, cp.at, cp.tree, cp.paths ? JSON.stringify(cp.paths) : null, j(cp.skipped), cp.of_id, j(cp.outside), cp.workspace, cp.label, cp.created);
     return cp;
   }
 
@@ -170,9 +172,9 @@ export class Checkpoints {
       const start = sh.snapshot(first).then((tree) => this.save(s, { turn, at: "start", tree, paths: sh.mode === "written" ? first : null, skipped: this.skippedOf(sh) }));
       // A snapshot that fails never stops the tool: the turn just has no checkpoint.
       start.catch((e) => this.errors.capture("server", e, { at: "checkpoint", session: s.id, workspace: s.workspace }));
-      live = { turn, start, written, dirty: false, mark: null, outside: new Set(), calls: new Map() };
+      live = { began: start.then((c) => c.tree, () => null), turn, start, written, dirty: false, mark: null, outside: new Set(), calls: new Map() };
       this.live.set(s.id, live);
-      if (sh.mode === "tree") this.track(live, s, call, cls, start.then((c) => c.tree, () => null));
+      if (sh.mode === "tree") this.track(live, s, call, cls, start.then((c) => c.tree, () => null), live.began);
       await start.catch(() => {});
       return;
     }
@@ -183,16 +185,23 @@ export class Checkpoints {
       const mark = live.mark;
       live.mark = null;
       let now: Promise<string | null> | null = null;
+      // Where this call begins: the files as the last call that changed some left them (an edit from outside
+      // in between included, so a step restore keeps it); the turn's start while no call has; the same as
+      // the call before it when that one is still running; unknown when the last snapshot failed.
+      let began: Promise<string | null> = live.began;
       try {
         const m = mark && (await mark);
+        if (mark && !m) began = Promise.resolve(null);
         if (m) {
           now = sh.snapshot();
+          began = now;
           for (const p of await sh.changed(m, (await now)!)) live.outside.add(p);
         }
       } catch (e) {
         this.errors.capture("server", e, { at: "checkpoint between calls", session: s.id });
       }
-      this.track(live, s, call, cls, cls.kind === "edit" ? (now ?? sh.snapshot()).catch(() => null) : null);
+      live.began = began = began.catch(() => null);
+      this.track(live, s, call, cls, cls.kind === "edit" ? (now ?? sh.snapshot()).catch(() => null) : null, began);
     }
     if (sh.mode !== "written" || cls.kind !== "edit") return;
     const add = rel(s.workspace, cls.paths).filter((p) => !live!.written.has(p));
@@ -234,6 +243,9 @@ export class Checkpoints {
     try {
       const [pre, post] = await Promise.all([run && !run.blind ? run.pre : null, mark]);
       if (pre && post) for (const p of await sh.changed(pre, post)) if (!run!.may.has(p)) live.outside.add(p);
+      // A call that changed files keeps the tree it began on: "revert from here" on that step.
+      const began = run ? await run.before : null;
+      if (began && post && began !== post) this.save(s, { turn: live.turn, at: "step", tree: began, paths: null, skipped: this.skippedOf(sh), of_id: call.id, label: labelOf(call) });
     } catch (e) {
       this.errors.capture("server", e, { at: "checkpoint during call", session: s.id });
     }
@@ -241,9 +253,9 @@ export class Checkpoints {
 
   // A call starting (tree mode): what each call already running may see
   // written beside it, and what this one may.
-  private track(live: Live, s: Session, call: ToolCall, cls: ReturnType<typeof classifyCall>, pre: Promise<string | null> | null) {
+  private track(live: Live, s: Session, call: ToolCall, cls: ReturnType<typeof classifyCall>, pre: Promise<string | null> | null, before: Promise<string | null>) {
     const writes = cls.kind === "edit" ? new Set(rel(s.workspace, cls.paths)) : null;
-    const run: Running = { writes, pre: writes ? pre : null, may: new Set(writes), blind: false };
+    const run: Running = { before, writes, pre: writes ? pre : null, may: new Set(writes), blind: false };
     for (const o of live.calls.values()) {
       if (writes) for (const p of writes) o.may.add(p);
       else o.blind = true;
@@ -298,11 +310,15 @@ export class Checkpoints {
   private async run(): Promise<{ removed: number; bytes: number }> {
     const db = this.store.db;
     let removed = 0;
-    const settle = () => db.query("DELETE FROM checkpoints WHERE tree = '' AND at != 'start'").run();
+    // The steps of a turn go with it: when its start was let go, or the step's own tree was.
+    const settle = () => {
+      db.query("DELETE FROM checkpoints WHERE tree = '' AND at != 'start'").run();
+      return db.query("DELETE FROM checkpoints WHERE at = 'step' AND NOT EXISTS (SELECT 1 FROM checkpoints st WHERE st.session_id = checkpoints.session_id AND st.turn = checkpoints.turn AND st.at = 'start' AND st.tree != '')").run().changes;
+    };
     // Rows of sessions that are gone, and past the newest KEEP of each session.
     removed += db.query("DELETE FROM checkpoints WHERE session_id NOT IN (SELECT id FROM sessions)").run().changes;
-    removed += db.query(`UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created DESC) AS r FROM checkpoints WHERE tree != '') WHERE r > ?)`).run(keep()).changes;
-    settle();
+    removed += db.query(`UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created DESC) AS r FROM checkpoints WHERE tree != '' AND at != 'step') WHERE r > ?)`).run(keep()).changes;
+    removed += settle();
     const gcAll = async (full = false) => {
       // Each tree is kept in the shadow of the folder it was taken of.
       const rows = db.query<{ id: string; tree: string; workspace: string }, []>("SELECT c.id, c.tree, COALESCE(c.workspace, s.workspace) AS workspace FROM checkpoints c JOIN sessions s ON s.id = c.session_id WHERE c.tree != ''").all();
@@ -317,7 +333,7 @@ export class Checkpoints {
     for (let i = 0; i < 6 && bytes > cap; i++) {
       const n = Math.max(1, Math.ceil((db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM checkpoints WHERE tree != ''").get()?.n ?? 0) / 10));
       removed += db.query("UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM checkpoints WHERE tree != '' ORDER BY created LIMIT ?)").run(n).changes;
-      settle();
+      removed += settle();
       await gcAll(true); // only a full pass gives back what the let-go trees held
       bytes = sizeOf(this.root);
     }
@@ -343,8 +359,9 @@ export class Checkpoints {
         out.push({ ...base, files: [], added: 0, removed: 0, unavailable: (e as Error).message.slice(0, 200) });
         continue;
       }
+      const steps = cps.filter((c) => c.at === "step" && c.turn === turn && c.tree && c.of_id).map((c): Step => ({ id: c.id, call: c.of_id!, label: c.label ?? "", created: c.created }));
       out.push({
-        ...base, files,
+        ...base, ...(steps.length ? { steps } : {}), files,
         added: files.reduce((n, f) => n + f.added, 0), removed: files.reduce((n, f) => n + f.removed, 0),
         ...(!end && this.live.get(s.id)?.turn !== turn ? { incomplete: true } : {}),
       });
@@ -554,13 +571,14 @@ export class Checkpoints {
   // and only while each is still the version the preview showed.
   // `note`: where the note for the model goes instead of the end of the branch shown (a chat rewind or
   // an edit makes the new branch first); `quiet`: no note (an undo that brings the branch it was told on back).
-  async rewind(s: Session, opts: { turn?: number; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean; confirm?: { paths: string[]; versions: Record<string, string> }; note?: (data: NoteData) => void; quiet?: boolean }): Promise<RewindResult> {
+  async rewind(s: Session, opts: { turn?: number; step?: string; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean; confirm?: { paths: string[]; versions: Record<string, string> }; note?: (data: NoteData) => void; quiet?: boolean }): Promise<RewindResult> {
     const sh = this.shadow(s.workspace);
     let target: string;
     let scopePaths: string[] | null;
     let skippedAt = new Set<string>();
     let outsideFrom: number | null = null;
     let incomplete = false;
+    let stepLabel: string | null = null;
     // Undo of a rewind: only the files that rewind changed go back, and one
     // edited since it (the owner's hand edit) is outside work, kept by default.
     let undoOf: { after: Checkpoint; touched: Set<string> } | null = null;
@@ -579,6 +597,17 @@ export class Checkpoints {
       const after = this.here(s).find((c) => c.at === "after" && c.of_id === cp.id && c.tree);
       if (after) undoOf = { after, touched: new Set(await sh.changed(cp.tree, after.tree, scopePaths ?? undefined)) };
       else incomplete = true;
+    } else if (opts.step) {
+      // Before one call of a turn: the files as that call found them, from the same protection of outside edits.
+      const cp = this.get(opts.step);
+      if (!cp || cp.session_id !== s.id || cp.at !== "step") throw new Bad("no such step", 404);
+      if (cp.workspace && cp.workspace !== s.workspace) throw new Bad(`that step ran in ${cp.workspace}; the session is in ${s.workspace} now, so its files cannot be put back here`, 409);
+      if (!cp.tree) throw new Bad("that step was let go by retention", 410);
+      target = cp.tree;
+      scopePaths = null;
+      skippedAt = new Set(cp.skipped ?? []);
+      outsideFrom = cp.turn;
+      stepLabel = cp.label ?? "";
     } else {
       if (opts.turn === undefined) throw new Bad("give a turn or a checkpoint");
       let skipped: Set<string>;
@@ -666,8 +695,8 @@ export class Checkpoints {
     const r: RewindResult = { files: [...res.restored, ...merged], failed: res.failed, skipped: opts.includeOutside ? [] : outside.filter((f) => !restore.includes(f) && !merged.includes(f)), outside, merged, conflicts, blocked, removes: removes.filter((f) => res.restored.includes(f)), uncaptured, versions: {}, incomplete, undo: undo.id, scope };
     const turnText = outsideFrom !== null ? this.promptOf(s.id, outsideFrom).split("\n")[0]!.slice(0, 80) : "";
     // Every turn from the start of this one on had its files put back: a branch that leaves them is not told they stay.
-    const covered = outsideFrom !== null ? this.here(s).filter((c) => c.at === "start" && c.turn >= outsideFrom!).map((c) => c.turn) : undefined;
-    if (!opts.quiet) this.tell(s, undoOf || incomplete ? "undid an earlier file restore" : `put files back as they were before the turn that began with "${turnText}"`, r, opts.note, covered);
+    const covered = outsideFrom !== null && stepLabel === null ? this.here(s).filter((c) => c.at === "start" && c.turn >= outsideFrom!).map((c) => c.turn) : undefined;
+    if (!opts.quiet) this.tell(s, stepLabel !== null ? `put files back as they were before the call "${stepLabel}" in the turn that began with "${turnText}"` : undoOf || incomplete ? "undid an earlier file restore" : `put files back as they were before the turn that began with "${turnText}"`, r, opts.note, covered);
     return r;
   }
 }
@@ -682,6 +711,13 @@ export class Bad extends Error {
 // Shadow tree paths use "/" as the component separator.
 function* parents(path: string): Iterable<string> {
   for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) yield path.slice(0, at);
+}
+
+// A call in a few words for the list of a turn's steps: its tool and what it was given (a path or the first line of a command).
+function labelOf(call: ToolCall): string {
+  const i = (call.input ?? {}) as Record<string, unknown>;
+  const hint = [i.file_path, i.path, i.command, i.description].find((v) => typeof v === "string" && v.trim()) as string | undefined;
+  return `${call.tool.name}${hint ? ` ${hint.trim().split("\n")[0]!.slice(0, 100)}` : ""}`;
 }
 
 // Workspace-relative paths of the files a call writes, where the writes land:

@@ -9,7 +9,8 @@ import { DiffView, FileList, RevertButton, type FileChange } from "./DiffView.ts
 import { Seg, tabId } from "./Seg.tsx";
 import { useViewed } from "../lib/viewed.ts";
 
-type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
+type Step = { id: string; call: string; label: string; created: number };
+type Turn = { steps?: Step[]; turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
 type RewindResult = {
   files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[]; removes: string[]; uncaptured: string[];
@@ -18,7 +19,7 @@ type RewindResult = {
 };
 const NO_FILES: FileChange[] = [];
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
-type Pending = { title: string; body: { turn?: number; paths?: string[] }; preview: RewindResult };
+type Pending = { title: string; body: { turn?: number; step?: string; paths?: string[] }; preview: RewindResult };
 
 // What the session changed, in the side panel: the list of the changed files
 // and the whole session's diff, with a revert per file, and each turn's diff
@@ -225,6 +226,24 @@ export function ChangesPanel({ session }: { session: Session }) {
                     </button>}
                   </summary>
                   <div className="border-t border-line p-3">
+                    {!!t.steps?.length && (
+                      <ol className="mb-3 flex flex-col gap-0.5" data-testid="turn-steps" aria-label="The calls of this turn that changed files">
+                        {t.steps.map((st, i) => (
+                          <li key={st.id} className="group flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-hover" data-testid="turn-step">
+                            <span className="w-6 shrink-0 text-right font-mono text-micro tabular-nums text-faint">{i + 1}</span>
+                            <span className="min-w-0 flex-1 truncate font-mono text-caption" title={st.label}>{st.label || "(a call)"}</span>
+                            {!gone && !t.elsewhere && <button
+                              data-testid="rewind-step"
+                              onClick={() => ask(`Revert the files to before step ${i + 1}?`, { step: st.id })}
+                              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-sunken hover:text-fg"
+                              title="Put the files back as they were before this call (this call and the ones after it)"
+                            >
+                              <RotateCcw className="size-3.5" /> Revert from here
+                            </button>}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
                     {turnDiff[t.turn]?.incomplete && <p className="mb-2 text-caption text-warn" data-testid="turn-incomplete">This turn has no end snapshot: shown is its start against the files now, which may include edits made after it.</p>}
                     {turnDiff[t.turn] ? <DiffView files={turnDiff[t.turn]!.files} patch={turnDiff[t.turn]!.diff} truncated={turnDiff[t.turn]!.truncated} partial={turnDiff[t.turn]!.partial} loadFile={fileDiff(`turn=${t.turn}`)} empty="This turn changed no files." /> : <p className="text-caption text-faint">Loading…</p>}
                   </div>

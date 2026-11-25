@@ -522,3 +522,60 @@ test("one maintenance pass serves every workspace: the turn ends of all of them 
   expect(passes).toBe(1);
   await new Promise((r) => setTimeout(r, 300));
 });
+
+// A call that changed files keeps the tree it began on, so a turn can be gone back from at any of its calls.
+test("a twelve-step turn: revert from step 7 keeps f1..f6, undo brings f7..f12 back, and the steps outlive git's pruning", async () => {
+  const t = setup({ "base.txt": "b\n" });
+  t.store.append(t.s.id, "user", { text: "write twelve files" });
+  t.store.append(t.s.id, "turn_start", {});
+  for (let i = 1; i <= 12; i++) {
+    const call = { id: `call-${i}`, tool: { name: "Bash", readOnly: false, kind: "shell" }, input: { command: `echo ${i} > f${i}` }, ctx: { cwd: t.ws } } as any;
+    await t.c.before(t.s, call);
+    t.write(`f${i}`, `${i}\n`);
+    await t.c.after(t.s, call);
+    // A read between the calls changes nothing and is no step.
+    if (i === 3) { const r = { id: "read", tool: { name: "Read", readOnly: true, kind: "read" }, input: { file_path: join(t.ws, "f1") }, ctx: { cwd: t.ws } } as any; await t.c.before(t.s, r); await t.c.after(t.s, r); }
+  }
+  await t.c.end(t.s);
+
+  const { turns } = await t.c.turns(t.s);
+  expect(turns).toHaveLength(1);
+  const steps = turns[0]!.steps!;
+  expect(steps.map((x) => x.call)).toEqual(Array.from({ length: 12 }, (_, i) => `call-${i + 1}`));
+  expect(steps[6]!.label).toBe("Bash echo 7 > f7");
+
+  // The trees are referenced: gc with every object older than the prune window keeps them.
+  const sh = t.c.shadow(t.ws);
+  const old = new Date(Date.now() - 3 * 3600_000);
+  const age = (d: string) => { for (const e of require("node:fs").readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) age(p); else require("node:fs").utimesSync(p, old, old); } };
+  age(join(sh.dir, "objects"));
+  await t.c.maintain();
+  expect((await sh.git(["ls-tree", "-r", "--name-only", steps[6]!.id ? t.c.get(steps[6]!.id)!.tree : ""])).split("\n").filter(Boolean).sort()).toEqual(["base.txt", "f1", "f2", "f3", "f4", "f5", "f6"]);
+
+  const preview = await t.c.rewind(t.s, { step: steps[6]!.id, preview: true });
+  expect(preview.files.sort()).toEqual(["f10", "f11", "f12", "f7", "f8", "f9"]);
+  const done = await t.c.rewind(t.s, { step: steps[6]!.id });
+  expect(done.removes.length).toBe(6);
+  for (let i = 1; i <= 12; i++) expect(existsSync(join(t.ws, `f${i}`))).toBe(i <= 6);
+  expect(t.read("base.txt")).toBe("b\n");
+  expect(t.store.events(t.s.id).findLast((e) => e.kind === "note")?.data.text).toContain('before the call "Bash echo 7 > f7"');
+
+  await t.c.rewind(t.s, { checkpoint: done.undo! });
+  for (let i = 1; i <= 12; i++) expect(t.read(`f${i}`)).toBe(`${i}\n`);
+
+  // A step belongs to its turn: a step of another session is no step, and when retention lets the turn go its steps go too.
+  await expect(t.c.rewind(t.s, { step: "nope", preview: true })).rejects.toThrow(/no such step/);
+  t.store.db.query("UPDATE checkpoints SET tree = '' WHERE at = 'start'").run();
+  await t.c.maintain();
+  expect(t.c.list(t.s.id).filter((c) => c.at === "step")).toEqual([]);
+});
+
+test("steps are not counted against the newest checkpoints a session keeps", async () => {
+  const t = setup({ "a.txt": "0\n" });
+  const edits = Array.from({ length: 10 }, (_, i) => () => t.write("a.txt", `${i + 1}\n`));
+  const t1 = await t.turn(...edits);
+  await t.c.maintain();
+  const rows = t.c.list(t.s.id);
+  expect(rows.filter((c) => c.at === "step")).toHaveLength(10);
+  expect((await t.c.rewind(t.s, { turn: t1, preview: true })).files).toEqual(["a.txt"]);
+});

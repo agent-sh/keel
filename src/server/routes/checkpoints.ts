@@ -180,9 +180,10 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         }
         // From a prompt of the branch shown: the chat, the files, or both go back to before it.
         if (typeof b.prompt_event === "string") return rewindPrompt(s, b, paths, confirm);
+        if (typeof b.step === "string" && b.mode && b.mode !== "files") return bad("a step is not a prompt: only the files go back to before it, the chat stays");
         const h = b.preview ? null : await held(s, !!b.stop_shells);
         if (h) return h;
-        return json(await c.rewind(s, { turn: b.turn, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm }));
+        return json(await c.rewind(s, { turn: b.turn, step: typeof b.step === "string" ? b.step : undefined, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm }));
       }),
     },
   };
