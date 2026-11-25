@@ -38,7 +38,8 @@ import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
 import { name as baseName, unwrap, type Run } from "./risk-words.ts";
 import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
 import { bareFetch } from "./bare-fetch.ts";
-import { familyOf, readCode } from "./interp-code.ts";
+import { familyOf } from "./interp-code.ts";
+import { otherOf, planOf, readAny, type Lang, type Other } from "./interp-other.ts";
 
 export type TargetKind = "host" | "email" | "remote" | "branch";
 // `pathq`: for a target a web address named, what follows its host (path and query, never the fragment), so a fetch of
@@ -474,39 +475,42 @@ function interpreterReaches(parts: Simple[], at: number, run: Run, prog: string,
     }
     return out;
   }
-  const fam = familyOf(prog);
-  const codes: string[] = [];
+  const other = otherOf(prog);
+  if (other) return otherReaches(parts, at, other, args, idx, out, inner, known, unread, add);
+  const fam: Lang = familyOf(prog);
+  const codes: { fam: Lang; text: string }[] = [];
   let blind = false;
   let modArgs: string[] = [];
   const positional: { a: string; j: number }[] = [];
   for (let j = 0; j < args.length; j++) {
     const a = args[j]!;
-    const take = (v: string | null) => { if (v === null) blind = true; else codes.push(v); };
+    const take = (v: string | null) => { if (v === null) blind = true; else codes.push({ fam, text: v }); };
     let m: RegExpExecArray | null;
     if (CODE_FLAG.test(a) && j + 1 < args.length) { take(wordValue(p, idx(j + 1), known)); j++; }
     else if ((m = /^--(?:eval|print)=(.*)$/s.exec(a))) take(wordValue(p, idx(j), known) === null ? null : m[1]!);
     else if (fam === "python" && (m = /^-c(.+)$/s.exec(a))) take(wordValue(p, idx(j), known) === null ? null : m[1]!);
-    else if (fam === "perl" && (m = /^-[Mm](.+)$/s.exec(a))) codes.push(`use ${m[1]};`);
-    else if (fam === "ruby" && (m = /^-r(.+)$/s.exec(a))) codes.push(`require "${m[1]}"`);
-    else if (fam === "python" && a === "-m" && args[j + 1] !== undefined) { codes.push(`import ${args[j + 1]}`); modArgs = args.slice(j + 2); break; }
+    else if (fam === "perl" && (m = /^-[Mm](.+)$/s.exec(a))) codes.push({ fam, text: `use ${m[1]};` });
+    else if (fam === "ruby" && (m = /^-r(.+)$/s.exec(a))) codes.push({ fam, text: `require "${m[1]}"` });
+    else if (fam === "python" && a === "-m" && args[j + 1] !== undefined) { codes.push({ fam, text: `import ${args[j + 1]}` }); modArgs = args.slice(j + 2); break; }
     else if (!a.startsWith("-") || a === "-") positional.push({ a, j });
   }
-  if (fam === "js" && args[0] === "eval") for (const q of positional.slice(1)) { const v = wordValue(p, idx(q.j), known); if (v === null) blind = true; else codes.push(v); }
+  if (fam === "js" && args[0] === "eval") for (const q of positional.slice(1)) { const v = wordValue(p, idx(q.j), known); if (v === null) blind = true; else codes.push({ fam, text: v }); }
   // A program given as an address (deno run URL): fetched and run, a send to the address.
   if (fam === "js") for (const { a } of positional) if (/^https?:\/\//i.test(a)) { const ts = spelledPlace(a) ? wholeTargets(a, true) : []; if (ts.length) add(ts, "send"); else unread(p.text); }
   // Code on the input.
   const script = positional.some(({ a }) => a !== "-" && !(fam === "js" && (a === "eval" || a === "run" || a === "repl")));
   const s = stdinCode(parts, at, script || codes.length > 0 || blind, known);
-  codes.push(...s.texts);
+  codes.push(...s.texts.map((text) => ({ fam, text })));
   blind ||= s.blind;
   let net = false;
   let opaque = blind;
   for (const c of codes) {
-    const r = readCode(c, fam);
+    const r = readAny(c.fam, c.text);
     net ||= r.net;
     opaque ||= r.opaque;
     if (r.net || r.opaque) for (const t of r.text) for (const x of extractTargets(t)) if (x.kind === "host" || x.kind === "remote") out.push({ target: x, how: "send" });
     for (const line of r.lines) inner(line);
+    for (const h of r.hosts) hostReach(h, p.text, unread, add);
   }
   if (net) {
     // The addresses a module run by name is given.
@@ -514,6 +518,45 @@ function interpreterReaches(parts: Simple[], at: number, run: Run, prog: string,
     opaque = true;
   }
   if (opaque) unread(p.text);
+  return out;
+}
+
+// A connection the code spells: a send to the host it names; a name the text does not give is unread, a loopback one is no place.
+function hostReach(host: string, text: string, unread: (text: string) => void, add: (ts: Target[], how: Reach["how"], word?: string) => void): void {
+  const ts = spelledPlace(host) ? wholeTargets(host) : [];
+  if (ts.length) add(ts, "send"); else if (!LOOPBACK_WORD.test(host)) unread(text);
+}
+
+// The reaches of lua, awk, R, PowerShell, Tcl, the sqlite3 shell, vim, emacs and gdb: what each is given as code (interp-other.ts
+// splits its options), read as the code of python or node is; a file it is given to open that is a remote address is a send to it.
+function otherReaches(parts: Simple[], at: number, other: Other, args: string[], idx: (j: number) => number, out: Reach[], inner: (line: string) => void, known: Map<string, string | null>, unread: (text: string) => void, add: (ts: Target[], how: Reach["how"], word?: string) => void): Reach[] {
+  const p = parts[at]!;
+  const plan = planOf(other, { args, vals: args.map((_, j) => wordValue(p, idx(j), known)), leads: args.map((a) => a.split(/[$`]/)[0]!) });
+  const texts = [...plan.codes];
+  let blind = plan.blind;
+  if (plan.stdin !== "none") {
+    // A file of queries given to the sqlite3 shell is no unread code; nothing on a program's input from /dev/null is code.
+    const prev = parts[at - 1];
+    const catFed = !!prev && (prev.sep === "|" || prev.sep === "|&") && baseName(unwrap(prev.words).words[0]) === "cat" && !prev.unknown && !prev.dyn?.length;
+    const nulled = !!p.inputs?.length && p.inputs.every((f) => f === "/dev/null") && !p.heredoc && hereString(p.text) < 0;
+    if (!(plan.stdin === "sql" && (p.inputs?.length || catFed)) && !nulled) {
+      const s = stdinCode(parts, at, false, known);
+      texts.push(...s.texts.map((text) => ({ fam: other as Lang, text })));
+      blind ||= s.blind;
+    }
+  }
+  for (const a of plan.remotes) { const ts = spelledPlace(a) ? wholeTargets(a) : []; if (ts.length) add(ts, "send"); else unread(p.text); }
+  let net = false;
+  let opaque = blind;
+  for (const c of texts) {
+    const r = readAny(c.fam, c.text);
+    net ||= r.net;
+    opaque ||= r.opaque;
+    if (r.net || r.opaque) for (const t of r.text) for (const x of extractTargets(t)) if (x.kind === "host" || x.kind === "remote") out.push({ target: x, how: "send" });
+    for (const line of r.lines) inner(line);
+    for (const h of r.hosts) hostReach(h, p.text, unread, add);
+  }
+  if (net || opaque) unread(p.text);
   return out;
 }
 
@@ -546,7 +589,7 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): 
     const prog = baseName(words[0]);
     const args = words.slice(1);
     if (prog === "cd") { if (args[0] && !/[$`*?~]/.test(args[0])) dir = resolve(dir, args[0]); continue; }
-    if (SHELLS.test(prog) || RUNS_CODE.test(prog)) {
+    if (SHELLS.test(prog) || RUNS_CODE.test(prog) || otherOf(prog)) {
       out.push(...interpreterReaches(parts, at, run, prog, f, dir, depth, known(at), unread, add));
     } else if (prog === "openssl" && OPENSSL_PLACE[args[0] ?? ""]) {
       // The place a client of openssl connects to: where there is no default place, a call that names none reads its input.

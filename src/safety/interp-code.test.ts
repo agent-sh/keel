@@ -45,9 +45,12 @@ const timed = (f: () => unknown) => {
 };
 const UNITS = [
   "ls /tmp/x; git status; ", "echo ls | bash; ", "x=$(ls); y=$x; ", "export A=1; ls $A/b; ", "os.system('ls'); ", "os.system(", "system(system(", "subprocess.run([", "'a'+'b'+", "'a' 'b' ", "\"a\" . \"b\" . ", "\\x41", "`", "import(", "require('x'); ", "exec(", "eval('1'); ", "a.", "'", "\"", "a ", "<<< ", "$d/", "/dev/", "$X ", "-c ", "https://h.example/ ", "x=1;",
+  // lua, awk, R, PowerShell, Tcl, the sqlite3 shell, vim, emacs and gdb
+  "os.execute(", "io.popen(", "f([[", "f([=[", "]]", "load(", "..", "|& ", "| getline ", "\"/inet/tcp/0/", "print | ", "system2(c(", "parse(text=", "Start-Process ", "iex ", "& ", "{ ", "exec ", "socket ", "open \"|", ".shell ", ".once |", "!", ":r !", "sil! ", "(shell-command ", "(concat \"a\" ", "(list ", "target remote ", "pipe ", "\n",
 ];
 const line = (unit: string, n: number, wrap: string) => wrap.replace("%", unit.repeat(Math.ceil(n / unit.length)).slice(0, n));
-const WRAPS = ["python3 -c '%'", "node -e '%'", "perl -e '%'", "php -r '%'", "python3 <<< '%'", "echo '%' | python3", "bash -c '%'", "echo hi > %", "python3 - <<EOF\n%\nEOF", "X='%'; python3 -c \"$X\"", "%"];
+const WRAPS = ["python3 -c '%'", "node -e '%'", "perl -e '%'", "php -r '%'", "python3 <<< '%'", "echo '%' | python3", "bash -c '%'", "echo hi > %", "python3 - <<EOF\n%\nEOF", "X='%'; python3 -c \"$X\"", "%",
+  "lua -e '%'", "awk '%'", "Rscript -e '%'", "pwsh -c '%'", "tclsh <<< '%'", "sqlite3 a.db '%'", "vim -c '%' f", "emacs --eval '%'", "gdb -ex '%'", "lua - <<EOF\n%\nEOF"];
 
 test("a command line of many calls, quotes or pieces is read in step with its length", () => {
   const slow: string[] = [];
@@ -61,4 +64,4 @@ test("a command line of many calls, quotes or pieces is read in step with its le
     }
   }
   expect(slow).toEqual([]);
-}, 240_000);
+}, 480_000);

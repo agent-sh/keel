@@ -18,7 +18,10 @@ export type Family = "python" | "js" | "perl" | "php" | "ruby";
 export const familyOf = (prog: string): Family =>
   prog.startsWith("python") ? "python" : prog === "ruby" ? "ruby" : prog === "perl" ? "perl" : prog === "php" ? "php" : "js";
 
-export type CodeRead = { text: string[]; net: boolean; lines: string[]; opaque: boolean };
+// The other languages read by interp-other.ts share the quoting and argument readers below.
+export type Fam = Family | "lua" | "awk" | "r" | "pwsh" | "tcl";
+// `hosts`: the places the code spells a connection to (read as a send to each, an unread place when it is not written out).
+export type CodeRead = { text: string[]; net: boolean; lines: string[]; opaque: boolean; hosts?: string[] };
 
 // The words that open a connection (the same list the scan has always used, with the libraries and forms it missed).
 const NET_CODE = /\b(?:urllib\d?|urlopen|requests\.|httpx|http\.client|httplib2?|socket|aiohttp|websockets?|ftplib|smtplib|poplib|imaplib|nntplib|telnetlib|xmlrpc|webbrowser|pycurl|paramiko|asyncio\.open_connection|open_connection|create_connection|fetch\s*\(|XMLHttpRequest|axios|undici|node-fetch|https?\.(?:request|get)|node:(?:https?|net|tls|dgram|dns|http2)|net\.(?:connect|Socket|createConnection)|tls\.connect|dgram|createConnection|Net::\w+|net\/http|open-uri|URI\.open|LWP|HTTP::Tiny|IO::Socket|WWW::|Mojo::UserAgent|curl_\w+|fsockopen|stream_socket_client|get_headers|SoapClient|file_get_contents|Deno\.connect|Bun\.connect|WebSocket)/i;
@@ -26,7 +29,7 @@ const NET_CODE = /\b(?:urllib\d?|urlopen|requests\.|httpx|http\.client|httplib2?
 const NET_MODULE = /(?:\bfrom\s+|\b(?:require|import)\s*\(?\s*)["'`](?:https?|net|tls|dgram|dns|http2)["'`]/;
 // A call whose first argument is a remote address: what it is called is read for what it does with it (not a print).
 const URL_ARG = /\b([A-Za-z_]\w*)\s*\(?\s*[rRbBuU]{0,2}["'`]\s*(?:https?|ftps?|sftp|ssh2\.\w+|tcp|udp|ssl|tls|wss?):\/\//g;
-const SAYS = /^(?:print|printf|echo|puts|say|log|info|warn|warning|error|debug|trace|write|writeln|format|raise|throw|Error|Exception|input|prompt|sprintf|println|alert|comment|title|help|usage|doc|assert|die|exit|fail|from|href|src|url|uri|link)$/i;
+const SAYS = /^(?:print|printf|echo|puts|say|cat|message|writeLines|stop|paste0?|log|info|warn|warning|error|debug|trace|write|writeln|format|raise|throw|Error|Exception|input|prompt|sprintf|println|alert|comment|title|help|usage|doc|assert|die|exit|fail|from|href|src|url|uri|link)$/i;
 // What builds and runs code, or reaches a name through a string: no place is read from it.
 const DYNAMIC = /\b(?:__import__|importlib|__builtins__|execfile|Reflect\.(?:get|apply|construct)|runIn\w+Context|create_function|call_user_func(?:_array)?|instance_eval|class_eval|public_send|const_get|globals\s*\(|getattr\s*\(|setattr\s*\(|new\s+Function|Function\s*\()|\b(?:globalThis|window|self|global|this|Deno|Bun|process)\s*\[|(?:%x|\bqx)\s*[^\s\w]/;
 const GENERIC = /^(?:exec|eval|compile)$/;
@@ -39,9 +42,9 @@ const SHELL = /\b(?:system|popen[23]?|execSync|execFileSync|spawnSync|execFile|s
 // Names that are modules, not calls: a mention is no call, the calls of the module are found by their own names.
 const MODULE = /^(?:subprocess|child_process|Open3|shelljs)$/;
 const LOAD = /\b(?:import|require)\s*\(/g;
-const CAP = 256;
-const REGION = 8192;
-const DEPTH = 3;
+export const CAP = 256;
+export const REGION = 8192;
+export const DEPTH = 3;
 
 // The characters an escape stands for, so that a name written in pieces or with escapes is read as the name.
 function unescape(s: string): string {
@@ -52,30 +55,33 @@ function unescape(s: string): string {
   });
 }
 // The text with each pair of quoted pieces joined ('a'+'b', "a"."b", 'a' 'b').
-const joined = (s: string): string => unescape(s).replace(/["'`]\s*(?:[+.]\s*|\s)["'`]/g, "");
+export const joined = (s: string): string => unescape(s).replace(/["'`]\s*(?:\.\.\s*|[+.]\s*|\s)["'`]/g, "");
 
 // ---- a call's arguments ----
 
-type Args = { ok: boolean; lits: string[] };
+export type Args = { ok: boolean; lits: string[] };
 const KEYWORDS = /^(?:True|False|None|true|false|null|undefined|nil|NULL|TRUE|FALSE)$/;
 const ENDS = /^(?:if|unless|and|or|xor|die|while|until|for)$/;
 
 // Whether a quoted piece holds something the language puts in when it runs.
-function interpolates(fam: Family, q: string, prefix: string, body: string): boolean {
+function interpolates(fam: Fam, q: string, prefix: string, body: string): boolean {
   if (fam === "python") return /[fF]/.test(prefix) && body.includes("{");
   if (fam === "js") return q === "`" && body.includes("${");
   if (q === "'") return false;
+  if (fam === "lua" || fam === "awk" || fam === "r") return false;
+  if (fam === "pwsh") return q === '"' && /\$[\w{(:?]|`\S/.test(body);
+  if (fam === "tcl") return /[$\[]/.test(body);
   if (fam === "ruby") return body.includes("#{") || /#[$@]/.test(body);
   return /[$@][\w{]/.test(body) || body.includes("{$");
 }
 
 // The piece quoted at `i` (the quote itself), or null when it does not end within `lim`.
-function quoted(s: string, i: number, lim: number, fam: Family, prefix: string): { text: string; end: number; dyn: boolean } | null {
+export function quoted(s: string, i: number, lim: number, fam: Fam, prefix: string): { text: string; end: number; dyn: boolean } | null {
   const q = s[i]!;
   const triple = fam === "python" && q !== "`" && s.startsWith(q.repeat(3), i);
   const open = triple ? 3 : 1;
   const raw = /[rR]/.test(prefix);
-  const plain = fam !== "python" && fam !== "js" && q === "'"; // no escape but \\ and \'
+  const plain = (fam === "perl" || fam === "php" || fam === "ruby") && q === "'"; // no escape but \\ and \'
   let j = i + open;
   let body = "";
   while (j < lim) {
@@ -106,7 +112,7 @@ function quoted(s: string, i: number, lim: number, fam: Family, prefix: string):
 // The pieces of a call's arguments, from `j` (the opening bracket, or the first word of a call written without one).
 // `ok`: every word of them is a quoted piece, a bracket, a comma, a name it is given by (key=, key:), a number or a constant;
 // anything else (a variable, an operator, a formatted or interpolated piece) builds the arguments from what the text does not say.
-function argsAt(s: string, j: number, fam: Family): Args {
+export function argsAt(s: string, j: number, fam: Fam): Args {
   const lim = Math.min(s.length, j + REGION);
   const lits: string[] = [];
   const paren = s[j] === "(";
@@ -127,24 +133,25 @@ function argsAt(s: string, j: number, fam: Family): Args {
       continue;
     }
     if (c === ",") { last = false; i++; continue; }
+    if (c === "." && s[i + 1] === "." && fam === "lua") { if (!last) return { ok: false, lits }; join = true; i += 2; continue; }
     if (c === "+" || (c === "." && (fam === "php" || fam === "perl") && s[i + 1] !== "." && !/[\d]/.test(s[i + 1] ?? ""))) { if (!last) return { ok: false, lits }; join = true; i++; continue; }
     if (c === "=" && s[i + 1] === ">") { last = false; i += 2; continue; }
     if (c === '"' || c === "'" || c === "`") {
       const q = quoted(s, i, lim, fam, "");
       if (!q || q.dyn) return { ok: false, lits };
-      if (lits.length && ((join && last) || (fam === "python" && last))) lits[lits.length - 1] += q.text; else lits.push(q.text);
+      if (lits.length && ((join && last) || ((fam === "python" || fam === "awk") && last))) lits[lits.length - 1] += q.text; else lits.push(q.text);
       last = true; join = false; i = q.end;
       continue;
     }
     if (/[A-Za-z_]/.test(c)) {
       let e = i + 1;
-      while (e < lim && /\w/.test(s[e]!)) e++;
+      while (e < lim && (fam === "r" ? /[\w.]/ : /\w/).test(s[e]!)) e++;
       const word = s.slice(i, e);
       // A prefix of a piece (r"..", b'..', f"..").
       if (/^[rRbBuUfF]{1,2}$/.test(word) && (s[e] === '"' || s[e] === "'")) {
         const q = quoted(s, e, lim, fam, word);
         if (!q || q.dyn) return { ok: false, lits };
-        if (lits.length && ((join && last) || (fam === "python" && last))) lits[lits.length - 1] += q.text; else lits.push(q.text);
+        if (lits.length && ((join && last) || ((fam === "python" || fam === "awk") && last))) lits[lits.length - 1] += q.text; else lits.push(q.text);
         last = true; join = false; i = q.end;
         continue;
       }
@@ -165,7 +172,10 @@ function argsAt(s: string, j: number, fam: Family): Args {
 
 // The command a call's pieces are: one piece is a shell line; several are the words of an argument list.
 const shellWord = (w: string): string => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
-const lineOf = (lits: string[]): string | null => (lits.length === 0 ? null : lits.length === 1 ? lits[0]! : lits.map(shellWord).join(" "));
+export const lineOf = (lits: string[]): string | null => (lits.length === 0 ? null : lits.length === 1 ? lits[0]! : lits.map(shellWord).join(" "));
+
+// Whether a call in `view` is given a remote address first (a print of one is no call).
+export const urlArg = (view: string[]): boolean => view.some((t) => { for (const m of t.matchAll(URL_ARG)) if (!SAYS.test(m[1]!)) return true; return false; });
 
 // ---- the reading ----
 
