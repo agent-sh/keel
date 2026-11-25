@@ -188,9 +188,19 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     expect(said.stdout).toContain(`"Cut during two commands" cut at step 1, during Bash, Bash, after`);
 
     // One Activity row, with all four.
-    const rows = (await call("/api/activity?kind=daemon", undefined, "GET")).items as any[];
+    const all = (await call("/api/activity?kind=daemon", undefined, "GET")).items as any[];
+    const rows = all.filter((r) => r.sub !== "incident");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ kind: "daemon", sub: "killed", session_id: null });
+    // The incident of a daemon that went down by itself is its own row, and names the four turns
+    // (not "no turn was running", which it said until the start's record was whole).
+    const incident = all.filter((r) => r.sub === "incident");
+    expect(incident).toHaveLength(1);
+    expect(incident[0].data.touched.map((t: any) => t.id).sort()).toEqual([...ids].sort());
+    expect(incident[0].text).not.toContain("No turn was running");
+    const told = ((await call("/api/alerts", undefined, "GET")).alerts as any[]).filter((a) => a.kind === "outage");
+    expect(told).toHaveLength(1);
+    expect(JSON.stringify(told[0])).not.toContain("No turn was running");
     expect(rows[0].data.restart.turns.map((t: any) => t.session_id).sort()).toEqual([...ids].sort());
     for (const t of turns) expect(rows[0].text).toContain(t.title);
 
@@ -237,7 +247,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     const calm = await record();
     expect(calm).toMatchObject({ before: { how: "signal" }, turns: [] });
     expect(Math.abs(calm.before.down_ms - stopped)).toBeLessThan(2_000);
-    expect((await call("/api/activity?kind=daemon", undefined, "GET")).items).toHaveLength(1);
+    expect(((await call("/api/activity?kind=daemon", undefined, "GET")).items as any[]).filter((r) => r.sub !== "incident")).toHaveLength(1);
     const logged = ((await call("/api/logs?limit=2000", undefined, "GET")).lines as { text: string }[]).filter((l) => l.text.startsWith("[daemon] The daemon "));
     expect(logged.map((l) => l.text.replace(/\d\d:\d\d:\d\d( UTC([+-]\d\d:\d\d)?)?/g, "T").replace(/\(down [^)]*\)/, "(down N)"))).toEqual([
       "[daemon] The daemon went down without stopping (killed, or the machine went down) at about T and came back at T (down N); 4 turns were cut: 4 resumed.",

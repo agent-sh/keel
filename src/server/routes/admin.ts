@@ -28,6 +28,7 @@ import { say, settingsChanges, settingsLine } from "../../admin/daemon-log.ts";
 import { restartNeedsEye, restartSummary, restartTurnLine, type Restart } from "../../admin/life-rows.ts";
 import { logOwn } from "../../admin/logs.ts";
 import * as activity from "../../automation/activity.ts";
+import { syncCut } from "../../automation/incidents.ts";
 import { tellCutAgents, tellEarlier } from "../../automation/restart-told.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage, shownReport } from "../../admin/storage.ts";
@@ -130,7 +131,8 @@ export const adminRoutes: RouteModule = (deps) => {
     // told once this start's record is whole (src/automation/restart-told.ts).
     const tell = (r: Restart, whole = false) => { try { tellCutAgents(r); if (whole) tellEarlier(r); } catch (e) { errors.capture("server", e, { at: "restart told to parents" }); } };
     // (After the step that changed it: a start finds every cut turn before it decides the first.)
-    starts.changed = () => { daemon.emit(); queueMicrotask(() => tell(starts.last())); };
+    // The incident of a daemon that went down by itself names the turns it cut as they are found.
+    starts.changed = () => { daemon.emit(); queueMicrotask(() => { syncCut(); tell(starts.last()); }); };
     // The log has a line a turn already, under the turn's own name (observe.ts).
     starts.whole = (r) => {
       if (r.before || r.turns.length) logOwn(`[daemon] ${restartSummary(r)}`);

@@ -108,7 +108,8 @@ function changed(i: Incident | undefined) {
   if (!i) return;
   const s = st();
   // A provider's alert waits for the first read of its status page (a few seconds at most), so it can name an open incident.
-  const ready = named(i);
+  // A restart's waits for the start's record to find the turns it cut.
+  const ready = named(i) && !cutsUnknown(i);
   if (owesAlert(i) && ready) tell(i);
   else persist(i);
   if (i.cleared) try { readWhere("incident", i.id); } catch (e) { capture(e, { at: "incident alert read" }); }
@@ -208,18 +209,33 @@ function onStart() {
   hit({ key: "restarts", cause: "restarts", cls: how, at: r.up_ms, message: `The daemon ${how === "killed" ? "went down without stopping" : "ended on a failure"}`, now: true });
 }
 
-// The cut turns of this start, as they are decided: the sessions a stop of the daemon touched.
-function syncCut() {
-  const i = book().get("restarts");
+// How long a start's record may stay open before its incident is told without it: a recovery that
+// never ends must not keep the owner from hearing that the daemon went down.
+const CUTS_MS = 60_000;
+// The restart incident's alert says which turns were cut, so it waits for the start's record to
+// find them (src/admin/life.ts: every cut turn is found before the first is decided).
+function cutsUnknown(i: Incident): boolean {
+  if (i.cause !== "restarts") return false;
   const r = restarts()?.last();
-  if (!i || !r) return;
-  let moved = false;
-  for (const t of r.turns) {
-    if (i.touched.some((x) => x.id === t.session_id)) continue;
-    i.touched.push({ id: t.session_id, title: t.title || "Session", parent: t.parent_id ?? null, state: "cut", n: 0, last: r.up_ms });
-    moved = true;
-  }
-  if (moved) changed(i);
+  return !!r && !r.settled_ms && Date.now() - i.since < CUTS_MS;
+}
+
+// The cut turns of this start, as they are decided: the sessions a stop of the daemon touched.
+// Called at each change of the start's record, and on the tick.
+export function syncCut() {
+  try {
+    const i = book().get("restarts");
+    const r = restarts()?.last();
+    if (!i || !r) return;
+    let moved = false;
+    for (const t of r.turns) {
+      if (i.touched.some((x) => x.id === t.session_id)) continue;
+      i.touched.push({ id: t.session_id, title: t.title || "Session", parent: t.parent_id ?? null, state: "cut", n: 0, last: r.up_ms });
+      moved = true;
+    }
+    // Its alert, held while the cuts were unknown, goes once they are.
+    if (moved || (owesAlert(i) && !cutsUnknown(i))) changed(i);
+  } catch (e) { capture(e, { at: "incident cut turns" }); }
 }
 
 function tick() {
