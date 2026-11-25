@@ -380,7 +380,7 @@ function Refusal({ e, sid, handled, end }: { e: StoredEvent; sid: string; handle
     <div id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-lg border border-warn/40 bg-raised px-3.5 py-3 text-ui" data-testid="refusal">
       <div className="flex items-center gap-2 font-medium">
         <ShieldAlert className="size-4 text-warn" /> The model declined this request
-        {d.category && <span className="rounded-sm bg-sunken px-1.5 py-px text-micro uppercase tracking-wide text-muted">{d.category}</span>}
+        {d.category && <span className="rounded-sm bg-sunken px-1.5 py-px text-micro text-muted">{d.category}</span>}
       </div>
       {d.explanation && <p className="mt-1 text-muted">{d.explanation}</p>}
       <p className="mt-1 text-muted">Its partial reply is left out of the context.{handled ? " The fallback model took the request." : " Another model can take the same request."}</p>

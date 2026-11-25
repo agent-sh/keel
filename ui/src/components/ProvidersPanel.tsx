@@ -110,7 +110,7 @@ function ProviderRow({ p }: { p: Row }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="k-truncate text-base font-medium">{p.label}</span>
-          <span className="rounded-xs bg-sunken px-1.5 text-micro uppercase tracking-wide text-faint">{WIRE[p.wire] ?? p.wire}</span>
+          <span className="rounded-xs bg-sunken px-1.5 text-micro text-faint">{WIRE[p.wire] ?? p.wire}</span>
           {p.kind !== "builtin" && <span className="text-micro text-faint">{p.server ?? p.kind}</span>}
           {p.source === "providers.toml" && <span className="text-micro text-faint">providers.toml</span>}
           {p.source === "providers.toml" && p.kind === "endpoint" && <MoveOut id={p.id} />}

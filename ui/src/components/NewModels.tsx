@@ -118,7 +118,7 @@ function NewModelSummary({ models, roles, metrics, labels, reload }: { models: L
   return (
     <section data-testid="new-models-summary" className="rounded-lg border border-line bg-raised p-4 shadow-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium uppercase tracking-wide text-accent-ink">New</span>
+        <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium text-accent-ink">New</span>
         <h3 className="text-base font-medium" data-testid="new-models-count">{models.length} new models</h3>
         <span className="text-caption text-faint">Try one as a reader, a small model or a builder.</span>
       </div>
@@ -235,7 +235,7 @@ function NewModelCard({ m, roles, metrics, reload, lean }: { m: Listed; roles: R
   return (
     <section data-testid="new-model" data-model={m.id} data-trial={t?.state ?? "none"} className="rounded-lg border border-line bg-raised p-4 shadow-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium uppercase tracking-wide text-accent-ink">New</span>
+        <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium text-accent-ink">New</span>
         <h3 className="min-w-0 truncate text-base font-medium max-md:whitespace-normal max-md:break-words" data-testid="new-model-name">{m.name}</h3>
         <span className="text-caption text-faint">{m.provider} · {m.unlisted ? "no longer in its listing" : `listed ${ago(m.first_seen) === "now" ? "just now" : `${ago(m.first_seen)} ago`}`}</span>
       </div>
@@ -260,7 +260,7 @@ function NewModelCard({ m, roles, metrics, reload, lean }: { m: Listed; roles: R
       {t && (
         <div className="mt-3 border-t border-line pt-3" data-testid="new-model-result">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui">
-            <span data-testid="new-model-state" className={cn("rounded-sm px-1.5 py-0.5 text-micro font-medium uppercase tracking-wide", t.state === "running" ? "bg-accent-soft text-accent" : "bg-sunken text-faint")}>{t.state === "running" ? "On trial" : "Trial ended"}</span>
+            <span data-testid="new-model-state" className={cn("rounded-sm px-1.5 py-0.5 text-micro font-medium", t.state === "running" ? "bg-accent-soft text-accent" : "bg-sunken text-faint")}>{t.state === "running" ? "On trial" : "Trial ended"}</span>
             <span className="text-muted">as {ROLE_LABEL[t.role].toLowerCase()} · {families} session {families === 1 ? "tree" : "trees"}{t.per_arm ? ` of ${t.per_arm * t.arms.length}` : ""} · {ago(t.started_ms ?? 0) === "now" ? "started now" : `started ${ago(t.started_ms ?? 0)} ago`}</span>
             {t.state === "running" && <button type="button" className="k-btn ml-auto" disabled={busy} data-testid="new-model-stop" onClick={() => void api(`/api/experiments/${t.id}/stop`, { method: "POST", body: "{}" }).then(reload).catch(reportError)}>Stop the trial</button>}
           </div>

@@ -1005,7 +1005,9 @@ for (const size of SIZES) {
           expect(await t.evaluate((e) => e.scrollHeight - e.clientHeight), "the call's words are cut").toBeLessThanOrEqual(1);
           const b = (await t.boundingBox())!;
           expect(b.x + b.width).toBeLessThanOrEqual(size.width);
-          expect(b.width, "the name has a line to stand on").toBeGreaterThan(size.width * 0.5);
+          // (Squeezed between the marks it had about 100 px; on a line of its own it is the words' width, which the
+          // text size moves, so the floor is well above the squeeze and below a short name's own width.)
+          expect(b.width, "the name has a line to stand on").toBeGreaterThan(size.width * 0.4);
         }
         await noSideScroll(page);
         await shoot(page, `phone-surfaces-26-acp-children-calls-${size.width}`);

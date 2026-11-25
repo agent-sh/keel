@@ -103,7 +103,7 @@ button.k-heard-line:hover { color: var(--fg); }
 /* How it stands, beside the verb and at the line's own size, each in its tone: it waits on the owner; it ran
    and failed; it failed while only looking (a note); the owner denied it; the policy refused it, or a restart
    cut it, or it is marked; it was stopped or never answered. */
-.k-line-state { margin-right: 0.25rem; font-weight: 500; white-space: nowrap; }
+.k-line-state { margin-right: 0.25rem; font-weight: 400; white-space: nowrap; }
 .k-line-state[data-tone="need"] { color: var(--st-need-ink); }
 .k-line-state[data-tone="fail"] { color: var(--danger-ink); }
 .k-line-state[data-tone="warn"] { color: var(--warn-ink); }
@@ -134,7 +134,7 @@ button.k-heard-line:hover { color: var(--fg); }
 .k-line-rest { white-space: nowrap; color: var(--faint); }
 /* After the targets it counts on, in the words' face: it is not one more target. */
 .k-line-rest[data-more] { margin-left: 0.375rem; font-family: var(--font-sans); font-size: var(--text-caption); }
-.k-line-answer { font-weight: 500; color: var(--fg); }
+.k-line-answer { font-weight: 400; color: var(--fg); }
 .k-line-end { display: flex; flex-shrink: 0; align-items: center; gap: 0.5rem; margin-left: auto; padding-left: 0.5rem; font-size: var(--text-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* The mark that a line opens: there before the pointer is. Drawn by the line's end, so a rail of a
    hundred lines holds no element for it. */
@@ -149,7 +149,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-line-thought { width: 0.8125rem; height: 0.8125rem; color: var(--faint); }
 .k-delta { font-family: var(--font-mono); }
 /* A chip at a line's end (a name of its own: the surfaces' chips are the toolkit's .k-line-chip). */
-.k-line-chip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.25rem; padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); font-weight: 500; font-size: var(--text-micro); line-height: 1; box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+.k-line-chip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.25rem; padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); font-weight: 400; font-size: var(--text-micro); line-height: 1; box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
 .k-line-chip[data-code] { font-family: var(--font-mono); }
 /* A chip that gives way before the words beside it are cut: down to its icon and count. (The shrink factor is that
    large so the words' share of the squeeze rounds to nothing: any part of a pixel would put an ellipsis on them.) */
@@ -213,8 +213,8 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 }
 .k-agent-line:hover { background: var(--hover); }
 .k-agent-line:focus-visible { outline-offset: -2px; }
-.k-agent-line-name { flex: 0 1 auto; min-width: 4rem; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--fg); }
-.k-agent-line-word { flex-shrink: 0; font-weight: 500; white-space: nowrap; color: var(--muted); }
+.k-agent-line-name { flex: 0 1 auto; min-width: 4rem; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--fg); }
+.k-agent-line-word { flex-shrink: 0; font-weight: 400; white-space: nowrap; color: var(--muted); }
 .k-agent-line-word[data-watch="work"] { color: var(--st-work-ink); }
 .k-agent-line-word[data-watch="need"] { color: var(--st-need-ink); }
 .k-agent-line-word:is([data-watch="fail"], [data-watch="declined"]) { color: var(--danger-ink); }
@@ -266,7 +266,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-under { display: flex; flex-direction: column; padding: 0 0.25rem 0.25rem 0.375rem; font-size: var(--text-ui); line-height: 1.45; color: var(--muted); }
 /* (What can be done about it, the one retry, goes to a row of its own before the words are squeezed.) */
 .k-under-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.5rem; min-width: 0; }
-.k-under-name { flex: 0 0 auto; min-width: var(--k-verb, 4.25rem); font-weight: 500; white-space: nowrap; }
+.k-under-name { flex: 0 0 auto; min-width: var(--k-verb, 4.25rem); font-weight: 400; white-space: nowrap; }
 .k-under-what { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
 .k-under-code { font-family: var(--font-mono); font-size: var(--text-caption); }
 /* A reason taken from a call's output: one line in the UI face, cut at its end; the output has the rest. */
@@ -279,7 +279,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* An MCP App beside its call (components/McpApp.tsx): a head that names whose it is, the frame, what it asked and called. */
 .k-mcpapp { display: flex; flex-direction: column; gap: 0.375rem; margin: 0.25rem 0 0.5rem 0.375rem; max-width: 52rem; }
 .k-mcpapp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 0.5rem; font-size: var(--text-caption); color: var(--faint); }
-.k-mcpapp-name { font-weight: 500; color: var(--muted); }
+.k-mcpapp-name { font-weight: 400; color: var(--muted); }
 .k-mcpapp-uri { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-micro); }
 .k-mcpapp-note { margin-left: auto; }
 .k-mcpapp-frame { position: relative; height: 10rem; overflow: hidden; border-radius: var(--radius-xl); background: var(--raised); transition: height var(--dur-move) ease; }
@@ -294,7 +294,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* A question's record: what it offered, with what was chosen marked. */
 .k-opts { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; margin-left: 0.5rem; vertical-align: baseline; }
 .k-opt { padding: 0 0.375rem; border-radius: var(--radius-sm); color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
-.k-opt[data-on] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; box-shadow: none; }
+.k-opt[data-on] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 400; box-shadow: none; }
 /* Under a closed line: how many more like it there are, what a small change changed. */
 .k-line-more { padding: 0.125rem 0.375rem 0.25rem; font-size: var(--text-caption); color: var(--faint); }
 .k-line-more[data-tone="fail"] { color: var(--danger-ink); }
@@ -318,7 +318,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* The calls of a step, under its line: a rule of their own, a step in. */
 .k-step-calls { display: flex; flex-direction: column; margin-left: 0.375rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
 .k-step-calls .k-line { padding-block: 0.1875rem; }
-.k-step-calls .k-line-verb { font-weight: 500; color: var(--muted); }
+.k-step-calls .k-line-verb { font-weight: 400; color: var(--muted); }
 /* A call that ran and failed says so in its verb too; one that failed while only looking does not. */
 .k-step-calls .k-tool-call[data-state="error"]:not([data-soft]) .k-line-verb { color: var(--danger-ink); }
 /* What a call holds, opened. */
@@ -330,7 +330,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* An output shown in part: what is shown, and the way to the whole. */
 .k-out-more { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; padding: 0.25rem 0.625rem; border-top: 1px solid var(--line); font-family: var(--font-sans); font-size: var(--text-caption); color: var(--faint); }
 .k-out-more:where(:not(:last-child)) { border-bottom: 1px solid var(--line); }
-.k-out-link { display: inline-flex; align-items: center; gap: 0.25rem; min-height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 500; color: var(--accent-ink); }
+.k-out-link { display: inline-flex; align-items: center; gap: 0.25rem; min-height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 400; color: var(--accent-ink); }
 .k-out-link:hover { background: var(--accent-soft); }
 .k-out-gap { display: block; margin: 0.375rem -0.625rem; padding: 0.125rem 0.625rem; border-block: 1px dashed var(--line-strong); font-family: var(--font-sans); color: var(--faint); }
 /* Steps and calls open and close at their own height (Base UI sets the variable). */
@@ -383,7 +383,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-transcript [data-new-since]::before { content: ""; position: absolute; inset: var(--k-new-top, -0.5rem) 0 auto 0; border-top: 1px solid var(--accent); opacity: 0.6; pointer-events: none; }
 .k-transcript [data-new-since]::after {
   content: attr(data-new-since); position: absolute; top: calc(var(--k-new-top, -0.5rem) - 0.4375rem); left: 0; padding-right: 0.5rem;
-  background: var(--k-new-bg); font-size: var(--text-micro); font-weight: 500; line-height: 0.875rem; color: var(--accent-ink); white-space: nowrap; pointer-events: none;
+  background: var(--k-new-bg); font-size: var(--text-micro); font-weight: 400; line-height: 0.875rem; color: var(--accent-ink); white-space: nowrap; pointer-events: none;
 }
 .k-step[data-new-since] { --k-new-top: -1px; }
 /* Inside a block of calls (or any quoted block) rows stand 0.375rem apart: the rule runs mid-gap,
@@ -398,7 +398,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-latest-bar { gap: 0.5rem; }
 .k-new-jump {
   display: inline-flex; align-items: stretch; height: 1.625rem; border: 1px solid var(--line); border-radius: 999px; overflow: hidden;
-  background: var(--raised); color: var(--accent-ink); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; pointer-events: auto;
+  background: var(--raised); color: var(--accent-ink); font-size: var(--text-caption); font-weight: 400; white-space: nowrap; pointer-events: auto;
 }
 .k-new-jump > button { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0 0.625rem; }
 .k-new-jump > button:not(:first-child) { padding: 0 0.5rem 0 0.4375rem; border-left: 1px solid var(--line); color: var(--muted); }
@@ -428,6 +428,6 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
    One row in the rail's indent, wrapping on a narrow pane; once kept, the row says where in quiet words. */
 .k-ruling-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.625rem; margin: 0.125rem 0 0.375rem; padding-left: var(--k-verb, 4.25rem); font-size: var(--text-caption); color: var(--muted); }
 .k-ruling-offer .k-btn { height: var(--spacing-ctl-sm); }
-.k-ruling-scope { font-weight: 500; color: var(--fg); }
+.k-ruling-scope { font-weight: 400; color: var(--fg); }
 .k-ruling-offer[data-state="revoked"] { color: var(--faint); }
 .k-ruling-err { color: var(--danger-ink); }

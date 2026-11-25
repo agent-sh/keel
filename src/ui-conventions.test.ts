@@ -487,7 +487,7 @@ function shared(list: Src[]): string[] {
 // rule holds for the modules a section imports too (not the dialogs and menus that float over the page).
 // The modules not moved yet are named in NOT_ON_KIT, each with what it still draws; the list only shrinks.
 const NOT_ON_KIT = [
-  "components/ElsewherePanel.tsx", "components/LogsSettings.tsx",
+  "components/ElsewherePanel.tsx",
   "components/PhonePanel.tsx", "components/PortPanel.tsx", "components/PrReviews.tsx",
   "components/HelperPanel.tsx", "components/MemoryFacts.tsx",
   "components/MemoryUsage.tsx", "components/NewModels.tsx", "components/ProviderModels.tsx", "components/ResumeFrom.tsx", "components/TakeOver.tsx",
@@ -767,7 +767,7 @@ test("no component writes a corner of its own", () => {
   expect(pageCorners(page)).toEqual([]);
   expect(rules(sheets.find((s) => s.file === "styles.css")!.text).flatMap((r) => r.decls).find((d) => d.prop === "--radius")?.value).toBe("var(--radius-sm)");
 });
-test("the instrument face is named by its four roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 4, strays: [] }));
+test("the instrument face is named by its two roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 2, strays: [] }));
 test("a choice of a few is the one segmented control", () => expect(segmented(page, sheets)).toEqual([]));
 test("steel is the frame and nothing else", () => expect(steel(page, sheets)).toEqual([]));
 test("nothing to show is said one way", () => expect(empties(page, sheets)).toEqual([]));

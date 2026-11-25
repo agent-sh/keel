@@ -231,6 +231,10 @@
 }
 
 @theme inline {
+  /* One weight step: regular for everything, semibold for a name that leads. Medium is regular and
+     bold is semibold, so no class draws a third or a fourth weight. */
+  --font-weight-medium: 400;
+  --font-weight-bold: 600;
   --color-bg: var(--bg);
   --color-panel: var(--panel);
   --color-raised: var(--raised);
@@ -281,15 +285,18 @@
   --shadow-3: var(--shadow-3);
   --shadow-soft: var(--shadow-2);
 
-  /* Type scale, in rem: eight sizes and no other. A 15 px interface, 16 px body and an
-     18 px reading size at the default text size; head, title and display name things.
+  /* Type scale, in rem. The chrome has two sizes: ui for names, controls and words, micro for
+     what is read beside them in the quiet ink (a time, a key, a count). Ui is caption's size: a
+     name a step over the control beside it was a third size 8% from each, which reads as one size
+     drawn carelessly, and the step down keeps every card and bar in the room it had. A 16 px body
+     and an 18 px reading size at the default text size; head, title and display name things.
      No stylesheet or component writes a size of its own (src/ui-conventions.test.ts). */
   --text-micro: 0.75rem;
   --text-micro--line-height: 1.35;
   --text-caption: 0.8125rem;
   --text-caption--line-height: 1.4;
-  --text-ui: 0.875rem;
-  --text-ui--line-height: 1.45;
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.4;
   --text-base: 0.9375rem;
   --text-base--line-height: 1.5;
   --text-read: 1.0625rem;
@@ -366,28 +373,20 @@
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
 
-/* The instrument face (Martian Mono, narrow) has four jobs and no other. Everything
-   else is set in the text face, code in the code face. A rule joins a role by
-   being listed here; no other rule and no component names the face
+/* The instrument face (Martian Mono, narrow) has two jobs and no other: a call sign of the folded
+   rail and a key. Everything else is set in the text face, code in the code face. A rule joins a
+   role by being listed here; no other rule and no component names the face
    (src/ui-conventions.test.ts).
-   The session list (its top block, rows and foot, open or folded, and its hover card) and a
-   pane's top bar are one block of the text face: titles, actions, state words, clocks and counts
-   alike, at the same size and weight steps (a name at --text-ui, regular when read and semibold
-   when it calls the owner; a control at --text-caption; a label or a time at --text-micro). The
-   narrow face there was a third face beside two, for words a glance reads as well in the text
-   face's tabular figures. Only a call sign of the folded rail and a key keep it. */
-/* 1. A state word: Working, Needs you, Failed, Done, Stopped, Offline. */
-.k-face-state, .k-needs, .k-pane-empty-word {
-  /* Set in sentence case, a word of two parts ("Needs you") keeps them together: the face's own space is a whole letter wide. */
-  font-family: var(--font-inst); font-stretch: 75%; word-spacing: -0.28em;
-}
-/* 2. A figure a glance reads: a clock, an age, a count. */
-.k-face-figure, .k-pane-empty-time, .k-dock-need, .k-tally b {
-  font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
-}
+   The chrome (the session list, the top bar, the lines over the box, the home, the panels) is one
+   block of the text face: titles, actions, state words, clocks and counts alike, in two sizes (a
+   name or a control at --text-ui, a time or a key at --text-micro) and two weights (regular, and
+   semibold for a name that leads). */
+/* A state word and a figure a glance reads (a clock, an age, a count) are in the text face, its figures
+   tabular so a clock does not jitter: a narrow mono beside the text face was a third face for small labels. */
+.k-face-figure, .k-pane-empty-time, .k-dock-need, .k-tally b { font-variant-numeric: tabular-nums; }
 /* (The list's and the top bar's figures, in the text face: tabular, so a clock does not jitter.) */
 .k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-n, .k-stuck-chip, .k-tick-more, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
-/* 3. A session's call sign on the folded rail. */
+/* 1. A session's call sign on the folded rail. */
 .k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
 .k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }
 /* The name of a surface (the product, a page, a panel, a dialog) is set in the text face, as a heading: the one
@@ -397,14 +396,14 @@
 }
 /* At a page's size a title is drawn at a medium weight. A surface's head (.k-surface-title) keeps the one weight
    every surface shares. */
-:is(.text-display, .text-title, .k-page h1):not(.k-surface-title) { font-weight: 500; }
-/* 4. A key of the keyboard. */
+:is(.text-display, .text-title, .k-page h1):not(.k-surface-title) { font-weight: 400; }
+/* 2. A key of the keyboard. */
 kbd { font-family: var(--font-inst); font-stretch: 75%; }
 /* A shortcut is one chord, not a row of keycaps: its keys sit in one hairline outline, a
    thin space apart, in the quietest ink. It is a hint beside a name, never louder than it. */
 /* In the components layer, so a page can hide it (no keyboard on a phone: pointer-coarse:hidden). */
 @layer components {
-  .k-keys { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.125rem; padding: 0 0.3125rem; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-micro); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--faint); }
+  .k-keys { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.125rem; padding: 0 0.3125rem; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-micro); font-weight: 400; line-height: 1; white-space: nowrap; color: var(--faint); }
   .k-keys > kbd { font-size: inherit; font-weight: inherit; }
 }
 
@@ -440,7 +439,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-seg { display: inline-flex; flex-shrink: 0; max-width: 100%; gap: 2px; padding: 2px; overflow-x: auto; scrollbar-width: none; border-radius: var(--radius-md); background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); }
 .k-seg > button {
   display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 0.375rem; height: var(--spacing-ctl-sm); min-width: var(--spacing-ctl-sm); padding: 0 0.625rem;
-  border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--muted); cursor: default;
+  border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 400; line-height: 1; white-space: nowrap; color: var(--muted); cursor: default;
   transition: color var(--dur-quick) var(--ease-out), background-color var(--dur-quick) var(--ease-out);
 }
 .k-seg > button:hover { color: var(--fg); }
@@ -570,7 +569,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    Its glyph and its name, so each is told apart without pointing at it; the
    one that is open is raised. Where the row is short (a pane among several)
    the names give way and the glyphs stay; the chooser keeps its arrow. */
-.k-hand { display: inline-flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--muted); }
+.k-hand { display: inline-flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-caption); font-weight: 400; white-space: nowrap; color: var(--muted); }
 .k-hand svg { width: 1rem; height: 1rem; flex-shrink: 0; color: var(--faint); }
 .k-hand svg.k-hand-more { width: 0.75rem; height: 0.75rem; margin-left: -0.125rem; }
 .k-hand:hover, .k-hand[data-popup-open] { background: var(--hover); color: var(--fg); }
@@ -673,7 +672,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    h3 and h4 are the text's own size (the scale has no step between), so h3 is bold
    where a strong word is semibold and stands further off what is above it, and h4
    is semibold and quiet. */
-.prose-keel h1, .prose-keel h2, .prose-keel h3, .prose-keel h4 { font-weight: 700; letter-spacing: -0.012em; line-height: 1.3; margin-top: 1.4em; }
+.prose-keel h1, .prose-keel h2, .prose-keel h3, .prose-keel h4 { font-weight: 600; letter-spacing: -0.012em; line-height: 1.3; margin-top: 1.4em; }
 .prose-keel h3 { margin-top: 1.7em; }
 .prose-keel h4 { font-weight: 600; }
 .prose-keel h1 { font-size: var(--text-title); } .prose-keel h2 { font-size: var(--text-head); } .prose-keel h3 { font-size: var(--text-read); } .prose-keel h4 { font-size: var(--text-read); color: var(--muted); }
@@ -837,11 +836,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   .k-chip-pick > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
   .k-chip-pick > svg.k-chip-pick-more { width: 0.75rem; height: 0.75rem; }
   .k-chip-pick[aria-checked="true"] > svg:first-child { color: var(--fg); }
-  .k-chip-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--fg); }
+  .k-chip-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 400; color: var(--fg); }
   .k-chip-pick-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
 }
 /* The project's chooser inside its chip is the chip's words, not a field of its own. */
-.k-chip-pick > .k-select { height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--fg); font-weight: 500; }
+.k-chip-pick > .k-select { height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--fg); font-weight: 400; }
 
 /* ---------- The ledger over the message box (SessionDock.tsx, DockNow.tsx) ----------
    Two lines set on the page above the box: no card, no shadow, the glyphs on the box's text edge.
@@ -852,7 +851,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-docket { display: flex; flex-direction: column; margin-bottom: 0.375rem; container: docket / inline-size; }
 .k-docket-line { display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; height: var(--spacing-ctl-md); padding: 0 0.75rem 0 1.125rem; border-radius: var(--radius-md); text-align: left; font-size: var(--text-caption); color: var(--muted); }
 button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
-.k-docket-act { display: inline-flex; align-items: center; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; color: var(--fg); }
+.k-docket-act { display: inline-flex; align-items: center; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 400; color: var(--fg); }
 .k-docket-act:hover { background: var(--hover); }
 .k-docket-glyph { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
 .k-docket-line[data-running] .k-docket-glyph { color: var(--st-work); }
@@ -900,7 +899,7 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-now-changes { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
 .k-now-count { display: inline-flex; align-items: baseline; gap: 0.375rem; white-space: nowrap; }
 .k-now-files { color: var(--fg); }
-.k-now-ready { flex-shrink: 0; white-space: nowrap; font-weight: 500; color: var(--ok); }
+.k-now-ready { flex-shrink: 0; white-space: nowrap; font-weight: 400; color: var(--ok); }
 .k-now-path { display: inline; min-width: 0; padding: 0; border-radius: var(--radius-sm); color: var(--fg); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 2px; }
 .k-now-path:hover { text-decoration-color: currentColor; }
 @container docket (max-width: 34rem) { .k-now-project .k-now-name, .k-now-clock { display: none; } .k-now-project { padding: 0 0.375rem; } }

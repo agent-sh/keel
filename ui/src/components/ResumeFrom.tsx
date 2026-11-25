@@ -240,7 +240,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
         <ul className="border-t border-line" data-testid="in-flight">
           {seen.in_flight.map((i, n) => (
             <li key={n} data-testid="in-flight-item" data-kind={i.kind} className="flex items-baseline gap-2.5 border-b border-line/60 px-4 py-2 last:border-b-0">
-              <span className={cn("w-16 shrink-0 text-micro font-medium uppercase tracking-wide", i.kind === "job" ? "text-brass" : "text-faint")}>{KIND[i.kind]}</span>
+              <span className={cn("w-16 shrink-0 text-micro font-medium", i.kind === "job" ? "text-brass" : "text-faint")}>{KIND[i.kind]}</span>
               <span className="min-w-0 flex-1">
                 <span className="block break-words text-caption text-fg">{i.label}</span>
                 {i.kind === "job" && i.command && <span className="block truncate font-mono text-micro text-faint">{i.command}</span>}

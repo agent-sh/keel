@@ -187,7 +187,7 @@ function LiveLog() {
           {shown.map((l, i) => (
             <div key={`${l.ts}-${i}`} className="flex gap-3 whitespace-pre-wrap break-all" data-level={l.level}>
               <span className="shrink-0 tabular-nums text-faint">{clock(l.ts, { seconds: true })}</span>
-              <span className={cn("w-10 shrink-0 uppercase", l.level === "error" ? "text-danger" : l.level === "warn" ? "text-warn" : "text-faint")}>{l.level}</span>
+              <span className={cn("w-10 shrink-0", l.level === "error" ? "text-danger" : l.level === "warn" ? "text-warn" : "text-faint")}>{l.level}</span>
               <span className={cn("min-w-0", l.level === "error" ? "text-fg" : "text-muted")}>{l.text}</span>
             </div>
           ))}

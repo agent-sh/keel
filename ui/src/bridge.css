@@ -86,7 +86,7 @@
 .k-foot-word { display: none; }
 /* Tight enough that the words and their counts fit the list's default width: the glyphs at either end
    take a control's width, not a wide one's, and the words their own and a little air. */
-.k-rail[data-open] .k-foot-named { gap: 0.3125rem; min-width: 0; padding: 0 0.375rem; font-size: var(--text-caption); font-weight: 500; }
+.k-rail[data-open] .k-foot-named { gap: 0.3125rem; min-width: 0; padding: 0 0.375rem; font-size: var(--text-caption); font-weight: 400; }
 .k-rail[data-open] .k-rail-foot > .k-act:not(.k-foot-named) { min-width: var(--spacing-ctl-md); padding-inline: 0.375rem; }
 .k-rail[data-open] .k-foot-named .k-foot-word { display: inline; }
 .k-rail[data-open] .k-foot-named > svg, .k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child > svg { display: none; }
@@ -115,7 +115,7 @@
 .k-rail[data-open] .k-new-session { color: var(--fg); font-weight: 600; }
 .k-act-count {
   position: absolute; right: 1px; top: 1px; min-width: 1rem; height: 1rem; padding: 0 0.25rem; border-radius: 999px;
-  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--st-need-on); background: var(--st-need-fill);
+  font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--st-need-on); background: var(--st-need-fill);
 }
 .k-rail[data-open] .k-act-count { position: static; margin-left: auto; }
 /* The New session button's word for a message kept in its box; folded, a dot at the button's corner. */
@@ -175,7 +175,7 @@
 .k-stuck-more { display: block; width: 100%; height: 1.375rem; padding: 0 1rem 0 1.375rem; text-align: left; font-size: var(--text-micro); line-height: 1.375rem; color: var(--faint); border-radius: var(--radius-md); }
 .k-stuck-more:hover, .k-stuck-more:focus-visible { background: var(--hover); color: var(--fg); }
 @media (pointer: coarse) { .k-stuck-more { height: 2.375rem; line-height: 2.375rem; } }
-.k-stuck-chip { display: flex; align-items: center; justify-content: center; gap: 0.25rem; flex-shrink: 0; width: 3.125rem; height: var(--spacing-ctl-sm); margin: 0.375rem auto 0; border-radius: var(--radius-md); font-weight: 500; font-size: var(--text-micro); line-height: 1; color: var(--faint); }
+.k-stuck-chip { display: flex; align-items: center; justify-content: center; gap: 0.25rem; flex-shrink: 0; width: 3.125rem; height: var(--spacing-ctl-sm); margin: 0.375rem auto 0; border-radius: var(--radius-md); font-weight: 400; font-size: var(--text-micro); line-height: 1; color: var(--faint); }
 .k-stuck-chip svg { width: 0.75rem; height: 0.75rem; }
 .k-stuck-chip:hover { background: var(--hover); color: var(--fg); }
 
@@ -187,7 +187,7 @@
 .k-marks ol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .k-marks-head {
   display: flex; justify-content: space-between; align-items: center; gap: 0.25rem; height: 1.25rem; padding: 0.25rem 0.5rem 0 0.5625rem;
-  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--faint);
+  font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--faint);
 }
 .k-marks-head .k-mark { width: 0.4375rem; height: 0.4375rem; }
 .k-marks-head svg { width: 0.625rem; height: 0.625rem; }
@@ -200,7 +200,7 @@
 .k-tick { position: relative; display: flex; align-items: center; gap: 0.375rem; width: 3.125rem; height: var(--spacing-ctl-md); padding-left: 0.5rem; border-radius: var(--radius-md); }
 .k-tick:hover, .k-tick:focus-visible { background: var(--hover); }
 .k-tick .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-tick-code { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.03em; color: var(--fg); }
+.k-tick-code { font-weight: 600; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.03em; color: var(--fg); }
 /* Finished and seen: the mark goes quiet. Unread ones keep a full mark. */
 .k-tick[data-watch="done"]:not([data-unread]):not([aria-current]) .k-mark { opacity: 0.7; transform: scale(0.85); }
 .k-tick:is([data-watch="done"], [data-watch="idle"]):not([data-unread]):not([aria-current]):not(:hover) .k-tick-code { color: var(--muted); font-weight: 600; }
@@ -214,7 +214,7 @@
 .k-rail-list[data-tight] .k-marks-head { height: 1rem; padding-top: 0.125rem; line-height: 0.875rem; }
 .k-rail-list[data-tight] .k-tick { height: 1.375rem; }
 /* A band with more marks than the rail has room for even so ends in how many it holds back; the list has them. */
-.k-tick-more { justify-content: center; padding-left: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-tick-more { justify-content: center; padding-left: 0; font-weight: 600; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
 .k-tick-more:hover { color: var(--fg); }
 
 /* The card beside an entry (hover or focus): the whole title, what it needs,
@@ -237,7 +237,7 @@
 .k-rail-card[data-kind="row"] .k-rail-card-meta:first-child { padding-top: 0; border-top: 0; }
 .k-rail-card-row { display: flex; align-items: center; gap: 0.4375rem; }
 .k-rail-card-row .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-rail-card-word { font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--st-done-ink); }
+.k-rail-card-word { font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--st-done-ink); }
 .k-rail-card[data-watch="need"] .k-rail-card-word { color: var(--st-need-ink); }
 .k-rail-card[data-watch="work"] .k-rail-card-word { color: var(--st-work-ink); }
 .k-rail-card[data-watch="wait"] .k-rail-card-word { color: var(--st-wait-ink); }
@@ -247,8 +247,8 @@
 .k-rail-card-title { margin-top: 0.375rem; font-size: var(--text-base); font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card-line { margin-top: 0.375rem; font-size: var(--text-caption); line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card-work { margin-top: 0.375rem; font-size: var(--text-caption); line-height: 1.4; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.k-rail-card-work b { margin-right: 0.4375rem; font-size: var(--text-micro); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
-.k-rail-card-why, .k-rail-card-new { margin-top: 0.375rem; font-size: var(--text-caption); font-weight: 500; }
+.k-rail-card-work b { margin-right: 0.4375rem; font-size: var(--text-micro); font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
+.k-rail-card-why, .k-rail-card-new { margin-top: 0.375rem; font-size: var(--text-caption); font-weight: 400; }
 /* Why, in the state's ink: the ask, the step, the wait, the failure. Three lines at most. */
 .k-rail-card-why { line-height: 1.4; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card[data-watch="need"] .k-rail-card-why { color: var(--st-need-ink); }
@@ -261,7 +261,7 @@
 .k-rail-card-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 0.75rem; margin-top: 0.5625rem; padding-top: 0.5rem; border-top: 1px solid var(--line); font-size: var(--text-micro); line-height: 1.0625rem; }
 .k-rail-card-meta dt { color: var(--faint); }
 .k-rail-card-meta dd { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.k-rail-card-meta dd b { font-weight: 700; color: var(--fg); }
+.k-rail-card-meta dd b { font-weight: 600; color: var(--fg); }
 
 /* Open: the full index. */
 /* The list's filter and its arrangement: one field, the menu at its end. */
@@ -372,7 +372,7 @@
    left going says that, not the bare Working the ring is a kind of. */
 .k-row-dot-word { display: none; }
 @media (max-width: 767px) {
-  .k-row-sub .k-row-dot-word { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; line-height: 1rem; color: var(--faint); }
+  .k-row-sub .k-row-dot-word { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: 400; line-height: 1rem; color: var(--faint); }
   .k-row[data-dotword="long"] .k-row-sub > .k-row-state { display: none; }
   .k-row[data-dotword="long"] .k-row-sub > .k-row-why { display: none; }
   /* A short word (Done, New) follows the title on its line, the title giving way; a long one (what it waits on in the
@@ -407,7 +407,7 @@
    The card beside the row has the reason in full. */
 .k-row-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
 /* A stream that went silent is said in the working ink: it may need a look. */
-:is(.k-row-why, .k-station-why)[data-why="stalled"] { color: var(--st-work-ink); font-weight: 500; }
+:is(.k-row-why, .k-station-why)[data-why="stalled"] { color: var(--st-work-ink); font-weight: 400; }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-row:hover { background: var(--hover); color: var(--fg); }
 /* The session open here: lifted onto the paper, no outline (a ringed white box read as a field). */
@@ -424,18 +424,18 @@
 .k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
 /* News at rest is the title's weight: a session with something new reads heavier than one you have seen, and no second dot
    stands in the row beside the state's. */
-.k-row[data-news]:not([data-gone]) .k-row-title { font-weight: 500; }
+.k-row[data-news]:not([data-gone]) .k-row-title { font-weight: 400; }
 /* A session at work reads first of the rows that need nothing: its title is in ink, not the quiet grey of a row at rest. */
 .k-row[data-watch="work"]:not([data-gone], [data-offline]) .k-row-title { color: var(--fg); }
 /* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
 .k-row-time[data-calm] { display: none; }
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
 .k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1.25rem; color: var(--faint); }
-.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 500; }
+.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 400; }
 /* The word before the age, for a row that waits on the owner (you) or was declined (Sidebar.tsx, `on`): the owner in the need ink,
    a declined one in the failure's. The state word on the row's line would say it twice: the reason has that room. */
 .k-row-time { white-space: nowrap; }
-.k-row-on { display: inline-block; vertical-align: bottom; min-width: 0; max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.k-row-on { display: inline-block; vertical-align: bottom; min-width: 0; max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
 .k-row-on[data-on="need"] { color: var(--st-need-ink); }
 .k-row-on:is([data-on="fail"], [data-on="declined"]) { color: var(--st-fail-ink); }
 .k-row:has(> .k-row-end .k-row-on) .k-row-sub > .k-row-state { display: none; }
@@ -450,7 +450,7 @@
 }
 .k-where svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--where); }
 .k-where-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.k-where-reach { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0; color: var(--faint); }
+.k-where-reach { font-weight: 600; font-size: var(--text-micro); line-height: 1; letter-spacing: 0; color: var(--faint); }
 .k-where[data-reach="offline"] { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--st-fail) 45%, transparent); color: var(--muted); }
 .k-where[data-reach="offline"] svg, .k-where[data-reach="offline"] .k-where-reach { color: var(--st-fail-ink); }
 .k-where[data-reach="connecting"] svg { animation: var(--animate-pulse-dot); }
@@ -497,14 +497,14 @@
 /* What a session at rest last said or did (two lines a row): quieter than a reason. */
 .k-row-sub .k-row-last { color: var(--faint); }
 /* A message of theirs that waits in the session's queue: its glyph and how many, before the time. */
-.k-row-queued { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--st-wait-ink); }
+.k-row-queued { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 600; font-size: var(--text-micro); line-height: 1; color: var(--st-wait-ink); }
 .k-row-queued svg { width: 0.75rem; height: 0.75rem; }
 /* A dollar cap on the session: the share spent, and the rate an hour; amber from 80 percent, red at the cap. */
-.k-row-cap { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-row-cap { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 600; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
 .k-row-cap svg { width: 0.75rem; height: 0.75rem; }
 .k-row-cap[data-level="warn"] { color: var(--warn-ink); }
 .k-row-cap[data-level="spent"] { color: var(--st-fail-ink); }
-.k-row-cap-rate { margin-left: 0.125rem; font-weight: 500; color: var(--faint); }
+.k-row-cap-rate { margin-left: 0.125rem; font-weight: 400; color: var(--faint); }
 /* The row a count above the list went to: ringed and washed for a moment, so it is found among
    rows that look alike, also after a press of the pointer (which shows no focus ring). */
 .k-row[data-jump] { box-shadow: inset 0 0 0 2px var(--ring); animation: k-jump 1.6s ease-in; }
@@ -522,7 +522,7 @@
 .k-sel-count { flex: 1; min-width: 0; font-weight: 600; color: var(--fg); }
 .k-sel-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
 .k-sel-acts { display: flex; flex-wrap: wrap; gap: 0.125rem 0.25rem; }
-.k-sel-act { display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-sel-act { display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 400; white-space: nowrap; color: var(--fg); }
 .k-sel-act svg { width: 0.875rem; height: 0.875rem; color: var(--muted); }
 .k-sel-act:hover:not(:disabled) { background: var(--hover); }
 .k-sel-act:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -542,7 +542,7 @@
 .k-need-name .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; }
 .k-need-title { min-width: 0; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-need-next { color: var(--muted); }
-.k-need-more { font-weight: 700; font-size: var(--text-micro); color: var(--muted); }
+.k-need-more { font-weight: 600; font-size: var(--text-micro); color: var(--muted); }
 .k-rail[data-narrow] .k-need-strip { margin-inline: 0.375rem; flex-direction: column; }
 .k-rail[data-narrow] .k-need-title { max-width: none; }
 .k-machines-below { display: flex; flex-direction: column; flex-shrink: 0; }
@@ -573,11 +573,11 @@
 .k-earlier svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; }
 .k-earlier:hover { background: var(--raised); color: var(--muted); }
 .k-earlier:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-earlier-n { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--muted); margin-inline-end: -0.1875rem; }
+.k-earlier-n { font-weight: 400; font-variant-numeric: tabular-nums; color: var(--muted); margin-inline-end: -0.1875rem; }
 .k-earlier-extra { overflow: hidden; text-overflow: ellipsis; }
 .k-child-below { flex: none; color: var(--faint); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
-.k-child-state { flex-shrink: 0; white-space: nowrap; font-weight: 500; font-size: var(--text-micro); line-height: 1rem; color: var(--faint); }
-.k-child-state:is([data-watch="need"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
+.k-child-state { flex-shrink: 0; white-space: nowrap; font-weight: 400; font-size: var(--text-micro); line-height: 1rem; color: var(--faint); }
+.k-child-state:is([data-watch="need"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 600; }
 .k-child-state[data-watch="need"] { color: var(--st-need-ink); }
 /* An agent at work is the normal case: its word is quiet, so what calls the owner is what stands out. */
 .k-child-state[data-watch="work"] { color: var(--muted); }
@@ -602,13 +602,13 @@
 }
 /* A machine that does not answer: its rows say the last it told, stepped back, the clock's place saying offline.
    A session that left the list while the hand held it still looks the same until the hand has gone. */
-.k-row:is([data-offline], [data-gone]) :is(.k-row-title, .k-row-state, .k-row-why, .k-row-class, .k-row-time) { color: var(--faint); font-weight: 500; }
+.k-row:is([data-offline], [data-gone]) :is(.k-row-title, .k-row-state, .k-row-why, .k-row-class, .k-row-time) { color: var(--faint); font-weight: 400; }
 .k-row:is([data-offline], [data-gone]) .k-row-class { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-row:is([data-offline], [data-gone]) > .k-mark, .k-tick[data-gone] { opacity: 0.45; filter: grayscale(1); }
 .k-row-time[data-offline] { letter-spacing: 0.02em; }
 .k-row-sub .k-row-class { align-self: center; }
 /* A message that waits for the daemon to be back: it goes out by itself, so it is said in the waiting ink, not the owner's. */
-.k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; color: var(--st-wait-ink); }
+.k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 400; color: var(--st-wait-ink); }
 /* Where it runs, at the line's end, when the list is not grouped by folder. */
 .k-row-sub .k-row-in { flex-shrink: 1; min-width: 2rem; max-width: 40%; margin-left: auto; }
 .k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
@@ -641,7 +641,7 @@
 .k-sum-chip:hover { background: var(--hover); color: var(--fg); }
 .k-sum-chip:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-sum-chip svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--faint); }
-.k-sum-n { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--fg); }
+.k-sum-n { font-weight: 400; font-variant-numeric: tabular-nums; color: var(--fg); }
 .k-sum-word { font-weight: 400; letter-spacing: 0; }
 .k-sum-chip[data-kind="need"] :is(.k-sum-n, .k-sum-word) { color: var(--st-need-ink); }
 .k-sum-calm { flex: 0 1 auto; min-width: 0; padding: 0 0.375rem; overflow: hidden; white-space: nowrap; font-size: var(--text-caption); color: var(--faint); }
@@ -735,8 +735,8 @@
 .k-look-state { flex-shrink: 0; margin-left: 0.25em; font-weight: 600; color: var(--st-need-ink); }
 .k-look-bar:is([data-under="fail"], [data-under="declined"]) .k-look-state { color: var(--st-fail-ink); }
 /* What a click on the row aimed at this pane will do, in place of the sentences while it is aimed. */
-.k-aim-in { flex: 0 1 auto; min-width: 0; height: 1.0625rem; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; border-radius: var(--radius-sm); background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--bg); }
-.k-look-act { display: inline-flex; align-items: center; gap: 0.4375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-aim-in { flex: 0 1 auto; min-width: 0; height: 1.0625rem; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; border-radius: var(--radius-sm); background: var(--fg); font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem;  color: var(--bg); }
+.k-look-act { display: inline-flex; align-items: center; gap: 0.4375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 400; white-space: nowrap; color: var(--fg); }
 .k-look-act:hover { background: var(--hover); }
 .k-look-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .k-look-act svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; color: var(--muted); }
@@ -753,7 +753,7 @@
 .k-look-bar:not([data-esc-card]) .k-look-shift { display: none; }
 /* A line at the pane's foot for a few seconds: what left the pane, and where it is. It lies
    in the room under the message box and leaves air between the two. */
-.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in var(--dur-move) var(--ease-out); }
+.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 400; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in var(--dur-move) var(--ease-out); }
 @keyframes k-note-in { from { opacity: 0; } }
 /* Before the click: the pane a row of the list will change, while the pointer or the keys
    are on that row. Its band goes to ink and a tab hangs from it that says what the click
@@ -762,7 +762,7 @@
    in a row of panes that scrolls sideways, the tab stands at that edge of the row with an
    arrow. */
 .k-stations > .k-station[data-aimed] .k-band { background-color: var(--fg); }
-.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
+.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--fg); font-weight: 600; font-size: var(--text-micro); line-height: 0.875rem;  white-space: nowrap; color: var(--bg); pointer-events: none; }
 .k-station[data-drop] .k-aim { display: none; }
 .k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 var(--radius-md); }
 .k-aim-edge[data-side="left"] { border-radius: 0 0 var(--radius-md) 0; }
@@ -806,8 +806,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty { background: var(--bg); }
 .k-pane-empty[data-next] { background: color-mix(in oklch, var(--raised) 55%, var(--bg)); }
 .k-pane-empty-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; width: 100%; max-width: 38rem; margin: 0 auto; padding: 11vh 2rem 2rem; }
-.k-pane-empty-word { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--muted); }
-.k-pane-empty-word span { font-weight: 500; color: var(--faint); }
+.k-pane-empty-word { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--muted); }
+.k-pane-empty-word span { font-weight: 400; color: var(--faint); }
 /* The title of a pane's start page ("Start a session", "Recent"): a heading in the text face, not a state word. */
 .k-pane-title { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 600; font-size: var(--text-ui); line-height: 1.3; color: var(--fg); }
 .k-pane-title span { font-weight: 400; font-size: var(--text-caption); color: var(--faint); }
@@ -823,7 +823,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty-list .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-pane-empty-in { flex-shrink: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--faint); }
 .k-pane-empty-time { flex-shrink: 0; min-width: 1.5rem; text-align: right; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--faint); }
-.k-pane-empty-new { align-self: flex-start; display: inline-flex; align-items: center; gap: 0.5rem; height: 2.125rem; margin-top: 1.375rem; padding: 0 0.75rem 0 0.625rem; border-radius: var(--radius-md); border: 1px solid var(--line-strong); font-size: var(--text-ui); font-weight: 500; color: var(--fg); }
+.k-pane-empty-new { align-self: flex-start; display: inline-flex; align-items: center; gap: 0.5rem; height: 2.125rem; margin-top: 1.375rem; padding: 0 0.75rem 0 0.625rem; border-radius: var(--radius-md); border: 1px solid var(--line-strong); font-size: var(--text-ui); font-weight: 400; color: var(--fg); }
 .k-pane-empty-new:hover { background: var(--hover); }
 .k-pane-empty-new svg { width: 0.9375rem; height: 0.9375rem; }
 .k-station:last-child { border-right: 0; }
@@ -844,7 +844,7 @@ html[data-resizing] iframe { pointer-events: none; }
 /* At least the top bar's height under the band, whatever the band's: its hairline is on the line where the rail's brand row ends. */
 .k-station-head { position: relative; display: flex; flex-direction: column; justify-content: center; min-height: calc(var(--spacing-bar) - var(--k-band-h)); padding: 0.75rem 1.125rem 0.6875rem 1.375rem; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .k-station-row { display: flex; align-items: center; gap: 0.75rem; min-height: 1.625rem; }
-.k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 700; font-size: var(--text-caption); letter-spacing: 0; color: var(--st-done-ink); }
+.k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 600; font-size: var(--text-caption); letter-spacing: 0; color: var(--st-done-ink); }
 .k-station-word .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-station[data-watch="need"] .k-station-word { color: var(--st-need-ink); }
 .k-station[data-watch="work"] .k-station-word { color: var(--st-work-ink); }
@@ -857,7 +857,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
 .k-station:is([data-watch="stop"], [data-watch="resume"]) .k-station-word { color: var(--muted); }
 /* The clock is part of the state: the word's size, in the muted ink, figures that do not move. */
-.k-station-clock { font-size: var(--text-caption); font-weight: 500; color: var(--muted); }
+.k-station-clock { font-size: var(--text-caption); font-weight: 400; color: var(--muted); }
 .k-station[data-watch="need"] .k-station-clock { color: var(--st-need-ink); }
 /* Another machine's name beside the title, in that machine's colour: kept at every width of the pane. */
 .k-station-machine { --where: var(--faint); flex: 0 1 auto; min-width: 2.5rem; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.375rem; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--where) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1.125rem; color: var(--where); }
@@ -1111,13 +1111,13 @@ html[data-resizing] iframe { pointer-events: none; }
    The headline is the sessions' state in the state words, each a count that
    opens the first session in it. The lists under the start box are rows of a
    mark, a title, the state word and one line. */
-h1.k-home-state { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1.375rem; row-gap: 0.25rem; margin-bottom: 0.5rem; font-family: var(--font-sans); font-size: var(--text-head); font-weight: 500; line-height: 1.3; letter-spacing: -0.012em; color: var(--fg); }
+h1.k-home-state { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1.375rem; row-gap: 0.25rem; margin-bottom: 0.5rem; font-family: var(--font-sans); font-size: var(--text-head); font-weight: 400; line-height: 1.3; letter-spacing: -0.012em; color: var(--fg); }
 /* With nothing to count it is a question, said at the page's size. (h1: over the new-session station's heading.) */
 h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; letter-spacing: -0.018em; }
 .k-home-finished { margin-bottom: 0.75rem; font-size: var(--text-ui); font-weight: 600; }
 /* A count is its mark and its figure in the state's color and its words in ink: five states on one line read as one sentence, not a row of colors. */
 .k-home-count { display: inline-flex; align-items: center; gap: 0.5rem; border-radius: var(--radius-md); color: var(--fg); }
-.k-home-n { font-weight: 650; font-variant-numeric: tabular-nums; color: var(--muted); }
+.k-home-n { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); }
 .k-home-count .k-mark { width: 0.625rem; height: 0.625rem; }
 .k-home-count[data-watch="need"] .k-home-n { color: var(--st-need-ink); }
 .k-home-count[data-watch="work"] .k-home-n { color: var(--st-work-ink); }
@@ -1139,7 +1139,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-row-main:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .k-home-row-mark { display: grid; place-items: center; align-self: center; flex-shrink: 0; width: 1rem; height: 1.3125rem; }
 .k-home-row-mark .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-home-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: var(--text-base); line-height: 1.3125rem; font-weight: 500; color: var(--fg); }
+.k-home-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: var(--text-base); line-height: 1.3125rem; font-weight: 400; color: var(--fg); }
 .k-home-row-main:hover .k-home-row-title { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 0.2em; }
 .k-home-row-meta { display: flex; align-items: baseline; gap: 0.75rem; flex-shrink: 0; }
 /* (The empty pane caps its folder at a share of the row; here it has the width it needs.) */
@@ -1171,7 +1171,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-home-row:not(:has(.k-home-row-cmd)) > .k-home-row-note { flex-basis: 100%; }
 }
 /* One action leads the screen (the first row's); the others are outlined, a way out is plain words. */
-.k-home-act { height: var(--spacing-ctl-md); padding: 0 0.625rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line-strong); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-home-act { height: var(--spacing-ctl-md); padding: 0 0.625rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line-strong); font-size: var(--text-caption); font-weight: 400; white-space: nowrap; color: var(--fg); }
 .k-home-act:hover:not(:disabled) { background: var(--hover); }
 .k-home-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .k-home-act:disabled, .k-home-act[aria-disabled="true"] { opacity: 0.5; cursor: default; }
@@ -1213,7 +1213,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-more:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 /* Recent: a session's state in a word when it is not simply done (it joins the state face by its class). */
 .k-home-recent .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-home-recent-word { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0; color: var(--faint); }
+.k-home-recent-word { flex-shrink: 0; font-weight: 600; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0; color: var(--faint); }
 .k-home-recent[data-watch="need"] .k-home-recent-word { color: var(--st-need-ink); }
 .k-home-recent[data-watch="work"] .k-home-recent-word { color: var(--st-work-ink); }
 .k-home-recent:is([data-watch="fail"], [data-watch="declined"]) .k-home-recent-word { color: var(--st-fail-ink); }
@@ -1239,7 +1239,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within) .k-allow { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-approval[data-many]:is(:focus-within, [data-hot]) { box-shadow: 0 0 0 3px color-mix(in oklch, var(--st-need) 13%, transparent); }
 /* What waits, over a list of requests: a state word (its face is the state role's, styles.css). */
-.k-ask-count { font-weight: 700; font-size: var(--text-micro); line-height: 1.25rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-need-ink); }
+.k-ask-count { font-weight: 600; font-size: var(--text-micro); line-height: 1.25rem;  color: var(--st-need-ink); }
 .k-allow-all { border-radius: var(--radius-md); }
 /* A list's bar stays at the top of the region while the list scrolls under it, where a whole row
    still shows under it (the list says so): it is opaque, and no fade lies over it. */
@@ -1280,7 +1280,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
    while the number answers. Its room is always held (a keyboard's screen only), so no answer moves as
    the numbers come and go: a control that moved waits again before a pointer's press counts. Inside the
    control, it covers no focus ring and no frame, and it is drawn in the control's own ink (filled or not). */
-.k-digit { display: inline-grid; place-items: center; vertical-align: 0.0625rem; min-width: 1rem; height: 1rem; margin-left: 0.4375rem; margin-right: -0.25rem; padding: 0 0.1875rem; border-radius: var(--radius-xs); color: inherit; box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 40%, transparent); font-family: var(--font-mono); font-size: var(--text-micro); font-weight: 500; line-height: 1; pointer-events: none; opacity: 0; transition: opacity var(--dur-quick) var(--ease-out); }
+.k-digit { display: inline-grid; place-items: center; vertical-align: 0.0625rem; min-width: 1rem; height: 1rem; margin-left: 0.4375rem; margin-right: -0.25rem; padding: 0 0.1875rem; border-radius: var(--radius-xs); color: inherit; box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 40%, transparent); font-family: var(--font-mono); font-size: var(--text-micro); font-weight: 400; line-height: 1; pointer-events: none; opacity: 0; transition: opacity var(--dur-quick) var(--ease-out); }
 .k-digit[data-on] { opacity: 1; }
 /* A key cap's number (an answer's, a question option's) is drawn from data-n: it is no part of the text or
    the accessible name of what it labels (an Allow once reads "Allow once", an option its own words). */
@@ -1302,11 +1302,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-question { border-radius: var(--radius-md); box-shadow: none; }
 /* A question's header: a small tag in the accent, beside its question (on a phone, in the card's head). */
 /* The rest of a question cut on a phone: said at the end of its last line, over a fade (the text is what a tap opens). */
-.k-q-more { position: absolute; right: 0; bottom: 0; padding-left: 2.5rem; background: linear-gradient(90deg, transparent, var(--raised) 2rem); font-size: var(--text-ui); line-height: 1.6; font-weight: 500; color: var(--accent-ink); pointer-events: none; }
+.k-q-more { position: absolute; right: 0; bottom: 0; padding-left: 2.5rem; background: linear-gradient(90deg, transparent, var(--raised) 2rem); font-size: var(--text-ui); line-height: 1.6; font-weight: 400; color: var(--accent-ink); pointer-events: none; }
 /* (Leading the text, it sits on the first line's middle, a space after it.) */
 /* (In the components layer: a utility on the same element, md:hidden, must beat its display.) */
 @layer components { .k-q-lead { display: inline-block; margin-right: 0.5rem; vertical-align: 0.125em; line-height: 1.4; } }
-.k-q-chip { border-radius: var(--radius-md); padding: 1px 0.375rem; background: var(--accent-soft); font-size: var(--text-micro); font-weight: 500; text-transform: uppercase; letter-spacing: 0.025em; color: var(--accent-ink); }
+.k-q-chip { border-radius: var(--radius-md); padding: 1px 0.375rem; background: var(--accent-soft); font-size: var(--text-micro); font-weight: 400; letter-spacing: 0.025em; color: var(--accent-ink); }
 /* A waiting question keeps its Answer row at the tray's lower edge while it scrolls: that edge is not faded. */
 .k-tray:has(.k-question[data-state="open"])[data-more="down"] { mask-image: none; }
 .k-tray:has(.k-question[data-state="open"])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
@@ -1419,20 +1419,20 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   /* Errors not yet read: the bug in the failure's ink, its count on it. */
   .k-dock-errors { color: var(--st-fail-ink); }
   .k-dock-errors .k-dock-out { color: var(--st-fail-ink); }
-  .k-dock-out { position: absolute; top: 0.125rem; right: 0; padding: 0 0.1875rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; color: var(--muted); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); font-variant-numeric: tabular-nums; pointer-events: none; }
+  .k-dock-out { position: absolute; top: 0.125rem; right: 0; padding: 0 0.1875rem; border-radius: 999px; font-weight: 600; font-size: var(--text-micro); line-height: 0.875rem; color: var(--muted); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); font-variant-numeric: tabular-nums; pointer-events: none; }
   .k-dock-list { --mark: 4.5rem; --gap: 2px; display: flex; gap: var(--gap); max-width: calc(round(down, 100cqw + var(--gap), var(--mark) + var(--gap)) - var(--gap)); overflow-x: auto; scrollbar-width: none; scroll-snap-type: x mandatory; }
   .k-dock-list > li { scroll-snap-align: start; }
   /* A mark and the session's short code under it: no two read alike. */
   .k-dock-mark { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; width: var(--mark); height: 2.75rem; padding-bottom: 0.25rem; border-radius: var(--radius-md); }
   .k-dock-mark .k-mark { width: 0.5625rem; height: 0.5625rem; }
-  .k-dock-code { max-width: 100%; padding-inline: 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0; color: var(--muted); }
+  .k-dock-code { max-width: 100%; padding-inline: 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--text-micro); line-height: 1; letter-spacing: 0; color: var(--muted); }
   .k-dock-mark[aria-current] .k-dock-code, .k-dock-mark[data-watch="need"] .k-dock-code { color: var(--fg); }
   .k-dock-mark[aria-current] { background: var(--raised); }
   .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.125rem; height: 0.125rem; border-radius: 2px; background: var(--fg); }
   /* What needs the owner: a finger's size of its own beside the marks, the pill inside it. */
   .k-dock-need { flex-shrink: 0; display: grid; place-items: center; height: 2.75rem; padding: 0 0.125rem; border-radius: var(--radius-md); }
   .k-dock-need { min-width: 2.75rem; }
-  .k-dock-need-n { display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0 0.5rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--st-need-on); background: var(--st-need-fill); }
+  .k-dock-need-n { display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0 0.5rem; border-radius: 999px; font-weight: 600; font-size: var(--text-micro); line-height: 1.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--st-need-on); background: var(--st-need-fill); }
   .k-dock-need-mark { width: 0.4375rem; height: 0.4375rem; rotate: 45deg; background: currentColor; }
   .k-dock-need:active .k-dock-need-n { filter: brightness(0.92); }
 }
@@ -1546,7 +1546,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-settings-jump-icon { display: grid; place-items: center; flex-shrink: 0; width: 2rem; height: var(--spacing-ctl-lg); border-radius: var(--radius-md); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg); }
 .k-settings-jump-group, .k-settings-jump-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-settings-jump-group { line-height: 1.2; }
-.k-settings-jump-label { font-weight: 700; font-size: var(--text-head); line-height: 1.25; letter-spacing: -0.02em; color: var(--fg); }
+.k-settings-jump-label { font-weight: 600; font-size: var(--text-head); line-height: 1.25; letter-spacing: -0.02em; color: var(--fg); }
 .k-settings-jump-hint { flex-shrink: 0; font-size: var(--text-caption); color: var(--muted); }
 .k-settings-jump-mark { flex-shrink: 0; width: 1rem; height: 1rem; color: var(--muted); transition: transform var(--dur-move) var(--ease-out); }
 .k-settings-jump[aria-expanded="true"] .k-settings-jump-mark { transform: rotate(180deg); }
@@ -1640,7 +1640,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-group { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
 .k-set-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 0.5rem 1rem; }
 .k-set-head > div:first-child { min-width: 0; flex: 1 1 18rem; }
-.k-set-title { display: flex; align-items: baseline; gap: 0.5rem; font-size: var(--text-base); font-weight: 650; line-height: 1.35; letter-spacing: -0.005em; color: var(--fg); }
+.k-set-title { display: flex; align-items: baseline; gap: 0.5rem; font-size: var(--text-base); font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; color: var(--fg); }
 .k-set-count { font-size: var(--text-caption); font-weight: 400; font-variant-numeric: tabular-nums; color: var(--faint); }
 .k-set-hint { max-width: 48rem; margin-top: 0.1875rem; font-size: var(--text-caption); line-height: 1.5; color: var(--muted); text-wrap: pretty; }
 .k-set-hint > p:where(:not(:first-child)) { margin-top: 0.125rem; }
@@ -1677,7 +1677,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-lead { grid-area: lead; display: grid; place-items: center; align-self: start; height: 1.25rem; color: var(--faint); }
 .k-set-main { grid-area: main; min-width: 0; }
 /* A name is shown whole, broken anywhere only when one word is longer than its line. */
-.k-set-name { display: block; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-ui); font-weight: 500; line-height: 1.45; color: var(--fg); }
+.k-set-name { display: block; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-ui); font-weight: 400; line-height: 1.45; color: var(--fg); }
 .k-set-name[data-mono] { font-family: var(--font-mono); font-size: var(--text-caption); }
 .k-set-sub { margin-top: 0.125rem; font-size: var(--text-caption); line-height: 1.45; color: var(--faint); overflow-wrap: anywhere; }
 /* A list of many short rows (figures, names): a tighter row. A line cut to one (clip) keeps its whole words in its title. */
@@ -1702,7 +1702,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 }
 
 /* A status: one chip, one tone, the word of the vocabulary (src/core/state-words.ts) where it has one. */
-.k-set-status { display: inline-flex; align-items: center; gap: 0.375rem; flex-shrink: 0; max-width: 100%; height: 1.375rem; padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; line-height: 1; white-space: nowrap; background: var(--sunken); color: var(--muted); }
+.k-set-status { display: inline-flex; align-items: center; gap: 0.375rem; flex-shrink: 0; max-width: 100%; height: 1.375rem; padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 400; line-height: 1; white-space: nowrap; background: var(--sunken); color: var(--muted); }
 .k-set-status::before { content: ""; flex-shrink: 0; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--st-idle); }
 .k-set-status[data-tone="ok"] { background: color-mix(in oklch, var(--ok) 13%, transparent); color: var(--ok-ink); }
 .k-set-status[data-tone="ok"]::before { background: var(--ok); }
@@ -1784,7 +1784,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* ---------- Turn notes: memory, hooks, restarts, folded onto the footer ---------- */
 .k-notes { display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.5rem; }
 .k-note-chip-wrap { display: inline-flex; }
-.k-note-chip { display: inline-flex; align-items: center; gap: 0.25rem; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 500; font-size: var(--text-micro); line-height: 1; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
+.k-note-chip { display: inline-flex; align-items: center; gap: 0.25rem; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 400; font-size: var(--text-micro); line-height: 1; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
 button.k-note-chip:hover, button.k-note-chip[data-popup-open] { color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-note-pop { width: min(36rem, 90vw); max-height: 50vh; overflow: auto; padding: 0.625rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
 .k-note-pop-head { margin-bottom: 0.375rem; }
@@ -1841,7 +1841,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-alert-icon[data-read] .k-mark { opacity: 0.45; }
 .k-inbox-count {
   min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 999px;
-  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
+  font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
 }
 .k-inbox-count[data-watch="idle"] { background: var(--accent); }
 
@@ -1881,7 +1881,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-pane-map-mark:hover { background: var(--hover); }
 .k-pane-map-mark:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-pane-map-mark .k-mark { width: 0.5625rem; height: 0.5625rem; }
-.k-pane-map-code { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.02em; }
+.k-pane-map-code { font-weight: 600; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.02em; }
 .k-pane-map-mark[data-shown] .k-pane-map-code { color: var(--faint); font-weight: 600; }
 .k-pane-map-mark[data-shown]::before { content: ""; position: absolute; left: -0.125rem; top: 0.375rem; bottom: 0.375rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-pane-map-mark[data-off] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); }
@@ -1934,7 +1934,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside-head > .k-mark { flex-shrink: 0; }
 .k-outside-state { font-size: var(--text-ui); font-weight: 600; color: var(--fg); overflow-wrap: anywhere; }
 .k-outside[data-state="waiting"] .k-outside-state { color: var(--st-need-ink); }
-.k-outside[data-state="stale"] .k-outside-state { font-weight: 500; color: var(--muted); }
+.k-outside[data-state="stale"] .k-outside-state { font-weight: 400; color: var(--muted); }
 /* On a phone the button stands on its own line under the sentence, as wide as the bar. */
 @media (max-width: 767px) {
   .k-outside-head { flex-wrap: wrap; row-gap: 0.5rem; }
