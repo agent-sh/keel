@@ -17,7 +17,7 @@ import { keptIn } from "./looked.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { decide } from "./policy.ts";
 import { risksOf as risksIn } from "./risk.ts";
-import { isReadOnly, matchRule, shimmedRead, suggestRule, type Simple } from "./shell.ts";
+import { isReadOnly, matchRule, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { READERS, SHIMMED } from "./shell-reads.ts";
 
 const N = 100_000;
@@ -264,4 +264,28 @@ test("a line of fetches and scripts reads each script once", () => {
   };
   const plain = best(run(false)), fetched = best(run(true));
   expect(fetched).toBeLessThan(4 * plain + 50);
+}, 120_000);
+
+// A long run of one bracket shape: a word read a character at a time was joined again at each `[` to see whether
+// it began with a dash, and each `((` that never closed was read to the end of the line (and again by the risk
+// rules), so 200,000 characters took a second or the better part of a minute. The splitter and the whole decision
+// read them in step with their length now; `$((` repeated is not followed past a nesting depth (it overflowed the stack).
+test("a long run of brackets and parentheses is split and judged in step with its length", () => {
+  const facts = { mode: "ask" as const, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] };
+  const rep = (u: string, n: number) => u.repeat(Math.ceil(n / u.length)).slice(0, n);
+  const M = 200_000;
+  const shapes: Record<string, string> = {
+    "[": rep("[", M), "[=[": rep("[=[", M), "[[": rep("[[", M), "-[": `ls ${rep("-[", M)}`, "[x[": `echo ${rep("[x[", M)}`,
+    "[ -f": rep("[ -f x ] ", M / 10), "[[ a": rep("[[ a == b ]] ", M), "*[?": `ls ${rep("*[?", M)}`, "a[": `echo ${rep("a[", M)}`,
+    "(((": rep("(", M), "((": rep("((", M), "$((": rep("$((", M), "$(": rep("$(", M), "(a": rep("(a ", M), "(a;": rep("(a;", M),
+    "((a": rep("((a ", M), "python -c": `python3 -c 'os.system(${rep("(", M)}'`, "python -c [": `python3 -c 'os.system(${rep("[", M)}'`,
+    "node -e": `node -e 'require("child_process").execSync(${rep("(", M)}'`, "bash -c": `bash -c '${rep("(", M)}'`,
+  };
+  const timed = (f: () => unknown) => { let best = Infinity; for (let k = 0; k < 3 && best > 150; k++) { const t = performance.now(); f(); best = Math.min(best, performance.now() - t); } return best; };
+  const slow: string[] = [];
+  for (const [name, command] of Object.entries(shapes)) {
+    const split = timed(() => splitCommand(command)), whole = timed(() => decide({ kind: "shell", command, cwd: "/w" }, facts));
+    if (split > 150 || whole > 150) slow.push(`${name}: split ${split.toFixed(0)} ms, decide ${whole.toFixed(0)} ms`);
+  }
+  expect(slow).toEqual([]);
 }, 120_000);

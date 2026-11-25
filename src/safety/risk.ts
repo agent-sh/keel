@@ -985,7 +985,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     // assignment, and the value given to a name declared with -i.
     const regions: string[] = [];
     if (lets || cond) regions.push(s.words.slice(1).join(" "));
-    else if (s.text.includes("((")) regions.push(...[...s.text.matchAll(/\(\(([^]*?)\)\)/g)].map((m) => m[1]!));
+    else if (s.text.includes("((")) regions.push(...arithmeticTexts(s.text));
     for (const m of s.text.matchAll(/\$\{[!#]?[A-Za-z_][A-Za-z0-9_]*(?:\[([^\]]*)\])?(?::([^-=+?}][^}]*)?)?\}/g)) { if (m[1]) regions.push(m[1]); if (m[2]) regions.push(m[2]); }
     const ints = (firstInteger ??= parts.findIndex(integerDecl)) >= 0 && firstInteger <= i;
     for (const word of s.words) {
@@ -1410,6 +1410,19 @@ function contained(args: string[], dir: string, home: string): { command: string
   return { command: command.map(mapped), cwd: cwd.startsWith("/") ? cwd : NOWHERE };
 }
 const OLD = (why: string): RiskRule => (/^runs as root|^stops the machine/.test(why) ? "machine" : /remote/.test(why) ? "remote" : /downloaded/.test(why) ? "hidden" : "destroys");
+
+// What stands between each `((` and the next `))`, the same as /\(\(([^]*?)\)\)/g finds, in one pass: that pattern
+// reads to the end of the text from every `((` that never closes, and a line of them is quadratic.
+function arithmeticTexts(text: string): string[] {
+  const out: string[] = [];
+  for (let at = text.indexOf("(("); at >= 0; at = text.indexOf("((", at)) {
+    const end = text.indexOf("))", at + 2);
+    if (end < 0) break;
+    out.push(text.slice(at + 2, end));
+    at = end + 2;
+  }
+  return out;
+}
 
 // Every reason the line is high risk, each once.
 export function risksOf(parts: Simple[], w: Where, pre?: Laid): Risk[] {

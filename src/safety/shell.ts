@@ -63,6 +63,7 @@ type Redirect = ">" | ">&" | "<" | "<&" | "<<<" | "<<" | "<<-";
 export function splitCommand(cmd: string): Simple[] | null {
   // A line continuation right after $ < > & ( is read by bash before it reads the operator: not followed here.
   if (/[$<>&(]\\\n/.test(cmd)) return null;
+  if (level === 0) { read = 0; allowed = 8 * cmd.length + 4096; }
   const r = scan(cmd, 0, false);
   if (!r) return null;
   if (!r.parts.length && cmd.trim()) return [{ words: [], text: cmd.trim(), redirects: false, unknown: true }];
@@ -73,6 +74,11 @@ export function splitCommand(cmd: string): Simple[] | null {
 // that closes the substitution they are in.
 // Nesting deeper than this is not followed: the cost of reading it grows with the square of its depth.
 let level = 0;
+// Each `((` that does not close is read to the end of the text to find that out: a line of them is quadratic. What
+// the arithmetic reads in all is bounded by a multiple of the line's length; past it the line is not followed
+// (null, as for a nesting too deep), which no real script reaches.
+let read = 0;
+let allowed = 0;
 // `bare`: the text is the elements of an array assignment, A=( ... ): words, not a command. What the shell
 // runs in them (the substitutions) is read as commands; the words themselves are not one.
 function scan(cmd: string, start: number, inner: boolean, flow = false, bare = false): { parts: Simple[]; end: number } | null {
@@ -96,6 +102,10 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     if (open) splits = cur.open = true;
   };
   let word = "";
+  // Whether the word begins with a dash, kept apart: reading a word that was built a character at a time
+  // joins it first, and doing that for every character of a long word is quadratic.
+  let dashed = false;
+  const put = (s: string | undefined) => { if (s === undefined) return; if (word === "") dashed = s.charCodeAt(0) === 45; word += s; };
   let inWord = false;
   let quoted = false; // the word has a quoted or escaped character
   let made = false; // an expansion makes the word, or part of it
@@ -183,8 +193,14 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
   // the text is not read as arithmetic here (a quote, ${, $[, a backslash, parentheses that do not close as `))`: bash
   // may read it as a command substitution of a subshell then), which is read as it always was; null: not shell text.
   const arithmetic = (from: number): number | null | undefined => {
+    if (level >= 64) return null;
+    level++;
+    try { return arithmeticIn(from); } finally { level--; }
+  };
+  const arithmeticIn = (from: number): number | null | undefined => {
     let paren = 0;
     for (let k = from; k < cmd.length; k++) {
+      if (++read > allowed) return null;
       const c = cmd[k]!;
       if (c === "$" && cmd[k + 1] === "(" && cmd[k + 2] !== "(") {
         const r = scan(cmd, k + 2, true, flow);
@@ -315,7 +331,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     if (param && /[<>(){;|&\n]/.test(c)) unknown = true;
     if (c === "\\" && i + 1 < cmd.length) {
       if (cmd[i + 1] === "\n") { i++; continue; }
-      word += cmd[i + 1]; inWord = true; quoted = true; text += c + cmd[i + 1]; i++;
+      put(cmd[i + 1]); inWord = true; quoted = true; text += c + cmd[i + 1]; i++;
       continue;
     }
     if (c === "'" || (c === "$" && cmd[i + 1] === "'")) {
@@ -329,7 +345,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         lit += cmd[j];
       }
       if (j >= cmd.length) return null;
-      word += lit; inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
+      put(lit); inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
       continue;
     }
     if (c === '"') {
@@ -359,7 +375,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
       if (j >= cmd.length) return null;
       // A quote inside "${...}" opens a string of its own there: where this one ends is not known.
       if (braces) unknown = true;
-      word += lit; inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
+      put(lit); inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
       continue;
     }
     if ((c === "$" || c === "<" || c === ">") && cmd[i + 1] === "(") {
@@ -367,19 +383,19 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
       if (c === "$") expands(word.length, true);
       const end = substitution(i);
       if (end === null) return null;
-      word += "$(...)"; inWord = true; text += cmd.slice(i, end + 1); i = end;
+      put("$(...)"); inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
     if (c === "`") {
       expands(word.length, true);
       const end = backquoted(i, false);
       if (end === null) return null;
-      word += "`...`"; inWord = true; text += cmd.slice(i, end + 1); i = end;
+      put("`...`"); inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
     if (c === "$") {
       dollar(i, false, word.length);
-      if (cmd[i + 1] === "{") { word += "${"; inWord = true; text += "${"; i++; continue; }
+      if (cmd[i + 1] === "{") { put("${"); inWord = true; text += "${"; i++; continue; }
     }
     if (c === "#" && !inWord && !param) {
       const nl = cmd.indexOf("\n", i);
@@ -432,7 +448,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         // An array given to a name a program reads (PATH, LD_PRELOAD, GIT_DIR) sets that name: its elements stand where the value does.
         const name = /^([A-Za-z_][A-Za-z0-9_]*)=$/.exec(word)?.[1];
         const elements = name !== undefined && (!PLAIN.test(name) || KEPT.test(name)) ? literalElements(cmd.slice(i + 1, r.end)) : null;
-        word += elements ? elements.join(":") : "(...)"; text += cmd.slice(i, r.end + 1); i = r.end;
+        put(elements ? elements.join(":") : "(...)"); text += cmd.slice(i, r.end + 1); i = r.end;
         continue;
       }
       // (( ... )) where a command starts (or after for, while, if): arithmetic, its substitutions run, its words are no command.
@@ -458,8 +474,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     if (c === "}" && param) param--;
     // A glob that opens a word can expand to an option (a file named -o): not known from the text.
     // (Asked once for a word: the first test that can say no comes first, as this runs for every such character.)
-    if ((c === "*" || c === "?" || c === "[") && !want && !(made && cur.open && cur.rest) && (word === "" || word.startsWith("-")) && !words.every((w) => CONTROL.test(w))) { expands(word.length, true); cur.rest = true; }
-    word += c; inWord = true; text += c;
+    if ((c === "*" || c === "?" || c === "[") && !want && !(made && cur.open && cur.rest) && (word === "" || dashed) && !words.every((w) => CONTROL.test(w))) { expands(word.length, true); cur.rest = true; }
+    put(c); inWord = true; text += c;
   }
   flushCmd();
   return bad || inner ? null : { parts: out, end: cmd.length };
