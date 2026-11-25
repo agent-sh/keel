@@ -13,7 +13,7 @@ import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
 import { AdminBand } from "./components/AdminBand.tsx";
-import { IncidentBand } from "./components/IncidentBand.tsx";
+import { useIncidents } from "./lib/incidents.ts";
 import { StaleMarks } from "./components/Stale.tsx";
 import "./lib/integrations-ui.ts";
 import "./lib/port-ui.ts";
@@ -37,6 +37,8 @@ import { UpdateNotice } from "./components/UpdateNotice.tsx";
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 // The page's own Find is the desktop app's only (a tab has the browser's): its chunk loads there alone.
 const PageFind = lazy(() => import("./components/FindBar.tsx").then((m) => ({ default: m.PageFind })));
+// The incident band is drawn only while an incident is open: its code comes with the first one.
+const IncidentBand = lazy(() => import("./components/IncidentBand.tsx").then((m) => ({ default: m.IncidentBand })));
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
 const ProjectPage = lazy(() => import("./components/ProjectPage.tsx").then((m) => ({ default: m.ProjectPage })));
@@ -180,7 +182,7 @@ export function App() {
       <StartedToast />
       <div className="k-shell">
         <AdminBand />
-        <IncidentBand />
+        <IncidentSlot />
         <ArchivedRefusalNotice />
         <div
           className="k-app"
@@ -207,6 +209,13 @@ export function App() {
       {inShell && <Suspense fallback={null}><PageFind at={route.name === "session" ? `s ${route.id}` : route.name} /></Suspense>}
     </Boundary>
   );
+}
+
+function IncidentSlot() {
+  const { open } = useIncidents();
+  const seen = useRef(false);
+  if (open.length) seen.current = true;
+  return seen.current ? <Suspense fallback={null}><IncidentBand /></Suspense> : null;
 }
 
 function Overlays() {
