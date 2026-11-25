@@ -1300,6 +1300,34 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
   // The requests that wait below the one kept in view, out of sight: how many, and the first of them.
   const [more, setMore] = useState(0);
   const next = useRef<HTMLElement | null>(null);
+  // A press on the region, from its start until its click has been delivered: what was under the finger when it
+  // came down is what the press lands on, so nothing here scrolls meanwhile (a browser under load delivers the
+  // click a frame or more after the finger lifts, and puts it where the page stands then). What the region owes
+  // the focus or an arrival is done the moment the press is over.
+  const hand = useRef<{ over: () => void } | null>(null);
+  const owed = useRef(false);
+  const settleLater = useRef(() => {});
+  const press = () => {
+    if (hand.current) return;
+    let done = 0;
+    const over = () => {
+      clearTimeout(done);
+      removeEventListener("pointerup", lift, true);
+      removeEventListener("pointercancel", lift, true);
+      removeEventListener("click", lift, true);
+      hand.current = null;
+      // (Its click brings an answer, a focus, a new height: the region settles on that.)
+      if (owed.current) { owed.current = false; requestAnimationFrame(() => requestAnimationFrame(() => settleLater.current())); }
+    };
+    // The click follows the lift by a moment; a press that ends in no click (a drag, a cancel) is over soon after it.
+    const lift = (e: Event) => { clearTimeout(done); done = window.setTimeout(over, e.type === "click" ? 0 : 400); };
+    addEventListener("pointerup", lift, true);
+    addEventListener("pointercancel", lift, true);
+    addEventListener("click", lift, true);
+    // Whatever happens to the press, it does not hold the region for long.
+    done = window.setTimeout(over, 5000);
+    hand.current = { over };
+  };
   const pad = () => parseFloat(getComputedStyle(ref.current!).paddingTop);
   const home = () => {
     const el = ref.current!;
@@ -1397,7 +1425,8 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
       // The scroll bar sits in the column's side padding: the cards keep the box's edges.
       const bar = el.offsetWidth - el.clientWidth;
       el.style.marginRight = bar ? `calc(-0.25rem - ${bar}px)` : "";
-      if (!keepFocus() && stick.current && !pin.current) el.scrollTop = home();
+      if (hand.current) owed.current = true;
+      else if (!keepFocus() && stick.current && !pin.current) el.scrollTop = home();
       mark();
     };
     // Sizes are written a frame later: a write inside the observer's own call would loop it.
@@ -1405,6 +1434,7 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
     // observer changes this column's width from inside its call, and an observer is told
     // of such a change in the same pass only for elements deeper than the one that made it.
     const later = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(settle); };
+    settleLater.current = later;
     const ro = new ResizeObserver(later);
     ro.observe(gauge.current!);
     ro.observe(c);
@@ -1436,6 +1466,7 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
       requestAnimationFrame(() => requestAnimationFrame(() => {
         // The pane may be gone by now (the owner went on as the card came): nothing is left to place.
         if (!el.isConnected || !ref.current || pin.current) return;
+        if (hand.current) { owed.current = true; return mark(); }
         if (keepFocus()) return mark();
         // A new request for the owner: the region goes to the oldest one waiting. Any other
         // new card is shown, unless a request waits: then the region stays on that.
@@ -1446,14 +1477,15 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
     });
     mo.observe(c, { childList: true, subtree: true });
     settle();
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); removeEventListener("resize", later); };
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); removeEventListener("resize", later); hand.current?.over(); settleLater.current = () => {}; };
   }, []);
   return (
     <div
       ref={ref}
       data-testid="composer-tray"
       onScroll={mark}
-      onFocus={() => requestAnimationFrame(() => { if (keepFocus()) mark(); })}
+      onPointerDownCapture={press}
+      onFocus={() => requestAnimationFrame(() => { if (hand.current) owed.current = true; else if (keepFocus()) mark(); })}
       className="k-tray relative -mx-1 min-h-0 shrink-[99] overflow-y-auto px-1 pt-1"
     >
       <div ref={inner}>

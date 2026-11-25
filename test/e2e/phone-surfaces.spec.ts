@@ -294,6 +294,53 @@ for (const size of SIZES) {
       }
     });
 
+    // A phone delivers a tap's click a moment after the finger lifts, and puts it where the page stands then.
+    // Under load that moment is long: the region above the box settled in it, took the keyboard's card back into
+    // view, and the press on a choice of the question landed on a button of the card above it.
+    test("a press on a question below an approval lands where the finger came down, though the region settles under it", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const root = await create(request, "Coordinator", folder("phone-press"));
+      try {
+        await request.put(`/api/sessions/${root}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        const alpha = `Alpha\n${calls([{ name: "Bash", input: { command: "touch alpha-press.txt" } }])}`;
+        const beta = `Beta\n${calls([colors])}`;
+        const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
+        await request.post(`/api/sessions/${root}/messages`, { data: { text: calls([spawn(alpha), spawn(beta)]) } });
+        await page.goto(`/s/${root}`);
+        const station = page.locator(`[data-station="${root}"]`);
+        const teal = station.getByTestId("question-option").filter({ hasText: "Teal" });
+        await expect(teal).toBeVisible({ timeout: 45_000 });
+        await expect(station.getByTestId("approval").first()).toBeVisible({ timeout: 45_000 });
+        // The keyboard rests on the approval's card; a finger comes down on a choice of the question, below it, with
+        // the region scrolled down to it. The region settles while the finger is down (a resize, a card's size
+        // changing) and the click comes after: nothing may scroll under the finger meanwhile.
+        const press = await page.evaluate(async () => {
+          const frames = (n: number) => new Promise<void>((done) => { let i = 0; const f = () => (++i >= n ? done() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+          const tray = document.querySelector<HTMLElement>('[data-testid="composer-tray"]')!;
+          const card = tray.querySelector<HTMLElement>('[data-testid="approval"]')!;
+          const option = [...tray.querySelectorAll<HTMLElement>('[data-testid="question-option"]')].find((o) => o.textContent?.includes("Teal"))!;
+          card.focus();
+          option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", isPrimary: true }));
+          tray.scrollTop = tray.scrollHeight;
+          const away = tray.scrollTop;
+          const box = tray.getBoundingClientRect();
+          const hidden = card.getBoundingClientRect().bottom <= box.top;
+          dispatchEvent(new Event("resize"));
+          await frames(6);
+          const kept = tray.scrollTop;
+          option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "touch", isPrimary: true }));
+          option.click();
+          return { away, kept, hidden };
+        });
+        expect(press.hidden, "the card that holds the keyboard is above what the region shows").toBe(true);
+        expect(press.kept, "the region scrolled under the finger").toBe(press.away);
+        await expect(teal).toHaveAttribute("aria-checked", "true");
+        await expect(station.getByTestId("approval").first()).toBeVisible();
+      } finally {
+        await drop(request, root);
+      }
+    });
+
     test("the new-model card on the home and in Settings > Models reads whole and is pressed by a finger", async ({ page }) => {
       const now = Date.now();
       const interval = (estimate: number) => ({ estimate, lo: estimate * 0.9, hi: estimate * 1.1, n: 12, method: "bootstrap" });
