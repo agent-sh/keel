@@ -208,9 +208,6 @@ export type ApplyOptions = {
   judged?: string[];         // the files the call was judged for (ToolContext.judged): nothing else is opened
   looked?: Record<string, string | null>; // and the file each was at the gate's look (ToolContext.looked)
   sessionId?: string;        // the session the patch is applied for (what its gate cleared lately holds a call with no `judged`)
-  // Asked of each file the patch changes, before anything is written: words refuse the whole patch (a file the
-  // session may change only in part: src/tools/reading.ts).
-  check?: (real: string, before: string, after: string) => string | undefined;
 };
 
 // Parses and applies a V4A patch inside the workspace `cwd`.
@@ -311,11 +308,6 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
     out.push({ path: f.display, kind, diff: d.diff, added: d.added, removed: d.removed, ...(f.movedFrom ? { moved_from: f.movedFrom.display } : {}) });
   }
   if (!out.length) throw new Error("the patch applies and changes nothing: what it would write is already there. Do not repeat it.");
-  for (const real of order) {
-    const f = files.get(real)!;
-    const no = f.original !== null && f.current !== null && f.original !== f.current && !f.movedFrom ? opts.check?.(real, f.original, f.current) : undefined;
-    if (no) throw new Error(no);
-  }
 
   // New contents first, deletions last: a failed write never loses the source of a move.
   for (const real of order) {

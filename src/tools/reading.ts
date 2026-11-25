@@ -8,8 +8,8 @@
 // context then carries the reading instead of the page, which it would
 // otherwise write to its cache and read again at every later step.
 //
-// The file itself is read when the caller asks for it (the family's explicit
-// form: `raw` on a read tool, a printed range in a shell), when the page is
+// The file itself is read when the caller asks for it (`raw` on the read
+// tool), when the page is
 // under the carry size (src/tools/carry.ts: a reader costs more than the text
 // there), for a program's own read (run_code), and when no other model than
 // the session's own can read. A reader that fails, refuses or is slower than
@@ -18,7 +18,7 @@
 // A reading counts as having read the file only for the lines it shows as
 // they are: an edit of other lines is refused once, with the read to make
 // first (editGuard).
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/reader.ts";
 import { FLOOR } from "./carry.ts";
@@ -113,7 +113,6 @@ export function rebase(known: Span[], before: string, after: string): Span[] {
 export type RawForm = { how: string; range: (from: number, to: number, path: string) => string };
 export const CLAUDE_RAW: RawForm = { how: "Read it with raw: true (offset and limit name a range)", range: (a, b) => `Read with raw: true, offset ${a}, limit ${b - a + 1}` };
 export const GEMINI_RAW: RawForm = { how: "use read_file with raw: true (start_line and end_line name a range)", range: (a, b) => `read_file with raw: true, start_line ${a}, end_line ${b}` };
-export const SHELL_RAW: RawForm = { how: "print a range of it (sed -n 'START,ENDp' FILE)", range: (a, b, p) => `sed -n '${a},${b}p' ${p}` };
 
 // An edit of a file the session read through a reader: refused when it changes
 // lines the session does not have as they are, once for a file, with the read
@@ -166,16 +165,6 @@ export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string): void 
     const name = p.slice(p.lastIndexOf("/") + 1);
     if (name && command.includes(name)) b.files.delete(p);
   }
-}
-
-// The one file a command prints whole while doing nothing else: `cat FILE`, after a `cd DIR &&` or not. The read
-// form of a family whose tools have no read (src/tools/gpt.ts). A path the shell would expand is not read here.
-export function wholePrint(command: string, cwd: string): string | undefined {
-  const word = `("[^"$\`\\\\]+"|'[^']+'|[^\\s;&|<>$\`*?()'"~-][^\\s;&|<>$\`*?()'"]*)`;
-  const m = new RegExp(`^\\s*(?:cd\\s+${word}\\s*&&\\s*)?cat\\s+(?:--\\s+)?${word}\\s*$`).exec(command);
-  if (!m) return undefined;
-  const bare = (w: string) => w.replace(/^(['"])(.*)\1$/, "$2");
-  return resolve(m[1] ? resolve(cwd, bare(m[1])) : cwd, bare(m[2]!));
 }
 
 // ---- the page and the reading ---------------------------------------------------

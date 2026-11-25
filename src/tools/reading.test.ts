@@ -14,7 +14,7 @@ import { FLOOR } from "./carry.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { stopJob, jobsOf } from "./jobs.ts";
-import { expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, touched, wholePrint } from "./reading.ts";
+import { expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, touched } from "./reading.ts";
 import type { Tool, ToolContext } from "./types.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "reading-"));
@@ -22,7 +22,7 @@ afterAll(async () => { for (const j of jobsOf("reading-test")) await stopJob(j);
 afterEach(() => { setSystemTime(); delete process.env.KEEL_READ_WAIT_MS; });
 
 const tool = (list: Tool[], name: string) => list.find((t) => t.name === name)!;
-const Read = tool(claudeTools, "Read"), Edit = tool(claudeTools, "Edit"), Write = tool(claudeTools, "Write");
+const Read = tool(claudeTools, "Read"), Edit = tool(claudeTools, "Edit"), Write = tool(claudeTools, "Write"), Bash = tool(claudeTools, "Bash");
 const read_file = tool(geminiTools, "read_file"), replace = tool(geminiTools, "replace");
 const exec_command = tool(gptTools, "exec_command"), apply_patch = tool(gptTools, "apply_patch");
 const text = (o: { content: unknown }) => (typeof o.content === "string" ? o.content : JSON.stringify(o.content));
@@ -163,30 +163,16 @@ describe("which reads go to the reader", () => {
     expect(text(await read_file.run({ file_path: p, start_line: 100, end_line: 500, raw: true }, ctx))).toStartWith(`${line(100)}\n`);
   });
 
-  test("the GPT family's read form: a bare cat answers with a reading, a printed range with the lines", async () => {
+  test("the GPT family's shell returns the command's output: a cat of a long file is the file, and no reader is asked", async () => {
     const { ctx, asked } = rig();
     const p = file();
     const out = text(await exec_command.run({ cmd: `cat ${p}`, login: false, shell: "bash" }, ctx));
     expect(out).toContain("Process exited with code 0");
-    expect(out).toContain("Output:\n[Compiled reading of");
-    expect(out).toContain("print a range of it (sed -n 'START,ENDp' FILE)");
-    expect(out).toContain(`121\t${line(121)}`);
-    expect(out).not.toContain(line(300));
-    expect(asked).toHaveLength(1);
-    const range = text(await exec_command.run({ cmd: `sed -n '290,310p' ${p}`, login: false, shell: "bash" }, ctx));
-    expect(range).toContain(`${line(300)}\n${line(301)}`);
-    // A pipeline, and a cat that fails, are a shell's output as before.
-    expect(text(await exec_command.run({ cmd: `cat ${p} | tail -n 2`, login: false, shell: "bash" }, ctx))).toContain(line(600));
-    expect(text(await exec_command.run({ cmd: `cat ${p}.missing`, login: false, shell: "bash" }, ctx))).toContain("No such file");
-    expect(asked).toHaveLength(1);
+    expect(out).not.toContain("Compiled reading");
+    expect(out).toContain(`${line(300)}\n${line(301)}`);
+    expect(asked).toHaveLength(0);
+    expect(knownOf(ctx, p)).toBeUndefined();
   }, 30_000);
-
-  test("the one file a command prints whole", () => {
-    expect(wholePrint("cat src/a.ts", "/w")).toBe("/w/src/a.ts");
-    expect(wholePrint("cd sub && cat 'my file.ts'", "/w")).toBe("/w/sub/my file.ts");
-    expect(wholePrint("cat -- /x/a.ts", "/w")).toBe("/x/a.ts");
-    for (const no of ["cat a.ts b.ts", "cat a.ts | head", "cat -n a.ts", "cat $F", "cat ~/a.ts", "cat a.ts > b.ts", "cat a.ts; rm a.ts", "cat *.ts", "nl a.ts", "cat `x`", "echo cat a.ts"]) expect(wholePrint(no, "/w")).toBeUndefined();
-  });
 });
 
 describe("an edit after a reading", () => {
@@ -267,13 +253,13 @@ describe("an edit after a reading", () => {
   test("a command that names the file looked at it: nothing is held back after", async () => {
     const { ctx } = rig();
     const p = file();
-    await exec_command.run({ cmd: `cat ${p}`, login: false, shell: "bash" }, ctx);
+    await Read.run({ file_path: p }, ctx);
     expect(knownOf(ctx, p)).toMatchObject({ lines: [{ from: 120, to: 122 }] });
-    await exec_command.run({ cmd: `sed -n '290,310p' ${p}`, login: false, shell: "bash" }, ctx);
+    await Bash.run({ command: `sed -n '290,310p' ${p}` }, ctx);
     expect(knownOf(ctx, p)).toBeUndefined();
   }, 30_000);
 
-  test("Gemini's replace and the GPT family's apply_patch name their own way to read the lines", async () => {
+  test("Gemini's replace names its own way to read the lines; the GPT family's apply_patch is not held", async () => {
     const g = rig();
     const p = file();
     await read_file.run({ file_path: p }, g.ctx);
@@ -284,13 +270,7 @@ describe("an edit after a reading", () => {
     const c = rig();
     const q = file();
     const name = q.slice(dir.length + 1);
-    await exec_command.run({ cmd: `cat ${q}`, login: false, shell: "bash" }, c.ctx);
     const patch = (n: number) => `*** Begin Patch\n*** Update File: ${name}\n@@\n-${line(n)}\n+const v${n} = 0;\n*** End Patch`;
-    expect((await apply_patch.run({ input: patch(121) }, c.ctx)).is_error).toBeFalsy();
-    const refused = await apply_patch.run({ input: patch(300) }, c.ctx);
-    expect(refused.is_error).toBe(true);
-    expect(text(refused)).toContain(`Read them first (sed -n '300,300p' ${q})`);
-    expect(readFileSync(q, "utf8")).toContain(line(300));
     expect((await apply_patch.run({ input: patch(300) }, c.ctx)).is_error).toBeFalsy();
     expect(readFileSync(q, "utf8")).toContain("const v300 = 0;");
   }, 30_000);
@@ -391,10 +371,11 @@ test("the changed tools carry an urgent mark", () => {
   const marks = { ...toolMarks(claudeTools), ...toolMarks(geminiTools), ...toolMarks(gptTools) };
   expect(marks.Read).toBe("read-through-reader");
   expect(marks.read_file).toBe("read-through-reader");
-  expect(marks.exec_command).toContain("cat-through-reader");
+  // A shell returns its command's output: the GPT family's tools changed nothing.
+  expect(marks.exec_command).toBe("wait-poll");
+  expect(marks.apply_patch).toBeUndefined();
   expect(marks.Edit).toBe("edit-after-reading");
   expect(marks.replace).toBe("edit-after-reading");
-  expect(marks.apply_patch).toBe("edit-after-reading");
   // The explicit fields are optional: a call written for the definition before them still runs.
   for (const t of [Read, read_file]) {
     expect((t.input_schema as any).properties.raw).toMatchObject({ type: "boolean" });
