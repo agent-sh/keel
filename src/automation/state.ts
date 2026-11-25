@@ -300,9 +300,13 @@ export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null 
 
 // A session whose turn ended while commands of it run works while they do (src/core/watch.ts): a command
 // that has not written for the tool's limit is called stuck, as a silent command of a running step is, and
-// its end still starts the next turn. Its progress is the last write of any of them.
+// its end still starts the next turn. Its progress is the last write of any of them. A session that set a
+// wait of its own (a log line, a file, a process, a timer) or has agents at work is not stuck: its silent
+// command is what that wait watches, and a check on another machine can say nothing for a long stage. The
+// wait's own time limit and its end say when it is over; a command with no wait set has only its output.
 function commandProgress(id: string, f: WatchFacts): Progress | null {
   if (f.asks?.length) return null;
+  if ((f.agents ?? 0) > 0 || (f.pending ?? []).some((p) => p.kind !== "command" && !p.agent)) return null;
   const cmds = jobsOf(id).filter((j) => j.background && running(j));
   if (!cmds.length) return null;
   return { what: "tool", text: cap(COMMAND_RUNNING_LONG), since: Math.max(...cmds.map((j) => Math.max(j.started, wrote(j.log)))) };

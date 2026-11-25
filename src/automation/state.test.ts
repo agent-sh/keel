@@ -6,6 +6,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import * as agents from "./agents.ts";
+import * as waits from "./waits.ts";
 import { setDeps } from "./core.ts";
 import { sessionState, TALLY } from "./state.ts";
 import { startJob, stopJob } from "../tools/jobs.ts";
@@ -105,6 +106,34 @@ test("a session's command that writes nothing past the tool's limit marks it stu
     expect(stuckSaid({ ...st.stuck!, elapsed_ms: 660_000 })).toBe("Command running long, no output for 11m");
     const ok = sessionState(store.session(busy.id)!, { after });
     expect([ok.watch, ok.why, ok.stuck, ok.word]).toEqual(["work", "command", undefined, "working (command in background)"]);
+  } finally {
+    await stopJob(a);
+    await stopJob(b);
+    store.db.close();
+  }
+});
+
+// A silent command is what a wait the session set watches: the wait owns the time, so the session is not
+// listed as stuck. The same command with no wait set is (the test above).
+test("a session that set a wait of its own is not stuck by the silent command the wait watches", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-state-"));
+  const store = new Store(join(dir, "state"));
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine: { isRunning: () => false, isHeld: () => false }, providers: { current: () => [] } } as any);
+  store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  agents.migrate();
+  waits.migrate();
+  const parked = store.createSession({ model: "m:x", workspace: dir, title: "Parked" });
+  const bare = store.createSession({ model: "m:x", workspace: dir, title: "Bare" });
+  const logDir = join(dir, "jobs");
+  const a = startJob({ sessionId: parked.id, command: "sleep 30", description: "the remote check", cwd: dir, logDir, background: true });
+  const b = startJob({ sessionId: bare.id, command: "sleep 30", description: "the hung run", cwd: dir, logDir, background: true });
+  try {
+    store.db.query("INSERT INTO waits (id, session_id, kind, spec, note, status, created, deadline, by) VALUES ('w1', ?, 'log', '{}', 'a stage line', 'active', ?, ?, NULL)").run(parked.id, Date.now(), Date.now() + 3_600_000);
+    await Bun.sleep(600);
+    const after = { model: 120_000, tool: 300 };
+    expect(sessionState(store.session(bare.id)!, { after }).stuck?.what).toBe("tool");
+    const st = sessionState(store.session(parked.id)!, { after });
+    expect([st.watch, st.why, st.stuck]).toEqual(["work", "command", undefined]);
   } finally {
     await stopJob(a);
     await stopJob(b);
