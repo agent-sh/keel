@@ -43,7 +43,7 @@ test("history from before telemetry counts each request once, a fork's copy incl
   expect(r.total.calls).toBe(2);
   expect(r.total.priced_cost_usd).toBe(0.25);
   expect([r.total.tool_calls, r.total.tool_errors]).toEqual([1, 1]);
-  const [ex] = t.examples({});
+  const [ex] = await t.examples({});
   expect(ex).toMatchObject({ session_id: a.id, call_id: "call_12", error: "Fixture report unavailable", event_id: step.id });
 }));
 
@@ -350,7 +350,7 @@ test("a failed call is kept with its class and cause, old rows get theirs once, 
   const again = new Telemetry(store, new Bus());
   expect(await again.report({}, true).then((r) => r.tool_failure_causes.map((c) => [c.tool, c.cause, c.count, c.shapes.map((x) => x.shape)] as const).sort((a, b) => b[2] - a[2] || a[0].localeCompare(b[0])))).toEqual(await ranked());
   expect(store.db.query("SELECT COUNT(*) AS n FROM telemetry_tools WHERE error_class IS NOT NULL").get()).toEqual({ n: 3 });
-  expect(t.examples({ tool: "Edit" })[0]).toMatchObject({ error_class: "The old_string was not found in the file.", cause: "bad_input" });
+  expect((await t.examples({ tool: "Edit" }))[0]).toMatchObject({ error_class: "The old_string was not found in the file.", cause: "bad_input" });
 }));
 
 // The report on a ledger that takes long to read is answered from what is kept, and the kept numbers are the full
@@ -432,4 +432,25 @@ test("a session's last runs of one tool are read by an index, not by a walk of e
   const plan = store.db.query<{ detail: string }, [string, string]>("EXPLAIN QUERY PLAN SELECT ms FROM telemetry_tools WHERE session_id = ? AND tool = ? AND ms IS NOT NULL ORDER BY ts DESC LIMIT 20").all("s", "Bash").map((r) => r.detail).join("; ");
   expect(plan).toContain("USING INDEX telemetry_tools_session (session_id=?)");
   expect(plan).not.toContain("TEMP B-TREE");
+}));
+
+// A call's step is looked up at every tool call on the loop: it reads the newest steps of the session,
+// never its whole history. A call a program made is the program's call's.
+test("a tool call finds its step among the newest ones, a program's call by the call that ran the program", () => withStore(async (store) => {
+  const s = store.createSession({ model: "p:m", workspace: "/" });
+  new PromptStore(store);
+  new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  const step = (id: string) => store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id, name: "Read", input: {} }], model: "p:m", usage: {}, stop: "tool_use" });
+  const old = step("old");
+  for (let i = 0; i < 12; i++) step(`mid${i}`);
+  const now = step("now");
+  const run = (id: string, nestedIn?: string) => hooks.toolRan!(store.session(s.id)!, { id, tool: { name: "Read" }, input: {}, ctx: nestedIn ? { nestedIn } : {} } as any, { type: "tool_result", tool_use_id: id, content: "ok" } as any, { ms: 1, outcome: "ok" });
+  run("now"); run("inner", "now"); run("old"); run("unknown");
+  await store.side.flush?.();
+  const rows = store.db.query<{ call_id: string; event_id: string | null; model: string | null }, [string]>("SELECT call_id, event_id, model FROM telemetry_tools WHERE session_id = ? ORDER BY rowid").all(s.id);
+  expect(rows.map((r) => [r.call_id, r.event_id, r.model])).toEqual([["now", now.id, "p:m"], ["inner", now.id, "p:m"], ["old", null, null], ["unknown", null, null]]);
+  // A listed example of an old row is found by the read thread through the whole history.
+  store.db.query("UPDATE telemetry_tools SET is_error = 1, error = 'x' WHERE call_id = 'old'").run();
+  expect((await new Telemetry(store, new Bus()).examples({})).map((e: any) => [e.call_id, e.event_id])).toEqual([["old", old.id]]);
 }));

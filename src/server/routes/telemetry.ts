@@ -120,13 +120,13 @@ export const telemetryRoutes: RouteModule = ({ store, bus, errors }) => {
     },
     // GET /api/telemetry/examples?tool=&session_id=&limit=&since_ms=&until_ms=  the last failed tool calls (in that interval)
     "/api/telemetry/examples": {
-      GET: (req: Request) => {
+      GET: async (req: Request) => {
         const q = new URL(req.url).searchParams;
         const f = filter(q);
         if (bad(f)) return json({ error: f.error }, f.status);
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
         if (limit !== undefined && !Number.isFinite(limit)) return json({ error: "limit is not a number" }, 400);
-        return json({ examples: t.examples({ tool: q.get("tool") || undefined, session: f.session, limit, since: f.since, until: f.until }) });
+        return json({ examples: await t.examples({ tool: q.get("tool") || undefined, session: f.session, limit, since: f.since, until: f.until }) });
       },
     },
     // GET /api/telemetry/prompt?session_id=: the system prompt kept with the

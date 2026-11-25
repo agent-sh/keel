@@ -146,6 +146,18 @@ export type LedgerCost = { session: string; route: string; purpose: string; outc
 const costListeners = new Set<(c: LedgerCost) => void>();
 export const onLedgerCost = (fn: (c: LedgerCost) => void): (() => void) => { costListeners.add(fn); return () => void costListeners.delete(fn); };
 
+// The steps a call's own is looked for in, newest first: the step a call belongs to is the newest the
+// session stored when the call runs. `instr` first: only a step that mentions the id is parsed.
+const CALL_STEPS = 4;
+const CALL_EVENT_NEWEST = `SELECT e.id AS id, json_extract(e.data, '$.model') AS model
+  FROM (SELECT id, data, seq FROM events WHERE session_id = ?1 AND kind = 'assistant' ORDER BY seq DESC LIMIT ?2) e, json_each(e.data, '$.blocks') b
+  WHERE instr(e.data, ?3) > 0 AND json_extract(b.value, '$.type') = 'tool_use' AND json_extract(b.value, '$.id') = ?4
+  ORDER BY e.seq DESC LIMIT 1`;
+// The same through the whole history, for the read thread.
+const CALL_EVENT_ANY = `SELECT e.id AS id FROM events e, json_each(e.data, '$.blocks') b
+  WHERE e.session_id = ?1 AND e.kind = 'assistant' AND instr(e.data, ?2) > 0 AND json_extract(b.value, '$.type') = 'tool_use' AND json_extract(b.value, '$.id') = ?3
+  ORDER BY e.seq DESC LIMIT 1`;
+
 export class Telemetry {
   // In flight, by the request object the engine passes to every measuring hook.
   private pending = new Map<ProviderRequest, Pending>();
@@ -257,7 +269,8 @@ export class Telemetry {
       turnStart: (s) => void this.turnOf.delete(s.id),
       toolRan: (s, call, result, ran) => {
         // The assistant step that asked for the call: its event and model.
-        const ev = this.callEvent(s.id, call.id);
+        // (A call a run_code program made is looked up by the call of the turn that ran the program.)
+        const ev = this.callEvent(s.id, call.ctx?.nestedIn ?? call.id);
         let turn = this.turnOf.get(s.id);
         if (turn === undefined) this.turnOf.set(s.id, (turn = openTurn(this.lineageOf(s.id))));
         const tag = armOf(this.store, s.id);
@@ -328,13 +341,12 @@ export class Telemetry {
     return this.store.lineage(id);
   }
 
-  // The newest assistant event of the session holding a tool_use block with
-  // exactly this id (never a mention of the id in text).
+  // The assistant step that asked for a call: one of the session's newest steps holding a tool_use
+  // block with exactly this id (never a mention of the id in text). A call's step is the one its turn
+  // is running, so the walk is bounded: a call that no step holds (one a program made) reads
+  // `CALL_STEPS` rows, never the session's whole history, and this runs on the loop at each call.
   private callEvent(sessionId: string, callId: string): { id: string; model: string | null } | undefined {
-    return this.store.db.query<{ id: string; model: string | null }, [string, string]>(
-      `SELECT e.id, json_extract(e.data, '$.model') AS model FROM events e, json_each(e.data, '$.blocks') b
-        WHERE e.session_id = ? AND e.kind = 'assistant' AND json_extract(b.value, '$.type') = 'tool_use' AND json_extract(b.value, '$.id') = ?
-        ORDER BY e.seq DESC LIMIT 1`).get(sessionId, callId) ?? undefined;
+    return this.store.db.query<{ id: string; model: string | null }, [string, number, string, string]>(CALL_EVENT_NEWEST).get(sessionId, CALL_STEPS, callId, callId) ?? undefined;
   }
 
   private callEnd(p: Pending, r: { outcome: string; usage?: any; stop?: string; error?: string; cls?: string | null }) {
@@ -511,7 +523,7 @@ export class Telemetry {
   }
 
   // The last failed tool calls, newest first, with where they happened.
-  examples(q: { tool?: string; session?: string; limit?: number; since?: number; until?: number }) {
+  async examples(q: { tool?: string; session?: string; limit?: number; since?: number; until?: number }) {
     const where = ["t.is_error = 1"];
     const args: (string | number)[] = [];
     if (q.tool) { where.push("t.tool = ?"); args.push(q.tool); }
@@ -522,9 +534,16 @@ export class Telemetry {
     args.push(Math.min(100, Math.max(1, q.limit ?? 20)));
     const sql = `SELECT t.session_id, t.ts, t.tool, t.ms, t.call_id, t.error, t.error_class, t.cause, t.event_id, s.title AS session_title, s.id IS NULL AS session_gone
       FROM telemetry_tools t LEFT JOIN sessions s ON s.id = t.session_id WHERE ${where.join(" AND ")} ORDER BY t.ts DESC LIMIT ?`;
-    return this.store.db.query<any, any[]>(sql).all(...args)
-      .map((r) => ({ ...r, session_gone: !!r.session_gone, session_title: r.session_title ?? undefined,
-        event_id: r.event_id ?? (r.call_id ? this.callEvent(r.session_id, r.call_id)?.id : undefined) ?? undefined }));
+    // Read on the read thread: a row from before the ledger kept the step looks it up through the
+    // session's whole history.
+    const reads = readsOf(this.store);
+    const rows = await reads.sql<any>(sql, args);
+    const out = [];
+    for (const r of rows) {
+      const found = r.event_id ?? (r.call_id ? (await reads.sql<{ id: string }>(CALL_EVENT_ANY, [r.session_id, r.call_id, r.call_id]))[0]?.id : undefined);
+      out.push({ ...r, session_gone: !!r.session_gone, session_title: r.session_title ?? undefined, event_id: found ?? undefined });
+    }
+    return out;
   }
 
   // Sessions from before telemetry: their stored steps give tokens and cost
