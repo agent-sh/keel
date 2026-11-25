@@ -34,7 +34,7 @@ export function Switcher() {
           );
         })}
       </ul>
-      <p className="m-0 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 text-micro text-faint">
+      <p className="m-0 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 text-micro text-faint pointer-coarse:hidden">
         {s.hold === "Alt" ? (<>
           <span className="flex items-center gap-1"><Kbd keys="alt+`" /> next</span>
           <span className="flex items-center gap-1"><Kbd keys="alt+shift+`" /> back</span>

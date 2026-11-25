@@ -1409,5 +1409,39 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("the recent-sessions switcher has a phone counterpart in the palette: rows a finger presses, and no key hints where there is no key", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const ids = [await start(request, "Switch first"), await start(request, "Switch second"), await start(request, "Switch third")];
+      try {
+        for (const id of ids) await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say hello" } });
+        for (const id of ids) await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            for (const id of ids) { await page.goto(`/s/${id}`); await expect(page.getByTestId("session-title").first()).toBeVisible(); }
+            // The palette is the phone's way to the switcher (the list's "Search and commands").
+            await page.getByTestId("show-sidebar").first().tap();
+            await page.getByTestId("open-palette").first().tap();
+            await page.getByRole("combobox").first().fill("recent sessions");
+            await page.keyboard.press("Enter");
+            const sw = page.getByTestId("switcher");
+            await expect(sw).toBeVisible();
+            await expect(sw.getByTestId("switcher-row")).toHaveCount(3);
+            await page.waitForTimeout(300);
+            const box = (await sw.boundingBox())!;
+            expect(box.x).toBeGreaterThanOrEqual(0);
+            expect(box.x + box.width, "inside the page").toBeLessThanOrEqual(size.width);
+            for (const row of await sw.getByTestId("switcher-row").all()) expect((await row.boundingBox())!.height, "a row is a finger's height").toBeGreaterThanOrEqual(2.75 * (await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))) - 1);
+            // No key to name: the hints for keys are not on a touch screen.
+            expect(await sw.evaluate((el) => [...el.querySelectorAll<HTMLElement>("p")].filter((p) => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0 && (p as HTMLElement).innerText.trim(); }).map((p) => p.innerText)), "the hints for keys (move, open, cancel) shown on a touch screen").toEqual([]);
+            await shoot(page, `phone-surfaces-36-switcher-${size.width}-${scale}`);
+            await sw.getByTestId("switcher-row").first().tap();
+            await expect(sw).toHaveCount(0);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, ...ids);
+      }
+    });
   });
 }
