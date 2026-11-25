@@ -464,25 +464,25 @@ export class CodexApp {
     const cwd = typeof p?.cwd === "string" ? p.cwd : s?.workspace ?? homeDir();
     const ctx = { sessionId: run.sessionId, cwd, signal, seen: new Map(), spillDir: "" } as unknown as ToolContext;
     const call = (tool: Partial<Tool> & { name: string }, input: Json): ToolCall => ({ id: `codex-${run.nonce}-${String(p?.itemId ?? rid)}-${String(p?.approvalId ?? rid)}`, tool: { description: "", input_schema: {}, readOnly: false, run: async () => ({ content: "" }), ...tool } as Tool, input, ctx });
-    // Why the card asks, in Codex's own words where it gave some.
-    const asks = (reason: unknown) => `asked by Codex${typeof reason === "string" && reason ? `: ${reason}` : ""}`;
+    // Why the card asks is said in Keel's words; what Codex gave as its reason is shown apart, as Codex's.
+    const says = typeof p?.reason === "string" && p.reason.trim() ? `Codex says: ${p.reason.trim().slice(0, 500)}` : undefined;
     const ask = async (tool: Partial<Tool> & { name: string }, input: Json, name: string, why: string, shown?: string) => {
       if (!s || !gate) return false;
-      const v = await gate.askOnce(s, call(tool, input), name, why, "harness", shown);
+      const v = await gate.askOnce(s, call(tool, input), name, why, "harness", shown, says);
       return !v && !signal.aborted;
     };
     try {
       switch (method) {
         case "item/commandExecution/requestApproval": {
           const command = typeof p?.command === "string" ? p.command : "";
-          const ok = await ask({ name: "Codex command", kind: "shell", input_schema: { properties: { command: {} } } }, { command, cwd }, "Codex command", asks(p?.reason), command ? undefined : "Codex asks to run a command it does not name");
+          const ok = await ask({ name: "Codex command", kind: "shell", input_schema: { properties: { command: {} } } }, { command, cwd }, "Codex command", "Codex runs this command in the session if you allow it, under the sandbox its turn has", command ? undefined : "Codex asks to run a command it does not name");
           return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
         }
         case "item/fileChange/requestApproval": {
           const changes = run.changes.get(String(p?.itemId)) ?? [];
           const paths = changes.map((c) => String(c.path));
           const shown = changes.length ? changes.map((c) => `${c.path}\n${c.diff ?? ""}`.trim()).join("\n\n") : `Codex asks to change files${p?.grantRoot ? ` under ${p.grantRoot}` : ""}`;
-          const ok = await ask({ name: "Codex file change", kind: "edit" }, { file_path: paths[0] ?? p?.grantRoot ?? cwd, paths, diff: changes.map((c) => c.diff ?? "").join("\n") }, "Codex file change", asks(p?.reason), shown);
+          const ok = await ask({ name: "Codex file change", kind: "edit" }, { file_path: paths[0] ?? p?.grantRoot ?? cwd, paths, diff: changes.map((c) => c.diff ?? "").join("\n") }, "Codex file change", "Codex writes these changes if you allow them", shown);
           return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
         }
         case "item/permissions/requestApproval": {
@@ -492,7 +492,7 @@ export class CodexApp {
             ...((want.fileSystem?.write ?? []) as string[]).map((x) => `write to ${x}`),
             ...((want.fileSystem?.read ?? []) as string[]).map((x) => `read ${x}`),
           ];
-          const ok = await ask({ name: "Codex permissions" }, want, "Codex permissions", asks(p?.reason), `Codex asks for ${lines.join(", ") || "more permissions"} for this turn`);
+          const ok = await ask({ name: "Codex permissions" }, want, "Codex permissions", "Codex gets more than its sandbox gives for the rest of this turn if you allow it", `Codex asks for ${lines.join(", ") || "more permissions"} for this turn`);
           const granted = ok ? { ...(want.network ? { network: want.network } : {}), ...(want.fileSystem ? { fileSystem: want.fileSystem } : {}) } : {};
           return { permissions: granted, scope: "turn" };
         }

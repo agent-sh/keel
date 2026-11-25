@@ -54,9 +54,9 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; lock
   let app: CodexApp | undefined;
   const o = new Outside({ store, bus, workspace: dir, settings: () => settings, viewed: () => true, ours: (id) => !!app?.ours(id) });
   o.start();
-  const cards: { name: string; input: any; why: string; shown?: string }[] = [];
+  const cards: { name: string; input: any; why: string; shown?: string; notice?: string }[] = [];
   let decide: (name: string) => { deny: string } | void = () => undefined;
-  const stub = { askOnce: async (_s, call, name, why, _held, shown) => { cards.push({ name, input: call.input, why, shown }); return decide(name); }, approvals: () => [], settled: () => {} } as CardGate;
+  const stub = { askOnce: async (_s, call, name, why, _held, shown, notice) => { cards.push({ name, input: call.input, why, shown, ...(notice ? { notice } : {}) }); return decide(name); }, approvals: () => [], settled: () => {} } as CardGate;
   let real = opts.realGate ? new Gate(store, bus) : undefined;
   let gate: CardGate = real ?? stub;
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
@@ -112,7 +112,7 @@ describe("a Codex session answered in place", () => {
       expect(text).toContain('"message":"fix the build"');
       expect(text).toContain("The command was allowed: fix the build");
       // One card, for its one command, in the harness's words.
-      expect(r.cards).toEqual([{ name: "Codex command", input: { command: "make test", cwd: expect.any(String) }, why: "asked by Codex: It runs the project's tests", shown: undefined }]);
+      expect(r.cards).toEqual([{ name: "Codex command", input: { command: "make test", cwd: expect.any(String) }, why: "Codex runs this command in the session if you allow it, under the sandbox its turn has", shown: undefined, notice: "Codex says: It runs the project's tests" }]);
       // The reply streamed as deltas; nothing was stored as an event of the session by the driver: the mirror stores the rollout's.
       const deltas = r.frames.filter((f): f is Extract<Frame, { t: "delta" }> => f.t === "delta" && f.session_id === s.id).map((f) => f.text).join("");
       expect(deltas).toContain("The command was allowed: fix the build");
@@ -182,7 +182,7 @@ describe("a Codex session answered in place", () => {
       const s = await r.session();
       r.app().send(s.id, "edit the constant", "k1");
       const a = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0], 15_000);
-      expect(a).toMatchObject({ tool: "Codex file change", kind: "edit", once: true, risk: "high", facts: { held: "harness" } });
+      expect(a).toMatchObject({ tool: "Codex file change", kind: "edit", once: true, risk: "high", facts: { held: "harness" }, why: "Codex writes these changes if you allow them", notice: "Codex says: It fixes the constant" });
       expect(a.summary).toContain("+const a = 2;");
       expect(a.summary).toContain(join(r.cwd, "a.ts"));
       expect(r.gate()!.resolve(a.id, s.id, { choice: "deny" })).toEqual({ ok: true });

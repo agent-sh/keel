@@ -2203,11 +2203,12 @@ export class Gate {
   // grant, mode change or reviewer settles it.
   // `shown`: what the card shows of the call (a mail as its recipients, subject and text).
   // `held`: what makes it a one-call card, kept with it (delegate.ts: none of these is the helper's to answer).
-  async askOnce(session: Session, call: ToolCall, name: string, why: string, held: HeldBy, shown?: string): Promise<{ deny: string } | void> {
+  // `notice`: what the asker said of it in its own words, shown apart from the gate's reason.
+  async askOnce(session: Session, call: ToolCall, name: string, why: string, held: HeldBy, shown?: string, notice?: string): Promise<{ deny: string } | void> {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const short = inShort(cls, call.input);
-    return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined, held }, true);
+    return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined, held, ...(notice ? { notice } : {}) }, true);
   }
 
   // A hook of the owner's asks about a call the gate let through. The card is answered once, as askOnce's,
