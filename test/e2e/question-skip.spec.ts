@@ -20,6 +20,8 @@ test("skip the rest sends what is picked and names what was skipped", async ({ p
   const skip = card.getByTestId("question-skip");
   // Nothing is picked yet: there is nothing to send.
   await expect(card).toBeVisible();
+  // The head names who asks and no more: no pulsing mark in the accent beside it (the card's edge says it waits).
+  await expect(card.locator(".animate-pulse-dot")).toHaveCount(0);
   await expect(skip).toHaveCount(0);
   await card.getByRole("checkbox", { name: "Lint" }).click();
   await card.getByRole("radio", { name: "release" }).click();

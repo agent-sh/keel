@@ -55,7 +55,8 @@ const at = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => (
 // card's label says who asks, and the question's header leads its text. Its choices get the room.)
 const Head = ({ open, answered, from, slim, onLater, waiting }: { open: boolean; answered: boolean; from?: string; slim?: boolean; onLater?: () => void; waiting?: string }) => (
   <div className={cn("flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui", slim && "max-md:hidden")}>
-    <MessageCircleQuestion className={cn("size-3.5 shrink-0", open ? "text-accent-ink" : "text-muted")} />
+    {/* The glyph in the quiet ink: that it waits is said by the card's edge, in the state's color, and nowhere else. */}
+    <MessageCircleQuestion className="size-3.5 shrink-0 text-muted" />
     <span className="min-w-0 truncate font-medium" data-testid="question-from">{from !== undefined ? `MCP server ${from} is asking` : open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
     {waiting && <WaitingSlot sessionId={waiting} />}
     {onLater && (
@@ -64,7 +65,6 @@ const Head = ({ open, answered, from, slim, onLater, waiting }: { open: boolean;
         <Clock className="size-3.5" aria-hidden="true" />Later
       </button>
     )}
-    {open && <span className={cn("size-1.5 shrink-0 rounded-full bg-accent animate-pulse-dot", !onLater && "ml-auto")} />}
   </div>
 );
 // On a phone the header leads the question's first line: the text has the card's width.
