@@ -639,6 +639,8 @@ bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.ta
                                # refused when src/ differs from the daemon's build (that needs a restart)
 desktop/build.sh                # desktop/dist/keel-desktop, the desktop app (install: for this account; deb: a package);
                                # and dist/keel-desktop-qt, its Qt WebEngine engine, where Qt's development files are installed
+desktop/qt/check.sh             # the Qt engine built in a container (no Qt needed here) and its --self-test run offscreen;
+                               # remote-verify runs it as its qt stage when desktop/qt or the shared Rust files changed
 desktop/test/e2e.sh             # its e2e, in a hidden desktop with a scratch daemon (never the owner's screen);
                                # KEEL_DESKTOP_ENGINE=qt|webkit runs it with one engine
 ```

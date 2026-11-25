@@ -41,6 +41,12 @@ run time the Qt engine needs the distribution's Qt WebEngine (Debian and
 Ubuntu: `sudo apt install libqt6webenginewidgets6`; the package the build
 makes recommends it and does not require it).
 
+A machine without those files can still check a change to `qt/main.cpp`:
+`desktop/qt/check.sh` builds it in a container (Docker or Podman, an image of
+Debian 13 with Qt 6.8, `desktop/qt/Dockerfile`) and runs `--self-test` on the
+offscreen platform. `scripts/remote-verify.sh` runs it as its `qt` stage when a
+commit changes `desktop/qt` or the files the two engines share.
+
 ## Use
 
 ```bash
