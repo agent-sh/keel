@@ -27,12 +27,51 @@ function credGet(): string {
 // Service, macOS Keychain, Windows Credential Manager) under this service.
 export const keyringService = () => process.env.KEEL_KEYRING_SERVICE || "keel-bun";
 
-async function ownKeyring(name: string): Promise<string | null> {
-  try {
-    return (await Bun.secrets.get({ service: keyringService(), name }))?.trim() || null;
-  } catch {
-    return null; // no keyring on this machine (a headless box): the next source answers
+// A headless Linux box (no display) has no one to answer a keyring's unlock
+// prompt: Bun.secrets.get on a locked collection then waits on that prompt and
+// never answers. Verified against a scratch Secret Service with a locked
+// collection and no display: the read did not return in 8 s, unlocked it returned
+// in milliseconds.
+export const headless = (): boolean =>
+  process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+
+export const KEYRING_WAIT_MS = 1500;
+
+// The keyring read, replaceable by a test.
+export const keyringRead = {
+  get: (service: string, name: string): Promise<string | null> => Bun.secrets.get({ service, name }),
+};
+
+// Entries whose last read did not answer in time: the keyring is locked.
+const locked = new Set<string>();
+const reading = new Map<string, Promise<string | null>>();
+
+function readOnce(name: string): Promise<string | null> {
+  let p = reading.get(name);
+  if (!p) {
+    p = Promise.resolve()
+      .then(() => keyringRead.get(keyringService(), name))
+      .then((v) => v?.trim() || null, () => null) // no keyring on this machine: the next source answers
+      .finally(() => reading.delete(name));
+    reading.set(name, p);
   }
+  return p;
+}
+
+async function ownKeyring(name: string): Promise<string | null> {
+  const read = readOnce(name);
+  if (!headless()) return read;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((r) => { timer = setTimeout(() => r("late"), KEYRING_WAIT_MS); });
+  const got = await Promise.race([read, late]);
+  clearTimeout(timer);
+  if (got !== "late") { locked.delete(name); return got; }
+  locked.add(name);
+  // The unlock may come later: a read that ends with a value then fills the cache.
+  void read.then((v) => {
+    if (v && locked.delete(name)) { cache.set(name, { value: v, at: Date.now() }); missing.delete(name); }
+  });
+  return null;
 }
 
 // Saves a key to the system keyring; the value is never written anywhere else.
@@ -52,7 +91,7 @@ async function helper(name: string): Promise<string> {
   const bin = credGet();
   if (bin === "cred-get" && !Bun.which("cred-get")) return "";
   const p = Bun.spawn([bin, name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homeDir() });
-  const timer = setTimeout(() => p.kill(), 20_000);
+  const timer = setTimeout(() => p.kill(), locked.has(name) ? KEYRING_WAIT_MS : 20_000);
   const out = (await readText(p.stdout)).split("\n")[0]!.trim();
   clearTimeout(timer);
   await p.exited;
@@ -120,7 +159,7 @@ export function forget(src: KeySource) {
 }
 
 export const shown = (src: KeySource) =>
-  src.env && process.env[src.env] ? `$${src.env}` : src.cred ? `keyring ${src.cred}` : "no key";
+  src.env && process.env[src.env] ? `$${src.env}` : src.cred ? (locked.has(src.cred) ? `keyring ${src.cred} is locked` : `keyring ${src.cred}`) : "no key";
 
 // A one-way fingerprint of what identifies an account and endpoint: the
 // endpoint, the key source, and an environment key's value (a keyring entry is
