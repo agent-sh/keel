@@ -5,7 +5,7 @@
 // GET  /api/debug/bundle?error_id= | ?session_id=&turn_event=   the bundle, text/markdown
 // POST /api/debug/fix { error_id | session_id, model?, workspace?, task?, repo? }
 //        task: the instruction for the agent, in place of the stock one (the helper's look writes one for a bug of
-//        Keel's); repo "keel": the agent works in Keel's own source folder (409 when the daemon does not run from one)
+//        Keel's); repo "keel": the agent works in Keel's own source folder (from the checkout the daemon runs from, else helper.keel_repo, else the folder the binary was built from; 409 saying which is missing)
 //        writes the bundle under the state folder and starts a session that is
 //        asked to find the cause and fix it -> { session, path }
 // GET  /api/debug/traces?session_id=&limit=     a session's traces (their root spans), newest first
@@ -27,6 +27,7 @@ import { buildBundle } from "../../admin/bundle.ts";
 import { detached } from "../../core/errors.ts";
 import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
+import { keelRepo } from "../../core/keel-source.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
 import { agentLine, say, sayAt, stopLine } from "../../admin/daemon-log.ts";
 import { bindStory } from "../../admin/story.ts";
@@ -238,8 +239,10 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         // Keel's own failures are fixed in Keel's source when the daemon runs from it; others where they happened.
         const own = err && (err.source === "server" || err.source === "client");
         if (body.task !== undefined && (typeof body.task !== "string" || !body.task.trim() || body.task.length > 6000)) return json({ error: "task is the agent's instruction, up to 6000 characters" }, 400);
-        if (body.repo === "keel" && !body.workspace && !src) return json({ error: "this daemon does not run from Keel's source folder: give a workspace" }, 409);
-        const ws = resolve(body.workspace || (body.repo === "keel" ? src!.dir : own && src ? src.dir : from?.workspace ?? src?.dir ?? workspace));
+        const keel = keelRepo();
+        if (body.repo === "keel" && !body.workspace && "problem" in keel) return json({ error: `Keel's source folder is not known: ${keel.problem}` }, 409);
+        const keelDir = "repo" in keel ? keel.repo.dir : undefined;
+        const ws = resolve(body.workspace || (body.repo === "keel" ? keelDir! : own && keelDir ? keelDir : from?.workspace ?? keelDir ?? workspace));
         const model = body.model || (await providers.defaultModel());
         if (!model) return json({ error: "no model is available: no provider has credentials" }, 409);
         await providers.resolve(model);

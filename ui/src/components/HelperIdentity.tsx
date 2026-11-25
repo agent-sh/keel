@@ -3,7 +3,7 @@
 // With no image model among their providers it says so and the upload is the way.
 import { ImagePlus, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { imageModels, makeAvatars, pickAvatar, removeAvatar, setHelper, uploadAvatar, useHelper, type ImageModels } from "../lib/helper.ts";
+import { imageModels, keelRepo, makeAvatars, pickAvatar, removeAvatar, setHelper, setKeelRepo, uploadAvatar, useHelper, type ImageModels, type KeelRepo } from "../lib/helper.ts";
 import { composing } from "../lib/keys.ts";
 import { reportError } from "../lib/store.ts";
 import { HelperFace } from "./HelperFace.tsx";
@@ -67,6 +67,34 @@ function Maker({ onClose }: { onClose: () => void }) {
   );
 }
 
+const WHERE = { running: "the checkout this daemon runs from", setting: "the folder you set", build: "the checkout this build was made from" } as const;
+
+// Where an agent started on a bug of Keel works: found by itself (the daemon's checkout, or the one the binary was
+// built from); the owner fills it once when that is gone or the binary was built somewhere else.
+function KeelRepoRow() {
+  const [found, setFound] = useState<KeelRepo | null>(null);
+  const [dir, setDir] = useState("");
+  const [err, setErr] = useState("");
+  const load = () => keelRepo().then((r) => { setFound(r); setDir(r.setting ?? ""); setErr(""); }, (e) => setErr(failed(e)));
+  useEffect(() => { load(); }, []);
+  const save = () => {
+    const to = dir.trim();
+    if (to === (found?.setting ?? "")) return;
+    setKeelRepo(to || null).then(load, (e) => setErr(failed(e)));
+  };
+  return (
+    <SettingRow label="Keel's source" hint="The folder of a Keel checkout the helper starts an agent in when it finds a bug of Keel's. Found by itself where it can; set it when it says it cannot." testid="helper-repo-row">
+      <div className="flex flex-col items-start gap-1.5">
+        <input className="k-field w-72" value={dir} placeholder="/path/to/keel" aria-label="Keel source folder" data-testid="helper-repo-input"
+          onChange={(e) => setDir(e.target.value)} onBlur={save} onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") e.currentTarget.blur(); }} />
+        {found && "repo" in found && <p className="k-pick-note" data-testid="helper-repo-found">Using {found.repo.dir}: {WHERE[found.repo.from]}.</p>}
+        {found && "problem" in found && <p className="k-pick-note" role="status" data-testid="helper-repo-problem">{found.problem}</p>}
+        {err && <p className="k-pick-note" role="alert" data-testid="helper-repo-error">{err}</p>}
+      </div>
+    </SettingRow>
+  );
+}
+
 export function HelperIdentity() {
   const view = useHelper((s) => s.view)!;
   const [name, setName] = useState(view.named ? view.name : "");
@@ -100,6 +128,7 @@ export function HelperIdentity() {
           <input ref={file} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" aria-label="Upload a picture" data-testid="helper-avatar-upload" onChange={(e) => upload(e.currentTarget.files?.[0])} />
         </div>
       </SettingRow>
+      <KeelRepoRow />
       {err && <p className="k-pick-note px-1" role="alert" data-testid="helper-identity-error">{err}</p>}
       {(open || view.candidates.length > 0) && <Maker onClose={() => setOpen(false)} />}
     </>

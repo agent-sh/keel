@@ -37,6 +37,8 @@ test("helper: a name and a picture an image model made, shown wherever it speaks
   await expect(page.getByTestId("helper-settings")).toBeVisible();
   await page.getByTestId("helper-name").fill("Pip");
   await page.getByTestId("helper-name").press("Enter");
+  // Keel's own source folder is found by itself (this daemon runs from a checkout) and said where it came from.
+  await expect(page.getByTestId("helper-repo-found")).toContainText("the checkout this daemon runs from");
   await expect(page.getByTestId("helper-rail-name")).toHaveText("Pip");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${helper.session_id}`)).json()).session.title).toBe("Pip");
   await page.getByTestId("helper-avatar-open").click();

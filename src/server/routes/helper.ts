@@ -12,11 +12,14 @@
 //   POST /api/helper/avatar/make     { prompt, model, n? } a few pictures to pick from (the helper view's candidates)
 //   GET  /api/helper/avatar/candidates/:id   one of them
 //   POST /api/helper/avatar/pick     { id } the picture kept
+//   GET  /api/helper/keel-repo       { repo: { dir, from, commit? } } or { problem }, and setting (helper.keel_repo): the folder an agent started on a bug of Keel works in
 //   GET  /api/helper/looks           the helper's looks at errors, newest first
 //   POST /api/helper/looks/:cause/ask   look now (or again), whatever the hour's count
 //   GET  /api/helper/memory          the memory's records (?q= finds keys by alias, topic, prefix or words)
 //   POST /api/helper/memory          { key?, value, kind?, aliases?, topics? } added by the owner
 //   PATCH/DELETE /api/helper/memory/:key  (PATCH may carry a new key)
+import { settings } from "../../admin/settings.ts";
+import { keelRepo } from "../../core/keel-source.ts";
 import { askId } from "../../helper/ask.ts";
 import { Helper } from "../../helper/helper.ts";
 import { paramKey } from "../../helper/memory.ts";
@@ -51,6 +54,7 @@ export const helperRoutes: RouteModule = (deps) => {
         return json(h.view());
       },
     },
+    "/api/helper/keel-repo": { GET: () => json({ ...keelRepo(), setting: settings().helper?.keel_repo ?? null }) },
     "/api/helper/avatar": {
       GET: () => {
         const f = h.avatarFile();

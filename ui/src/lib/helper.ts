@@ -85,3 +85,7 @@ export const removeAvatar = () => api<HelperView>("/api/helper/avatar", { method
 export const askLook = (cause: string) => api<{ look: Look }>(`/api/helper/looks/${encodeURIComponent(cause)}/ask`, { method: "POST" });
 // The look that stands for an error row, when the helper has one.
 export const lookOf = (looks: readonly Look[], errorId: string) => looks.find((l) => l.error_ids.includes(errorId));
+
+export type KeelRepo = ({ repo: { dir: string; from: "running" | "setting" | "build"; commit?: string } } | { problem: string }) & { setting: string | null };
+export const keelRepo = () => api<KeelRepo>("/api/helper/keel-repo");
+export const setKeelRepo = (dir: string | null) => api("/api/settings", { method: "PATCH", body: JSON.stringify({ helper: { keel_repo: dir } }) });

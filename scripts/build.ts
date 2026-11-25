@@ -145,7 +145,7 @@ try {
     define: {
       ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs),
       __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs), __KEEL_STALLWATCH_JS__: JSON.stringify(stallWatchJs), __KEEL_NETPROXY_JS__: JSON.stringify(netProxyJs), __KEEL_SEARCHFILL_JS__: JSON.stringify(searchFillJs), __KEEL_PICTURES_JS__: JSON.stringify(picturesJs),
-      __KEEL_REVISION__: JSON.stringify(revision), __KEEL_TARGET__: JSON.stringify((target ?? `bun-${process.platform}-${process.arch}`).replace(/^bun-/, "")),
+      __KEEL_REVISION__: JSON.stringify(revision), __KEEL_SOURCE_DIR__: JSON.stringify(root), __KEEL_TARGET__: JSON.stringify((target ?? `bun-${process.platform}-${process.arch}`).replace(/^bun-/, "")),
     },
   });
   if (res.success) console.log(`binary: compiled in ${((performance.now() - t) / 1000).toFixed(2)}s`);
