@@ -1767,6 +1767,8 @@ test("the phone gets nothing of an outside session: no row, no message, no frame
   const st = await openStream(mobile.globalSeq());
   bus.emit({ t: "session", session: store.session(out.id)! } as any);
   bus.emit({ t: "event", event: said } as any);
+  // The reply Codex streams while Keel answers it in place is a delta of the session: neither a frame nor a draft.
+  bus.emit({ t: "delta", session_id: out.id, kind: "text", index: 0, text: "CANARY-PHONE streamed reply" } as any);
   const reply = store.append(mine.id, "assistant", { blocks: [{ type: "text", text: "mine" }] });
   bus.emit({ t: "event", event: reply } as any);
   await st.read((f) => f.some((x) => x.type === "message" && x.message?.chat_id === mine.id));
