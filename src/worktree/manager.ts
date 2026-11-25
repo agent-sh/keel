@@ -11,6 +11,7 @@ import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, 
 import { readText } from "../core/proc.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { prTarget, type Host } from "./pr-head.ts";
+import { runSetup, setupDir, setupHook, SetupPins, type SetupOutcome } from "./setup.ts";
 
 export type Worktree = {
   session_id: string;
@@ -23,6 +24,8 @@ export type Worktree = {
   snapshot_ref: string | null;
   created: number;
   updated: number;
+  // What the repository's setup for new worktrees came to (src/worktree/setup.ts); none when it names none.
+  setup?: SetupOutcome | null;
 };
 // exists: the folder is on disk; branch_missing: the branch ref is gone;
 // unknown: git could not say what the branch holds (then nothing is removed);
@@ -66,6 +69,14 @@ const notKept = (paths: string[], unpushed = false) => `${paths.length === 1 ? "
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS worktrees (session_id TEXT PRIMARY KEY, repo_root TEXT NOT NULL, path TEXT NOT NULL, branch TEXT NOT NULL, base TEXT NOT NULL, base_commit TEXT NOT NULL, state TEXT NOT NULL, snapshot_ref TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL);
 `;
+
+// A row as the code reads it: its setup is kept as JSON.
+function fromRow(r: Worktree): Worktree {
+  const raw = r.setup as unknown;
+  let setup: SetupOutcome | null = null;
+  if (typeof raw === "string") try { setup = JSON.parse(raw); } catch {}
+  return { ...r, setup };
+}
 
 export class GitError extends Error {
   constructor(message: string, readonly status = 409) { super(message); }
@@ -154,9 +165,14 @@ export type BranchList = {
 };
 
 export class Worktrees {
+  private pins: SetupPins;
   constructor(private store: Store, private root: string) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("worktrees", "setup")) store.migrate("ALTER TABLE worktrees ADD COLUMN setup TEXT");
+    this.pins = new SetupPins(store);
   }
+  // The pins of repositories' setup files (the routes pin and show them).
+  get setupPins() { return this.pins; }
 
   // Whether a row names a worktree of the kind Keel makes: a folder inside Keel's own worktree folder (where its
   // links land) on a branch of Keel's naming. A row that names anything else is not Keel's to remove.
@@ -166,16 +182,17 @@ export class Worktrees {
   }
 
   get(sessionId: string): Worktree | undefined {
-    return this.store.db.query<Worktree, [string]>("SELECT * FROM worktrees WHERE session_id = ?").get(sessionId) ?? undefined;
+    const r = this.store.db.query<Worktree, [string]>("SELECT * FROM worktrees WHERE session_id = ?").get(sessionId);
+    return r ? fromRow(r) : undefined;
   }
   all(): Worktree[] {
-    return this.store.db.query<Worktree, []>("SELECT * FROM worktrees ORDER BY created DESC").all();
+    return this.store.db.query<Worktree, []>("SELECT * FROM worktrees ORDER BY created DESC").all().map(fromRow);
   }
   private put(w: Worktree) {
     w.updated = Date.now();
-    this.store.db.query(`INSERT INTO worktrees (session_id, repo_root, path, branch, base, base_commit, state, snapshot_ref, created, updated)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET repo_root = excluded.repo_root, path = excluded.path, branch = excluded.branch, base = excluded.base, base_commit = excluded.base_commit, state = excluded.state, snapshot_ref = excluded.snapshot_ref, updated = excluded.updated`)
-      .run(w.session_id, w.repo_root, w.path, w.branch, w.base, w.base_commit, w.state, w.snapshot_ref, w.created, w.updated);
+    this.store.db.query(`INSERT INTO worktrees (session_id, repo_root, path, branch, base, base_commit, state, snapshot_ref, created, updated, setup)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET repo_root = excluded.repo_root, path = excluded.path, branch = excluded.branch, base = excluded.base, base_commit = excluded.base_commit, state = excluded.state, snapshot_ref = excluded.snapshot_ref, updated = excluded.updated, setup = excluded.setup`)
+      .run(w.session_id, w.repo_root, w.path, w.branch, w.base, w.base_commit, w.state, w.snapshot_ref, w.created, w.updated, w.setup ? JSON.stringify(w.setup) : null);
   }
 
   // The repository a folder belongs to: its main checkout's root.
@@ -221,9 +238,11 @@ export class Worktrees {
       const was = (e as Error).message ?? String(e);
       throw new GitError(left.length ? `${was}; the new worktree could not be removed, left: ${left.join(", ")}` : `${was}; the new worktree and its branch ${branch} were removed`, (e as GitError).status ?? 500);
     }
+    // The repository's own setup (.keel/worktree.json), as the session that asked for the worktree is allowed to run commands.
+    const setup = await runSetup({ path, dir: setupDir(this.root, path), madeFor, pins: this.pins }).catch((e): SetupOutcome => ({ state: "failed", ms: 0, steps: 0, note: `the setup could not start: ${(e as Error).message}` }));
     const now = Date.now();
     return {
-      wt: { repo_root: repo.root, path, branch, base: ref === "HEAD" ? baseCommit : ref, base_commit: baseCommit, state: "active", snapshot_ref: null, created: now, updated: now },
+      wt: { repo_root: repo.root, path, branch, base: ref === "HEAD" ? baseCommit : ref, base_commit: baseCommit, state: "active", snapshot_ref: null, created: now, updated: now, ...(setup ? { setup } : {}) },
       cwd: join(path, relative(repo.top, workspace)),
     };
   }
@@ -326,6 +345,8 @@ export class Worktrees {
 
   adopt(sessionId: string, wt: Omit<Worktree, "session_id">) {
     this.put({ ...wt, session_id: sessionId });
+    // A setup that did not run well is told on the session (what the owner and its model need to know first).
+    if (wt.setup && wt.setup.state !== "ok") try { setupHook.told?.(sessionId, wt.setup, wt.branch); } catch {}
   }
 
   async status(w: Worktree): Promise<WorktreeStatus> {
@@ -494,8 +515,11 @@ export class Worktrees {
       await this.applyState(w.path, w.snapshot_ref, w.session_id); // the saved work comes back uncommitted, as it was
       await git(w.repo_root, ["update-ref", "-d", w.snapshot_ref], { ok: true });
     }
-    const next = { ...w, state: "active" as const, snapshot_ref: null };
+    // The folder is new again (what the setup made, ignored files and all, went with the old one): it runs again.
+    const setup = await runSetup({ path: w.path, dir: setupDir(this.root, w.path), madeFor: w.session_id, pins: this.pins }).catch((e): SetupOutcome => ({ state: "failed", ms: 0, steps: 0, note: `the setup could not start: ${(e as Error).message}` }));
+    const next = { ...w, state: "active" as const, snapshot_ref: null, setup: setup ?? null };
     this.put(next);
+    if (setup && setup.state !== "ok") try { setupHook.told?.(w.session_id, setup, w.branch); } catch {}
     return next;
   }
 

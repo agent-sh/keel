@@ -9,6 +9,8 @@ import { fitted } from "../../engine/image-fit.ts";
 import { crossingIn, routeOfFolder } from "../../safety/content-routes.ts";
 import { hostOfRemote } from "../../worktree/pr-head.ts";
 import { headsRef } from "./trust.ts";
+import { setupHook, type SetupOutcome } from "../../worktree/setup.ts";
+import { gate, presence } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -25,6 +27,24 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, engine, providers } = deps;
   const wts = new Worktrees(store, join(store.stateDir, "worktrees"));
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+  // A repository's setup for its new worktrees (src/worktree/setup.ts) runs as the session's own commands do, and
+  // what did not go well is said on the session: a note for its owner, and a failure its model is told once.
+  setupHook.confine = (id, path, tool) => {
+    const s = store.session(id);
+    if (!s || s.machine || !gate) return { skip: "the session's rules are not known here" };
+    const c = gate.confineFor(id, path, tool);
+    if (c?.sandbox === "read-only") return { skip: "the session's sandbox is read-only, so a setup could write nothing" };
+    return c ? { wrap: c.wrap } : {};
+  };
+  setupHook.envOf = (id) => {
+    try { const raw = store.db.query<{ setup: string | null }, [string]>("SELECT setup FROM worktrees WHERE session_id = ?").get(id)?.setup; return raw ? (JSON.parse(raw) as SetupOutcome).env : undefined; } catch { return undefined; }
+  };
+  setupHook.told = (id, o) => {
+    const secs = (o.ms / 1000).toFixed(1);
+    const text = o.state === "failed" ? `The repository's worktree setup failed after ${secs} s: ${o.note}` : `The repository's worktree setup did not run: ${o.note}`;
+    bus.emit({ t: "event", event: store.append(id, "note", { kind: "worktree-setup", text }) });
+    if (o.state === "failed") deps.errors.capture("server", new Error(text), { session: id, at: "worktree setup" });
+  };
   const managed = (id: string) => {
     const s = store.session(id);
     if (!s) return { error: bad("no such session", 404) };
@@ -83,6 +103,23 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
           store.deleteSession(s.id);
           throw e;
         }
+      }),
+    },
+    // The repository's .keel/worktree.json as the owner reads it before pinning: it runs commands.
+    "/api/worktree-setup": {
+      GET: (req: any) => guard(async () => {
+        const dir = new URL(req.url).searchParams.get("cwd") || deps.workspace;
+        return json(wts.setupPins.show(dir));
+      }),
+    },
+    "/api/worktree-setup/trust": {
+      POST: (req: any) => guard(async () => {
+        if (presence && !presence.allows(req, "worktree-setup-trust")) return json({ error: "this needs your passkey from a remote device", presence: { action: "worktree-setup-trust" } }, 428);
+        const b = await body(req);
+        if (typeof b.sha256 !== "string") return bad("give the sha256 of the file you read");
+        const cwd = typeof b.cwd === "string" ? b.cwd : deps.workspace;
+        const err = wts.setupPins.pin(cwd, b.sha256);
+        return err ? bad(err, 409) : json(wts.setupPins.show(cwd));
       }),
     },
     "/api/worktrees/check": {

@@ -9,6 +9,14 @@ export type { BranchList, WorktreeStatus };
 // Who wrote the head of a session that started at a pull request (src/safety/head-trust.ts).
 export type HeadView = { held: boolean; state: "held" | "trusted" | "owner"; number: number; author: string | null; fork: boolean | null; why: string; base_ref: string | null; merge_base: string | null; head_commit: string };
 
+// What a worktree's setup came to, in a few words: its outcome and how long it took.
+export function setupWords(s: { state: string; ms: number; steps: number }): string {
+  const t = s.ms >= 60_000 ? `${Math.floor(s.ms / 60_000)} min ${Math.round((s.ms % 60_000) / 1000)} s` : `${(s.ms / 1000).toFixed(1)} s`;
+  if (s.state === "ok") return s.ms ? `Setup ran in ${t}` : "Setup named no command";
+  if (s.state === "failed") return `Setup failed after ${t}`;
+  return s.state === "held" ? "Setup held until you pin it" : "Setup did not run";
+}
+
 let byId: Record<string, WorktreeStatus | null> = {};
 let heads: Record<string, HeadView | null> = {};
 let startInWorktree = localStorage.getItem("keel.startInWorktree") === "1";

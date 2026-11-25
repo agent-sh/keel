@@ -24,6 +24,7 @@ import * as failures from "./failures.ts";
 import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { git, Worktrees } from "../worktree/manager.ts";
+import type { SetupOutcome } from "../worktree/setup.ts";
 import { git as gitRead, locate } from "../core/git.ts";
 import { matchableTips, namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
@@ -126,6 +127,7 @@ export type AgentRecord = {
   first_seq: number;
   worktree?: string | null; // the folder of its own git worktree, when it has one
   branch?: string | null;
+  setup?: SetupOutcome | null; // what the repository's setup for new worktrees came to in its own (src/worktree/setup.ts)
   machine?: string | null; // the fleet machine its tools run on, when not this one
   structured?: boolean; // its result is one JSON value matching the schema it was given
   stopped_by?: StopBy | null;
@@ -242,7 +244,7 @@ CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('runni
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
   writeAsks.migrate(); // the questions an agent asked its parent about a write outside its scope
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"], ["api", "TEXT"], ["landing", "TEXT"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"], ["api", "TEXT"], ["landing", "TEXT"], ["setup", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
   // A budget's read of the tree under a task walks the sessions' parents (TREE_SPEND_SQL).
@@ -266,11 +268,13 @@ const wts = () => {
 // `task`: its first prompt, kept until it is in its session (sendTask).
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
 // `reviews`: the branches it reviews with their tips as it started, as JSON (reviewsAt), for the work board.
-type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off" | "landing"> & { landing?: string | null; api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task?: string | null; parked: number | null; result?: string | null; report_chars?: number; start_from: string | null; start_force: string | null; reviews?: string | null };
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off" | "landing" | "setup"> & { setup?: string | null; landing?: string | null; api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task?: string | null; parked: number | null; result?: string | null; report_chars?: number; start_from: string | null; start_force: string | null; reviews?: string | null };
 // What a read of many rows asks the database once (`toRecs`); one row asks for itself.
 type RowFacts = { waiting: number; line: (parentId: string) => Line | undefined };
 const toRec = (r: Row, facts?: RowFacts): AgentLean & { result?: string | null } => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, landing: landingJson, report_chars, ...rest } = r;
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, landing: landingJson, report_chars, setup: setupRaw, ...rest } = r;
+  let setup: SetupOutcome | undefined;
+  try { setup = setupRaw ? JSON.parse(setupRaw) : undefined; } catch {}
   let external: ExternalInfo | undefined;
   if (def?.includes('"external"')) try { external = (JSON.parse(def) as AgentDef).external; } catch {}
   void schema_tries; void restarts; void park_told; void task; void parked;
@@ -284,7 +288,7 @@ const toRec = (r: Row, facts?: RowFacts): AgentLean & { result?: string | null }
   try { landing = landingJson ? JSON.parse(landingJson) : undefined; } catch {}
   let reviews: string[] | undefined;
   try { reviews = reviewsRaw ? (JSON.parse(reviewsRaw) as { branch: string }[]).map((x) => x.branch) : undefined; } catch {}
-  return { ...rest, ...(report_chars !== undefined ? { report_chars } : {}), ...(external ? { external } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: facts ? facts.waiting : waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...(landing ? { landing } : {}), ...apiOf(r.session_id, api) };
+  return { ...rest, ...(report_chars !== undefined ? { report_chars } : {}), ...(external ? { external } : {}), ...(setup ? { setup } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: facts ? facts.waiting : waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...(landing ? { landing } : {}), ...apiOf(r.session_id, api) };
 };
 // Its grant of the daemon's lists, and why it does not take effect when one above it lost its own.
 function apiOf(sessionId: string, api: string | null): Pick<AgentRecord, "api" | "api_off"> {
@@ -1212,6 +1216,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews, api) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
     JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length, ...(owned ? { owned: true } : {}) })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json, reviews, input.api === "read" ? "read" : null);
+  if (iso?.wt.setup) store.db.query("UPDATE agents SET setup = ? WHERE id = ?").run(JSON.stringify(iso.wt.setup), id);
   release(); // the persisted running row now occupies the slot
   // The repositories it may change, as they are before its first step: what it makes there is told at its end.
   if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));

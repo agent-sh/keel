@@ -559,6 +559,13 @@ under `~/.cache/keel-work/bun/research/`.
   and time come from the rate new trees start at; it ends when its sample is settled, at its time limit, or when a
   guard finds harm. Keep sets the owner's setting for agents (`agents` in the settings), Drop leaves it. A new
   trial is a row of `SETTING_TRIALS` plus the session setting an agent reads up its tree (`src/engine/agent-defaults.ts`).
+- A repository names a setup for the worktrees Keel makes (`.keel/worktree.json`, `src/worktree/setup.ts`):
+  commands that run once in each new worktree after git made it and `.worktreeinclude` was copied in, so agents
+  do not each install. It runs commands, so it is held like a hooks file: only while the owner's pin holds the
+  file and the `.keel/` scripts it runs (a new or changed one is held and said on the session). It runs under
+  the session's own sandbox and network rules (nothing when its sandbox is read-only), its output is a file,
+  a failure is a failure of the session and shows on its worktree chip and its agent's card, and the NAME=value
+  lines it writes to `$KEEL_ENV_FILE` are the environment of the session's later commands.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

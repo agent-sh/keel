@@ -223,7 +223,7 @@ export function coveredFiles(root: string, groups: Partial<Record<HookEvent, Gro
 // hashed again. What is kept is replaced by what this call read.
 type Bodies = Map<string, { bytes: Buffer; sha: string }>;
 const BODY_MAX = 256 * 1024;
-function pinDigest(text: string, root: string, files: string[], bodies?: Bodies): string {
+export function pinDigest(text: string, root: string, files: string[], bodies?: Bodies): string {
   if (!files.length) { bodies?.clear(); return sha(text); }
   const h = new Bun.CryptoHasher("sha256").update(text);
   const read: Bodies = new Map();

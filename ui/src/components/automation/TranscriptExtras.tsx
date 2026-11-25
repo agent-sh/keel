@@ -9,6 +9,7 @@ import { resultText } from "../../lib/tools.ts";
 import { CALL_FAILED, CALL_STOPPED, agentTask, callState, failureLine, type CallState } from "../../lib/work.ts";
 import { Apart, Under } from "../ToolCall.tsx";
 import { savePref } from "../../lib/ui.ts";
+import { setupWords } from "../../lib/worktree.ts";
 import { cn } from "../../lib/utils.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Markdown } from "../Markdown.tsx";
@@ -422,6 +423,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
             )}
             {type && <span className="k-line-chip" data-testid="agent-call-type">{type}</span>}
             {agent?.branch && <span className="k-line-chip k-line-branch" data-code="" data-testid="agent-call-branch" title={`${agent.branch}, in its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
+            {agent?.setup && agent.setup.state !== "ok" && <span className={cn("k-line-chip", agent.setup.state === "failed" ? "text-danger" : "text-warn")} data-code="" data-testid="agent-call-setup" data-state={agent.setup.state} title={`${setupWords(agent.setup)}${agent.setup.note ? `: ${agent.setup.note}` : ""}`}>{setupWords(agent.setup)}</span>}
             {(agent?.machine || input.machine) && <span className="k-line-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
             {agent?.structured && <span className="k-line-chip" data-code="" data-testid="agent-call-structured">json</span>}
             {/* Its commands read the daemon's lists: its parent granted it (src/automation/api-grant.ts). */}

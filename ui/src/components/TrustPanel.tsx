@@ -1,4 +1,4 @@
-import { FileCheck2, FileWarning, Package, RotateCcw, ShieldCheck, Trash2, Webhook } from "lucide-react";
+import { FileCheck2, FileWarning, GitBranch, Package, RotateCcw, ShieldCheck, Trash2, Webhook } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Source as HookSource } from "../../../src/integrations/hooks.ts";
@@ -111,6 +111,8 @@ export function TrustPanel({ session }: { session: Session }) {
         )}
       </section>
 
+      <WorktreeSetupFile session={session} />
+
       <section className="flex flex-col gap-2">
         <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><FileWarning className="size-4 text-accent" /> Quarantine</h3>
         {live.length === 0 ? (
@@ -118,6 +120,40 @@ export function TrustPanel({ session }: { session: Session }) {
         ) : live.map((b) => <BatchCard key={b.id} b={b} onDone={load} />)}
       </section>
     </div>
+  );
+}
+
+type SetupView = { path: string; exists: boolean; state: "none" | "new" | "changed" | "pinned" | "refused"; text?: string; sha256?: string; covers?: string[]; problems: string[] };
+const SETUP_STATE = { new: "held: not pinned", changed: "held: changed since you pinned it", pinned: "runs in each new worktree", refused: "cannot run", none: "" } as const;
+
+// The repository's .keel/worktree.json: commands that run in each new worktree, so it is read and pinned like a hooks file.
+function WorktreeSetupFile({ session }: { session: Session }) {
+  const [v, setV] = useState<SetupView | null>(null);
+  const [err, setErr] = useState("");
+  const load = useCallback(() => { api<SetupView>(`/api/worktree-setup?cwd=${encodeURIComponent(session.workspace)}`).then(setV).catch(reportError); }, [session.workspace]);
+  useEffect(load, [load]);
+  if (!v?.exists) return null;
+  return (
+    <section className="flex flex-col gap-2" data-testid="worktree-setup-file" data-state={v.state}>
+      <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><GitBranch className="size-4 text-accent" /> Worktree setup</h3>
+      <div className="rounded-xl border border-line bg-raised px-3 py-2 text-caption">
+        <div className="flex items-center gap-2">
+          <span className={cn("rounded px-1.5 text-micro font-medium", v.state === "pinned" ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")}>{v.state === "pinned" ? "runs" : "held"}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-faint">{v.path}</span>
+        </div>
+        <p className="mt-1 text-muted">{SETUP_STATE[v.state]}. It runs once in each new worktree of this repository, under the session's sandbox and network rules. Scripts it runs from outside .keel/ are not part of the pin.</p>
+        {v.covers && v.covers.length > 0 && <p className="mt-0.5 text-muted">The pin also covers: {v.covers.join(", ")}</p>}
+        {v.problems.map((p, i) => <p key={i} className="mt-0.5 text-warn">{p}</p>)}
+        {v.state !== "pinned" && v.sha256 && v.state !== "refused" && (
+          <>
+            <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{v.text}</pre>
+            <button data-testid="trust-worktree-setup" className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90"
+              onClick={() => api("/api/worktree-setup/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: v.sha256 }) }).then(() => { setErr(""); load(); }).catch((e) => setErr(failed(e, { at: "TrustPanel" })))}>Trust this version</button>
+            {err && <p className="mt-1 text-danger">{err}</p>}
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 

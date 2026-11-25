@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
-import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, setStartPr, startBase, useHead, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
+import { isGitFolder, loadBranches, loadWorktree, setupWords, setStartBase, setStartInWorktree, setStartPr, startBase, useHead, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
 import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
 import { OverlapList } from "./BranchesPanel.tsx";
 import { StewardRow } from "./StewardRow.tsx";
@@ -110,6 +110,12 @@ export function WorktreeChip({ session }: { session: Session }) {
         <GitBranch className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{wt.branch.replace(/^keel\//, "")}</span>
         {wt.state !== "active" && <span className="text-micro">{wt.state}</span>}
+        {wt.setup && wt.setup.state !== "ok" && (
+          <span data-testid="setup-mark" data-state={wt.setup.state} title={setupWords(wt.setup)}
+            className={cn("inline-flex h-[1.125rem] shrink-0 items-center rounded-md px-1 font-mono text-micro font-medium", wt.setup.state === "failed" ? "bg-danger/12 text-danger" : "bg-warn/12 text-warn")}>
+            setup
+          </span>
+        )}
         {clashes.length > 0 && (
           <span data-testid="overlap-mark" data-count={clashes.length} title={`Would conflict with ${clashes.length === 1 ? "1 branch" : `${clashes.length} branches`} when landing`}
             className="inline-flex h-[1.125rem] shrink-0 items-center gap-0.5 rounded-md bg-warn/12 px-1 font-mono text-micro font-medium text-warn">
@@ -137,6 +143,13 @@ export function WorktreeChip({ session }: { session: Session }) {
                 : wt.state === "parked" ? " · parked: the folder is gone, its work saved" : " · removed"}
             </p>
             <p className="mt-1 truncate font-mono text-micro text-faint" title={wt.path}>{wt.path}</p>
+            {wt.setup && (
+              <div className="mt-2 text-caption" data-testid="worktree-setup" data-state={wt.setup.state}>
+                <p className={cn("font-medium", wt.setup.state === "ok" ? "text-ok" : wt.setup.state === "failed" ? "text-danger" : "text-warn")}>{setupWords(wt.setup)}</p>
+                {wt.setup.note && <p className="mt-0.5 whitespace-pre-wrap break-words text-muted">{wt.setup.note}</p>}
+                {wt.setup.log && <p className="mt-0.5 truncate font-mono text-micro text-faint" title={wt.setup.log}>{wt.setup.log}</p>}
+              </div>
+            )}
 
             {clashes.length > 0 && overlap?.mine && (
               <div className="mt-3 rounded-lg border border-warn/35 bg-warn/6 px-2.5 py-2" data-testid="overlap-popup">
