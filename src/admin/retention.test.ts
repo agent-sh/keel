@@ -53,6 +53,7 @@ test("nothing goes until a retention is set; then what a listing named, by its s
     const stays = [
       file(idle, "jobs/b1.json", 45, 200),          // a command's record: the Terminal panel still lists it
       file(idle, "jobs/b2.log", 5),                  // written after its session's last turn
+      file(idle, "cleared/t0.txt", 60),              // the text a stub in the context names (src/engine/cold-clear.ts)
       file(daily, "1-bash-old.txt", 300),            // an old file of a session in use
       file(pinned, "1-bash-old.txt", 90),
       file(working, "1-bash-old.txt", 50),
@@ -95,7 +96,7 @@ test("nothing goes until a retention is set; then what a listing named, by its s
     // The counts are the rows and files that went, though each deleted call also changed the rollup.
     expect(removed).toEqual({ spill_files: 3, spill_bytes: 5000, usage_calls: 450, usage_tools: 7, egress_rows: 0 });
     expect(rollup()).toBe(50);
-    expect([...gone.map((p) => existsSync(p)), ...stays.map((p) => existsSync(p)), existsSync(laterFile)]).toEqual([false, false, false, true, true, true, true, true, true, true]);
+    expect([...gone.map((p) => existsSync(p)), ...stays.map((p) => existsSync(p)), existsSync(laterFile)]).toEqual([false, false, false, true, true, true, true, true, true, true, true]);
     expect(captured).toEqual([]);
 
     // A removed file says what became of it: to the model that reads it again, and to the page.
