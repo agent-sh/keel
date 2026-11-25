@@ -165,8 +165,43 @@ async function claudeSessions(): Promise<Listed[]> {
 }
 
 // The process table and the harnesses' own lists, as they are now.
-type Now = { procs: Proc[]; claude: Listed[] };
-const now = async (): Promise<Now> => { const [procs, claude] = await Promise.all([processTable(), claudeSessions()]); return { procs, claude }; };
+// `files`: the files each Codex process has open, where /proc does not say (macOS: lsof does).
+type Now = { procs: Proc[]; claude: Listed[]; files?: Map<number, Set<string>> };
+const now = async (): Promise<Now> => {
+  const [procs, claude] = await Promise.all([processTable(), claudeSessions()]);
+  return { procs, claude, files: await openFilesOf(procs.filter((p) => isCodex(p)).map((p) => p.pid)) };
+};
+
+const isCodex = (p: Proc) => p.args.trim().split(/\s+/)[0]?.split("/").at(-1) === "codex";
+
+// The open files of processes, from lsof's field output (`-Fpn`): a `p` line names a process, each `n` line after it
+// one of its files. Only paths: a socket or a pipe has none.
+export function parseLsof(out: string): Map<number, Set<string>> {
+  const by = new Map<number, Set<string>>();
+  let pid = 0;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("p")) { pid = Number(line.slice(1)) || 0; if (pid && !by.has(pid)) by.set(pid, new Set()); }
+    else if (line.startsWith("n/") && pid) by.get(pid)!.add(line.slice(1));
+  }
+  return by;
+}
+// Where there is no /proc (macOS) the files a process holds open are asked of lsof. Nothing where lsof is not there or
+// fails: a session is then found by the id its process was started with, as before.
+async function openFilesOf(pids: number[]): Promise<Map<number, Set<string>> | undefined> {
+  if (!pids.length || existsSync("/proc/self/fd") || !Bun.which("lsof")) return undefined;
+  try {
+    const p = Bun.spawn(["lsof", "-nP", "-w", "-Fpn", "-p", pids.join(",")], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 5000 });
+    const out = await readText(p.stdout);
+    await p.exited; // (it exits 1 when one of the processes is gone: what it printed still counts)
+    return parseLsof(out);
+  } catch { return undefined; }
+}
+// The files a process has open: from the table `Now` holds where there is one, else /proc.
+function heldFiles(p: Proc, at: Pick<Now, "files">): string[] {
+  const known = at.files?.get(p.pid);
+  if (known) return [...known];
+  try { return readdirSync(`/proc/${p.pid}/fd`).flatMap((fd) => { try { return [readlinkSync(`/proc/${p.pid}/fd/${fd}`)]; } catch { return []; } }); } catch { return []; }
+}
 
 // A record is of the process that has its pid now, not of an earlier one: the
 // start it wrote down is this process's (clock ticks since boot, field 22 of
@@ -187,7 +222,8 @@ function namedResume(p: Proc, harness: string, id: string): boolean {
   return bin?.split("/").at(-1) === harness && (harness === "codex" ? flag === "resume" : ["--resume", "-r", "--session-id"].includes(flag ?? "")) && value === id;
 }
 
-function harnessOf(f: Found, { procs, claude }: Now): { proc: Proc; status?: Signals["status"]; waiting_for?: string; blocked?: string } | null {
+function harnessOf(f: Found, at: Now): { proc: Proc; status?: Signals["status"]; waiting_for?: string; blocked?: string } | null {
+  const { procs, claude } = at;
   const by = new Map(procs.map((p) => [p.pid, p]));
   if (f.harness === "claude") {
     const holders = claude.filter((r) => r.sessionId === f.id && by.has(r.pid) && sameProcess(r, by.get(r.pid)!));
@@ -198,11 +234,7 @@ function harnessOf(f: Found, { procs, claude }: Now): { proc: Proc; status?: Sig
     for (const p of procs) {
       const [bin, verb] = p.args.trim().split(/\s+/);
       if (bin?.split("/").at(-1) !== "codex") continue;
-      try {
-        for (const fd of readdirSync(`/proc/${p.pid}/fd`)) {
-          try { if (readlinkSync(`/proc/${p.pid}/fd/${fd}`) === f.path) return { proc: p, blocked: verb === "app-server" ? "This thread uses a shared app-server. End the thread there first." : undefined }; } catch {}
-        }
-      } catch {}
+      if (heldFiles(p, at).includes(f.path)) return { proc: p, blocked: verb === "app-server" ? "This thread uses a shared app-server. End the thread there first." : undefined };
     }
   }
   const p = procs.find((p) => namedResume(p, f.harness, f.id));
@@ -225,13 +257,7 @@ export function runningOf(all: Found[], at: Now): Found[] {
     const name = bin?.split("/").at(-1);
     if (name !== "claude" && name !== "codex") continue;
     if (value && (name === "codex" ? flag === "resume" : ["--resume", "-r", "--session-id"].includes(flag ?? ""))) for (const f of byId.get(value) ?? []) if (f.harness === name) found.add(f);
-    if (name === "codex") {
-      try {
-        for (const fd of readdirSync(`/proc/${p.pid}/fd`)) {
-          try { const f = byPath.get(readlinkSync(`/proc/${p.pid}/fd/${fd}`)); if (f) found.add(f); } catch {}
-        }
-      } catch {}
-    }
+    if (name === "codex") for (const path of heldFiles(p, at)) { const f = byPath.get(path); if (f) found.add(f); }
   }
   return [...found].filter((f) => harnessOf(f, at)).sort((a, b) => b.updated_ms - a.updated_ms);
 }

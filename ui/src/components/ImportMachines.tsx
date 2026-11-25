@@ -103,7 +103,7 @@ export function useFarLists({ open, machines, harness, q, all }: { open: boolean
   // What runs there now, looked at every few seconds while the sheet is open.
   const watch = useCallback(async () => {
     for (const m of mine.current) {
-      if (m.transport !== "ssh" || !granted(m)) continue;
+      if (!granted(m)) continue;
       try {
         const r = await api<Running>(`/api/fleet/machines/${m.id}/running`);
         noteRows(m.id, r.sessions);

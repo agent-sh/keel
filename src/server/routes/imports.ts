@@ -195,18 +195,18 @@ export const importRoutes: RouteModule = (deps) => {
         }
       },
     },
-    // What runs now on a machine reached over ssh: the sessions its Claude Code and Codex hold open, each
+    // What runs now on a machine, over ssh or a linked daemon: the sessions its Claude Code and Codex hold open, each
     // with what it does (the same rows as the list, which says on each what runs it). One that is not
     // reached shows none, with the reason: a running list is never old news.
     "/api/fleet/machines/:id/running": {
       GET: async (req: any) => {
         const m = machineOf(req.params.id);
         if (m instanceof Response) return m;
-        if (!fleet!.isSsh(m)) return json({ machine_id: m.id, machine: m.name, sessions: [], supported: false });
         if (m.state === "offline") return json({ machine_id: m.id, machine: m.name, sessions: [], supported: true, offline: m.reason ?? "it does not answer" });
         try {
           const r = await fleet!.handsJson<Listed>(m.id, "/api/fleet/hands/transcripts?running=1&peek=1&limit=50", { timeout: 20_000, idempotent: true });
-          return json({ machine_id: m.id, machine: m.name, supported: true, sessions: r.sessions.map((f) => rowOf(m, f)) });
+          // (A daemon of an older build ignores `running` and lists its sessions: only the rows that say a harness runs them count.)
+          return json({ machine_id: m.id, machine: m.name, supported: true, sessions: r.sessions.filter((f) => (f as { original?: unknown }).original).map((f) => rowOf(m, f)) });
         } catch (e) {
           if (!(e instanceof LinkError)) throw e;
           return json({ machine_id: m.id, machine: m.name, sessions: [], supported: true, offline: (e as Error).message });

@@ -13,7 +13,7 @@ const { migrate } = await import("./db.ts");
 const { Listings } = await import("./listing.ts");
 const { LinkError } = await import("./link.ts");
 const { page } = await import("../integrations/import/offer.ts");
-const { runningOf } = await import("./hands-sessions.ts");
+const { parseLsof, runningOf } = await import("./hands-sessions.ts");
 import type { Found } from "../integrations/import/types.ts";
 
 const dirs: string[] = [];
@@ -106,4 +106,25 @@ test("the transcripts a harness holds open are found from its own lists, not by 
     ],
   };
   expect(runningOf(all, at as any).map((f) => f.id)).toEqual(["live", "rollout"]);
+});
+
+test("a Codex process is found by the file it holds open where /proc says nothing, as lsof tells it", () => {
+  const all = [row("held", "Held open", 5, "codex"), row("idle", "Not held", 4, "codex"), row("shared", "On an app-server", 3, "codex")];
+  const at = {
+    claude: [],
+    procs: [
+      { pid: 20, ppid: 1, pgid: 20, started_ms: 1, args: "/opt/homebrew/bin/codex" },
+      { pid: 21, ppid: 1, pgid: 21, started_ms: 1, args: "codex app-server" },
+      { pid: 22, ppid: 1, pgid: 22, started_ms: 1, args: "vim /far/idle.jsonl" },
+    ],
+    files: new Map([[20, new Set(["/far/held.jsonl", "/tmp/other"])], [21, new Set(["/far/shared.jsonl"])], [22, new Set(["/far/idle.jsonl"])]]),
+  };
+  expect(runningOf(all, at as any).map((f) => f.id)).toEqual(["held", "shared"]);
+});
+
+test("lsof's field output is read as the files each process holds, paths only", () => {
+  const out = "p71482\nfcwd\nn/Users/o\nftxt\nn/opt/homebrew/bin/codex\nf5\nn*:8080\nf6\nn->127.0.0.1:443\nf7\nn/Users/o/.codex/sessions/2026/11/rollout-a.jsonl\np9\nf3\nn/tmp/x\n";
+  const got = parseLsof(out);
+  expect([...got.get(71482)!]).toEqual(["/Users/o", "/opt/homebrew/bin/codex", "/Users/o/.codex/sessions/2026/11/rollout-a.jsonl"]);
+  expect([...got.get(9)!]).toEqual(["/tmp/x"]);
 });
