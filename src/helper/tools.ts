@@ -7,6 +7,7 @@ import { clip } from "../automation/core.ts";
 import { agentCounts, sessionState } from "../automation/state.ts";
 import { watchWord } from "../core/watch.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
+import { replyOf } from "../core/tree.ts";
 import { whose } from "../engine/compact.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { readsOf } from "../server/reads.ts";
@@ -289,7 +290,9 @@ const relayTool: Tool = {
     if (askedOf(s.id, call)) throw new Error("Refused: this is a server's form (an MCP elicitation): the owner answers it on its card himself.");
     // When the question was asked: the call that asks it, as its session stored it (a restart asks it again under the same call).
     await store.warm(s.id, false);
-    const asked = store.lineage(s.id).find((e) => e.kind === "assistant" && (e.data.blocks as any[] | undefined)?.some((b) => b.type === "tool_use" && b.id === call));
+    // (An open question's call is in one of the newest replies: the branch is not read from its first event for it.)
+    const line = store.lineage(s.id);
+    const asked = line[replyOf(line, call)];
     await store.warm(ctx.sessionId, false);
     const r = relayAnswers(store.lineage(ctx.sessionId), { event: String(input.event), answers: input.answers }, qs, asked?.ts ?? Date.now());
     if ("refused" in r) throw new Error(`Refused: ${r.refused}.`);
