@@ -110,13 +110,13 @@ test("a set cap rests below the permission mode in the bar once half of it is sp
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo spent" } }, { name: "Bash", input: { command: "echo spent again" } }])}` } });
     await expect.poll(async () => { const d = await (await request.get(`/api/sessions/${session.id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 60_000 }).toBe(true);
-    // Far from the cap: the chip is quiet, in the session's menu, and the mode is still at rest.
+    // Far from the cap: the chip is quiet, in the session's menu. (The mode is in the message box's row, not the bar.)
     const spent = (await cap())!.spent;
     test.skip(!(spent > 0), "needs a priced turn: the stand-in's spend is not counted here");
     for (const width of [1050, 1366, 1920]) {
       await page.setViewportSize({ width, height: 1040 });
       await page.goto(`/s/${session.id}`);
-      await expect(header.getByTestId("head-mode")).toBeVisible();
+      await expect(header.getByTestId("head-mode")).toHaveCount(0);
       await page.mouse.move(width / 2, 900);
       await expect(header.getByTestId("cap-chip"), `at ${width} a cap far from its limit is not in the bar`).toHaveCount(0);
       await header.getByTestId("session-menu").click();
@@ -124,22 +124,19 @@ test("a set cap rests below the permission mode in the bar once half of it is sp
       await page.keyboard.press("Escape");
       await shoot(page, `cap-03-quiet-${width}`);
     }
-    // Past half of it, a chip that has room rests beside the mode, after it.
+    // Past half of it, a chip that has room rests in the bar.
     // (A cap is whole cents, so it is set from what was spent, to the cent, until the spend is past half of it.)
     await expect.poll(async () => { await request.put(`/api/sessions/${session.id}/cap`, { data: { usd: Math.max(0.01, Math.round((await cap())!.spent * 125) / 100) } }); return (await cap())!.pct; }).toBeGreaterThan(0.5);
     for (const width of [1050, 1366, 1920]) {
       await page.setViewportSize({ width, height: 1040 });
       await page.goto(`/s/${session.id}`);
-      await expect(header.getByTestId("head-mode")).toBeVisible();
+      await expect(header.getByTestId("head-mode")).toHaveCount(0);
       await page.mouse.move(width / 2, 900);
-      // The mode is at rest; a chip that has room is beside it, after it.
+      // A chip that has room rests in the bar.
       const chip = header.getByTestId("cap-chip");
       if (width > 1050) await expect(chip, `at ${width} a set cap rests in the bar`).toBeVisible();
-      if (await chip.count()) {
-        const [mode, cap] = [(await header.getByTestId("head-mode").boundingBox())!, (await chip.boundingBox())!];
-        expect(cap.x, `at ${width} the chip is after the mode`).toBeGreaterThan(mode.x);
-      } else {
-        // No room: it is in the session's menu, and the mode is still at rest.
+      if (!(await chip.count())) {
+        // No room: it is in the session's menu.
         await header.getByTestId("session-menu").click();
         await expect(page.getByTestId("header-more").getByTestId("cap-chip")).toBeVisible();
         await page.keyboard.press("Escape");

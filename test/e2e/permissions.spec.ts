@@ -79,12 +79,8 @@ test("permission gate", async ({ page, request }) => {
   await page.getByTestId("permission-menu").click();
   await page.getByTestId("mode-read-only").click();
   await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
-  // Out of the usual mode, the bar says so, and the word takes the owner to the menu.
-  await expect(page.getByTestId("head-mode")).toHaveText("Read only");
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("mode-ask")).toBeHidden();
-  await page.getByTestId("head-mode").click();
-  await expect(page.getByTestId("mode-ask")).toBeVisible();
+  // Out of the usual mode, the bar still says nothing: the mode is in the message box's row, once.
+  await expect(page.getByTestId("head-mode")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("mode-ask")).toBeHidden();
   await say(ask("Run exactly this Bash command once and nothing else: touch gamma.txt. If it fails, do not retry; reply with one word: refused.", scriptBash("touch gamma.txt")));

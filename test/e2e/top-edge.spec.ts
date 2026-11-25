@@ -235,7 +235,8 @@ test("a head with a long title and a long reason is still one bar, the brand row
 
 // Feature: the bar's mode control is neutral ink in every session. Full auto draws warm, with the struck
 // shield, only where it is unusual for the session (new sessions start in another mode, so the owner
-// chose it for this one) or while a call of the session waits on the owner.
+// chose it for this one) or while a call of the session waits on the owner. The mode is said once, in the message
+// box's row; the bar does not repeat it.
 test("Full auto is neutral ink where it is the owner's usual mode and warm where it is not", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   const model = models.find((m) => m.id === "scripted:stand-in")?.id;
@@ -263,6 +264,10 @@ test("Full auto is neutral ink where it is the owner's usual mode and warm where
     await expect(page.getByTestId("permission-mode")).toHaveText("Full auto");
     await expect.poll(async () => (await look()).colour, "Full auto the owner chose for this session is warm").not.toBe(calm.colour);
     expect((await look()).struck).toBe(true);
+    // It is said once, in the message box's row: the bar says nothing of the mode, usual or not.
+    await expect(page.getByTestId("head-mode")).toHaveCount(0);
+    await expect(page.getByTestId("session-header")).not.toContainText("Full auto");
+    await expect(page.getByTestId("permission-menu")).toHaveCount(1);
     await shoot(page, "mode-tone-02-unusual");
   } finally {
     await request.put("/api/permissions/settings", { data: { default_mode: usual } });
