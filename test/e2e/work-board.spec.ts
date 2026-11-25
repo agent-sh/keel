@@ -201,7 +201,8 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const line = card(refuser.id);
   await expect(line).toHaveAttribute("data-compact", "");
   await expect(line.getByTestId("board-state")).toHaveText("done");
-  await expect(line.getByTestId("board-lasted")).toHaveText(/^\d+(s|m|h)/);
+  // A finished agent shows how long ago it ended (the sidebar's own time), not how long it worked: a working one shows its time so far.
+  await expect(line.getByTestId("board-lasted")).toHaveText(/^(now|\d+[mhd])$/);
   await expect(line).toContainText(`reviews ${beta.branch.replace(/^keel\//, "")}`);
   expect((await line.boundingBox())!.height).toBeLessThan(40);
   await expect(card(beta.id)).not.toHaveAttribute("data-compact", "");

@@ -212,7 +212,8 @@ export function lasted(from: number, to: number): string {
 }
 
 // An agent with no branch and no changes of its own (a reader, a reviewer, one that only asked) has nothing
-// to land, check or review: one line, not a card of facts that are all empty.
+// to land, check or review: one line, not a card of facts that are all empty. Its time is how long it has worked
+// while it works, and how long ago it ended once it has (the word beside it says which).
 const compact = (r: BoardRow) => !r.branch && !r.work;
 
 // What waits as a card the owner answers (the daemon's reason for a state that needs them).
@@ -231,7 +232,7 @@ function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st:
       <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-caption font-medium text-fg group-hover/line:text-accent max-md:basis-[calc(100%-1.75rem)]" title={`Open ${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
       {r.reviews.length > 0 && <span className="k-whole min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted max-md:ml-7 max-md:max-w-none max-md:basis-[calc(100%-1.75rem)]" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
       <span className={cn("shrink-0 text-micro max-md:ml-7", w === "fail" ? "text-danger" : "text-muted")} data-testid="board-state">{word}</span>
-      <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Worked ${lasted(r.created, r.ended)}; ended ${ago(r.ended)}` : "Working since it started"}>{lasted(r.created, r.ended ?? Date.now())}</span>
+      <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Ended ${ago(r.ended)} ago; worked ${lasted(r.created, r.ended)}` : "Working since it started"}>{r.ended ? ago(r.ended) : lasted(r.created, Date.now())}</span>
       {answers && <button type="button" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it" className="inline-flex h-6 shrink-0 items-center rounded-md border border-accent/40 bg-accent-soft px-2 text-micro font-medium text-accent-ink hover:border-accent">Answer</button>}
       <ChevronRight className="size-3.5 shrink-0 text-faint group-hover/line:text-accent" aria-hidden="true" data-testid="board-opens" />
     </li>
