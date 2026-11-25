@@ -202,7 +202,9 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   // the branch it reviews. Agents with a branch keep their cards.
   const line = card(refuser.id);
   await expect(line).toHaveAttribute("data-compact", "");
-  await expect(line.getByTestId("board-state")).toHaveText("done");
+  // Its dot says done (its word is the dot's tooltip): no word beside it that repeats the dot.
+  await expect(line.locator(".k-mark")).toHaveAttribute("aria-label", "Done");
+  await expect(line.getByTestId("board-state")).toBeHidden();
   // A finished agent shows how long ago it ended (the sidebar's own time), not how long it worked: a working one shows its time so far.
   await expect(line.getByTestId("board-lasted")).toHaveText(/^(now|\d+[mhd])$/);
   await expect(line).toContainText(`reviews ${beta.branch.replace(/^keel\//, "")}`);
@@ -357,7 +359,7 @@ test("a one-line board row has a verb for what waits and the class of what faile
   const row = async (get: typeof asker) => page.getByTestId("work-board").locator(`[data-testid="board-row"][data-agent="${(await get()).id}"]`);
   const ask_ = await row(asker), bad = await row(broken);
   await expect(ask_).toBeVisible();
-  await expect(ask_.getByTestId("board-state")).toHaveText(/^needs you/);
+  await expect(ask_.locator(".k-mark")).toHaveAttribute("data-watch", "need");
   await page.mouse.move(0, 0);
   await shoot(page, "work-board-05-lines");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -367,7 +369,8 @@ test("a one-line board row has a verb for what waits and the class of what faile
   await page.setViewportSize({ width: 1920, height: 1040 });
   await expect(ask_).toHaveAttribute("data-compact", "");
   await expect(ask_).toHaveAttribute("data-watch", "need");
-  await expect(ask_.getByTestId("board-state")).toHaveText("needs you");
+  // At a desk the yellow dot says it needs you; the word would say it twice.
+  await expect(ask_.getByTestId("board-state")).toBeHidden();
   await expect(ask_.getByTestId("board-answer")).toHaveText("Answer");
   // A failed row says its class, as the session list does; it asks for no answer.
   await expect(bad.getByTestId("board-state")).toHaveText("failed: billing");
@@ -418,7 +421,9 @@ test("a work board card is one line, with its facts under a chevron, and Land he
       const c = card(n);
       expect((await c.boundingBox())!.height, `card ${n} is one line`).toBeLessThanOrEqual(3.5 * rem);
       await expect(c.getByTestId("board-delta")).toHaveText("+5-1");
-      await expect(c.getByTestId("board-marks")).toBeVisible();
+      // The line marks only what does not hold (a red pair, a failed check): a card whose facts hold is quiet.
+      if (n === 1) await expect(c.getByTestId("board-marks")).toHaveCount(0);
+      else await expect(c.getByTestId("board-marks")).toBeVisible();
       await expect(c.locator('[data-testid="board-answer"], [data-testid="board-land"], [data-testid="board-open"]')).toHaveCount(1);
       await expect(c.getByTestId("board-checks")).toHaveCount(0);
       await expect(c.getByTestId("board-head")).toHaveCount(0);

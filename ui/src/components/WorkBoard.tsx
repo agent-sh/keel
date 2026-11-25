@@ -224,15 +224,18 @@ function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st:
   // The state in a word, and for a failure its class: what to see to. A needs-you row has a verb: Answer goes to its card.
   const why = w === "fail" ? failWord(st?.cls) : "";
   const word = STATE_WORD[w].toLowerCase() + (why ? `: ${why}` : "");
+  // At a desk the dot says the state (its word is its tooltip): the word stands only where it says more, a failure's class.
+  // A phone has no tooltip to read the dot's word in: it keeps the word.
+  const repeats = !why;
   const answers = w === "need" && CARD_ASKS.has(st?.why ?? "");
   return (
     <li className="group/line flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1 hover:bg-hover max-md:flex-wrap max-md:gap-y-0" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}
       // The whole row opens the agent (its title is the control for a keyboard); its own buttons keep their own press.
       onClick={(e) => { if (e.target === e.currentTarget || !(e.target as Element).closest("button")) openSession(r.session_id); }}>
-      <StateMark w={w} />
+      <StateMark w={w} st={st} />
       <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-caption font-medium text-fg group-hover/line:text-accent max-md:basis-[calc(100%-1.75rem)]" title={`Open ${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
       {r.reviews.length > 0 && <span className="k-whole min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted max-md:ml-7 max-md:max-w-none max-md:basis-[calc(100%-1.75rem)]" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
-      <span className={cn("shrink-0 text-micro max-md:ml-7", w === "fail" ? "text-danger" : "text-muted")} data-testid="board-state">{word}</span>
+      <span className={cn("shrink-0 text-micro max-md:ml-7", w === "fail" ? "text-danger" : "text-muted", repeats && "hidden max-md:inline")} data-testid="board-state" data-repeats={repeats || undefined}>{word}</span>
       <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Ended ${ago(r.ended)} ago; worked ${lasted(r.created, r.ended)}` : "Working since it started"}>{r.ended ? ago(r.ended) : lasted(r.created, Date.now())}</span>
       {answers && <button type="button" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it" className="inline-flex h-6 shrink-0 items-center rounded-md border border-accent/40 bg-accent-soft px-2 text-micro font-medium text-accent-ink hover:border-accent">Answer</button>}
       <ChevronRight className="size-3.5 shrink-0 text-faint group-hover/line:text-accent" aria-hidden="true" data-testid="board-opens" />
@@ -252,9 +255,10 @@ function Delta({ r }: { r: BoardRow }) {
   );
 }
 
-// The card's facts as one mark each in its line (the tiles below say them in words): green where it holds, red where it does not.
+// The card's line marks only a fact that does not hold, in red: one that holds, waits or is not there is said in the tiles
+// below (the row opens them), so a line of agents at work stays quiet.
 function Marks({ facts, held }: { facts: FactProps[]; held: string | null }) {
-  const all = held ? [...facts, { name: "Landing", tone: "bad" as Tone, value: held, title: held }] : facts;
+  const all = (held ? [...facts, { name: "Landing", tone: "bad" as Tone, value: held, title: held }] : facts).filter((f) => f.tone === "bad");
   if (!all.length) return null;
   return (
     <span className="flex shrink-0 items-center gap-1" data-testid="board-marks">
@@ -285,6 +289,8 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
   // A branch that landed says so: "done" is what every finished agent says, and the mark that told landed from not
   // landed was a tick whose words are in its tooltip.
   const word = w === "done" && r.landed?.state === "yes" ? "landed" : STATE_WORD[w].toLowerCase();
+  // At a desk the dot says the state (its word is its tooltip): the word stands only where it says more than the dot, a landing.
+  const repeats = word !== "landed";
   const reviewing = r.reviews.length > 0;
   const changes = !!(r.work && (r.work.uncommitted || r.work.branch));
   // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
@@ -298,7 +304,7 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
       {/* One line: the agent, its branch, what it changes, a mark a fact, its one action. The facts open under it. */}
       {/* (As high as the button it may hold: the card keeps its height when its Land goes, so the next one stays under the pointer.) */}
       <div className="flex min-h-ctl-md min-w-0 items-center gap-2">
-        <StateMark w={w} />
+        <StateMark w={w} st={st} />
         {phone ? (
           // The row: the agent and its state in one control that opens its facts; the one action beside it.
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={`${r.title} (agent ${r.id})`} data-testid="board-toggle">
@@ -314,7 +320,7 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
             {r.branch && <span className="k-whole hidden min-w-0 max-w-[30%] shrink truncate font-mono text-micro text-muted @[30rem]:inline" title={r.branch} data-testid="board-branch">{short(r.branch)}</span>}
             <Delta r={r} />
             <Marks facts={marks} held={held} />
-            <span className="hidden shrink-0 text-micro text-muted @[26rem]:inline" data-testid="board-state">{word}</span>
+            {!repeats && <span className="hidden shrink-0 text-micro text-muted @[26rem]:inline" data-testid="board-state">{word}</span>}
           </>
         )}
         {answers && <button type="button" className="k-btn" data-ink="" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it">Answer</button>}
@@ -397,16 +403,17 @@ export function WorkBoard({ session }: { session: Session }) {
   // What to do next, first: the agents that wait on the owner, then the branches that wait to land. A count of nothing is not said.
   const answering = b.rows.filter((r) => watches.get(r.id) === "need" && CARD_ASKS.has(told[r.session_id]?.why ?? "")).length;
   const landing = b.rows.filter(canLand).length;
-  const next = [answering && `${answering} to answer`, landing && `${landing} to land`, working && `${working} working`, landed && `${landed} landed`].filter(Boolean).join(" · ") || "Nothing to do";
+  // What works is its dots' blue: the summary says what is the owner's to do, and what landed.
+  const next = [answering && `${answering} to answer`, landing && `${landing} to land`, landed && `${landed} landed`].filter(Boolean).join(" · ") || (working ? "" : "Nothing to do");
   return (
     <div className="@container flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="work-board" data-quote-from="the work board">
       {/* The summary keeps a measure of its own (16rem); where the panel has no room for it and the buttons, they stand under it. */}
       <div className="flex flex-wrap items-start gap-2 px-1">
         <div className="flex min-w-0 basis-64 grow flex-col gap-0.5">
           <p className="text-ui font-medium text-fg">{b.total} {b.total === 1 ? "agent" : "agents"}</p>
-          <p className="text-caption text-muted" data-testid="board-summary" title={[repo?.base && `Base ${repo.base} at ${sha(repo.base_tip)}`, ...(repo?.deploys.map((d) => `live at ${sha(d.sha)} (${d.how})`) ?? [])].filter(Boolean).join(" · ") || undefined}>
+          {next && <p className="text-caption text-muted" data-testid="board-summary" title={[repo?.base && `Base ${repo.base} at ${sha(repo.base_tip)}`, ...(repo?.deploys.map((d) => `live at ${sha(d.sha)} (${d.how})`) ?? [])].filter(Boolean).join(" · ") || undefined}>
             {next}
-          </p>
+          </p>}
         </div>
         {b.rows.some((r) => toLand(r)) && (
           <button type="button" onClick={() => setReviewing(true)} data-testid="board-review-tree" title="Every agent's branch as one diff by area: land, send back or drop each area"

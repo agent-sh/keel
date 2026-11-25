@@ -629,8 +629,10 @@ test("one status a session: every surface counts working and waiting alike, and 
     await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^Agents: 1 agent: 1 working/);
     await expect(page.getByTestId("dock-agent")).toHaveAttribute("data-watch", "work");
     await openPanel(page, "board");
-    await expect(page.getByTestId("board-row").getByTestId("board-state")).toHaveText("working");
-    await expect(page.getByTestId("board-summary")).toContainText("1 working");
+    // On the board its blue dot says it: no word beside the dot, and the summary says only what is the owner's to do.
+    await expect(page.getByTestId("board-row").locator(".k-mark")).toHaveAttribute("data-watch", "work");
+    await expect(page.getByTestId("board-row").getByTestId("board-state")).toBeHidden();
+    await expect(page.getByTestId("board-summary").filter({ hasText: "working" })).toHaveCount(0);
     // The parent of the agent on a timer waits, as its agent does.
     await expect(row(page, quiet).getByTestId("row-state")).toHaveText("Waiting");
 
