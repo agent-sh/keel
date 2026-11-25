@@ -1913,26 +1913,24 @@ export class Gate {
         const back = this.writeOut(session, cls.command, cls.cwd ?? cwdOf(call) ?? call.ctx.cwd);
         if (back) return { deny: back };
       }
-      if (words) {
-        if (session.parent_id) return { deny: heldRefusal(words) };
-        const out = await this.askOnce(session, call, name, heldWhy(words), "words");
-        if (out) return out;
-      }
+      if (words && session.parent_id) return { deny: heldRefusal(words) };
     }
+    // One call opens one card: what the owner must answer for it (private words bound for a public place, a target outside
+    // content named, and what the rules ask of it besides, an account beyond his among them) is said together, each
+    // reason whole, and his answer is for the call the card shows.
     // The owner decides what goes to a target outside content named (in every mode, a hook's or a grant's allow
     // included): their card says where it came from. An agent is refused, and says why to its parent.
-    if (provHeld.hits.length) {
+    if (provHeld.hits.length || words) {
       const now = Date.now();
-      if (session.parent_id) return { deny: provRefusal(provHeld.hits, now) };
-      const why = [provReason(provHeld.hits, now), "ask" in d ? d.ask.why : undefined].filter(Boolean).join("; and ");
-      const out = await this.askOnce(session, call, name, why, "provenance");
+      if (provHeld.hits.length && session.parent_id) return { deny: provRefusal(provHeld.hits, now) };
+      const rest = [provHeld.hits.length ? provReason(provHeld.hits, now) : undefined, "ask" in d && (provHeld.hits.length || d.ask.ownerOnly) ? d.ask.why : undefined].filter(Boolean).join("; and ");
+      const why = words ? `${heldWhy(words)}${rest ? `\nAlso: ${rest}` : ""}` : rest;
+      const out = await this.askOnce(session, call, name, why, words ? "words" : "provenance");
       if (out) return out;
       // Answered: the owner has said these targets (they are theirs from here on in this session).
-      this.provenance.clear(provHeld.ids, provHeld.hits);
+      if (provHeld.hits.length) this.provenance.clear(provHeld.ids, provHeld.hits);
       return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     }
-    // (The owner answered for the words: what else the call asks, an account beyond his, is still asked.)
-    if (words && !("ask" in d && d.ask.ownerOnly)) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     if (mode !== "auto" && cls.kind === "shell" && call.tool.answeredBefore && this.takeAnswered(session.id, cls.command)) return { cls };
