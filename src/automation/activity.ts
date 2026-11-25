@@ -109,7 +109,9 @@ export function get(id: string): Activity | undefined {
 // what went wrong. `cap`: at most this many rows a session, the newest (a busy
 // session does not fill the list; its last row shown says how many more it
 // has), for a list across sessions.
-export type ListOpts = { before?: string; limit?: number; kinds?: string[]; session_id?: string; q?: string; since?: number; until?: number; failures?: boolean; cap?: number };
+// `blind`: the caller is not the owner (a paired machine): the rows of a session another harness runs are left out
+// (src/core/outside.ts).
+export type ListOpts = { before?: string; limit?: number; kinds?: string[]; session_id?: string; q?: string; since?: number; until?: number; failures?: boolean; cap?: number; blind?: boolean };
 
 // The alerts a turn's end raises (alerts.onTurnEnd): each is the same
 // happening as the turn's own row, so the list shows one row a turn: the
@@ -135,6 +137,7 @@ export function listSql(opts: ListOpts, now = Date.now()): { sql: string; args: 
     args.push(JSON.stringify(opts.kinds));
   }
   if (opts.session_id) { where.push("a.session_id = ?"); args.push(opts.session_id); }
+  if (opts.blind) where.push("(a.session_id IS NULL OR a.session_id NOT IN (SELECT id FROM sessions WHERE outside IS NOT NULL))");
   if (opts.q?.trim()) { where.push("a.text LIKE ? ESCAPE '\\'"); args.push(`%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`); }
   if (opts.failures) where.push(FAILED.replace(/\b(kind|sub)\b/g, "a.$1"));
   // One row a turn: the alert its end raised is folded into the turn's row, unless alerts alone are asked for

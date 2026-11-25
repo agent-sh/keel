@@ -1026,7 +1026,7 @@ export const automationRoutes: RouteModule = (deps) => {
           const since = q.get("since") ? parseSince(q.get("since")!, now) : undefined;
           const until = q.get("until") ? parseSince(q.get("until")!, now) : undefined;
           const session_id = q.get("session_id") ? sessionRef(deps.store, q.get("session_id")!, seesOutside(req)).id : undefined;
-          const opts: activity.ListOpts = { before: q.get("before") ?? undefined, limit, kinds, session_id, q: q.get("q") ?? undefined, since, until, failures: only === "failures", cap };
+          const opts: activity.ListOpts = { before: q.get("before") ?? undefined, limit, kinds, session_id, q: q.get("q") ?? undefined, since, until, failures: only === "failures", cap, blind: !seesOutside(req) };
           // Read off the loop: the cap is a window over every row of the range.
           const sql = activity.listSql(opts, now);
           const page = activity.listRows(await readsOf(deps.store).sql<any>(sql.sql, sql.args), sql.limit, session_id ? 0 : cap);

@@ -64,3 +64,20 @@ test("a hold under a minute that only kept the machine for turns leaves no row; 
   expect(activity.holdRow(92, "loop due within 15 minutes", false)).toBe("Kept the machine awake for under a minute (loop due within 15 minutes)");
   expect(activity.holdRow(95_000, "2 turns running", true)).toBe("Kept the machine awake for 2 min (2 turns running)");
 });
+
+test("a caller blind to the sessions another harness runs gets none of their rows", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-activity-")));
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+  setDeps({ store, bus: new Bus(), errors: { capture: () => {} } } as any);
+  activity.migrate();
+  const mine = store.createSession({ title: "Build", model: "m", workspace: "/" }).id;
+  const away = store.createSession({ title: "Codex: rotate the deploy key", model: "m", workspace: "/" }).id;
+  store.updateSession(away, { outside: { harness: "codex", source_id: "t-1", state: "working", since: 1, files: 0, failures: 0 } });
+  const add = store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, turn_event) VALUES (?, ?, 'alert', 'approval', ?, ?, NULL)");
+  add.run("a-1", Date.now() - 2, mine, "Approval: Build");
+  add.run("a-2", Date.now() - 1, away, "Approval: Codex command scp id_deploy host:/keys");
+  add.run("a-3", Date.now(), null, "the daemon's own");
+  expect(activity.list({}).items.map((x) => x.id)).toEqual(["a-3", "a-2", "a-1"]);
+  expect(activity.list({ blind: true }).items.map((x) => x.id)).toEqual(["a-3", "a-1"]);
+  expect(activity.list({ blind: true, cap: 3 }).items.map((x) => x.id)).toEqual(["a-3", "a-1"]);
+});

@@ -1,6 +1,8 @@
 // Permission gate routes and its beforeTool hook. app.ts wraps every handler
 // so a throw is captured as an error.
 import { join } from "node:path";
+import { seesOutside } from "../admission.ts";
+import { outsideIds } from "../../core/outside.ts";
 import { deliver } from "../../automation/core.ts";
 import { sandboxSaid } from "../../safety/refwatch.ts";
 import { gitShut, linkedWorktree } from "../../safety/sandbox.ts";
@@ -268,7 +270,13 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       },
     },
     "/api/approvals": {
-      GET: () => json({ approvals: g.approvals({ pending: true }) }),
+      // (A card of a session another harness runs is the owner's alone: a paired machine is not given it, src/core/outside.ts.)
+      GET: (req: Request) => {
+        const all = g.approvals({ pending: true });
+        if (seesOutside(req)) return json({ approvals: all });
+        const away = outsideIds(store.db);
+        return json({ approvals: away.size ? all.filter((a) => !away.has(a.session_id)) : all });
+      },
     },
     "/api/sessions/:id/approvals": {
       GET: (req: any) => {
