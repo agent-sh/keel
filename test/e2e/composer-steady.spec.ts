@@ -120,6 +120,7 @@ test("typing moves neither the message box nor the conversation", async ({ page,
         deviceScaleFactor: c.dsf,
         storageState: { cookies: [], origins: [{ origin: new URL(baseURL!).origin, localStorage: [
           { name: "keel.focus", value: "false" },
+          { name: "keel.workbench", value: "true" },
           { name: "keel.textScale", value: JSON.stringify(c.scale) },
           { name: "keel.panes", value: JSON.stringify({ count: c.panes, slots: [others[0], a, others[1], others[2]].slice(0, c.panes), sizes: {}, active: 0 }) },
         ] }] },

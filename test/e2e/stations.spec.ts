@@ -1,14 +1,14 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: several sessions on screen at once (the Bridge's panes). The
 // pane worked in has the keys: Alt+M opens only its model menu, a slash
 // command acts on its session, and text put into one session's draft from
 // outside lands in that station's message box and no other.
 // Every station on screen: no focus mode (the config's default for the other specs).
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 test("keys and drafts per station", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;

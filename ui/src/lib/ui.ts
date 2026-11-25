@@ -21,6 +21,7 @@ type UIState = {
   theme: ThemePref;
   sidebar: boolean; // desktop: the list is wanted (rail.ts says whether it fits); phone: the drawer is open
   peek: boolean; // desktop, no room for the list: it lays over the stations
+  workbench: boolean; // a session is shown with the full workbench (the list, the panes, the dock); false is Focus (lib/focus.ts)
   listW: number | null; // the list's width when it was dragged, px; null is the default
   scale: number; // text size: every length in the interface is a rem and scales with it
   palette: boolean;
@@ -89,6 +90,7 @@ let state: UIState = {
   theme: (localStorage.getItem("keel.theme") as ThemePref) || "system",
   sidebar: isPhone() ? false : pref("keel.list", true), // desktop: the list, unless it was folded by choice
   peek: false,
+  workbench: pref("keel.workbench", false),
   listW: pref<number | null>("keel.listW", null),
   scale: 1,
   palette: false,
@@ -164,7 +166,7 @@ export const keepPanels = (m: Record<string, string>) => panelStore().setItem("k
 // A session that opens with this panel (the page goes to it next).
 export function rememberPanel(session: string, panel: string) { keepPanels({ ...stationPanels(), [session]: panel }); }
 
-export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW", v: unknown) {
+export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW" | "workbench", v: unknown) {
   if (!(k === "sidebar" && isPhone()) && k !== "panel") localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }

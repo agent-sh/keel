@@ -97,6 +97,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     // Specs drive one session at a time: the bridge shows only the helm
     // (focus mode). bridge.spec.ts clears this to drive several stations.
-    storageState: { cookies: [], origins: [{ origin: new URL(url).origin, localStorage: [{ name: "keel.focus", value: "true" }] }] },
+    // They drive the workbench (the list, the dock, the tools); focus-mode.spec.ts
+    // clears keel.workbench to drive Focus, the owner's default.
+    storageState: { cookies: [], origins: [{ origin: new URL(url).origin, localStorage: [{ name: "keel.focus", value: "true" }, { name: "keel.workbench", value: "true" }] }] },
   },
 });

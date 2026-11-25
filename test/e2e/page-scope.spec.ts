@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Locator, type Page, type WebSocketRoute } from "./isolate.ts";
 import { calls, create, drop, folder, open, pane, row, scripted, settle } from "./answering.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: a page costs what it shows. Its socket brings the whole stream (the
 // reply as it is written, the stored events, what the turn is doing) only of
@@ -11,7 +11,7 @@ import { shoot } from "./shots.ts";
 // time and then let go; a new socket is told again what the page shows. A
 // pane's own session under a look is not drawn again until it shows. Agents
 // that come and go, and alerts that arrive, cost the page no request.
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 const LINGER_MS = 20_000; // ui/src/lib/scope.ts
 

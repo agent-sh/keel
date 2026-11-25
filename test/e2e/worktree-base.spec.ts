@@ -44,6 +44,7 @@ test("a new worktree starts from the branch picked", async ({ browser, request, 
     await page.addInitScript((ws) => {
       localStorage.setItem("keel.newWorkspace", JSON.stringify(ws));
       localStorage.setItem("keel.startInWorktree", "0");
+      localStorage.setItem("keel.workbench", "true");
     }, repo);
     await page.goto("/");
     await page.getByTestId("start-in-worktree").click();

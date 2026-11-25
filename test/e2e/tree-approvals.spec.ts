@@ -2,7 +2,7 @@ import { expect, test, type Page } from "./isolate.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { approvals, calls, colors, create, drop, folder, pending, scripted, SETTLE } from "./answering.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: a session's view shows what its whole tree of agents waits on, at any depth, each card named by
 // the agent that asks and its place in the tree. The owner of a coordinator answers its agents' approvals
@@ -10,7 +10,7 @@ import { shoot } from "./shots.ts";
 // (lib/asks.ts: no key answers as the keyboard arrives). The inbox opens an agent's approval on the
 // session at the top of the tree.
 // Every pane on screen: no focus mode (the config's default for the other specs).
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 const bash = (command: string) => ({ name: "Bash", input: { command } });
 const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });

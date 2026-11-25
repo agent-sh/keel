@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { ask, asksToRun, calls, cardIn, create, drop, folder, idle, open, row, scripted, settle } from "./answering.ts";
-import { shoot, setPanes } from "./shots.ts";
+import { shoot, setPanes, WORKBENCH } from "./shots.ts";
 
 // Feature: a pane holds the session the owner put in it. Opening another
 // session never takes that away: beside other panes it lies over the pane
@@ -14,7 +14,7 @@ import { shoot, setPanes } from "./shots.ts";
 // lists what needs the owner in every layout, in a pane's width. A pane says
 // before the click what a click on a row will do to it, and its header keeps
 // the title readable beside the reason. No pane changes its session by itself.
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 const bridge = (page: Page) => page.getByTestId("bridge");
 const slot = (page: Page, i: number) => bridge(page).locator(`:scope > [data-slot="${i}"]`);

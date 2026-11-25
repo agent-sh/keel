@@ -231,7 +231,7 @@ async function behindLink(browser: Browser, dir: string, more: Record<string, st
   const d = await ownDaemon(join(dir, "state"), 0, more);
   const link = tcpLink(d.port);
   const url = await link.listen();
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, storageState: { cookies: [], origins: [{ origin: url, localStorage: [{ name: "keel.focus", value: "true" }] }] } });
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, storageState: { cookies: [], origins: [{ origin: url, localStorage: [{ name: "keel.focus", value: "true" }, { name: "keel.workbench", value: "true" }] }] } });
   const page = await ctx.newPage();
   await page.addInitScript(WATCH);
   // The page's requests that have no answer yet, for the word of a failure.
@@ -459,6 +459,7 @@ test("connection truth: a daemon that was down for twenty seconds to two minutes
   let d = await ownDaemon(state);
   const port = d.port;
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await ctx.addInitScript(() => localStorage.setItem("keel.workbench", "true"));
   const page = await ctx.newPage();
   await page.addInitScript(MADE);
   await page.addInitScript(WATCH);
@@ -520,6 +521,7 @@ test("connection truth: a daemon that drains says so within two seconds, with th
   const gates = [join(state, "drain-1.go"), join(state, "drain-2.go")];
   const d = await ownDaemon(state, 0, { KEEL_DRAIN_MS: "30000" });
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1040 } });
+  await ctx.addInitScript(() => localStorage.setItem("keel.workbench", "true"));
   const page = await ctx.newPage();
   try {
     const call = (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => fetch(`${d.url}${path}`, { method, headers: { "content-type": "application/json" }, body: data === undefined ? undefined : JSON.stringify(data) }).then((r) => r.json() as Promise<any>);

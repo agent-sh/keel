@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: what shapes the agent (instructions, rulings, lessons, skills, commands, agents, plugins,
 // hooks, MCP servers, language servers, importing a setup) is one Customize page, opened from the
@@ -8,7 +8,7 @@ import { shoot } from "./shots.ts";
 // a search in Settings finds a Customize section and opens it there. On a phone it is a list, as
 // Settings is.
 const SECTIONS = ["instructions", "rulings", "lessons", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"];
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1920, height: 1040 } });
+test.use({ storageState: WORKBENCH, viewport: { width: 1920, height: 1040 } });
 
 test("Settings keeps its rail in the window and Customize holds the eleven sections", async ({ page }) => {
   await page.goto("/settings/general");

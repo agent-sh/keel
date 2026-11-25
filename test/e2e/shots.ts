@@ -2,6 +2,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { relative } from "node:path";
 
+// A page with no saved state but the one choice every spec makes: the workbench (the list, the panes, the dock),
+// not Focus, the owner's default (ui/src/lib/focus.ts; focus-mode.spec.ts drives that).
+export const WORKBENCH = { cookies: [], origins: [{ origin: new URL(process.env.KEEL_URL ?? "http://127.0.0.1:1").origin, localStorage: [{ name: "keel.workbench", value: "true" }] }] };
 export const SHOTS = process.env.KEEL_SHOTS ?? `${process.env.HOME}/.cache/keel-work/bun/shots`;
 mkdirSync(SHOTS, { recursive: true });
 

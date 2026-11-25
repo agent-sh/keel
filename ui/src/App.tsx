@@ -28,6 +28,8 @@ import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
 import { focusApproval } from "./lib/automation.ts";
 import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
+import { useFocus } from "./lib/focus.ts";
+import { FocusChrome } from "./components/Focus.tsx";
 import { chunked, preloadSettled } from "./lib/preload.ts";
 
 // Overlays and Settings load on first use; the first page carries the shell only.
@@ -108,6 +110,7 @@ export function App() {
 
   const sidebar = useUI((s) => s.sidebar);
   const rail = useRail();
+  const calm = useFocus();
   // Escape puts a laid-over list away (and nothing else: not the running turn).
   useEffect(() => {
     if (!rail.over) return;
@@ -198,7 +201,7 @@ export function App() {
       <AnswerQueue />
       <UndoToast />
       <StartedToast />
-      <div className="k-shell">
+      <div className="k-shell" data-mode={calm ? "focus" : undefined}>
         <AdminBand />
         <IncidentSlot />
         <ArchivedRefusalNotice />
@@ -219,6 +222,7 @@ export function App() {
               <main className="k-page"><Suspense fallback={null}>{(route.name === "settings" || route.name === "customize") && <Settings kind={route.name} section={route.section} />}{route.name === "project" && <ProjectPage id={route.id} />}</Suspense></main>
             ) : <Suspense fallback={null}><Bridge /></Suspense>}
           </div>
+          <FocusChrome />
         </div>
       </div>
       <Overlays />

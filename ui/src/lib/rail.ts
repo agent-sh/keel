@@ -13,6 +13,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { getStations, MAX_PANES, useStations } from "./stations.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
 import { PHONE_QUERY } from "./phone.ts";
+import { focusOn } from "./focus.ts";
 
 // A length given in px at a 16 px root, at the root's size now (the default
 // size and the owner's text size are the stylesheet's: styles.css sets the root).
@@ -57,7 +58,7 @@ export function useWidth() {
 // and the widest the panel gets. bridge.css holds only the conversation's
 // minimum (27.5rem, in the helm's min-width); the panel's width comes from here.
 const sessionMin = () => rem(440), panelMin = () => rem(384), panelMax = () => rem(640);
-const panes = () => { const st = getStations(); return st.focus ? 1 : st.count; };
+const panes = () => { const st = getStations(); return st.focus || focusOn() ? 1 : st.count; };
 // The room the helm pane can have: the window less the folded rail and the
 // other panes at their narrowest, each with its 1 px divider.
 const helmRoom = (width: number) => width - Math.ceil(railWidth()) - (panes() - 1) * (Math.ceil(paneMin()) + 1);
@@ -93,8 +94,9 @@ export const settingsFold = (width = innerWidth) => {
 // that is a width the list is dragged to; with less, the narrow list of titles.
 // With more panes than fit, the room is what the panes that fit leave: the list
 // is as it would be with only those open.
+// In Focus the list is never beside the conversation: a press lays it over the page.
 function beside(width: number): { width: number; narrow: boolean } | null {
-  if (settingsFold(width)) return null;
+  if (settingsFold(width) || focusOn()) return null;
   if (panesOver(width)) {
     const fit = panesMax(width), room = Math.floor(width - fit * paneMin() - fit);
     if (room >= Math.floor(rem(LIST_MIN))) return { width: Math.min(listWidth(), room), narrow: false };
@@ -134,7 +136,7 @@ export function railForm(width = innerWidth): RailForm {
 export function useRail(): RailForm {
   const width = useWidth();
   // What the form depends on, and no more: a pane does not render again for an overlay opening.
-  useUI((s) => `${s.sidebar}|${s.peek}|${s.listW}|${s.scale}|${!!s.panel}|${s.route.name}`);
+  useUI((s) => `${s.sidebar}|${s.peek}|${s.listW}|${s.scale}|${!!s.panel}|${s.route.name}|${s.workbench}`);
   useStations((s) => s.count);
   useStations((s) => s.focus);
   const form = railForm(width);
@@ -169,6 +171,8 @@ export function usePanelSide(): { beside: boolean; width: number } {
 export function toggleList(show?: boolean) {
   const ui = getUI();
   if (phone()) return savePref("sidebar", show ?? !ui.sidebar);
+  // In Focus the list is only laid over the page: the workbench's own choice stays as it was.
+  if (focusOn()) return setUI({ peek: show ?? !ui.peek });
   if (railTight()) {
     const next = show ?? !ui.peek;
     // (A list folded for Settings is only laid over it: the owner's own choice stays as it was.)

@@ -2,7 +2,7 @@ import type { APIRequestContext, Page } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { openPanel, setTheme, shoot, tabInto, setPanes } from "./shots.ts";
+import { openPanel, setTheme, shoot, tabInto, setPanes, WORKBENCH } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
@@ -16,7 +16,7 @@ import { openPanel, setTheme, shoot, tabInto, setPanes } from "./shots.ts";
 // Ctrl -, Ctrl 0, or Settings) scales the whole interface and is remembered,
 // with nothing clipped. A long transcript never makes the row of panes scroll.
 const MODEL = "scripted:stand-in";
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
+test.use({ storageState: WORKBENCH, viewport: { width: 1700, height: 980 } });
 
 test("panes by number, dragging, and text size", async ({ page, request }) => {
   const tag = Date.now().toString(36);

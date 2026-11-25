@@ -39,6 +39,7 @@ test("a session starts at a pull request's head, and a missing one is named", as
     await page.addInitScript((ws) => {
       localStorage.setItem("keel.newWorkspace", JSON.stringify(ws));
       localStorage.setItem("keel.startInWorktree", "0");
+      localStorage.setItem("keel.workbench", "true");
     }, repo);
     await page.goto("/");
     await page.getByTestId("start-in-worktree").click();

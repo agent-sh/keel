@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { rmSync } from "node:fs";
 import { calls, create, drop, folder, open, pane, row, scripted, settle } from "./answering.ts";
 import { daemon, exited, seeded } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: the owner's place in a conversation is theirs. Going to another
 // session and back, a visit to an agent, a look over a pane, a reload and a
@@ -15,7 +15,7 @@ import { shoot } from "./shots.ts";
 // something in the page within the last minute, or their pointer, a wheel or a
 // touch was in it within the last half minute. A pane beside the one worked in
 // is not read because it is on screen, and the list's mark follows the same rule.
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 const say = (text: string) => `script:say ${text.replaceAll("\n", "\\n")}`;
 const lines = (tag: string, n: number) => Array.from({ length: n }, (_, i) => `${tag} line ${i + 1} of the reply says something of its own.`).join("\n\n");

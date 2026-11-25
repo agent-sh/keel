@@ -3,7 +3,7 @@ import {
   answersOf, answersSent, approvals, arrives, ask, asksToRun, calls, cardIn, colors, create, drop, folder, idle, KINDS, mark, messagesSent, open, pane,
   pending, presses, rearm, reset, row, said, scripted, secondEnter, secretsAsked, SETTLE, settle, since, waits, watchKeys, type Kind,
 } from "./answering.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: answering what waits on the owner by keyboard. The rule every card is held to
 // (ui/src/lib/asks.ts): an answer is given only for what the owner could read, by a key the owner
@@ -11,7 +11,7 @@ import { shoot } from "./shots.ts";
 // decide; the others are the cases that each caught a fault. (The whole matrix of ways, kinds and
 // delays is run for reviews from the same parts, test/e2e/answering.ts, outside the suite.)
 // Every pane on screen: no focus mode (the config's default for the other specs).
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 // The numbers drawn on key caps (from data-n, the style sheet's: no part of the text they label).
 const numbers = (caps: Locator) => caps.evaluateAll((els) => els.map((el) => el.getAttribute("data-n")));

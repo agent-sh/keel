@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { shoot, showArchived } from "./shots.ts";
+import { shoot, showArchived, WORKBENCH } from "./shots.ts";
 
 // Feature: the session list stays where the owner left it. By default a row's
 // place comes from when its session was made, so no turn that starts or ends
@@ -21,7 +21,7 @@ import { shoot, showArchived } from "./shots.ts";
 // of six sessions every 200 ms, for 20 s.
 const MODEL = "scripted:stand-in";
 const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1920, height: 1040 } });
+test.use({ storageState: WORKBENCH, viewport: { width: 1920, height: 1040 } });
 test.setTimeout(420_000);
 
 type Day = { root: string; gate: string; ids: Record<string, string>; ticks: string[] };

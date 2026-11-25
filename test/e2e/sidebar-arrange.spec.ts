@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
-import { openPanel, shoot, showArchived } from "./shots.ts";
+import { openPanel, shoot, showArchived, WORKBENCH } from "./shots.ts";
 
 // Feature: the list and the panes stay the owner's to arrange. A second pane
 // is never forced: a kept layout with an empty pane opens as one pane, and
@@ -24,7 +24,7 @@ const ownFolder = (name: string) => {
   mkdirSync(dir, { recursive: true });
   return dir;
 };
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
+test.use({ storageState: WORKBENCH, viewport: { width: 1700, height: 980 } });
 
 // What a test here started is stopped when it ends, passed or failed. A session that starts
 // agents goes with them: one agent runs a 30 s command on, and its report starts the parent on

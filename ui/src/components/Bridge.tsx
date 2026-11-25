@@ -56,6 +56,7 @@ import { WatchHeadline, WatchLists, useAttended, useHome } from "./HomeWatch.tsx
 import { StartBox } from "./StartBox.tsx";
 import { goNextWaiting } from "./AnswerQueue.tsx";
 import { usePhoneWidth } from "../lib/list-hold.ts";
+import { useFocus } from "../lib/focus.ts";
 
 const helmNow = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
 // What the panes show, left to right: a look where one lies over a pane, else the pane's own session.
@@ -188,7 +189,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : offline ? OFFLINE : stateWords(st).word}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
           {/* At work the step's clock is the line over the box's (DockNow.tsx): one clock for one step. */}
           {timed(st) && !offline && !working && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
@@ -718,6 +719,8 @@ export function Bridge() {
   const phone = usePhoneWidth();
   const { list, watches } = useLive();
   const kept = useStations((s) => s);
+  // Focus shows the session worked in alone (lib/focus.ts).
+  const calm = useFocus();
   const sessions = useStore((x) => x.sessions);
   const loaded = useStore((x) => x.loaded.sessions);
   const helm = route.name === "session" ? route.id : null;
@@ -762,7 +765,7 @@ export function Bridge() {
   const gone = (id: string) => id !== helm && leftPane(sessions[id], !!splitId(id), viewed);
   useEffect(() => { if (loaded) stations.drop(gone); }, [loaded, sessions, helm, viewed]);
 
-  const focus = kept.focus;
+  const focus = kept.focus || calm;
   const startAt = fresh ? target(st) : -1; // the pane the start page shows in
   const weights = shares(st);
   const slots = phone ? [] : st.slots.map((id, i) => ({ id, i })).filter((x) => !focus || x.i === (fresh ? startAt : st.active));
@@ -980,7 +983,7 @@ export function Bridge() {
         })]}
         {phone && (fresh || (!helm && pages.length === 0)) && <NewStation />}
       </main>
-      {!phone && <PaneMap track={track} />}
+      {!phone && !calm && <PaneMap track={track} />}
       {/* (Not on a phone, in a window of one session, or with the helm alone: no empty pane stands beside the one worked in.) */}
       {!phone && !focus && !soloWindow && loaded && kept.seeded && <FillWaiting skip={startAt} helm={helm} />}
       {phone && <PhoneDock list={pages} helm={helm} />}

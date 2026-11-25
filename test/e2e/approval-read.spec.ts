@@ -72,6 +72,7 @@ test("a cut command takes no answer, and no keyboard on one: the rail, a link, t
     const aid = (await (await request.get(`/api/sessions/${s.id}/approvals`)).json()).approvals[0].id as string;
     for (const [name, viewport] of [["desk", { width: 1920, height: 1040 }], ["phone width", { width: 390, height: 844 }]] as const) {
       const c = await browser.newContext({ baseURL, viewport });
+      await c.addInitScript(() => localStorage.setItem("keel.workbench", "true"));
       const p = await c.newPage();
       await p.goto(`/s/${s.id}?approval=${aid}`);
       await expect(p.getByTestId("approval").first()).toBeVisible();

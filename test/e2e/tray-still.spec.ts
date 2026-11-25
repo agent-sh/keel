@@ -2,13 +2,13 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { calls, create, drop, folder, scripted } from "./answering.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: the card the owner is looking at stays where it is when another request arrives. The region above
 // the box goes to the oldest request only when that card is out of view, and the agents line does not
 // shift what is shown: the card's Allow takes a press at once, with no "it moved a moment ago". The foot of the
 // region says that a request waits below the one in view; a press goes to it, and the line goes when nothing waits.
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 const bash = (command: string) => ({ name: "Bash", input: { command } });
 const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });

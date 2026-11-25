@@ -1,12 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { shoot, setPanes } from "./shots.ts";
+import { shoot, setPanes, WORKBENCH } from "./shots.ts";
 
 // Feature: the daily paths by keyboard. Each test names the path it holds.
 const MODEL = "scripted:stand-in";
 // Every pane on screen: no focus mode (the config's default for the other specs).
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 async function scripted(request: APIRequestContext) {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];

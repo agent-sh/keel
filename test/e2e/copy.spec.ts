@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: copy. One copy button (CopyButton.tsx) on every message (the raw
 // markdown of a reply, the prompt as typed), every code block, a tool call's
@@ -7,7 +7,7 @@ import { shoot } from "./shots.ts";
 // copies also where the page has no async clipboard (plain http on a LAN or
 // tailnet address): through a hidden text field.
 const MODEL = "scripted:stand-in";
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
+test.use({ storageState: WORKBENCH, viewport: { width: 1700, height: 980 } });
 
 test("copy what a session shows, also without the async clipboard", async ({ page, context, request }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

@@ -1969,3 +1969,49 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-import :is(button, select) { min-width: 2.75rem; }
   .k-import-back { display: flex; align-items: center; gap: 0.25rem; padding: 0 0.75rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); color: var(--accent); text-align: left; }
 }
+
+/* ---------- The quiet bar ----------
+   The session's title at the body's size, in regular weight and quiet ink; its state is the dot, the word its
+   tooltip and the reader's. A pane alone (and Focus) has a bar of one text line and a small pad. Beside other
+   panes a head keeps its two rows (the title, then a preview line under another pane's), so every head ends on
+   one line. The pane's tools and the panel button rest out of sight and come under the pointer or the keys. */
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
+  .k-station .k-top-in > .k-station-head .k-station-title { font-size: var(--text-base); font-weight: 400; line-height: 1.35; color: var(--muted); letter-spacing: 0; }
+  .k-station .k-station-word-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .k-station-identity .k-station-word { cursor: default; }
+  .k-stations[data-count="1"] .k-top-in > .k-station-head { height: auto; min-height: 0; padding-block: 0.5rem; }
+  .k-stations[data-count="1"] .k-top-in > .k-station-head :is(.k-station-row, .k-station-rest) { min-height: 0; }
+  .k-stations[data-count="1"] .k-top-in > .k-session-header { align-items: center; }
+  .k-station .k-top:not(:hover, :focus-within) :is(.k-station-tools, .k-session-header .k-hand, .k-station-clock, .k-station-where) { opacity: 0; }
+  .k-station .k-top :is(.k-station-tools, .k-session-header .k-hand, .k-station-clock, .k-station-where) { transition: opacity var(--dur-move) var(--ease-out); }
+}
+
+/* ---------- Focus (lib/focus.ts, components/Focus.tsx) ----------
+   The session alone: its title in quiet ink over the conversation, the conversation and the message box at a
+   reading width, and the line over the box that says what runs. The list, the pane's tools, the session's menu
+   and the counts are a press, a key or the pointer away. */
+.k-shell[data-mode="focus"] .k-rail-wrap:not([data-over]) { display: none; }
+.k-shell[data-mode="focus"] .k-rail-wrap[data-over] { width: 0; }
+.k-shell[data-mode="focus"] .k-band { height: 0; }
+.k-shell[data-mode="focus"] .k-station { --k-band-h: 0px; }
+.k-shell[data-mode="focus"] .k-top-in > .k-station-head { border-bottom-color: transparent; padding-inline: max(1.375rem, calc(50% - 21.5rem)) 4rem; padding-block: 0.875rem 0.25rem; }
+.k-shell[data-mode="focus"] :is(.k-station-rest, .k-station-machine) { display: none; }
+.k-shell[data-mode="focus"] .k-top-in > .k-session-header { display: none; }
+.k-shell[data-mode="focus"] .k-stations .k-transcript, .k-shell[data-mode="focus"] .k-stations .k-compose-in { max-width: 46rem; }
+.k-shell[data-mode="focus"] .k-compose-in { padding-bottom: 2.25rem; }
+.k-shell[data-mode="focus"] .k-composer-box:focus-within { box-shadow: 0 0 0 1px var(--line-strong); }
+/* A message's acts, its turn's figures and its notes come under the pointer or the keys. */
+.k-shell[data-mode="focus"] .k-turn-foot:not(:hover, :focus-within) > *,
+.k-shell[data-mode="focus"] .k-user-message:not(:hover, :focus-within) > button { opacity: 0; }
+.k-shell[data-mode="focus"] .k-composer-box:not(:hover) .k-ctx-meter { opacity: 0; }
+.k-focus-edge { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 0.625rem; background: transparent; cursor: pointer; outline: none; }
+.k-focus-edge:is(:hover, :focus-visible) { box-shadow: inset 2px 0 0 var(--line-strong); }
+.k-focus-leave { position: fixed; top: 0.625rem; right: 0.875rem; z-index: 30; display: grid; place-items: center; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); color: var(--faint); opacity: 0.55; transition: opacity var(--dur-move) var(--ease-out); }
+.k-focus-leave svg { width: 1rem; height: 1rem; }
+.k-focus-leave:is(:hover, :focus-visible) { opacity: 1; color: var(--fg); background: var(--hover); outline: none; }
+.k-focus-leave:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
+.k-focus-line { position: fixed; bottom: 0.625rem; left: 50%; z-index: 30; transform: translateX(-50%); padding: 0.125rem 0.625rem; border-radius: var(--radius-md); font-size: var(--text-caption); color: var(--muted); white-space: nowrap; }
+.k-focus-line::before { content: ""; display: inline-block; width: 0.375rem; height: 0.375rem; margin-right: 0.5rem; border-radius: 50%; background: var(--st-need); vertical-align: 0.0625rem; }
+.k-focus-line:is(:hover, :focus-visible) { color: var(--fg); background: var(--hover); outline: none; }
+@media (prefers-reduced-motion: reduce) { .k-focus-leave { transition: none; } }
+.k-shell[data-mode="focus"] .k-notes:not(:hover, :focus-within) { opacity: 0; }

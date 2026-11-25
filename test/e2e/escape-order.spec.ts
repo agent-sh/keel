@@ -1,11 +1,11 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { create, drop, folder, scripted } from "./answering.ts";
-import { shoot, openPanel } from "./shots.ts";
+import { shoot, openPanel, WORKBENCH } from "./shots.ts";
 
 // Feature: Escape in the message box while a turn works closes what is open first, the topmost thing:
 // a popup, then the pane's side panel. Only with nothing open does it stop the turn. The press that
 // follows one that closed something is the double press: it stops nothing and says how to.
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 const phase = async (request: APIRequestContext, id: string) => ((await (await request.get("/api/sessions")).json()).sessions as { id: string; phase: string }[]).find((s) => s.id === id)?.phase;
 async function works(request: APIRequestContext, id: string, ws: string) {

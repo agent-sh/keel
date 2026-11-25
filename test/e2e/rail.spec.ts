@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot, setPanes } from "./shots.ts";
+import { shoot, setPanes, WORKBENCH } from "./shots.ts";
 
 // Feature: the rail always says which session is which. With room it is the
 // list (title, state, time, by folder), with one pane, two or three open at
@@ -14,7 +14,7 @@ import { shoot, setPanes } from "./shots.ts";
 // daemon keeps the mark). The pane head shows the whole title in the text
 // face.
 const MODEL = "scripted:stand-in";
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
+test.use({ storageState: WORKBENCH, viewport: { width: 1700, height: 980 } });
 
 test("the list with room, marks without, the card and the toggle", async ({ page, request }) => {
   const tag = Date.now().toString(36);

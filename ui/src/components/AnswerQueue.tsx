@@ -70,6 +70,7 @@ import { cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
 import { DESK_QUERY, PHONE_QUERY } from "../lib/phone.ts";
+import { useFocus } from "../lib/focus.ts";
 
 const KEYS = "alt+a";
 // A phone: one page at a time, answered on the way (see the head of the file).
@@ -172,7 +173,7 @@ export function goNextWaiting() {
 }
 
 // The next session that waits, from a session that waits itself (a finger's way: the line above its cards).
-function goNextOther() {
+export function goNextOther() {
   const next = nextWaiting(state.order, here());
   if (next) go(next);
   else say("Nothing else waits for you.");
@@ -351,6 +352,11 @@ export function WaitingSlot({ sessionId }: { sessionId: string }) {
   return <span ref={ref} data-waiting-slot="" className="[&:not(:empty)]:ml-auto [&:not(:empty)]:inline-flex max-md:[&:not(:empty)]:order-last max-md:[&:not(:empty)]:ml-0 max-md:[&:not(:empty)]:basis-full" />;
 }
 
+// How many sessions other than this one wait on the owner (its own agents are not other: what they ask shows here).
+export function useOthersWaiting(sessionId: string | null): number {
+  return useQueue((s) => s.order.filter((id) => id !== sessionId && !(sessionId && s.above[id]?.includes(sessionId))).length);
+}
+
 // Above what a session asks: how many other sessions wait, and how to get to
 // them. In a sequence it says that the next one opens by itself. The session's
 // own agents are not elsewhere: what they ask is reached from this page.
@@ -359,7 +365,9 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   const on = useQueue((s) => s.on && s.at === sessionId);
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
   const slot = useSyncExternalStore(slotSub, () => slots.get(sessionId) ?? null);
-  if (!others || !helm) return null;
+  // In Focus the other sessions that wait are one line at the bottom edge (Focus.tsx).
+  const calm = useFocus();
+  if (!others || !helm || calm) return null;
   const said = `${others} other session${others === 1 ? " waits" : "s wait"}`;
   const n = `${said} for you`;
   const words = on ? `Answering in sequence. ${n}: the next opens when this is answered.` : `${n}.`;

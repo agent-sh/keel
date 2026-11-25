@@ -3,9 +3,9 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, WORKBENCH } from "./shots.ts";
 
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: WORKBENCH });
 
 test("the active pane has a single identity line and a background pane keeps its preview", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string; provider: string; context: number }[];
