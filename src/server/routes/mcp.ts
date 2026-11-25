@@ -3,6 +3,7 @@ import { registerSocket, type RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { changeDigest } from "../../mcp/pins.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
+import { bindMcpCalls } from "../../automation/mcp-calls.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
@@ -79,6 +80,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     alertHook.raise?.("mcp", null, `${n} server${n === 1 ? " was" : "s were"} pinned as ${n === 1 ? "it is" : "they are"} now: review in Customize > MCP servers`, `Keel now pins each MCP server's tools and instructions, and holds a later change until you accept it. ${list(names)} ${n === 1 ? "was" : "were"} set up before, so what ${n === 1 ? "it lists" : "they list"} now was taken as accepted. Look ${n === 1 ? "it" : "them"} over in Customize > MCP servers.`, n === 1 ? { mcp_server: names[0] } : {});
   };
   installMcpTools(m);
+  bindMcpCalls(m);
   // A call whose server asked the owner a question waits on the owner: a
   // drain does not wait for it, and a restart asks again on the same card.
   registerHooks({

@@ -37,13 +37,17 @@ export type WaitSpec =
   | { kind: "websocket"; url: string; protocols?: string[]; match?: string; coalesce_ms?: number; max_events?: number }
   // A pull request's checks on GitHub, read with the owner's gh login.
   | { kind: "pr_checks"; repo: string; pr_number: number }
-  | { kind: "session"; machine: string; session: string; title?: string; message_id?: string };
+  | { kind: "session"; machine: string; session: string; title?: string; message_id?: string }
+  // An MCP call that went on in the background (src/automation/mcp-calls.ts). Keel makes it; nobody sets it by hand.
+  | { kind: "mcp_call"; entry: string; tool: string; label: string; started: number; call_id: string; task_id?: string; remote?: true; file: string; spill_dir: string };
 
 // A wait kind another module probes (the fleet's session notices): how a spec
 // is read, how often it is probed, and the probe itself (an outcome fires it;
 // a thrown error is kept as the last probe's error). The signal aborts when
 // the probe took too long or its wait was settled.
-export type WaitKind = { normalize(spec: any, cwd: string): WaitSpec; every: number; probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> | string | undefined };
+// `ended`: told once when the wait is settled, by whatever reason (fired, timed out, cancelled): a kind that holds
+// something of its own lets it go there.
+export type WaitKind = { normalize(spec: any, cwd: string): WaitSpec; every: number; probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> | string | undefined; ended?(w: WaitRecord): void };
 const kinds = new Map<string, WaitKind>();
 export const registerWaitKind = (kind: string, k: WaitKind) => void kinds.set(kind, k);
 
@@ -801,6 +805,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   // and the same statement records that the wake is owed.
   if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, `${kept(outcome)}${carry ? `\n\n${carry}` : ""}${others ? `\n\n${others}` : ""}`, Date.now(), wake ? 1 : 0, id).changes) return false;
   const rec = get(id)!;
+  try { kinds.get(w.kind)?.ended?.(rec); } catch (e) { capture(e, { at: "a wait kind's end", wait: id }); }
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}${lateness.late ? ` ${lateness.late}` : ""}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id, ...(lateness.late ? { late: lateness.late } : {}) });
   sayAt({ session: w.session_id }, waitEndLine({ id, on: waitsFor(w.kind), status, ms: (rec.ended ?? Date.now()) - w.created, late: lateness.late, title: D().store.session(w.session_id)?.title }), status === "timeout" ? "warn" : "info");

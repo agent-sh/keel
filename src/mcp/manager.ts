@@ -15,7 +15,7 @@ import { registerCatalog, sessionOff, unregisterCatalog, type CatalogTool } from
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { networkFailure, RETRY, retryDelay } from "./retry.ts";
-import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, TOOL_CEILING_MS, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { formOf, linkOf, linksRequired, plain, URL_REQUIRED, type ElicitResult, type Link } from "./elicit.ts";
 import { cardText, samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
 import { withoutHidden } from "../core/hidden-chars.ts";
@@ -59,7 +59,16 @@ const SELF_MAX = 10;
 const QUEUED_MAX = 5;
 // `end`: stops the call (its request is cancelled); `ended`: why it was.
 // `client`: the connection the call runs on (a page's completion is said on it).
-type CallAsks = { asked: number; declined: number; queued: number; self: number; roots: number; notes: Set<string>; readOnly: boolean; client?: McpClient; end?: () => void; ended?: string };
+type CallAsks = { asked: number; declined: number; queued: number; self: number; roots: number; notes: Set<string>; readOnly: boolean; client?: McpClient; end?: () => void; ended?: string; background?: boolean };
+// A call that may go on in the background: what the call makes known to the one that watches it.
+type Movable = { call?: CallAsks; task?: string; card?: string };
+// What takes over a call that ran past its time (src/automation/mcp-calls.ts): the session's wait on it.
+export type BackgroundCalls = {
+  // How long a call of this session runs in the turn: 0 for never.
+  afterMs(ctx: ToolContext): number;
+  // Takes over `finished`: the text the model is told (its handle), or nothing when it cannot (the call then goes on in the turn).
+  move(at: { ctx: ToolContext; server: string; entry: string; shown: string; tool: string; started: number; maxMs: number; taskId?: string; remote: boolean; finished: Promise<ToolOutput>; stop: () => void }): string | undefined;
+};
 // Declines are counted when the owner answers, so that bound is looked at
 // again when a queued question's turn comes; the count of questions is
 // looked at once, before the question is counted (the twentieth is shown).
@@ -436,6 +445,11 @@ const SESSION_KEPT = 200;
 registerSettings("mcp_idle", { close_browser_min: 10, stop_min: 30 }, (v) =>
   typeof v.close_browser_min !== "number" || !Number.isFinite(v.close_browser_min) || v.close_browser_min < 0 ? "close_browser_min is a number of minutes, 0 or more (0: never)"
     : typeof v.stop_min !== "number" || !Number.isFinite(v.stop_min) || v.stop_min < 0 ? "stop_min is a number of minutes, 0 or more (0: never)" : undefined);
+
+// A call that has run this long goes on in the background (Claude Code's CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS is two
+// minutes): its session gets a handle and goes on, and the result comes as a message when it ends. 0: calls wait.
+registerSettings("mcp_background", { after_secs: 120 }, (v) =>
+  typeof v.after_secs !== "number" || !Number.isFinite(v.after_secs) || v.after_secs < 0 ? "after_secs is a number of seconds, 0 or more (0: a call always waits in the turn)" : undefined);
 
 // Where the owner published Keel's client metadata document (the MCP authorization spec's Client ID Metadata
 // Documents). An authorization server that supports them is signed in to with this URL as the client id; one that does
@@ -1315,9 +1329,68 @@ export class McpManager {
     if (no) return Promise.resolve({ content: no, is_error: true });
     if (e) { e.inflight = (e.inflight ?? 0) + 1; e.used = Date.now(); }
     const done = () => { if (e) { e.inflight = Math.max(0, (e.inflight ?? 1) - 1); e.used = Date.now(); } };
-    const run = () => (b?.call ? b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m)) : this.callRaw(name, tool, input, ctx, undefined, app));
+    // A call that goes on in the background keeps its server in use until it ends, not until the turn is told.
+    let held = false;
+    const hold = () => ((held = true), done);
+    const run = () => (b?.call ? b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m)) : app ? this.callRaw(name, tool, input, ctx, undefined, app) : this.movable(name, tool, input, ctx, hold));
     // (A call that comes while the server's browser is being closed goes on after the close.)
-    return (e?.closing ? e.closing.then(run) : run()).finally(done);
+    return (e?.closing ? e.closing.then(run) : run()).finally(() => { if (!held) done(); });
+  }
+
+  // What takes over a call that runs long (set by the daemon; none: every call waits in its turn).
+  background?: BackgroundCalls;
+
+  // The task a remote server made of a call that went on in the background, looked at again after the daemon
+  // restarted (tasks/get until it ends, no tasks/cancel while it runs) and taken as the call's result. A server of
+  // the owner's own config only: a session's server, or one the daemon started as a child, is not there to ask.
+  async resumeTask(name: string, taskId: string, o: { sessionId: string; cwd: string; spillDir: string; tool: string; signal: AbortSignal; maxMs: number }): Promise<ToolOutput> {
+    const e = this.entries.get(name);
+    if (!e || e.session || e.bundled || !e.config.url) throw new Error(`the server ${name} is not one of the owner's remote servers now, so its task cannot be followed`);
+    const shown = e.label ?? name;
+    const client = await this.ensure(name);
+    // No card is open for a call that went on in the background: what the task asks is answered as no choice.
+    const input = { session: o.sessionId, ask: async (q: InputRequest): Promise<unknown> => { if (q.method === "elicitation/create") return { action: "cancel" }; throw new RpcError(-32601, `keel does not answer ${q.method} for a call that went on in the background`); } };
+    const r = await client.resumeTask(taskId, { signal: o.signal, ceilingMs: o.maxMs, timeoutMs: (e.config.tool_timeout_secs ?? 600) * 1000, input });
+    return toOutput(r, { sessionId: o.sessionId, cwd: o.cwd, spillDir: o.spillDir, signal: o.signal, seen: new Map() }, `${shown}__${o.tool}`);
+  }
+
+  // A call of a session's tool, which goes on in the background once it has run `afterMs` (mcp_background.after_secs):
+  // the turn is told so, with a handle, and the call is no longer the turn's: its stop is not the call's stop, and a
+  // question the server asks then has no card to be shown on. Not while the call waits for the owner's answer.
+  private movable(name: string, tool: string, input: unknown, ctx: ToolContext, hold: () => () => void): Promise<ToolOutput> {
+    const after = ctx.callId && !ctx.nestedIn ? this.background?.afterMs(ctx) ?? 0 : 0;
+    if (!(after > 0)) return this.callRaw(name, tool, input, ctx);
+    const own = new AbortController();
+    const forward = () => own.abort(ctx.signal.reason);
+    if (ctx.signal.aborted) forward(); else ctx.signal.addEventListener("abort", forward, { once: true });
+    const state: Movable = {};
+    const started = Date.now();
+    const finished = this.callRaw(name, tool, input, { ...ctx, signal: own.signal }, undefined, undefined, state);
+    const e = this.entries.get(name);
+    return new Promise<ToolOutput>((resolve, reject) => {
+      let moved = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const arm = (ms: number) => { timer = setTimeout(move, ms); timer.unref?.(); };
+      const over = () => { if (timer) clearTimeout(timer); ctx.signal.removeEventListener("abort", forward); };
+      const move = () => {
+        timer = undefined;
+        if (moved || ctx.signal.aborted) return;
+        // Waiting for the owner's answer: not now, and again shortly.
+        if (state.call && (state.call.queued > 0 || (state.card && this.asking.has(state.card)))) return arm(2_000);
+        const shown = e?.label ?? name;
+        const maxMs = e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : TOOL_CEILING_MS;
+        const text = this.background!.move({ ctx, server: shown, entry: name, shown, tool, started, maxMs, taskId: state.task, remote: !!e && !e.session && !!e.config.url, finished, stop: () => own.abort() });
+        if (text === undefined) return;
+        moved = true;
+        over();
+        if (state.call) state.call.background = true;
+        const release = hold();
+        void finished.then(release, release);
+        resolve({ content: text });
+      };
+      arm(after);
+      finished.then((v) => { over(); if (!moved) resolve(v); }, (err) => { over(); if (!moved) reject(err); });
+    });
   }
 
   // A read of a server's resources or prompts is a use of it as a tool call is: it is not idle for the bound after it.
@@ -1421,7 +1494,7 @@ export class McpManager {
   onIdleClose?: (name: string, idleMs: number) => void;
   private idleTimer?: ReturnType<typeof setInterval>;
 
-  private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>, app?: AppCall): Promise<ToolOutput> {
+  private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>, app?: AppCall, watch?: Movable): Promise<ToolOutput> {
     const e = this.entries.get(name);
     const shown = e?.label ?? name; // the name the session knows it by
     const config = e?.config;
@@ -1457,6 +1530,7 @@ export class McpManager {
       // goes with the call; the next call starts the server again.
       if (client.era === "legacy" && client.unnamedRequests) client.drop(`a call of ${shown}__${tool} was ended because of the questions it asked, and the server may still be asking`);
     }, client, readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
+    if (watch) { watch.call = call; watch.card = card; }
     // What the model is told besides the result: what the server asked that got no answer, and why.
     // The first call since it connected, when the server itself failed it (an error it answered, or a
     // failure on the way: not Keel's end of the call, not the owner's), says what of the environment it went without.
@@ -1482,6 +1556,7 @@ export class McpManager {
           session: ctx.sessionId,
           // (By the name the session knows the server by: the card and the notes show it.)
           ask: (q) => this.input(shown, q, ctx, card, call),
+          task: (id) => { if (watch) watch.task = id; },
           dropped: (method, why) => call.notes.add(`${shown} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other call is using ${shown}.`),
         }, e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : undefined, taskSupport);
       } finally { done?.(); }
@@ -1628,6 +1703,7 @@ export class McpManager {
     const over = overLimit(server, call);
     if (over) end(over);
     call.asked++;
+    if (call.background) return unasked(`${server} asked the owner ${sampling ? "to let it use the session's model" : "a question"} after its call went on in the background, where no card can show it.`);
     if (!card) return unasked(`${server} asked the owner ${sampling ? "to let it use the session's model" : "a question"}, and a call a program made has no card to show it on: call the tool directly.`);
     if (call.queued >= QUEUED_MAX + 1) return unasked(`${server} asked more than ${QUEUED_MAX} questions at once: one card is shown at a time, and no more than that wait behind it.`);
     call.queued++;

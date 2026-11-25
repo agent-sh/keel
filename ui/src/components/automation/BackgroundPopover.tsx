@@ -24,6 +24,7 @@ export function waitLabel(w: WaitRecord): string {
     case "websocket": return `Socket ${s.url}${s.match ? ` /${s.match}/` : ""}`;
     case "pr_checks": return `Checks of ${s.repo}#${s.pr_number}`;
     case "session": return `Until ${s.title || s.session} ${s.message_id ? "handles it" : "is at rest"}`;
+    case "mcp_call": return `MCP call ${s.label}`;
   }
 }
 

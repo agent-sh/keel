@@ -69,7 +69,9 @@ export type InputHandler = (req: InputRequest) => Promise<unknown>;
 // session the call belongs to (a request is never routed across sessions).
 // `dropped`: told when a request that may have been this call's was not
 // routed to any call, with the reason.
-export type CallInput = { session: string; ask: InputHandler; dropped?: (method: string, why: string) => void };
+// `task`: told the id of a task the server made of the call, as soon as there is one (a call that goes on in the
+// background keeps it, to look at the task again after a restart).
+export type CallInput = { session: string; ask: InputHandler; dropped?: (method: string, why: string) => void; task?: (taskId: string) => void };
 // A modern server answers a call with input_required and no question, to be
 // called again with its state. Each such round is sent at once with no owner
 // in it, so a server that never stops would spin: this many in a row end the call.
@@ -1035,6 +1037,7 @@ export class McpClient {
     const start = Date.now();
     const ceiling = ceilingMs ?? opt.ceilingMs ?? Infinity;
     const each = { signal: opt.signal, timeoutMs: opt.timeoutMs, authorize: opt.authorize };
+    try { opt.input?.task?.(id); } catch { /* the call's note of its task is not the task */ }
     let wake = () => {};
     this.tasks.set(id, () => wake());
     const answered = new Set<string>();
@@ -1087,6 +1090,14 @@ export class McpClient {
     } finally {
       this.tasks.delete(id);
     }
+  }
+
+  // A task this server made of an earlier call (its id was kept), looked at again until it ends and answered with the
+  // call's result, as the call that made it would have been. The server says what became of a task it no longer knows.
+  // `input`: what answers the task's questions (a call that went on in the background has none: it asks for input,
+  // and the call fails saying so).
+  resumeTask(taskId: string, o: { signal?: AbortSignal; timeoutMs?: number; ceilingMs?: number; input?: CallInput } = {}): Promise<any> {
+    return this.awaitTask({ taskId, status: "working" }, "tools/call", { signal: o.signal, timeoutMs: o.timeoutMs, input: o.input, ceilingMs: o.ceilingMs }, o.ceilingMs);
   }
 
   // Close once nothing waits on this client (a reload replaced it).

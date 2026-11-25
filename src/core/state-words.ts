@@ -68,7 +68,7 @@ export const NEEDS: Record<string, string> = {
 // What a wait is on, by its kind.
 export const WAITS_FOR: Record<string, string> = {
   timer: "a timer", file: "a file", log: "a log line", http: "an HTTP check", process: "a process", monitor: "a monitor",
-  websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session", wake: "a wake of its own",
+  websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session", mcp_call: "an MCP call", wake: "a wake of its own",
   agent: "an agent", slot: "a free agent slot", resume: "the provider", unreachable: "the provider", send: "Keel to be back",
 };
 export const waitsFor = (kind: unknown) => WAITS_FOR[String(kind)] ?? "a condition";
