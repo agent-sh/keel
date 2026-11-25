@@ -18,9 +18,11 @@ export function SpeechSettings() {
   const tts = (list?.models ?? []).filter((m) => m.kind === "tts");
   const voices = voicesOf(p, list);
   const listen = chooseListen(p, list), say = chooseSay(p, list);
-  const dictate = commandKeys("dictate"), converse = commandKeys("converse");
+  // A touch screen has no keys to name: there the line says what each does, not how to start it.
+  const touch = matchMedia("(pointer: coarse)").matches;
+  const key = (id: string) => (touch ? "" : ` (${commandKeys(id)})`);
   return (
-    <Page intro={`Dictate into the message box (${dictate}), or talk with a session (${converse}): you speak, the message goes when you stop, the reply is read aloud and it listens again. Esc ends it.`} testid="speech-settings">
+    <Page intro={`Dictate into the message box${key("dictate")}, or talk with a session${key("converse")}: you speak, the message goes when you stop, the reply is read aloud and it listens again.${touch ? "" : " Esc ends it."}`} testid="speech-settings">
       <Group title="Listening" hint="Turns what you say into text.">
         <SettingRow label="Hear with" hint={listen.way ? <>Used now: <span data-testid="speech-listen-now">{listen.way.label}</span></> : listen.why}>
           <Seg label="Hear with" value={p.listen} onChange={(v) => setPrefs({ listen: v })} options={WAYS} testid="speech-listen" />

@@ -360,3 +360,26 @@ test("narrow: the speech line and Settings > Speech at 390x844 in both themes", 
   expect(scroll).toBeLessThanOrEqual(390);
   await shoot(page, "speech-08-narrow-settings");
 });
+
+// A touch screen has no keys to press: the Settings a phone shows name none (Speech, the helper, General), and a desk keeps them.
+test("Settings on a touch screen name no keys", async ({ browser, baseURL, page }) => {
+  const ctx = await browser.newContext({ baseURL, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const phone = await ctx.newPage();
+  const KEYS = /\b(Ctrl|Alt|Shift|Esc)\b/;
+  try {
+    for (const [section, words] of [["speech", "Hear with"], ["helper", "One conversation that never ends"], ["general", "Text size"]] as const) {
+      await phone.goto(`/settings/${section}`);
+      const scroll = phone.getByTestId("settings-scroll");
+      await expect(scroll).toContainText(words);
+      expect(await scroll.innerText(), `no key named in ${section} on a touch screen`).not.toMatch(KEYS);
+    }
+    await phone.goto("/settings/speech");
+    await expect(phone.getByTestId("speech-settings")).toContainText("Dictate into the message box, or talk with a session");
+    await shoot(phone, "speech-05-settings-touch");
+  } finally {
+    await ctx.close();
+  }
+  // At a desk the keys are named.
+  await page.goto("/settings/speech");
+  await expect(page.getByTestId("speech-settings")).toContainText(/Dictate into the message box \(Alt Shift D\)/);
+});

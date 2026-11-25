@@ -200,7 +200,7 @@ export function HelperSettings() {
     <div className="flex flex-col gap-4" data-testid="helper-settings">
       <Card>
         <HelperIdentity />
-        <SettingRow label="Helper" hint="One conversation that never ends, at the top of the list (Ctrl J). It follows your sessions, checks your mail, and keeps what is worth remembering. Off: no wakes and no mail checks; the conversation and the list stay.">
+        <SettingRow label="Helper" hint={`One conversation that never ends, at the top of the list${matchMedia("(pointer: coarse)").matches ? "" : " (Ctrl J)"}. It follows your sessions, checks your mail, and keeps what is worth remembering. Off: no wakes and no mail checks; the conversation and the list stay.`}>
           <div className="flex items-center gap-3">
             {view.on && view.session_id && <button type="button" data-testid="helper-open" onClick={() => openHelper().catch(reportError)} className="k-link rounded-sm text-ui text-accent-ink hover:underline">Open the conversation</button>}
             {/* The switch stays in Settings: turning it on does not take the page to the conversation (the link beside it does). */}
