@@ -606,7 +606,9 @@ test("a goal's verifier is continued across restarts and gives one verdict", asy
     // The third start continues the turn to its verdict: nothing is left to read.
     await expect.poll(async () => (await goal()).status, { timeout: 60_000 }).toBe("achieved");
     expect(await goal()).toMatchObject({ verified: true, verifying: false, verifier_session: child, evidence: ["3 reads of the pipe were started"] });
-    expect((await verifiers()).map((a) => [a.session_id, a.status])).toEqual([[child, "completed"]]);
+    // The goal is met when its verdict is read; the verifier's record ends when its end is settled, which first stops
+    // the reads of the pipe the earlier daemons' cut turns left (a second each).
+    await expect.poll(async () => (await verifiers()).map((a) => [a.session_id, a.status]), { timeout: 30_000 }).toEqual([[child, "completed"]]);
     const ev = (await view(child)).events as any[];
     expect(ev.filter((e) => e.kind === "user").map((e) => e.data.kind ?? e.data.origin)).toEqual(["verify_goal", "restart", "restart", "restart"]);
     expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "restart", "restart", "end_turn"]);
