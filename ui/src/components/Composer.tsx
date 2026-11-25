@@ -1,5 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
-import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, MessageSquare, Slash, SlidersHorizontal, Square, X } from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
+import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, MessageSquare, Plus, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { lazy, memo, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
@@ -39,6 +40,7 @@ import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
 import { DESK_QUERY } from "../lib/phone.ts";
+import { useFocus } from "../lib/focus.ts";
 
 // The two presses of Escape that open the rewind come within this time.
 const ESC_TWICE_MS = 700;
@@ -54,6 +56,25 @@ const Pickers = {
   }),
   Model: memo(ModelPicker), Effort: memo(EffortPicker), Speed: memo(SpeedPicker), Fallback: memo(FallbackChip), Limit: memo(LimitChip), Meter: memo(ContextMeter),
 };
+// Focus's + in the message box: the mode, the model, the effort and the context in one popup. A key that asks for
+// one of them (Alt M, Alt E, /permissions) opens it with that picker.
+function BoxMore({ signal, children }: { signal: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const was = useRef(signal);
+  useEffect(() => { if (signal !== was.current) { was.current = signal; setOpen(true); } }, [signal]);
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger className="k-box-more grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg data-popup-open:bg-hover" data-testid="box-more" aria-label="Mode, model and context" title="Mode, model and context">
+        <Plus className="size-4" />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50">
+          <Popover.Popup className="k-box-more-pop flex flex-col items-start gap-1 rounded-lg border border-line bg-raised p-1.5 shadow-3 outline-none" data-testid="box-more-popup">{children}</Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
 const FileInput = memo(function FileInput({ at, take }: { at: { current: HTMLInputElement | null }; take: { current: (files: File[]) => void } }) {
   return <input ref={at} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { take.current([...(e.target.files ?? [])]); e.target.value = ""; }} />;
 });
@@ -463,6 +484,9 @@ const SessionComposer = memo(function SessionComposer({
   // A large text size on a phone leaves the hint room for two short words: the queue button names itself.
   const crowded = useCrowded();
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
+  // Focus on a desk: the box is one line, the field with Send beside it; the mode, the model and the context are
+  // behind its + (BoxMore, lib/focus.ts).
+  const focusMode = useFocus();
   const rest = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !working && !notice && synced;
   // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
   // one line then, Stop included, until a tap brings its tools (bridge.css).
@@ -508,7 +532,8 @@ const SessionComposer = memo(function SessionComposer({
     // high at a text size that makes its rows fractional, and the box would grow by the rest.
     let under = 0;
     // (What lies over the box, like the resting box's tools button, takes no room under the text.)
-    for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) if (getComputedStyle(x).position !== "absolute") under += x.getBoundingClientRect().height;
+    // (Nor what stands beside the text on its line: Focus's tools, in the second column of the box's grid.)
+    for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) { const cs = getComputedStyle(x); if (cs.position !== "absolute" && cs.gridColumnStart !== "2") under += x.getBoundingClientRect().height; }
     // The attachments give way to a long draft down to one row (it scrolls), so what is above
     // the text counts that row, not all of them.
     const strip = box.querySelector<HTMLElement>(':scope > [data-testid="attachments"]');
@@ -1239,19 +1264,31 @@ const SessionComposer = memo(function SessionComposer({
             <FileInput at={fileInput} take={takeFiles} />
             <SpeechButtons sid={sid} />
             {/* The mode, the model, the effort and the context stand in one row: what the next turn may do is read where it is asked for. */}
-            {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
-            <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
+            {/* (In Focus they are behind the box's +: the box is one line.) */}
+            {!focusMode && sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
+            {!focusMode && <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />}
+            {focusMode && (
+              <BoxMore signal={`${modeOpen}|${pickerSignal}|${effortOpen}`}>
+                {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
+                <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
+                {sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
+                {sid && <Pickers.Speed sessionId={sid} />}
+                {sid && <Pickers.Fallback sessionId={sid} />}
+                {model && <Pickers.Limit model={model} />}
+                {sid && <Pickers.Meter sessionId={sid} />}
+              </BoxMore>
+            )}
           </span>
-          {sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
-          {sid && <Pickers.Speed sessionId={sid} />}
-          {sid && <Pickers.Fallback sessionId={sid} />}
-          {model && <Pickers.Limit model={model} />}
-          {short && !narrow && sid && <Pickers.Meter sessionId={sid} />}
+          {!focusMode && sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
+          {!focusMode && sid && <Pickers.Speed sessionId={sid} />}
+          {!focusMode && sid && <Pickers.Fallback sessionId={sid} />}
+          {!focusMode && model && <Pickers.Limit model={model} />}
+          {!focusMode && short && !narrow && sid && <Pickers.Meter sessionId={sid} />}
           {!short && status}
         </div>
         <div className="k-compose-send ml-auto flex shrink-0 items-center gap-1.5">
           {/* On a phone the ring stands with Send, out of what scrolls. */}
-          {(!short || narrow) && sid && <Pickers.Meter sessionId={sid} />}
+          {!focusMode && (!short || narrow) && sid && <Pickers.Meter sessionId={sid} />}
           {busy && onQueue && (
             <button
               ref={queueButton}

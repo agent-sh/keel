@@ -2022,3 +2022,22 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-station .k-station-identity .k-station-title { font-size: var(--text-base); font-weight: 400; color: var(--muted); letter-spacing: 0; }
 }
+/* Focus's message box: a hairline frame in quiet ink, one line at rest (Composer.tsx rests it as a phone's), and
+   Send and Stop at the size of a line's icon button. Send wears the accent only while there is something to send. */
+.k-shell[data-mode="focus"] .k-composer-box { border-color: var(--line); background: transparent; }
+.k-shell[data-mode="focus"] .k-composer-box:focus-within { border-color: var(--line-strong); box-shadow: none; }
+/* One line: the field, and beside it on its line the few tools used while typing (Composer.tsx); what else the box
+   holds (attachments, notices) spans the line above or below. */
+.k-shell[data-mode="focus"] .k-composer-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.k-shell[data-mode="focus"] .k-composer-box > * { grid-column: 1 / -1; }
+.k-shell[data-mode="focus"] .k-composer-box > textarea { grid-column: 1; padding-bottom: 0.625rem; }
+.k-shell[data-mode="focus"] .k-composer-box > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; padding: 0 0.375rem 0.375rem 0; }
+.k-shell[data-mode="focus"] .k-compose-tools :is(.k-attach, .k-dictate, .k-box-more, .k-queue) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); }
+.k-shell[data-mode="focus"] :is(.k-send, .k-stop) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); }
+.k-shell[data-mode="focus"] :is(.k-send, .k-stop) svg { width: 0.875rem; height: 0.875rem; }
+.k-shell[data-mode="focus"] .k-send:disabled { background: transparent; color: var(--faint); opacity: 1; }
+.k-shell[data-mode="focus"] .k-stop { border-color: transparent; color: var(--muted); }
+.k-shell[data-mode="focus"] .k-stop:hover { color: var(--fg); background: var(--hover); }
+/* The agents of the dock in Focus: one item in muted ink, the word and how many are live (AgentsDock.tsx). */
+.k-shell[data-mode="focus"] .k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }
+.k-agents-count { color: var(--muted); }

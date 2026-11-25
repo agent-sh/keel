@@ -115,6 +115,58 @@ test.describe("Focus is the default", () => {
       for (const id of made) await request.delete(`/api/sessions/${id}`);
     }
   });
+
+  test("in Focus the box is one line, its buttons a line's icons, the agents one quiet item, the owner's words the reply's size", async ({ page, request }) => {
+    const model = await scripted(request);
+    test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+    const { session } = await (await request.post("/api/sessions", { data: { model, title: "Focus: a coordinator" } })).json();
+    const calls = (l: unknown[]) => `script:calls ${JSON.stringify(l)}`;
+    const spawn = (title: string) => ({ name: "spawn_agent", input: { message: `${title}\n${calls([{ name: "Bash", input: { command: "sleep 120" } }])}` } });
+    try {
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:say A short reply." } });
+      await page.goto(`/s/${session.id}`);
+      await expect(page.getByTestId("assistant-text").last()).toContainText("A short reply.", { timeout: 30_000 });
+      const px = await rootPx(page);
+      // The owner's words are the reply's size.
+      const size = (sel: string) => page.locator(sel).last().evaluate((e) => getComputedStyle(e).fontSize);
+      expect(await size(".k-owner-words")).toBe(await size('[data-testid="assistant-text"] .prose-keel'));
+      // At rest the box is one line: the field and Send share it; the mode and the model are not drawn in it.
+      const box = page.getByTestId("composer-box"), field = page.getByTestId("composer"), send = page.getByTestId("send");
+      await expect(box.getByTestId("permission-menu")).toHaveCount(0);
+      await expect(box.getByTestId("model-picker")).toHaveCount(0);
+      const b = (await box.boundingBox())!, f = (await field.boundingBox())!, s2 = (await send.boundingBox())!;
+      const line = await field.evaluate((e) => parseFloat(getComputedStyle(e).lineHeight));
+      expect(b.height, `the box is ${b.height}px for a line of ${line}px`).toBeLessThanOrEqual(line + 1.5 * px);
+      expect(s2.y).toBeGreaterThanOrEqual(f.y - 1);
+      expect(s2.y + s2.height).toBeLessThanOrEqual(f.y + f.height + 1);
+      // Send is a line's icon button, in quiet ink while there is nothing to send.
+      expect(s2.width).toBeLessThanOrEqual(1.75 * px + 1);
+      expect(s2.height).toBeLessThanOrEqual(1.75 * px + 1);
+      // The mode and the model are behind the box's +.
+      await page.getByTestId("box-more").click();
+      await expect(page.getByTestId("box-more-popup").getByTestId("model-picker")).toBeVisible();
+      await page.keyboard.press("Escape");
+      // Agents at work: one quiet item, the word and how many, no names; it lies inside the dock.
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([spawn("Focus agent one"), spawn("Focus agent two")]) } });
+      const agents = page.getByTestId("dock-agents-line");
+      await expect(page.getByTestId("dock-agents-count")).toHaveText("2", { timeout: 30_000 });
+      await expect(agents).not.toContainText("Focus agent");
+      await expect(page.getByTestId("dock-agent")).toHaveCount(0);
+      const a = (await agents.boundingBox())!, dock = (await page.getByTestId("session-dock").boundingBox())!;
+      expect(a.height).toBeLessThanOrEqual(2 * px);
+      const first = (await page.getByTestId("session-dock").locator(".k-docket-line, .k-docket-row > *").first().boundingBox())!;
+      expect(first.x).toBeGreaterThanOrEqual(dock.x);
+      expect(first.x + first.width).toBeLessThanOrEqual(dock.x + dock.width + 0.5);
+      // Stop, while the turn runs, is the same size as Send.
+      const stop = page.getByTestId("stop");
+      if (await stop.count()) { const t = (await stop.boundingBox())!; expect(t.width).toBeLessThanOrEqual(1.75 * px + 1); }
+      await shoot(page, "focus-mode-05-box-and-agents");
+    } finally {
+      await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+      await request.delete(`/api/sessions/${session.id}`);
+    }
+  });
 });
 
 test.describe("the bar in the workbench", () => {
