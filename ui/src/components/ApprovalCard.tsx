@@ -1399,7 +1399,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
       ) : (
         // The three answers keep their order and wrap when the card is narrow: none is cut, Deny least of all.
         <div className={cn(FOOT, "flex flex-wrap items-center gap-1.5", dense ? "px-3 py-2" : "px-4 py-3")} data-testid="approval-actions">
-          {longLine && <span className="order-first basis-full text-micro text-muted" role="status" data-testid="approval-long">{longLine}</span>}
+          {longLine && <span className="k-ask-note order-first basis-full text-micro text-muted" role="status" data-testid="approval-long">{longLine}</span>}
           {/* A card that must be opened leads with the control that opens it: the step it asks for first. */}
           {slot.current && (
             <button
@@ -1494,7 +1494,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
             disabled={busy}
             data-testid="deny"
             onClick={() => setDenying(true)}
-            className="h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+            className="k-deny h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
           >
             Deny{!touch && <Digit n={3} on={digits.deny} />}
           </button>

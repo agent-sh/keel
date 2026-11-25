@@ -939,3 +939,29 @@ test("a card says which call of the reply it is and names the calls behind it th
     await request.delete(`/api/sessions/${id}`);
   }
 });
+
+// Feature (UX-S153): a request on a phone at a large text size shows Allow and Deny together in the region above the
+// message box, not Deny on a second row under it (the owner scrolled to find it).
+for (const scale of [1, 1.5]) {
+  test.describe(`touch at ${scale * 100}%`, () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test(`on a phone at ${scale * 100}% text, Deny stands beside Allow once in view`, async ({ page, request }) => {
+    const { id, cards } = await start(request, `One on a phone at ${scale * 100}%`, [bash("s153")]);
+    try {
+      await page.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+      await page.goto(`/s/${id}`);
+      const pane = paneOf(page, id);
+      const card = pane.getByTestId("approval");
+      await expect(card).toHaveCount(1, { timeout: 30_000 });
+      await expect.poll(async () => (await cards()).filter((c) => c.state === "pending").length).toBe(1);
+      const allow = card.getByTestId("allow-once"), deny = card.getByTestId("deny");
+      await expect(allow).toBeInViewport({ ratio: 1 });
+      await expect(deny, "Deny is in view with Allow once, without a scroll").toBeInViewport({ ratio: 1 });
+      const [a, d, tray] = await Promise.all([allow.boundingBox(), deny.boundingBox(), pane.getByTestId("composer-tray").boundingBox()]);
+      expect(Math.abs(a!.y - d!.y), "Deny is on Allow's row").toBeLessThan(4);
+      expect(d!.y + d!.height, "Deny is above the message box").toBeLessThanOrEqual(tray!.y + tray!.height + 1);
+      await shoot(page, `approvals-batch-390x844-deny-${scale}`);
+    } finally { await request.delete(`/api/sessions/${id}`); }
+  });
+  });
+}
