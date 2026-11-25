@@ -175,6 +175,28 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
+  test("a Codex that stops answering: Stop gives up on it in seconds, and a second Stop ends it at once", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "stuck now", "k1");
+      await until(() => r.frames.some((f) => f.t === "delta" && f.session_id === s.id && f.text.includes("Stuck")));
+      let t = Date.now();
+      // The first Stop asks Codex to interrupt; nothing answers, so it ends the child after a few seconds.
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 20_000);
+      expect(Date.now() - t).toBeLessThan(15_000);
+      // Again, with a second Stop while the first waits: the child ends at once.
+      r.app().send(s.id, "stuck again", "k2");
+      await until(() => r.frames.filter((f) => f.t === "delta" && f.session_id === s.id && f.text.includes("Stuck")).length >= 2, 15_000);
+      void r.app().interrupt(s.id);
+      t = Date.now();
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 20_000);
+      expect(Date.now() - t).toBeLessThan(4_000);
+    } finally { r.done(); }
+  }, 60_000);
+
   test("a session another process holds takes nothing, and says who holds it", async () => {
     const r = rig({ holder: () => ({ kind: "terminal", pid: 4242 }) });
     try {

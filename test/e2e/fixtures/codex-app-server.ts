@@ -7,6 +7,8 @@
 // and asks the client what Codex asks. No model: the prompt says what it does.
 //   - "ask me ...": one question with two choices, then a reply naming the pick.
 //   - "wait ...": works until turn/interrupt, then the turn is interrupted.
+//   - "stuck ...": a Codex that stops answering mid-turn: no reply to any request
+//     after it, its input's end and SIGTERM ignored (only SIGKILL ends it).
 //   - "edit ...": a file change it asks to make (a.ts in its folder), then a
 //     reply naming the decision.
 //   - anything else: a command it asks to run (make test), then a reply naming
@@ -22,6 +24,8 @@ let thread = "";
 let nextId = 1000;
 const waits = new Map<number, (r: any) => void>();
 let turn: { id: string; stop?: () => void; stopped?: boolean } | undefined;
+let deaf = false;
+process.on("SIGTERM", () => { if (!deaf) process.exit(0); });
 
 const out = (m: object) => process.stdout.write(JSON.stringify(m) + "\n");
 const note = (method: string, params: object) => out({ method, params });
@@ -58,6 +62,11 @@ async function run(turnId: string, text: string) {
   record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text }] });
   record("event_msg", { type: "user_message", message: text });
   await sleep(100);
+  if (/^stuck\b/i.test(text)) {
+    deaf = true;
+    await reply(turnId, "m1", "Stuck.");
+    return;
+  }
   if (/^wait\b/i.test(text)) {
     await reply(turnId, "m1", "Working on it.");
     // (An interrupt that came before this point stops it at once.)
@@ -91,6 +100,7 @@ async function run(turnId: string, text: string) {
 }
 
 async function handle(m: any) {
+  if (deaf) return;
   if (m.id !== undefined && !m.method) { waits.get(m.id)?.(m.result); waits.delete(m.id); return; }
   if (m.id === undefined) return;
   if (rollout) appendFileSync(`${rollout}.standin.log`, JSON.stringify({ method: m.method, params: m.params }) + "\n");
@@ -139,4 +149,4 @@ process.stdin.on("data", (c) => {
   rest = lines.pop() ?? "";
   for (const l of lines) if (l.trim()) void handle(JSON.parse(l));
 });
-process.stdin.on("end", () => process.exit(0));
+process.stdin.on("end", () => { if (!deaf) process.exit(0); });

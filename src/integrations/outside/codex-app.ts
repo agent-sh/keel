@@ -135,6 +135,15 @@ function recordsFrom(path: string, offset: number): Json[] {
   } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
+// How long a request that only moves the child along (initialize, turn/interrupt, thread/unsubscribe) may take
+// before the child is taken as not answering, and how long a child that was told to end may take to end.
+const RPC_MS = 5000;
+const END_MS = 2000;
+const bounded = <T>(p: Promise<T>, what: string, ms = RPC_MS): Promise<T> => {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<never>((_, no) => { t = setTimeout(() => no(new Error(`Codex did not answer ${what} in ${ms / 1000} s`)), ms); })]).finally(() => clearTimeout(t));
+};
+
 type Run = {
   sessionId: string;
   threadId: string;
@@ -150,6 +159,8 @@ type Run = {
   // The cards open now, by the request's id: withdrawn when Codex says it resolved one, or the turn stops.
   cards: Map<string | number, AbortController>;
   stopped: AbortController;
+  // The owner's Stop was asked of Codex: a second Stop ends the child.
+  interrupting?: boolean;
   // Sends given to this child whose delivery is checked at the turn's end.
   given: Set<string>;
 };
@@ -238,8 +249,16 @@ export class CodexApp {
     const r = this.runs.get(sessionId);
     if (!r) return false;
     for (const c of r.cards.values()) c.abort();
-    if (r.turn) await r.conn.request("turn/interrupt", { threadId: r.threadId, turnId: r.turn }).catch(() => {});
-    else void this.end(r);
+    // A second Stop, or a Codex that does not answer the first in a few seconds: the child ends.
+    if (r.interrupting) { void this.kill(r); return true; }
+    if (!r.turn) { void this.end(r); return true; }
+    r.interrupting = true;
+    const turn = r.turn;
+    const ok = await bounded(r.conn.request("turn/interrupt", { threadId: r.threadId, turnId: turn }), "Stop").then(() => true, () => false);
+    if (!ok) { void this.kill(r); return true; }
+    // Taken, the turn ends soon: one that is still open a few seconds later is ended with the child.
+    const t = setTimeout(() => { if (this.runs.get(sessionId) === r && r.turn === turn) void this.kill(r); }, RPC_MS);
+    (t as any).unref?.();
     return true;
   }
 
@@ -301,7 +320,7 @@ export class CodexApp {
     void conn.exited.then(() => this.gone(run));
     run.ready = (async () => {
       try {
-        await conn.request("initialize", { clientInfo: { name: "keel", title: "Keel", version: "1" }, capabilities: { experimentalApi: false, requestAttestation: false } });
+        await bounded(conn.request("initialize", { clientInfo: { name: "keel", title: "Keel", version: "1" }, capabilities: { experimentalApi: false, requestAttestation: false } }), "initialize");
         conn.notify("initialized", undefined);
         await conn.request("thread/resume", {
           threadId: run.threadId, excludeTurns: true,
@@ -439,12 +458,21 @@ export class CodexApp {
     run.ending ??= (async () => {
       run.stopped.abort();
       this.d.outside.retell(run.sessionId);
-      await run.conn.request("thread/unsubscribe", { threadId: run.threadId }).catch(() => {});
-      await run.conn.finish(5000);
-      run.conn.close();
-      await run.conn.exited;
+      await bounded(run.conn.request("thread/unsubscribe", { threadId: run.threadId }), "thread/unsubscribe").catch(() => {});
+      await run.conn.finish(RPC_MS);
+      await this.kill(run);
     })();
     return run.ending;
+  }
+
+  // The child ends now: SIGTERM, then SIGKILL when it is still there after END_MS.
+  private async kill(run: Run): Promise<void> {
+    run.stopped.abort();
+    run.conn.close();
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const late = await Promise.race([run.conn.exited.then(() => false), new Promise<boolean>((r) => { t = setTimeout(() => r(true), END_MS); })]);
+    clearTimeout(t);
+    if (late) { run.conn.close("SIGKILL"); await run.conn.exited; }
   }
 
   private gone(run: Run) {
@@ -480,7 +508,7 @@ export class CodexApp {
 
   stop() {
     this.closed = true;
-    for (const r of [...this.runs.values()]) { r.stopped.abort(); r.conn.close(); }
+    for (const r of [...this.runs.values()]) void this.kill(r);
     this.runs.clear();
   }
 }

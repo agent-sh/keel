@@ -135,8 +135,10 @@ export class AcpConnection {
     clearTimeout(t);
   }
 
-  close() {
+  // `signal`: SIGKILL for an agent that did not end on SIGTERM.
+  close(signal?: "SIGTERM" | "SIGKILL") {
     try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
-    this.proc.kill();
+    if (signal) this.proc.kill(signal);
+    else this.proc.kill();
   }
 }
