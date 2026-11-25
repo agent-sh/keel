@@ -803,10 +803,46 @@ function reboundBy(parts: Simple[]): string | undefined {
 type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean };
 const ELSE_WHY = "a cd before it may not land where it says (it can fail, the line names CDPATH, or it is not one the rules follow), so the folder it runs in is not known to the rules";
 
+// `git -C ~/folder`: a `~/` that begins the word, unquoted, is the home folder by the time git reads it (the shell writes
+// it out before git starts), as it is for a `cd`: the word is read as that folder. Not when the word is quoted or escaped
+// (git is then given the `~` itself, a folder of that name where it runs), names anything else the shell makes (a
+// variable, a glob, `~user`), or stands in a line that may give HOME another value: one that names HOME other than to
+// read it, an eval or a sourced file. A script another shell is given (`bash -c`, behind `sudo -u`) is not read so: whose
+// home that shell has is not in the line's words. Such a word stays one the rules do not place.
+const HOME_READ = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
+// (git's own options that take the next word, as the account rules read them: accounts.ts gitWrites.)
+const GIT_VALUED = new Set(["-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+function homeWritten(parts: Simple[], pre: ReturnType<typeof laid>, home: string): ReturnType<typeof laid> {
+  let runs: Run[] | undefined, kept: boolean | undefined;
+  const homeKept = () => (kept ??= !parts.some((s, i) => {
+    const first = baseName(pre.runs[i]?.words[0]);
+    return first === "eval" || first === "source" || first === "." || /\bHOME\s*\+?=/.test(s.text) || s.words.some((w) => /\bHOME\b/.test(w.replace(HOME_READ, "")));
+  }));
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!, run = pre.runs[i]!;
+    if (part.heredoc || baseName(run.words[0]) !== "git") continue;
+    for (let k = 1; k < run.words.length && run.words[k]!.startsWith("-"); k++) {
+      const o = run.words[k]!;
+      if (GIT_VALUED.has(o)) { k++; continue; }
+      if (o !== "-C") continue;
+      const w = run.words[++k];
+      if (w === undefined || !(w === "~" || w.startsWith("~/")) || /[$`*?[\]{}]/.test(w)) continue;
+      // (The word as the line wrote it: the same word, with no quote or escape in it.)
+      const at = run.at + k;
+      if (part.words[at] !== w || part.quotes?.includes(at) || part.dyn?.includes(at) || !homeKept()) continue;
+      runs ??= pre.runs.slice();
+      const words = (runs[i] === run ? (runs[i] = { ...run, words: run.words.slice() }) : runs[i]!).words;
+      words[k] = home + w.slice(1);
+    }
+  }
+  return runs ? { ...pre, runs } : pre;
+}
+
 // Every write with an account the parts of a line make, found through what wraps them and in the folder each runs in.
 // A script a shell is given with -c (or eval) is read as a line of its own. Exports before a command count for it.
 export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: Pick<Facts, "looked" | "home">, depth = 0, from?: Scope): Write[] {
   const out: Write[] = [];
+  if (depth === 0) pre = homeWritten(parts, pre, f.home ?? homeDir());
   const scope: Scope = { vars: new Map(from?.vars), exported: new Set(from?.exported), rebinds: from?.rebinds ?? reboundBy(parts), added: new Map(from?.added) };
   // The folder the line starts in, and for each part the other folders it may run in (a cd before it that failed).
   const start = pre.dirs[0] ?? null, or = elseOf(parts, pre.runs, pre.dirs);
