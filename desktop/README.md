@@ -93,6 +93,9 @@ started: the first page says so.
   stopped, or the desktop has no notification service). More than three
   sessions alerting together are one notification that says how many, and
   opens the inbox.
+  The helper's own alerts carry its picture as their icon (a picture of the
+  daemon's on this disk; any other alert, and the one for many, carries the
+  app's icon).
 - **Quit.** Quit leaves the daemon and its turns running. "Quit and Stop the
   Daemon" asks first, and names the sessions at work.
 - **Keys from anywhere.** Where the desktop has global shortcuts for apps

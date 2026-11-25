@@ -85,7 +85,7 @@ notes_shown() { grep -c '^NOTIFY ' "$D/notify-host.out" || true; }
 last_note() { grep '^NOTIFY ' "$D/notify-host.out" | tail -1; }
 helper=$(api /api/helper '{"on":true}' PUT 2> /dev/null | py 'import json,sys; print(json.load(sys.stdin).get("session_id") or "")' 2> /dev/null || true)
 png "$D/face.png"
-curl -fsS -m 10 -X POST -H 'content-type: image/png' --data-binary "@$D/face.png" "$URL/api/helper/avatar" > /dev/null 2>&1 || true
+curl -sS -m 10 -X POST -H 'content-type: image/png' --data-binary "@$D/face.png" "$URL/api/helper/avatar" > "$D/avatar.out" 2>&1 || true
 if [ -n "$helper" ]; then
   api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$helper\"}" POST > /dev/null
   check "the helper's own alert is shown by the app with the helper's face as its icon" "wait_for 15 'last_note | grep -q avatar'"

@@ -451,11 +451,11 @@ impl Shell {
                 *self.listed.borrow_mut() = list;
                 self.show_tray();
             }
-            Event::Notify { key, alert, title, body, urgent, silent, ack, stream } => {
+            Event::Notify { key, alert, title, body, icon, urgent, silent, ack, stream } => {
                 if let Some(n) = self.notifier.borrow().as_ref() {
-                    n.show(APP_ID, &key, &alert, &title, &body, urgent, silent, ack.map(|n| (n, stream)));
+                    n.show(APP_ID, &key, &alert, &title, &body, &icon, urgent, silent, ack.map(|n| (n, stream)));
                 }
-                self.note_done("notify", serde_json::json!({ "key": key, "alert": alert, "title": title }));
+                self.note_done("notify", serde_json::json!({ "key": key, "alert": alert, "title": title, "icon": icon }));
             }
             Event::Refused(why) => {
                 if !self.refused.replace(true) || *self.note.borrow() != why {

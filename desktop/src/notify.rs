@@ -50,6 +50,14 @@ pub fn hints(app_id: &str, urgent: bool, silent: bool) -> HashMap<String, glib::
     h
 }
 
+/// The picture a notification carries: the daemon's own file for the session's helper (its face), when it is a
+/// picture on this machine's disk, else the app's own icon. Never a name or an address the daemon was handed.
+pub fn icon_of(app_id: &str, icon: &str) -> String {
+    let p = std::path::Path::new(icon);
+    let picture = p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"));
+    if p.is_absolute() && picture && !icon.contains('\0') && p.is_file() { icon.to_string() } else { app_id.to_string() }
+}
+
 /// A body as text for a service that reads markup: what a session wrote stays words.
 pub fn plain(body: &str, markup: bool) -> String {
     if markup { body.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;") } else { body.to_string() }
@@ -119,12 +127,12 @@ impl Notifier {
         Self { conn: conn.clone(), shown, on_shown: Rc::new(on_shown) }
     }
 
-    fn send(&self, app_id: &str, slot: &str, alert: &str, title: &str, body: &str, urgent: bool, silent: bool, ack: Option<(u64, String)>) {
+    fn send(&self, app_id: &str, slot: &str, alert: &str, title: &str, body: &str, icon: &str, urgent: bool, silent: bool, ack: Option<(u64, String)>) {
         let (replaces, markup) = {
             let sh = self.shown.borrow();
             (sh.ids.get(slot).copied().unwrap_or(0), sh.markup)
         };
-        let args = ("Keel", replaces, app_id, title, plain(body, markup).as_str(), vec!["default", "Open"], hints(app_id, urgent, silent), -1i32).to_variant();
+        let args = ("Keel", replaces, icon_of(app_id, icon).as_str(), title, plain(body, markup).as_str(), vec!["default", "Open"], hints(app_id, urgent, silent), -1i32).to_variant();
         let (s, slot, alert, on_shown) = (self.shown.clone(), slot.to_string(), alert.to_string(), self.on_shown.clone());
         self.conn.call(Some(NAME), PATH, NAME, "Notify", Some(&args), None, gio::DBusCallFlags::NONE, 5000, gio::Cancellable::NONE, move |r| {
             // Only a notification the service took is acknowledged: with no service, or one that refused, the daemon shows the alert itself.
@@ -141,7 +149,7 @@ impl Notifier {
         });
     }
 
-    pub fn show(&self, app_id: &str, key: &str, alert: &str, title: &str, body: &str, urgent: bool, silent: bool, ack: Option<(u64, String)>) {
+    pub fn show(&self, app_id: &str, key: &str, alert: &str, title: &str, body: &str, icon: &str, urgent: bool, silent: bool, ack: Option<(u64, String)>) {
         let (as_many, count, singles) = {
             let mut sh = self.shown.borrow_mut();
             let as_many = together(&sh.keys, sh.many, key);
@@ -158,9 +166,9 @@ impl Notifier {
                 self.close(id);
             }
             let (head, line) = many_words(count, title);
-            self.send(app_id, MANY, "", &head, &line, urgent, silent, ack);
+            self.send(app_id, MANY, "", &head, &line, "", urgent, silent, ack);
         } else {
-            self.send(app_id, key, alert, title, body, urgent, silent, ack);
+            self.send(app_id, key, alert, title, body, icon, urgent, silent, ack);
         }
     }
 
@@ -184,7 +192,7 @@ impl Notifier {
             self.close(id);
         } else if left > 0 {
             let (head, _) = many_words(left, "");
-            self.send(crate::APP_ID, MANY, "", &head, "", false, false, None);
+            self.send(crate::APP_ID, MANY, "", &head, "", "", false, false, None);
         }
     }
 
@@ -219,6 +227,25 @@ mod tests {
         // Sound is the service's own unless the owner turned it off.
         assert!(!h.contains_key("suppress-sound"));
         assert_eq!(hints("io.example.App", false, true)["suppress-sound"].get::<bool>(), Some(true));
+    }
+
+    #[test]
+    fn the_icon_is_the_daemons_picture_on_this_disk_else_the_apps_own() {
+        let dir = std::env::temp_dir().join(format!("keel-icon-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let face = dir.join("avatar.png");
+        std::fs::write(&face, b"png").unwrap();
+        let text = dir.join("note.txt");
+        std::fs::write(&text, b"x").unwrap();
+        let app = "io.example.App";
+        assert_eq!(icon_of(app, face.to_str().unwrap()), face.to_str().unwrap());
+        // No picture, no such file, a relative path, a file that is no picture, an address: the app's own icon.
+        assert_eq!(icon_of(app, ""), app);
+        assert_eq!(icon_of(app, dir.join("none.png").to_str().unwrap()), app);
+        assert_eq!(icon_of(app, "avatar.png"), app);
+        assert_eq!(icon_of(app, text.to_str().unwrap()), app);
+        assert_eq!(icon_of(app, "https://example.com/a.png"), app);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

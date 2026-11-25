@@ -1230,7 +1230,7 @@ registerChannel({
     // both: one this daemon showed for the session before the app came is
     // taken down first, and so is this daemon's copy when the app's word
     // comes late.
-    if (await handShell({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, sound, kind: a.kind }, { late: () => void withdrawOwn(key).catch(() => {}) })) {
+    if (await handShell({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, sound, kind: a.kind, ...(icon ? { icon } : {}) }, { late: () => void withdrawOwn(key).catch(() => {}) })) {
       void withdrawOwn(key).catch(() => {});
       return;
     }

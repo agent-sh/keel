@@ -88,7 +88,7 @@ pub enum Event {
     /// One frame: what waits on the owner and the sessions the tray's menu lists, so the two never differ.
     Needs { n: u32, unread: u32, list: Vec<Listed> },
     /// `ack` and `stream` go back to the daemon once the notification is on screen.
-    Notify { key: String, alert: String, title: String, body: String, urgent: bool, silent: bool, ack: Option<u64>, stream: String },
+    Notify { key: String, alert: String, title: String, body: String, icon: String, urgent: bool, silent: bool, ack: Option<u64>, stream: String },
     Withdraw(String),
     Snooze(Option<i64>),
     /// Whether this app is the one the daemon hands the alerts to (another shell attached first takes them).
@@ -301,7 +301,7 @@ fn told(event: &str, data: &str, stream: &str) -> Option<Event> {
     Some(match event {
         "hello" => Event::Needs { n: v.get("needs")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v) },
         "needs" => Event::Needs { n: v.get("n")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v) },
-        "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), silent: v.get("sound").and_then(Value::as_bool) == Some(false), ack: v.get("ack").and_then(Value::as_u64), stream: stream.to_string() },
+        "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), icon: s("icon"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), silent: v.get("sound").and_then(Value::as_bool) == Some(false), ack: v.get("ack").and_then(Value::as_u64), stream: stream.to_string() },
         "withdraw" => Event::Withdraw(s("key")),
         "snooze" => Event::Snooze(v.get("until_ms").and_then(Value::as_i64)),
         "takes" => Event::Takes(v.get("takes")?.as_bool()?),
@@ -619,8 +619,8 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        match told("notify", r#"{"key":"s1","alert":"a1","title":"T","body":"B","urgency":2,"sound":false,"kind":"approval","ack":9}"#, "st-1") {
-            Some(Event::Notify { key, alert, title, body, urgent, silent, ack, stream }) => assert_eq!((key.as_str(), alert.as_str(), title.as_str(), body.as_str(), urgent, silent, ack, stream.as_str()), ("s1", "a1", "T", "B", true, true, Some(9), "st-1")),
+        match told("notify", r#"{"key":"s1","alert":"a1","title":"T","body":"B","icon":"/x/face.png","urgency":2,"sound":false,"kind":"approval","ack":9}"#, "st-1") {
+            Some(Event::Notify { key, alert, title, body, icon, urgent, silent, ack, stream }) => assert_eq!((key.as_str(), alert.as_str(), title.as_str(), body.as_str(), icon.as_str(), urgent, silent, ack, stream.as_str()), ("s1", "a1", "T", "B", "/x/face.png", true, true, Some(9), "st-1")),
             other => panic!("{other:?}"),
         }
         assert!(matches!(told("snooze", r#"{"until_ms":null}"#, ""), Some(Event::Snooze(None))));
