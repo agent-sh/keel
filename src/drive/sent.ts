@@ -1,29 +1,69 @@
 // The words a model sent into another harness's session through the drive (src/drive/tools.ts). That harness
 // records them as typed at its prompt, the way it records the owner's own, so a copy of that session made later
-// must not count them as the owner's words (Imports.copy reads this before it keeps a prompt's `typed` mark).
-// Only a digest of the words is kept, never the words. What the owner sends from the page is theirs and is not
-// kept here.
+// must not count them as the owner's words (Imports.copy asks wasSent before it keeps a prompt's `typed` mark).
+// Only digests of the words are kept, never the words (src/drive/sent-read.ts): of the whole and of each line.
+// What the owner sends from the page is theirs and is not kept here.
+//
+// The sends made before this record began are read once from the stored history, on the read thread
+// (backfillSent); until that read is done no prompt of a copy counts as typed. A send to a session on another
+// machine is told to that machine's Keel before it goes (farSent), since a copy made there reads its own record.
 import type { Store } from "../core/store.ts";
-import { outsideText } from "./text.ts";
+import { digestsOf, sentBy, type SentAsk } from "./sent-read.ts";
 
-const SCHEMA = "CREATE TABLE IF NOT EXISTS drive_sent (digest TEXT PRIMARY KEY, sent_ms INTEGER NOT NULL)";
+const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT NOT NULL, transcript TEXT NOT NULL DEFAULT '', sent_ms INTEGER NOT NULL, PRIMARY KEY (digest, transcript));
+CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`;
 
-// The words as a harness records what was pasted at its prompt: spacing may differ, the words do not.
-const digestOf = (text: string) => String(Bun.hash(text.replace(/\s+/g, " ").trim()));
-
-// Kept before the words are sent, as the harness will receive them (outsideText: the characters a delivery drops are
-// dropped here too, so a character the paste loses does not make other words of the same text).
-export function noteSent(store: Store, text: string) {
-  let body: string;
-  try { body = outsideText(text).text; } catch { return; } // nothing would be sent
+function keep(store: Store, digests: string[], transcript: string) {
+  if (!digests.length) return;
   store.migrate(SCHEMA);
-  store.db.query("INSERT INTO drive_sent (digest, sent_ms) VALUES (?, ?) ON CONFLICT(digest) DO UPDATE SET sent_ms = excluded.sent_ms").run(digestOf(body), Date.now());
+  const q = store.db.query("INSERT INTO drive_sends (digest, transcript, sent_ms) VALUES (?, ?, ?) ON CONFLICT(digest, transcript) DO UPDATE SET sent_ms = excluded.sent_ms");
+  const now = Date.now();
+  store.db.transaction(() => { for (const d of digests) q.run(d, transcript, now); })();
 }
 
+// Kept before the words are sent, with the transcript the session writes when the drive names it. Returns the
+// digests, for a far machine's Keel.
+export function noteSent(store: Store, text: string, transcript?: string): string[] {
+  const digests = digestsOf(text);
+  keep(store, digests, transcript ?? "");
+  return digests;
+}
+
+// Digests another machine's Keel sent for a send into a session here (the fleet's paired route).
+export function noteDigests(store: Store, digests: unknown[]) {
+  keep(store, digests.filter((d): d is string => typeof d === "string" && /^\d{1,24}$/.test(d)).slice(0, 4096), "");
+}
+
+// Whether a recorded prompt is words a model sent through the drive. True while the history's sends are not read
+// yet: a prompt is the owner's only once it is known that no model sent it.
 export function wasSent(store: Store, text: string): boolean {
   try {
-    return !!store.db.query("SELECT 1 FROM drive_sent WHERE digest = ?").get(digestOf(text));
+    if (!store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return true;
+    const q = store.db.query<unknown, [string]>("SELECT 1 FROM drive_sends WHERE digest = ? LIMIT 1");
+    return sentBy(text, (d) => !!q.get(d));
   } catch {
-    return false; // no table: nothing was ever sent
+    return true; // no table: the history was never read
   }
+}
+
+// The sends of the stored history, read once on the read thread a part at a time (`run`: Reads.run).
+export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ digests: string[]; next: number | null }>, span = 20_000) {
+  store.migrate(SCHEMA);
+  if (store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return;
+  for (let after = 0; ; ) {
+    const r = await run({ after, span });
+    keep(store, r.digests, "");
+    if (r.next === null) break;
+    after = r.next;
+  }
+  store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES ('backfilled', ?)").run(Date.now());
+}
+
+// Tells the Keel of the machine an outside session runs on (its agent view's host name) the digests of a send,
+// before the send: set by the fleet (src/server/routes/fleet.ts). It throws when that machine runs a Keel that could
+// not be told; it does nothing for a host with no Keel the fleet knows.
+let far: ((host: string, digests: string[]) => Promise<void>) | undefined;
+export const onFarSent = (fn: typeof far) => { far = fn; };
+export async function farSent(host: string, digests: string[]) {
+  if (host && digests.length && far) await far(host, digests);
 }

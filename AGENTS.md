@@ -541,8 +541,9 @@ under `~/.cache/keel-work/bun/research/`.
   Of a session copied from the owner's own store here (Claude Code, Codex; not Antigravity, whose store does not
   say whether a person or a script entered a prompt),
   the prompts a person typed are the owner's words: the reader marks them `typed` from its format's own record
-  shapes, the copy keeps the mark only for such a source and never for words Keel's drive sent there
-  (`src/drive/sent.ts`), and the gate reads it through `src/safety/imported.ts`; the rest of the copy stays
+  shapes, the copy keeps the mark only for such a source, in an import the owner started, and never for words
+  Keel's drive sent there (`src/drive/sent.ts`: digests of the whole and of each line, the history's sends read
+  once before any mark is kept, a far machine's Keel told before the send), and the gate reads it through `src/safety/imported.ts`; the rest of the copy stays
   outside. A search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
   a path or query it did not list, a header, a cookie or a body is a send). A text is read whole, in chunks,
   with a turn of the loop between them; a text past 8 MB, or more than 50,000 targets in a session, leaves the

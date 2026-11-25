@@ -5,6 +5,7 @@
 import { boundedFeed, FEED_LIMIT } from "../streams.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
+import { noteDigests, onFarSent } from "../../drive/sent.ts";
 import { instructionFiles } from "../../engine/turn.ts";
 import { Fleet, RELAY_PING_MS } from "../../fleet/fleet.ts";
 import { bindFollow } from "../../fleet/follow.ts";
@@ -70,6 +71,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
   });
   bindFleetTools(f, msgs, (id) => store.session(id), bindNotices(f, msgs, store, engine));
+  // A model's send through the drive into a session on another machine: that machine's Keel is told its digests
+  // first. The agent view names a machine as the fleet does (its name or its ssh host); one the fleet does not know,
+  // or reaches over ssh with no daemon, runs no Keel that could copy the session.
+  onFarSent(async (host, digests) => {
+    const h = host.toLowerCase();
+    const m = f.rows().find((r) => r.name.toLowerCase() === h || r.ssh_host?.toLowerCase() === h);
+    if (!m || f.isSsh(m)) return;
+    await f.handsJson(m.id, "/api/fleet/drive-sent", { method: "POST", body: JSON.stringify({ digests }), timeout: 10_000 });
+  });
   // The state of each message as it moves: read, handled, dropped (message-state.ts).
   const gs = globalThis as { __keelMessageStates?: MessageStates };
   gs.__keelMessageStates?.stop();
@@ -642,6 +652,17 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           throw e;
         }
       },
+    },
+
+    // A paired daemon's model is about to send words into a session another harness runs here: their digests, so a
+    // copy made here does not count them as the owner's (src/drive/sent.ts).
+    "/api/fleet/drive-sent": {
+      POST: linked(async (req) => {
+        const b = await body(req);
+        if (!Array.isArray(b.digests)) return bad("give digests");
+        noteDigests(store, b.digests);
+        return json({ ok: true });
+      }),
     },
 
     // A linked daemon's relay fetches what waits for it; a caller without its key gets nothing.

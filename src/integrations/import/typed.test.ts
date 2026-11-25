@@ -19,7 +19,10 @@ const { Imports, ownStore } = await import("./service.ts");
 const { ClaudeConvert } = await import("./claude.ts");
 const { CodexConvert } = await import("./codex.ts");
 const { readAgy } = await import("./agy.ts");
-const { noteSent } = await import("../../drive/sent.ts");
+const { backfillSent, noteSent } = await import("../../drive/sent.ts");
+const { sentCalls } = await import("../../drive/sent-read.ts");
+// The drive's sends of the history read (none here): until then no prompt of a copy counts as typed.
+const ready = (store: any) => backfillSent(store, (a) => Promise.resolve(sentCalls(store.db, a)));
 const { TakeOver } = await import("../../drive/takeover.ts");
 
 // The user events a reader made, each with whether it is marked typed.
@@ -153,6 +156,7 @@ test("a copy keeps the marks only for a session of the owner's own store here, a
   const store = new Store(join(root, "state"));
   store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
   const imports = new Imports(store);
+  await ready(store);
   noteSent(store, "words a model sent through the drive");
   const typedOf = (sessionId: string) => store.events(sessionId).filter((e) => e.kind === "user").map((e) => [(e.data as any).text, (e.data as any).typed === true]);
   // In Claude Code's own store on this machine.
@@ -182,6 +186,7 @@ test("only an import the owner started keeps the marks: a model's copy through k
   const store = new Store(join(root, "state-owner"));
   store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
   const imports = new Imports(store);
+  await ready(store);
   const typed = (sessionId: string) => store.events(sessionId).filter((e) => e.kind === "user").map((e) => (e.data as any).typed === true);
   const id = "5e55107a-0000-4000-8000-000000000002";
   const own = join(root, "stores", "claude_dir", "-q", `${id}.jsonl`);

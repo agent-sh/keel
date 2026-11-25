@@ -30,10 +30,13 @@ import { regressionRows } from "../admin/regressions.ts";
 import { readProcs, type ProcAsk } from "../admin/proc-read.ts";
 import { sealBundleTo, sealRoots, sealVerify } from "../admin/seal-read.ts";
 import { liveReport, type Experiment } from "../admin/experiment-report.ts";
+import { sentCalls, type SentAsk } from "../drive/sent-read.ts";
 
 export const tasks = {
   // What /proc says of the processes under the daemon (the resource sampler's pass, src/admin/proc-read.ts).
   "proc.sample": (_db: Database, a: ProcAsk) => readProcs(a),
+  // The drive's sends of the stored history, a part of the events at a time (src/drive/sent.ts backfillSent).
+  "drive.sentCalls": (db: Database, a: SentAsk) => sentCalls(db, a),
   // One statement and its rows. The statement is not kept: its text may carry
   // values of one request.
   sql: (db: Database, a: { sql: string; params?: (string | number | null)[] }): unknown[] => {

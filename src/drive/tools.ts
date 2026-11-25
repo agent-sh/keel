@@ -12,7 +12,7 @@ import { OUTPUT_CAP } from "../tools/spill.ts";
 import { fail, ok, type ToolOutput } from "../tools/types.ts";
 import { DriveError, modelCommand, type Drive, type Found } from "./drive.ts";
 import { pickChoice } from "./text.ts";
-import { noteSent } from "./sent.ts";
+import { farSent, noteSent } from "./sent.ts";
 
 const fmt = (e: unknown): ToolOutput => fail(e instanceof DriveError ? `Error [${e.code}]: ${e.message}` : `Error: ${(e as Error).message}`);
 
@@ -24,6 +24,16 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
     server: "keel", name, qualified: `keel__${name}`, description, readOnly, judge,
     input_schema: { type: "object", properties, required, additionalProperties: false }, run,
   });
+
+  // Words a model is about to put at another session's prompt, kept as digests before they go (src/drive/sent.ts):
+  // with the transcript the session writes here, or told to the Keel of the machine it runs on (nothing is sent
+  // when that Keel cannot be told).
+  const sent = async (f: Found, text: string) => {
+    const digests = noteSent(store, text, !f.host && typeof f.raw.transcript === "string" ? f.raw.transcript : undefined);
+    if (f.host) {
+      try { await farSent(f.host, digests); } catch (e) { throw new DriveError("NOT_SENT", `the Keel on ${f.host} could not be told what is sent (${(e as Error).message}). Nothing was sent.`); }
+    }
+  };
 
   // A judgement that refuses with the reason rather than throws.
   const judging = (tool: string, f: (i: any) => Promise<Omit<Extract<CallClass, { kind: "drive" }>, "kind" | "resource">>) => async (i: any): Promise<CallClass> => {
@@ -77,8 +87,9 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       { to: { type: "string" }, text: { type: "string" } }, ["to", "text"], false,
       async (i) => {
         try {
-          noteSent(store, String(i.text ?? ""));
-          return ok(await drive.send(i.to, String(i.text ?? ""), judged.get(i)));
+          const f = judged.get(i) ?? (await drive.find(i.to));
+          await sent(f, String(i.text ?? ""));
+          return ok(await drive.send(i.to, String(i.text ?? ""), f));
         } catch (e) {
           return fmt(e);
         }
@@ -97,8 +108,9 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       ["id", "request", "hash", "decision"], false,
       async (i) => {
         try {
-          if (typeof i.note === "string") noteSent(store, i.note);
-          return ok(await drive.answer(i.id, i, judged.get(i)));
+          const f = judged.get(i) ?? (await drive.find(i.id));
+          if (typeof i.note === "string") await sent(f, i.note);
+          return ok(await drive.answer(i.id, i, f));
         } catch (e) {
           return fmt(e);
         }
@@ -144,7 +156,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
         try {
           const f = judged.get(i) ?? (await drive.find(i.id));
           if (!f.row.drive.resume) throw new DriveError("NOT_AVAILABLE", `that session is ${f.row.state} and cannot be resumed by the agent view`);
-          noteSent(store, String(i.text ?? ""));
+          await sent(f, String(i.text ?? ""));
           return ok(await drive.send(i.id, String(i.text ?? ""), f));
         } catch (e) {
           return fmt(e);

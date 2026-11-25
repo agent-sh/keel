@@ -7,6 +7,8 @@ import * as av from "../../drive/agentview.ts";
 import { DriveError, sharedDrive } from "../../drive/drive.ts";
 import { saysNo } from "../../drive/text.ts";
 import { driveTools } from "../../drive/tools.ts";
+import { backfillSent } from "../../drive/sent.ts";
+import { readsOf } from "../reads.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerCatalog } from "../../tools/catalog.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -25,6 +27,9 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
   const drive = sharedDrive();
   drive.onList.push((sessions) => deps.bus.emit({ t: "feature", name: "outside", data: { sessions, at: Date.now() } }));
   registerCatalog({ name: "keel", tools: async () => driveTools(drive, deps.store, deps.providers) });
+  // The sends a model made through the drive before they were recorded, read once off the loop: until then no
+  // prompt of a copy counts as the owner's (src/drive/sent.ts).
+  void backfillSent(deps.store, (a) => readsOf(deps.store).run("drive.sentCalls", a, true)).catch((e) => deps.errors.capture("server", e, { at: "drive sends backfill" }));
   registerHooks({
     // Whether the owner set an agent view is their side of the block (hooks.ts SystemBlock).
     system: () => ({
