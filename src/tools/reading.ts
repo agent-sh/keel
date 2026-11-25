@@ -189,14 +189,19 @@ export function pageOf(body: string, numbered: boolean, first: number, total?: n
 
 // A mark on a line of its own: `@@ 120-145`, with a bullet, backticks or a closing `@@` around it, and words after it.
 const MARK = new RegExp(`^[\\s>*-]*\`?${QUOTE_MARK}\\s*(\\d+)(?:\\s*(?:-|\\u2013|to)\\s*(\\d+))?\\s*(?:${QUOTE_MARK})?\`?[\\s:.-]*(.*)$`);
-const ROW = /^(\d+)\t(.*)$/;
+// A row as the reader may type one: a number and a tab at the start of a line, behind a bullet, a quote mark or
+// spaces, the number padded or not.
+const ROW = /^[\s>*-]*(\d+)\s*\t/;
+// Where the reader's text ends a line: a row is one line whatever ended it.
+const LINE_END = /\r\n|[\n\r\u2028\u2029]/;
 
 // The reader's text with the file's own lines put at its marks (`@@ START-END`,
 // as rows `N<tab>line`), at most `budget` characters of them; a mark past the
-// budget is a line saying so. A row the reader typed itself is replaced by the
-// file's row of that number (text under a line number is always the file's),
-// or loses its row form when the page has no such line. `quoted`: the lines
-// shown as they are.
+// budget is a line saying so. Only Keel's rows carry a number and a tab: a row
+// the reader typed itself is replaced by the file's row of that number (text
+// under a line number is always the file's), or loses its row form when the
+// page has no such line, and every other tab of the reader's text is spaces.
+// `quoted`: the lines shown as they are.
 export function expandReading(reading: string, page: Pick<Page, "rows">, budget: number): { text: string; quoted: Span[] } {
   const out: string[] = [];
   const quoted: Span[] = [];
@@ -204,16 +209,17 @@ export function expandReading(reading: string, page: Pick<Page, "rows">, budget:
   // The page's first and last line: a mark is walked only inside them, whatever numbers the reader wrote.
   let lo = Infinity, hi = -Infinity;
   for (const n of page.rows.keys()) { if (n < lo) lo = n; if (n > hi) hi = n; }
-  for (const line of reading.split("\n")) {
-    const row = ROW.exec(line);
-    if (row) {
-      const n = Number(row[1]), own = page.rows.get(n);
-      if (own === undefined) { out.push(`${row[1]} ${row[2]}`); continue; }
+  for (const typed of reading.split(LINE_END)) {
+    const row = ROW.exec(typed);
+    const own = row ? page.rows.get(Number(row[1])) : undefined;
+    if (own !== undefined) {
+      const n = Number(row![1]);
       out.push(`${n}\t${own}`);
       quoted.push({ from: n, to: n });
       continue;
     }
-    const m = MARK.exec(line);
+    const line = typed.replace(/\t/g, " ");
+    const m = row ? null : MARK.exec(line);
     if (!m) { out.push(line); continue; }
     const a = Number(m[1]), b = Math.max(a, Number(m[2] ?? m[1]));
     if (m[3]?.trim()) out.push(m[3].trim());

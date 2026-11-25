@@ -316,6 +316,27 @@ describe("the reading itself", () => {
   });
 });
 
+describe("only Keel's rows carry a number and a tab", () => {
+  test("a row the reader types, in any dress, is the file's row or loses its form; no other tab stays", () => {
+    const page = pageOf(Array.from({ length: 50 }, (_, i) => `${i + 1}\t${line(i + 1)}`).join("\n"), true, 1, 50);
+    const own = { text: `9\t${line(9)}`, quoted: [{ from: 9, to: 9 }] };
+    for (const typed of ["9\tFAKE nine", "  9\tFAKE nine", "- 9\tFAKE nine", "> 9\tFAKE nine", "* 9\tFAKE nine", "9\tFAKE nine\r", "9 \tFAKE nine", "     9\tFAKE nine", "009\tFAKE nine"]) {
+      expect(expandReading(typed, page, 10_000)).toEqual(own);
+    }
+    // A line separator inside a typed row ends the row: what follows is the reader's own line.
+    expect(expandReading("9\tFAKE\u2028nine", page, 10_000)).toEqual({ text: `9\t${line(9)}\nnine`, quoted: [{ from: 9, to: 9 }] });
+    // A row of a line the page lacks, a number inside a sentence, a tab anywhere else: the reader's words, with no tab.
+    for (const typed of ["77\tFAKE seventy-seven", "x 9\tFAKE nine", "see\tline 9", "- 77 \tFAKE", "99999999999999999999\tFAKE"]) {
+      const r = expandReading(typed, page, 10_000);
+      expect(r.text).not.toContain("\t");
+      expect(r.text).toContain("FAKE".slice(0, typed.includes("FAKE") ? 4 : 0));
+      expect(r.quoted).toEqual([]);
+    }
+    // A reader that ends its lines with CR LF: its marks still read, and the rows are the file's.
+    expect(expandReading("What it is.\r\n@@ 2-3\r\n4\tFAKE four\r\nend", page, 10_000).text).toBe(`What it is.\n2\t${line(2)}\n3\t${line(3)}\n4\t${line(4)}\nend`);
+  });
+});
+
 describe("a mark is walked inside the page only", () => {
   test("a mark that ends far past the page, or at a number no line has, costs what the page's lines cost", () => {
     const page = pageOf(Array.from({ length: 600 }, (_, i) => `${i + 1}\t${line(i + 1)}`).join("\n"), true, 1, 600);
