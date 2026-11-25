@@ -122,7 +122,9 @@ const Read: Tool = {
     "their line ranges, what matters for your aim, and the file's own lines (numbered) where you need exact text. " +
     "Say what you want from the file in `for`. Pass raw: true to get the file itself (by default up to 2000 lines " +
     "from the start; offset and limit name a range): do that for the lines you will edit when the reading does " +
-    "not show them, and for a text you must follow to the letter (instructions, a brief, a spec). Images (PNG, JPEG, GIF, WebP) come back as images. PDFs: short ones whole as text; for longer " +
+    "not show them, and for a text you must follow to the letter. Prose and instruction files (.md, .txt, .rst, " +
+    "AGENTS, CLAUDE, GEMINI) and files your task names come back as they are; raw: false asks for a reading of " +
+    "one. Images (PNG, JPEG, GIF, WebP) come back as images. PDFs: short ones whole as text; for longer " +
     "ones pass pages, e.g. \"1-5\" (max 20), to see them as page images. Jupyter notebooks come back as cells " +
     "with outputs. Read files, not directories (use ls).",
   input_schema: obj({
@@ -131,7 +133,7 @@ const Read: Tool = {
     limit: { type: "integer", description: "The number of lines to read" },
     pages: { type: "string", description: "Page range for PDF files, e.g. \"1-5\"" },
     allow_large: { type: "boolean", description: "Read a text file, or a line range of one, over the usual size limits, up to what still fits in your context. Only when you need all of it." },
-    raw: { type: "boolean", description: "The file's own text instead of a compiled reading. For lines you will edit or must see exactly." },
+    raw: { type: "boolean", description: "true: the file's own text instead of a compiled reading, for lines you will edit or must see exactly. false: a compiled reading of a file that would come back as it is." },
     for: { type: "string", description: "What you want from the file, in a sentence: the reader looks for that and shows the lines it needs." },
   }, ["file_path"]),
   async run(input, ctx) {
@@ -139,7 +141,7 @@ const Read: Tool = {
     if ("error" in at) return { content: at.error, is_error: true };
     const r = await readFile(at.p, ctx, {
       offset: Number(input.offset) || undefined, limit: Number(input.limit) || (input.offset || input.allow_large ? undefined : 2000), pages: input.pages, large: !!input.allow_large,
-      raw: input.raw === true, aim: input.for, form: CLAUDE_RAW,
+      raw: typeof input.raw === "boolean" ? input.raw : undefined, aim: input.for, form: CLAUDE_RAW,
     });
     return { content: r.content, is_error: r.error, ...(r.shown ? { shown: r.shown } : {}) };
   },

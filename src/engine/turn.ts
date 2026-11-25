@@ -5,7 +5,7 @@ import { timed } from "../admin/stall.ts";
 import { pace, yieldLoop } from "./pace.ts";
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
 import { crossing, crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
 import { allowedOnly, type RoutePurpose } from "../safety/route-rule.ts";
@@ -63,7 +63,7 @@ import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, freshStartText, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
 import { cachePlanOn, compactLimit, readThrough } from "./agent-defaults.ts";
-import { readAim } from "./read-aim.ts";
+import { readAim, readNamed } from "./read-aim.ts";
 import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
 import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
@@ -3088,7 +3088,9 @@ export class Engine {
       readBudget: () => readBudget(this.readerHost(id)),
       // A file read comes back as a reader's compiled reading (src/tools/reading.ts), for the task and the last words of this branch.
       readThrough: readThrough(session, (sid) => this.store.session(sid)),
-      aim: () => readAim(this.lineage(id)) };
+      aim: () => readAim(this.lineage(id)),
+      // A file the session's own prompts name is read as it is.
+      named: (p) => readNamed(this.lineage(id), [p, relative(session.workspace, p)]) };
 
     const t0 = Date.now();
     let usage: Usage = emptyUsage();

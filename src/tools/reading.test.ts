@@ -101,6 +101,28 @@ describe("which reads go to the reader", () => {
     expect(asked[0]).toMatchObject({ first: 100, lines: 400 });
   });
 
+  test("prose, instruction files and a file the session's prompts name are read as they are; raw: false asks for a reading", async () => {
+    const { ctx, asked } = rig({ more: { named: (p) => p.endsWith("/pointed.ts") } });
+    const prose = Array.from({ length: 600 }, (_, i) => `Rule ${i + 1}: do the thing numbered ${i + 1} exactly.`).join("\n") + "\n";
+    for (const name of ["AGENTS.md", "CLAUDE.md", "brief.MD", "notes.txt", "guide.rst", "page.mdx", "rule.mdc", "long.markdown", "AGENTS", "CLAUDE", "GEMINI"]) {
+      expect(text(await Read.run({ file_path: file(prose, name) }, ctx))).toStartWith("1\tRule 1: do the thing numbered 1 exactly.\n2\t");
+    }
+    expect(text(await read_file.run({ file_path: file(prose, "GEMINI.md") }, ctx))).toStartWith("Rule 1: do the thing numbered 1 exactly.\nRule 2:");
+    expect(text(await read_file.run({ file_path: join(dir, "GEMINI.md"), start_line: 2, end_line: 500 }, ctx))).toStartWith("Rule 2: do the thing numbered 2 exactly.\nRule 3:");
+    expect(text(await Read.run({ file_path: file(LONG, "pointed.ts") }, ctx))).toStartWith(`1\t${line(1)}\n`);
+    expect(asked).toHaveLength(0);
+    // The file is the session's as any file it read: an edit of any line is applied.
+    expect((await Edit.run({ file_path: join(dir, "pointed.ts"), old_string: line(300), new_string: "x" }, ctx)).is_error).toBeFalsy();
+    // The call's own word decides: a reading of prose, of a named file, and through Gemini's form.
+    expect(text(await Read.run({ file_path: join(dir, "AGENTS.md"), raw: false }, ctx))).toStartWith("[Compiled reading of AGENTS.md");
+    expect(text(await Read.run({ file_path: file(LONG, "pointed.ts"), raw: false }, ctx))).toStartWith("[Compiled reading of pointed.ts");
+    expect(text(await read_file.run({ file_path: join(dir, "GEMINI.md"), raw: false }, ctx))).toStartWith("[Compiled reading of GEMINI.md");
+    expect(asked).toHaveLength(3);
+    // A name that only looks like one of them is a file like any other.
+    expect(text(await Read.run({ file_path: file(LONG, "agents.ts") }, ctx))).toStartWith("[Compiled reading of agents.ts");
+    expect(text(await Read.run({ file_path: file(LONG, "README") }, ctx))).toStartWith("[Compiled reading of README");
+  });
+
   test("the carry size decides what is short", async () => {
     const { ctx, asked } = rig({ more: { inline: { cap: 30_000, head: 0.25 } } });
     const p = file();

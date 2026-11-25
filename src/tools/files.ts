@@ -412,7 +412,8 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
 
 // `large` (Claude Code's allow_large): a text read sized to the context left
 // (ctx.room) instead of one page and the whole-file limit.
-// `raw`: the file itself, never a reader's reading of it; `aim`: what the caller wants from the file, for the
+// `raw`: true for the file itself, never a reader's reading of it; false for a reading of a file that is read as
+// it is when nothing is said (prose, an instruction file, one the session's prompts name); `aim`: what the caller wants from the file, for the
 // reader; `form`: how the caller's family reads a file itself (the words a reading names it by).
 export type ReadAsk = { offset?: number; limit?: number; pages?: string; large?: boolean; raw?: boolean; aim?: unknown; form?: RawForm };
 export async function readFile(p: string, ctx: ToolContext, o: ReadAsk = {}): Promise<ReadResult> {
@@ -463,7 +464,7 @@ async function readHeld(p: string, ctx: ToolContext, o: ReadAsk): Promise<ReadRe
   const r = numbered(text, o.offset, o.limit, true, o.large ? roomChars : READ_CHARS);
   if (o.offset && o.offset > r.total) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true }; }
   // (A read sized to the context left is a request for all of it: the file itself.)
-  return textPage(p, ctx, st.mtimeMs, r.body, r.partial, { raw: o.raw || o.large, aim: o.aim, form: o.form, first: o.offset, total: r.total });
+  return textPage(p, ctx, st.mtimeMs, r.body, r.partial, { raw: o.large ? true : o.raw, aim: o.aim, form: o.form, first: o.offset, total: r.total });
 }
 
 function pageRange(spec: string, count: number): [number, number] | string {

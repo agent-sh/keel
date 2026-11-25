@@ -27,7 +27,8 @@ test("a long file is read through the reader; raw is the file; an edit of lines 
 
   const edit = (n: number) => ({ name: "Edit", input: { file_path: file, old_string: line(n), new_string: `export const v${n} = 0;` } });
   await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([
-    { name: "Read", input: { file_path: file, for: "where v120 is set script:read-lines 120-122" } },
+    // (The prompt names the file, and a file the owner's prompt names is read as it is: the call asks for the reading.)
+    { name: "Read", input: { file_path: file, raw: false, for: "where v120 is set script:read-lines 120-122" } },
     edit(121),
     edit(300),
     { name: "Read", input: { file_path: file, raw: true, offset: 300, limit: 3 } },

@@ -9,7 +9,9 @@
 // otherwise write to its cache and read again at every later step.
 //
 // The file itself is read when the caller asks for it (`raw` on the read
-// tool), when the page is
+// tool), when it is prose or an instruction file or one the session's own
+// prompts name (a text to follow is read to the letter; `raw: false` asks for
+// a reading of one), when the page is
 // under the carry size (src/tools/carry.ts: a reader costs more than the text
 // there), for a program's own read (run_code), and when no other model than
 // the session's own can read. A reader that fails, refuses or is slower than
@@ -287,14 +289,32 @@ export const smallCap = (ctx: Pick<ToolContext, "inline">) => ctx.inline?.cap ??
 // A reading no shorter than this share of the page saves too little: the page goes back as it is.
 const WORTH = 0.6;
 
+// Prose and instruction files: a text a model is to follow, or quote, is read to the letter, and a reader's
+// account of it would stand between the model and what it was told. By the name alone: the markup and plain
+// text extensions, and the instruction files a harness names with no extension.
+const PROSE = new Set([".md", ".mdx", ".mdc", ".markdown", ".txt", ".rst"]);
+const INSTRUCTIONS = new Set(["agents", "claude", "gemini"]);
+export function proseFile(p: string): boolean {
+  const name = p.slice(p.lastIndexOf("/") + 1).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? PROSE.has(name.slice(dot)) : INSTRUCTIONS.has(name);
+}
+
 export type Through =
   | { content: string; shown: unknown }
   // The file itself is to be returned: with `note` above it when a reader was asked and gave nothing.
   | { note?: string };
 
-// The read of a page through the session's reader. `raw`: the caller asked for the file itself.
+// The read of a page through the session's reader. `raw`: the caller asked for the file itself (true) or for a
+// reading whatever the file is (false).
 export async function throughReader(p: string, ctx: ToolContext, page: Page, o: { raw?: boolean; aim?: unknown; mtime: number; form?: RawForm }): Promise<Through> {
   if (o.raw || !ctx.readMaterial || ctx.readThrough === false || ctx.nestedIn || page.chars <= smallCap(ctx) || !page.rows.size) return {};
+  // The caller said nothing: prose, an instruction file and a file its own prompts name are read as they are.
+  if (o.raw === undefined) {
+    let named = false;
+    try { named = proseFile(p) || !!ctx.named?.(p); } catch {}
+    if (named) return {};
+  }
   const book = bookOf(ctx);
   if (Date.now() < book.restUntil) return {};
   const form = o.form ?? CLAUDE_RAW;

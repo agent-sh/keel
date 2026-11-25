@@ -1,6 +1,7 @@
 // What a session is doing, for a reader that reads a file for it when the
 // read states no aim (src/tools/reading.ts): its task and what it last said,
-// shortened. Read off the branch's stored events, no model.
+// shortened. And whether its own prompts name a file: one the owner or a task
+// pointed at is read as it is. Read off the branch's stored events, no model.
 import type { StoredEvent } from "../core/types.ts";
 import { ownerPrompts } from "./title.ts";
 
@@ -28,3 +29,21 @@ export function readAim(line: readonly StoredEvent[]): string {
   }
   return [task ? `Its task (shortened): ${task}` : "", said ? `What it said before this read (shortened): ${tail(said, AIM_PART)}` : ""].filter(Boolean).join("\n");
 }
+
+// Whether a prompt names the file: its path as given (`paths`: the file's own, and as the session's folder
+// sees it), or its name where a file name stands (not inside a longer name).
+const NAME_CHAR = /[A-Za-z0-9_-]/;
+export function namedIn(prompts: readonly string[], paths: readonly string[]): boolean {
+  const name = (paths[0] ?? "").slice((paths[0] ?? "").lastIndexOf("/") + 1);
+  if (!name) return false;
+  for (const text of prompts) {
+    if (paths.some((p) => p.includes("/") && text.includes(p))) return true;
+    for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
+      const before = text[at - 1] ?? " ", after = text[at + name.length] ?? " ", then = text[at + name.length + 1] ?? " ";
+      if (NAME_CHAR.test(before) || before === "." || NAME_CHAR.test(after) || (after === "." && NAME_CHAR.test(then))) continue;
+      return true;
+    }
+  }
+  return false;
+}
+export const readNamed = (line: readonly StoredEvent[], paths: readonly string[]) => namedIn(ownerPrompts(line), paths);

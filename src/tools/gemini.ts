@@ -72,12 +72,13 @@ const read_file: Tool = {
   description: "Reads and returns the content of a specified file. Use start_line and end_line for targeted reads of long files. Handles text, images and PDF files. " +
     "A long text file is read for you by a reader model and comes back as a compiled reading: what the file is, its parts with their line ranges, what matters for your aim, " +
     "and the file's own lines (as `N<tab>text`) where you need exact text. Say what you want from the file in `for`. Set raw to true to get the file's content itself: " +
-    "do that for the lines you will change when the reading does not show them, and for a text you must follow to the letter (instructions, a brief, a spec).",
+    "do that for the lines you will change when the reading does not show them, and for a text you must follow to the letter. " +
+    "Prose and instruction files (.md, .txt, .rst, AGENTS, CLAUDE, GEMINI) and files your task names come back as they are; raw: false asks for a reading of one.",
   input_schema: obj({
     file_path: { type: "string", description: "The path to the file to read." },
     start_line: { type: "integer", description: "Optional: the 1-based line number to start reading from." },
     end_line: { type: "integer", description: "Optional: the 1-based line number to end reading at (inclusive)." },
-    raw: { type: "boolean", description: "Optional: the file's own content instead of a compiled reading. For lines you will change or must see exactly." },
+    raw: { type: "boolean", description: "Optional: true for the file's own content instead of a compiled reading (lines you will change or must see exactly); false for a compiled reading of a file that would come back as it is." },
     for: { type: "string", description: "Optional: what you want from the file, in a sentence: the reader looks for that and shows the lines it needs." },
   }, ["file_path"]),
   async run(input, ctx) {
@@ -86,7 +87,7 @@ const read_file: Tool = {
     const p = at.p;
     const s = Number(input.start_line) || undefined;
     const e = Number(input.end_line) || undefined;
-    const asked = { raw: input.raw === true, aim: input.for, form: GEMINI_RAW };
+    const asked = { raw: typeof input.raw === "boolean" ? input.raw : undefined, aim: input.for, form: GEMINI_RAW };
     const page = (r: ReadResult) => ({ content: r.content, is_error: r.error, ...(r.shown ? { shown: r.shown } : {}) });
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));

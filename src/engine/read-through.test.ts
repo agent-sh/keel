@@ -9,7 +9,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { allHooks } from "./hooks.ts";
-import { AIM_PART, readAim } from "./read-aim.ts";
+import { AIM_PART, namedIn, readAim } from "./read-aim.ts";
 import { Engine } from "./turn.ts";
 
 const hooksAtStart = allHooks().length;
@@ -45,9 +45,9 @@ function rig(models = [BIG, SMALL]) {
   };
   const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }), recovered: () => {} } as any, join(dir, "spill"));
   (engine as any).systemOf = async () => ({ text: "A stand-in system prompt.", split: 0 });
-  const run = async (settings = {}) => {
+  const run = async (settings = {}, prompt = "Look at the values file and say where v240 is set.") => {
     const s = store.createSession({ model: BIG.id, workspace: dir, settings });
-    engine.send(s.id, "Look at values.ts and say where v240 is set.");
+    engine.send(s.id, prompt);
     await engine.idle(s.id);
     const result = engine.lineage(s.id).find((e) => e.kind === "tool_result")!.data as any;
     return { id: s.id, result: result.results[0], shown: result.shown?.["read-1"] };
@@ -66,7 +66,7 @@ test("a turn's Read of a long file comes back as the reader's compiled reading, 
   const reads = r.sent.filter((x) => x.purpose === "reader");
   expect(reads).toHaveLength(1);
   expect(reads[0]!.model).toBe("small");
-  expect(reads[0]!.text).toContain("Its task (shortened): Look at values.ts and say where v240 is set.");
+  expect(reads[0]!.text).toContain("Its task (shortened): Look at the values file and say where v240 is set.");
   expect(reads[0]!.text).toContain("What it said before this read (shortened): I will read values.ts to find where v240 is set.");
   expect(reads[0]!.text).toContain(`500\t${line(500)}`);
   // The working model's next request carries the reading, not the file.
@@ -113,4 +113,20 @@ test("the aim a reader is given: the newest prompt, an agent's task without the 
   // A reply before the newest prompt is not what it said about this read.
   expect(readAim([...line, ev("user", { text: "Now the tests." })])).toBe("Its task (shortened): Now the tests.");
   expect(readAim([])).toBe("");
+});
+
+test("a file the session's own prompt names is read as it is, with no reader asked", async () => {
+  const r = rig();
+  const named = await r.run({}, "Read values.ts and follow it to the letter.");
+  expect(named.result.content).toStartWith(`1\t${line(1)}\n2\t${line(2)}`);
+  expect(r.sent.filter((x) => x.purpose === "reader")).toHaveLength(0);
+  r.store.db.close();
+});
+
+test("which words of a prompt name a file: its path, or its name where a file name stands", () => {
+  const paths = ["/w/src/tools/reading.ts", "src/tools/reading.ts"];
+  for (const yes of ["Fix src/tools/reading.ts first.", "see /w/src/tools/reading.ts", "reading.ts has the bug", "In `reading.ts`, line 4.", "open tools/reading.ts.", "(reading.ts)"]) expect(namedIn([yes], paths)).toBe(true);
+  for (const no of ["the reading module", "reading.tsx is the view", "reading.ts.bak", "pre-reading.ts", "my_reading.ts", "x.reading.ts", "reading.test.ts", ""]) expect(namedIn([no], paths)).toBe(false);
+  expect(namedIn(["first", "then reading.ts"], paths)).toBe(true);
+  expect(namedIn(["anything"], [])).toBe(false);
 });

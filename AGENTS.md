@@ -34,7 +34,8 @@ under `~/.cache/keel-work/bun/research/`.
   (Claude's Read, Gemini's read_file; a shell returns its command's output) answered by default with the
   reader model's compiled reading of the page: what the file is, its parts with their lines, what matters for
   the caller's aim (`for`, else its task and last words), and the file's own lines put by Keel where the reader
-  marked them (`src/tools/reading.ts`; the file itself with `raw`, a page under the carry size,
+  marked them (`src/tools/reading.ts`; the file itself with `raw`, for prose and instruction files and a file
+  the session's own prompts name unless the call says `raw: false`, a page under the carry size,
   a program's read, or when the reader fails or is slower than a minute, said once; an edit of lines a reading
   did not show is refused once with the read to make first; `read_through` in a session's settings and
   `agents.read_through` turn it off, and a trial tries it on agent trees), idle compaction before a long context's cache
