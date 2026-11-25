@@ -7,7 +7,7 @@ import { Bus } from "../../core/bus.ts";
 import { ErrorTracker } from "../../core/errors.ts";
 import { Store } from "../../core/store.ts";
 import { running, startJob, stopJob } from "../../tools/jobs.ts";
-import { worktreeRoutes } from "./worktrees.ts";
+import { worktreeRoutes, worktreeTitle } from "./worktrees.ts";
 
 // Each test here runs git a dozen times or more, and on a busy disk one git
 // command takes half a second: the 5 s default was passed in whole-suite runs.
@@ -85,4 +85,33 @@ test("a worktree create sends the first message with its images", async () => {
   const both = await make({ workspace: repo, text: " look at this ", images: [image] });
   const alone = await make({ workspace: repo, title: "image only", images: [image] });
   expect(sent).toEqual([[both, "look at this", { images: [image] }], [alone, "", { images: [image] }]]);
+});
+
+// A session the start box makes in a worktree is named by the owner's first words until its reply, and a small
+// model titles it then (title_by "prompt"); a name the owner gave stays theirs (title_by empty).
+test("a worktree create marks a title taken from the prompt, not one the owner gave", async () => {
+  const repo = join(root, "repo-title");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "a.txt"), "a\n");
+  git(repo, "add", ".");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a");
+  const store = new Store(join(root, "state-title"));
+  store.db.run("CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT)");
+  const bus = new Bus();
+  const providers = { defaultModel: async () => "m", resolve: async () => ({ provider: { id: "p" }, info: { id: "p:m" } }) };
+  const routes = worktreeRoutes({ store, bus, errors: new ErrorTracker(store, bus), providers, workspace: repo, engine: { isRunning: () => false, send() {} } } as any) as any;
+  const make = async (body: unknown) => (await (await routes["/api/worktrees"].POST(new Request("http://x/api/worktrees", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }))).json()).session.id as string;
+  const said = await make({ workspace: repo, text: "Fix the cart rounding\nand the tax" });
+  const named = await make({ workspace: repo, title: "Mine", text: "Fix the cart rounding" });
+  expect(store.session(said)).toMatchObject({ title: "Fix the cart rounding", title_by: "prompt" });
+  expect(store.session(named)).toMatchObject({ title: "Mine", title_by: "" });
+});
+
+test("worktreeTitle: the owner's name, the prompt's words, a pull request's number", () => {
+  expect(worktreeTitle({ title: "Mine", text: "x" })).toEqual({ title: "Mine", title_by: "" });
+  expect(worktreeTitle({ text: "  \nFix it\nmore" })).toEqual({ title: "Fix it", title_by: "prompt" });
+  expect(worktreeTitle({ prompt: "Fix it" })).toEqual({ title: "Fix it", title_by: "prompt" });
+  expect(worktreeTitle({}, "https://github.com/a/b/pull/12")).toEqual({ title: "Pull request 12", title_by: "" });
+  expect(worktreeTitle({}).title_by).toBe("");
 });

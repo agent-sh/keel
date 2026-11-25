@@ -1,4 +1,7 @@
 import { expect, test } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { ask, HAIKU, SCRIPTED, shoot } from "./shots.ts";
 
 // Feature: a session's title says its task. Until the first reply it is the
@@ -102,4 +105,37 @@ test("a small model titles a session after its first reply, and never over the o
   await expect(header).toHaveText(settled);
   await shoot(page, "titles-04-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
+});
+
+// A session started from the start box in a new worktree is titled the same way: its first words until the
+// reply, then the small model's title (its title was once kept as one the owner gave, and never replaced).
+test("a session started in a worktree gets a model title after its first reply", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "needs the scripted provider: its title stand-in answers the title request");
+  const tag = `tw${Date.now().toString(36)}`;
+  // The owner's small model writes it: a model other than the session's.
+  const { models, default: def } = await (await request.get("/api/models")).json();
+  const small = (models as any[]).find((m) => m.id !== def && m.provider === (models as any[]).find((x) => x.id === def)?.provider && !m.hidden)?.id;
+  test.skip(!small, "needs a second model of the default's provider: the title is never written by the session's own model");
+  expect((await request.patch("/api/settings", { data: { small_models: { ids: [small] } } })).ok()).toBe(true);
+  const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `title-wt-${Date.now()}`);
+  mkdirSync(repo, { recursive: true });
+  const git = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(repo, "a.txt"), "a\n");
+  git("add", "-A");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+  await page.addInitScript((ws) => {
+    localStorage.setItem("keel.newWorkspace", JSON.stringify(ws));
+    localStorage.setItem("keel.startInWorktree", "0");
+  }, repo);
+  await page.goto("/");
+  await page.getByTestId("start-in-worktree").click();
+  await expect(page.getByTestId("start-in-worktree")).toHaveAttribute("aria-checked", "true");
+  const long = `Point 1: round the invoice tax per line, not on the total (${tag})`;
+  await page.getByTestId("composer").fill(ask(long, `${long}\nscript:say Done.\nscript:title Per line tax rounding ${tag}`));
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/s\//);
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
+  await expect(page.getByTestId("session-title")).toHaveText(`Per line tax rounding ${tag}`, { timeout: 30_000 });
+  await shoot(page, "titles-05-worktree");
 });

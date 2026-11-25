@@ -196,7 +196,7 @@ export const runRoutes: RouteModule = (deps) => {
             const r = await fetch(new URL("/api/worktrees", req.url), {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ workspace, model: m, title: b.worktree || text.split("\n")[0]!.slice(0, 80) }),
+              body: JSON.stringify({ workspace, model: m, ...(b.worktree ? { title: b.worktree } : { prompt: text }) }),
             });
             const w = (await r.json()) as any;
             if (!r.ok) throw fail(w.error ?? `the worktree was not made (HTTP ${r.status})`, r.status);

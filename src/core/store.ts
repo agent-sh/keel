@@ -924,12 +924,12 @@ export class Store {
     return this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
   }
 
-  createSession(s: { title?: string; model: string; workspace: string; settings?: Session["settings"] }): Session {
+  createSession(s: { title?: string; title_by?: Session["title_by"]; model: string; workspace: string; settings?: Session["settings"] }): Session {
     const now = Date.now();
     const id = Bun.randomUUIDv7();
     this.db
-      .query("INSERT INTO sessions (id, title, model, workspace, created, updated, settings) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(id, this.redact(null, "title", s.title ?? ""), s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
+      .query("INSERT INTO sessions (id, title, title_by, model, workspace, created, updated, settings) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, this.redact(null, "title", s.title ?? ""), s.title_by ?? "", s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
     // It has no event: that is kept, so its first reader reads nothing. Not inside a transaction of
     // the caller's, which may still be undone: there the session is only known as new, and the read
     // that finds it empty is not counted as a whole-session read (held).

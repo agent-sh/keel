@@ -6,11 +6,24 @@ import { folderUse, inUse as folderInUse } from "../inuse.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { fitted } from "../../engine/image-fit.ts";
+import { firstLineTitle } from "../../engine/turn.ts";
 import { crossingIn, routeOfFolder } from "../../safety/content-routes.ts";
 import { hostOfRemote } from "../../worktree/pr-head.ts";
 import { headsRef } from "./trust.ts";
 import { setupHook, type SetupOutcome } from "../../worktree/setup.ts";
 import { gate, presence } from "./permissions.ts";
+
+// The title a new worktree session starts with, and who wrote it. A name the owner gave (`title`) is theirs and
+// stays (`title_by` empty). The words of the first prompt (`text`, or `prompt` when the caller sends the prompt
+// itself) are only a stand-in until the first reply: it is "prompt", so a small model titles the session then
+// (src/engine/title.ts). A pull request's number is the maker's name: kept, never replaced.
+export function worktreeTitle(b: { title?: unknown; text?: unknown; prompt?: unknown }, pr?: string | number): { title: string; title_by: "" | "prompt" } {
+  const given = String(b.title ?? "").split("\n")[0]!.slice(0, 80);
+  if (given.trim()) return { title: given, title_by: "" };
+  const said = firstLineTitle(String(b.text || b.prompt || ""));
+  if (said) return { title: said, title_by: "prompt" };
+  return { title: pr !== undefined ? `Pull request ${String(pr).replace(/^.*\/(?:pull|merge_requests)\/(\d+).*$/, "$1")}` : "", title_by: "" };
+}
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -86,8 +99,8 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         const pr = b.pr === undefined || b.pr === null || b.pr === "" ? undefined : b.pr;
         if (pr !== undefined && typeof pr !== "string" && typeof pr !== "number") return bad("pr is a number or an address");
         if (pr !== undefined && b.base) return bad("give a pull request or a base branch, not both");
-        const title = String(b.title || b.text || (pr !== undefined ? `Pull request ${String(pr).replace(/^.*\/(?:pull|merge_requests)\/(\d+).*$/, "$1")}` : "")).split("\n")[0]!.slice(0, 80);
-        const s = store.createSession({ model, workspace, title });
+        const { title, title_by } = worktreeTitle(b, pr);
+        const s = store.createSession({ model, workspace, title, title_by });
         try {
           const at = pr !== undefined ? await wts.atPr(s.id, workspace, pr) : undefined;
           const { wt, cwd } = at ?? await wts.create(s.id, workspace, title, b.base);
