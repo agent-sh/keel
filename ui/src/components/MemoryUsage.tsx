@@ -19,6 +19,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { api, reportError } from "../lib/store.ts";
 import { fmtTokens } from "../lib/utils.ts";
 import { FactReader, GivenView, SearchView, UnusedView, type MemorySession, type OpenFact } from "./MemoryFacts.tsx";
+import { MemorySweep } from "./MemorySweep.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { fmtMs, fmtPct, Panel, Table } from "./UsagePanel.tsx";
 
@@ -32,7 +33,7 @@ type Kinds = { ask: boolean; tool: boolean };
 // `fell`: paths whose recall in the last two hours is half of their day's or less (answered asks, and those with facts).
 type Fell = { path: string; recent: { answered: number; hits: number }; day: { answered: number; hits: number } };
 type Report = { total: Row; paths: (Row & { path: string })[]; store?: { out: Kinds; degraded: Kinds }; fell?: Fell[] };
-export type MemoryTab = "usage" | "given" | "search" | "unused";
+export type MemoryTab = "usage" | "given" | "search" | "unused" | "sweep";
 
 // A path's name: "Memory store, with a prompt", and on a phone "With a prompt".
 const STORE = "Memory store, ";
@@ -52,6 +53,7 @@ const HINT: Record<MemoryTab, string> = {
   given: "what a session was told to remember, moment by moment, and what each fact cost",
   search: "the store's own search; a fact opens with its source and date",
   unused: "notes given and never named afterwards (a rough signal), rules followed or broken, and what memory costs",
+  sweep: "the helper's daily look at how each memory system did, and what it offers to improve",
 };
 const PANEL = "memory-view";
 const PHONE = "(max-width: 767px)";
@@ -148,7 +150,7 @@ export function MemoryUsage({ since, session: from = "", tab: first = "usage", o
     if (!open) { el.focus({ preventScroll: true }); opener.current = null; }
   }, [open, phone]);
   useEffect(() => {
-    if (tab === "usage" || tab === "search") return;
+    if (tab === "usage" || tab === "search" || tab === "sweep") return;
     let live = true;
     api<{ sessions: MemorySession[]; gone: boolean }>(`/api/memory/sessions${session ? `?with=${session}` : ""}`).then((x) => {
       if (!live) return;
@@ -169,14 +171,16 @@ export function MemoryUsage({ since, session: from = "", tab: first = "usage", o
   const view = tab === "usage" ? <UsageTable since={since} />
     : tab === "given" ? <GivenView session={one} sessions={sessions} onSession={pick} onOpen={openFact} onGone={lost} under={under} />
     : tab === "search" ? null
+    : tab === "sweep" ? <MemorySweep />
     : <UnusedView since={since} session={session} sessions={sessions} onSession={pick} onOpen={openFact} onGone={lost} under={under} />;
-  const beside = !!open && !phone && tab !== "usage";
+  const beside = !!open && !phone && tab !== "usage" && tab !== "sweep";
 
   return (
     <Panel plain title="Memory" hint={HINT[tab]} testid="usage-memory"
       aside={<Seg<MemoryTab> wrap label="Memory view" kind="tabs" panel={PANEL} testid="memory-tabs" value={tab} onChange={(t) => { setTab(t); setOpen(null); opener.current = null; }} options={[
         { value: "usage", label: "Usage", testid: "memory-tab-usage" }, { value: "given", label: "Given", testid: "memory-tab-given" },
         { value: "search", label: "Search", testid: "memory-tab-search" }, { value: "unused", label: "Never named", testid: "memory-tab-unused" },
+        { value: "sweep", label: "Daily sweep", testid: "memory-tab-sweep" },
       ]} />}>
       <div id={PANEL} role="tabpanel" aria-labelledby={tabId(PANEL, tab)} className={beside ? "grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]" : undefined}>
         <div className="min-w-0">

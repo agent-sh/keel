@@ -189,19 +189,19 @@ type View = "overview" | "causes" | "sessions" | "calls" | "tokens" | "errors" |
 // A link may name the view to open (?view=memory, with the session it is about); one followed while
 // this page is already open is told by an event (USAGE_LINK), since nothing mounts again.
 export const USAGE_LINK = "keel-usage-link";
-const linked = () => { const q = new URLSearchParams(location.search); return { memory: q.get("view") === "memory", session: q.get("session") ?? "" }; };
+const linked = () => { const q = new URLSearchParams(location.search); return { memory: q.get("view") === "memory", session: q.get("session") ?? "", sweep: q.get("tab") === "sweep" }; };
 export function UsagePanel() {
   const [link, setLink] = useState(() => ({ ...linked(), n: 0 }));
   const [view, setView] = useState<View>(link.memory ? "memory" : "overview");
   const [range, setRange] = useState<Range>("week");
   // The range sums what the Memory view's Usage and Never named show; Given and Search do not read it.
-  const [memoryTab, setMemoryTab] = useState<MemoryTab>(link.memory ? "given" : "usage");
+  const [memoryTab, setMemoryTab] = useState<MemoryTab>(link.sweep ? "sweep" : link.memory ? "given" : "usage");
   useEffect(() => {
-    const follow = () => { const l = linked(); if (!l.memory) return; setLink((was) => ({ ...l, n: was.n + 1 })); setMemoryTab("given"); setView("memory"); };
+    const follow = () => { const l = linked(); if (!l.memory) return; setLink((was) => ({ ...l, n: was.n + 1 })); setMemoryTab(l.sweep ? "sweep" : "given"); setView("memory"); };
     addEventListener(USAGE_LINK, follow);
     return () => removeEventListener(USAGE_LINK, follow);
   }, []);
-  const ranged = view !== "compare" && view !== "trials" && !(view === "memory" && (memoryTab === "given" || memoryTab === "search"));
+  const ranged = view !== "compare" && view !== "trials" && !(view === "memory" && (memoryTab === "given" || memoryTab === "search" || memoryTab === "sweep"));
   return (
     <div className="flex flex-col gap-4" data-testid="usage-panel">
       <div className="flex flex-wrap items-center gap-3">
@@ -214,7 +214,7 @@ export function UsagePanel() {
         <Help label="where it is measured">Measured on this machine. Nothing is sent anywhere.</Help>
       </div>
       {view === "overview" ? <Overview range={range} go={setView} /> : view === "causes" ? <CostDrivers range={range} /> : view === "sessions" ? <SpendRank range={range} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
-        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "yield" ? <ReviewYield range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} onTab={setMemoryTab} /> : view === "trials" ? <SettingTrials /> : <CompareView />}
+        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "yield" ? <ReviewYield range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} sweep={link.sweep} onTab={setMemoryTab} /> : view === "trials" ? <SettingTrials /> : <CompareView />}
     </div>
   );
 }
@@ -505,7 +505,7 @@ function CallsView({ range }: { range: Range }) {
 // What the agent was told to remember and what it cost. Opened from the page it starts on what
 // recall added over the range; opened by a link (a session's memory chip, /memory, the palette) it
 // starts on what that session was given.
-function MemoryView({ range, session, given, onTab }: { range: Range; session: string; given: boolean; onTab: (t: MemoryTab) => void }) {
+function MemoryView({ range, session, given, sweep, onTab }: { range: Range; session: string; given: boolean; sweep: boolean; onTab: (t: MemoryTab) => void }) {
   const since = useMemo(() => Date.now() - RANGES[range], [range]);
-  return <MemoryUsage since={since} session={session} tab={given ? "given" : "usage"} onTab={onTab} />;
+  return <MemoryUsage since={since} session={session} tab={sweep ? "sweep" : given ? "given" : "usage"} onTab={onTab} />;
 }

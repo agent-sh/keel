@@ -40,14 +40,19 @@ registerCommand({ id: "integrations", label: "Memory and supervisor", group: "Ge
 // The Memory panel (Settings > Usage, Memory), on what one session was given
 // when a session is named. With that page already open nothing mounts again:
 // it is told by an event (the name is UsagePanel's USAGE_LINK).
-export function openMemory(session?: string) {
-  history.pushState(null, "", `/settings/usage?view=memory${session ? `&session=${session}` : ""}`);
+export function openMemory(session?: string, tab?: "sweep") {
+  history.pushState(null, "", `/settings/usage?view=memory${session ? `&session=${session}` : ""}${tab ? `&tab=${tab}` : ""}`);
   navigate({ name: "settings", section: "usage" });
   dispatchEvent(new Event("keel-usage-link"));
 }
 registerCommand({
   id: "memory-panel", label: "Memory: what was given, search, correct", group: "View", words: "tacit facts given unused search correct wrong",
   run: () => { const r = getUI().route; openMemory(r.name === "session" ? r.id : undefined); },
+});
+
+registerCommand({
+  id: "memory-sweep", label: "Memory: the helper's daily sweep", group: "View", words: "helper sweep daily memory offers stale rule helped",
+  run: () => openMemory(undefined, "sweep"),
 });
 
 slash.add({

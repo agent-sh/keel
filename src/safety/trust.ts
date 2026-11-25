@@ -11,6 +11,8 @@ import { contains, realOf, homeDir } from "../core/paths.ts";
 import { dirname, join, relative } from "node:path";
 import type { Store } from "../core/store.ts";
 import { timed } from "../admin/stall.ts";
+import { instructionNames } from "./instruction-files.ts";
+import { codexConfig, nativeRoots } from "../engine/native-memory.ts";
 
 export type TrustKind = "instructions" | "skill";
 export type ProjectFile = {
@@ -33,8 +35,15 @@ CREATE TABLE IF NOT EXISTS trust_settings (key TEXT PRIMARY KEY, value TEXT NOT 
 CREATE TABLE IF NOT EXISTS trust_told (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, key TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS trust_servers (root TEXT PRIMARY KEY, auto INTEGER NOT NULL DEFAULT 0, trusted INTEGER NOT NULL);
 `;
-const INSTRUCTION_NAMES = ["AGENTS.md", "CLAUDE.md"]; // as the system prompt loads them
 const sha = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
+
+// The folder a pinned file belongs to: a skill's three levels up, an instruction file's own folder
+// (the one above its `.claude` for a name that lives there).
+function folderOf(path: string, kind: TrustKind, names: readonly string[]): string {
+  if (kind === "skill") return dirname(dirname(dirname(path)));
+  const n = names.find((x) => x.includes("/") && path.endsWith(`/${x}`));
+  return n ? path.slice(0, path.length - n.length - 1) : dirname(path);
+}
 
 // The repository root of a folder: the nearest ancestor with .git, never the home itself.
 export function rootOf(dir: string): string | null {
@@ -171,19 +180,20 @@ export class Trust {
     if (!root) return [];
     const found: { path: string; kind: TrustKind; digest: string | null; content?: string; outside?: string[]; refused?: string }[] = [];
     const dirs: string[] = [];
+    const names = instructionNames(codexConfig(nativeRoots()).fallback);
     for (let d = cwd; ; d = dirname(d)) {
       dirs.unshift(d);
       if (d === root || dirname(d) === d) break;
     }
     for (const d of dirs) {
-      for (const n of INSTRUCTION_NAMES) {
+      // Every file a family's chain can load from the folder is pinned (src/safety/instruction-files.ts).
+      for (const n of names) {
         const p = join(d, n);
         try {
           if (!statSync(p).isFile()) continue;
           const text = readFileSync(p, "utf8");
           if (!text.trim()) continue;
           found.push({ path: p, kind: "instructions", digest: sha(text), content: text });
-          break;
         } catch {}
       }
       // Command files are skills in the older form: each file is pinned.
@@ -223,7 +233,7 @@ export class Trust {
     // Pinned files of the folders on the way that are gone now.
     const seen = new Set(found.map((f) => f.path));
     for (const r of this.store.db.query<{ path: string; kind: string; sha: string; trusted: number }, [string]>("SELECT path, kind, sha, trusted FROM trust_pins WHERE root = ?").all(root)) {
-      if (seen.has(r.path) || !dirs.includes(r.kind === "skill" ? dirname(dirname(dirname(r.path))) : dirname(r.path))) continue;
+      if (seen.has(r.path) || !dirs.includes(folderOf(r.path, r.kind as TrustKind, names))) continue;
       out.push({ path: r.path, kind: r.kind as TrustKind, root, sha256: null, state: "gone", pinned_sha256: r.sha, trusted_ms: r.trusted });
     }
     return out;

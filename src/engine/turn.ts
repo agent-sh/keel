@@ -20,6 +20,7 @@ import { ownerPrompt, ownersMeta } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
+import { chainOf, nativeContext, nativeMemory, nativeRoots, withoutPorted } from "./native-memory.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
 import { SCHEMA_RESENDS, ToolFit, wireOf as fitWireOf } from "./tool-fit.ts";
@@ -28,7 +29,7 @@ import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import { shutWords } from "../providers/account.ts";
-import { EFFORT_LADDER, type ModelInfo, type Price, type Provider, type ProviderRequest, type ProviderResult } from "../providers/types.ts";
+import { EFFORT_LADDER, type Family, type ModelInfo, type Price, type Provider, type ProviderRequest, type ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
@@ -298,10 +299,13 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 // `marks`: every path looked for is noted with its mark on disk, before it is
 // looked at (src/engine/instruction-marks.ts).
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-export function instructionPaths(cwd: string, marks?: Marks): { path: string; scope: "owner" | "parent" | "folder" }[] {
-  const found: { path: string; scope: "owner" | "parent" | "folder" }[] = [];
+// A model of the Claude or GPT family reads the files its own harness does (src/engine/native-memory.ts);
+// any other family, or none named, the chain below.
+export function instructionPaths(cwd: string, marks?: Marks, family?: Family): { path: string; scope: "owner" | "parent" | "folder"; limit?: number }[] {
+  const native = family ? chainOf(family, cwd, nativeRoots(), marks) : null;
+  const found: { path: string; scope: "owner" | "parent" | "folder"; limit?: number }[] = native ?? [];
   const seen = new Set<string>();
-  for (let dir = cwd; !seen.has(dir); dir = dirname(dir)) {
+  for (let dir = cwd; !native && !seen.has(dir); dir = dirname(dir)) {
     seen.add(dir);
     if (marks) for (const n of ["AGENTS.md", "CLAUDE.md"]) noteMark(marks, join(dir, n));
     const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
@@ -400,17 +404,22 @@ export function cutInstructions(path: string, text: string, limit: number, lines
 
 // `window`: the context window of the model the prompt is for, in tokens (instructionLimit).
 // `marks`: each file's mark on disk, noted before it is read (src/engine/instruction-marks.ts).
-export function instructionFiles(cwd: string, window?: number, marks?: Marks): string {
-  const limit = instructionLimit(window);
+export function instructionFiles(cwd: string, window?: number, marks?: Marks, family?: Family): string {
+  const whole = instructionLimit(window);
   const parts: string[] = [];
-  const files = instructionPaths(cwd, marks);
+  const files = instructionPaths(cwd, marks, family);
   const seen = new Set(files.map((f) => real(f.path)));
-  for (const { path: p } of files) {
+  // A family that reads its own harness's user file has no use for the copy Keel's import made of it.
+  const own = join(configDir(), "AGENTS.md");
+  const theirs = !!family && files.some((f) => f.scope === "owner" && f.path !== own);
+  for (const { path: p, limit: room } of files) {
+    const limit = room === undefined ? whole : Math.min(whole, room);
     let read: string;
     try {
       const held = heldFile(p);
       if (held) throw new Error(held);
       read = readFileSync(p, "utf8");
+      if (p === own && family) read = withoutPorted(read, family, theirs);
     } catch (e) {
       // Not left out silently: the model knows a source is missing, not removed.
       parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
@@ -434,10 +443,17 @@ const CORE = [
 ].join("\n");
 
 // The per-session part, as its two blocks: the place and the instruction files.
-function sessionParts(cwd: string, created: number, window?: number, marks?: Marks): PromptPart[] {
-  const inst = instructionFiles(cwd, window, marks);
+// `family`: the model's, which decides what the owner's folders give it (src/engine/native-memory.ts); `top`: no agent started the session.
+function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): PromptPart[] {
+  const inst = instructionFiles(cwd, window, marks, native?.family);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
-  return [{ name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst }];
+  const mem = native && nativeMemory(native.family, cwd, { top: native.top, store: nativeContext.store?.(native.session) });
+  if (mem) nativeContext.loaded?.(native!.session, mem);
+  return [
+    { name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst },
+    // The model's own harness's memory of the project: a block of the owner's data, kept in its place while it is empty.
+    { name: "native memory", text: mem ? `\n${mem.text}\n` : "", data: mem?.data ?? "" },
+  ];
 }
 
 type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean; providerWaitMs?: number };
@@ -2051,7 +2067,7 @@ export class Engine {
     // folder (started that day), so the session's own blocks come after them.
     // (The instruction files' marks on disk, noted before they are read: an edit is noticed by them, instructionsEdited.)
     const marks: Marks = new Map();
-    const folder = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks).map(sent);
+    const folder = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks, info ? { family: info.family, top: !session.parent_id, session } : undefined).map(sent);
     this.marks.set(session.id, marks);
     const parts = [...shared, ...folder, ...own];
     const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);

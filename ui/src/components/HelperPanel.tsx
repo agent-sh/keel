@@ -7,6 +7,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { addMemory, checkMail, dropMemory, editMemory, openHelper, setHelper, useHelper, type MemoryRecord } from "../lib/helper.ts";
 import { reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
+import { MemorySweep } from "./MemorySweep.tsx";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { iconButton } from "./ui.tsx";
@@ -140,6 +141,8 @@ export function HelperPanel(_: { session: Session }) {
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto p-4" data-testid="helper-panel">
       <MemoryList />
+
+      <MemorySweep compact />
 
       <section aria-labelledby="helper-ev">
         <h3 id="helper-ev" className="text-ui font-semibold">Lately</h3>

@@ -30,6 +30,8 @@ import { plantsSaid, scanPlants, settle, type Plants } from "./plants.ts";
 import { setCallEnv } from "../tools/jobs.ts";
 import type { Shared } from "./shared-branches.ts";
 import { configDir } from "../providers/config.ts";
+import { familyOf } from "../providers/family.ts";
+import { nativeWrites } from "../engine/native-memory.ts";
 import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
@@ -1320,7 +1322,21 @@ export class Gate {
   private scope(session: Session) {
     let root = session;
     for (let n = 0; root.parent_id && !root.machine && n < 32; n++) root = this.store.session(root.parent_id) ?? root;
-    return { workspace: this.rootOf(session), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))] };
+    return { workspace: this.rootOf(session), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id)), ...this.memoryPlaces(root)] };
+  }
+
+  // Where the model writes its own harness's memory (src/engine/native-memory.ts): the auto memory
+  // folder of a Claude model, the notes folder of Codex's memories for a GPT model. Judged like the
+  // session's scratch folder, so the model keeps notes as its harness does. Only the session that was
+  // not started by an agent; read from the files again after half a minute.
+  private memory = new Map<string, { at: number; key: string; dirs: string[] }>();
+  private memoryPlaces(root: Session): string[] {
+    if (root.parent_id || !root.model) return [];
+    const key = `${root.model}\0${root.workspace}`, now = Date.now(), had = this.memory.get(root.id);
+    if (had && had.key === key && now - had.at < 30_000) return had.dirs;
+    const dirs = nativeWrites(familyOf(root.model), root.workspace).map(realOf);
+    this.memory.set(root.id, { at: now, key, dirs });
+    return dirs;
   }
 
   // What the read thread judges this session's stored calls on (marks.ts):

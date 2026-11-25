@@ -1,4 +1,5 @@
 import { zoned } from "../core/clock.ts";
+import { nativeLog } from "../integrations/native-log.ts";
 import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { asksLess, isMode } from "../safety/policy.ts";
@@ -170,6 +171,12 @@ function init(deps: Deps) {
           if (typeof result.content === "string") result.content = result.content ? `${result.content}\n\n${over}` : over;
           else result.content = [...result.content, { type: "text", text: over }];
         }
+      }
+      // A call that read or wrote the model's own harness's memory is noted for the daily sweep; a write that left
+      // the Claude index past what a start reads is told with its result, as for an agent's own.
+      if (!result.is_error) {
+        const over = nativeLog(deps.store).after(s, call.tool, call.input, result);
+        if (over) result.content = typeof result.content === "string" ? (result.content ? `${result.content}\n\n${over}` : over) : [...result.content, { type: "text", text: over }];
       }
       // A plan the tool refused is not the plan: the saved list stays as it was.
       if (goals.isPlanTool(call.tool.name) && !result.is_error) taskRenames.fromPlan(s.id, call.tool.name, call.input);

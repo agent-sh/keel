@@ -205,22 +205,23 @@ export class MemoryStore {
   readonly correctionNote = "A correction is sent as a newer note for the store's curator, which reads it against this fact when it next runs. Until then nothing changes, and the curator may ask you on its own page before it replaces anything.";
 
   // The note a correction is: under the fact's own scope and type, said by the owner.
-  private correctionArgs(name: string, text: string, f: FactView): string[] {
+  private correctionArgs(name: string, text: string, f: FactView, body?: string): string[] {
     const one = text.replace(/\s+/g, " ").trim();
     const args = ["add", "--harness", this.writer(), "--kind", "user"];
     if (f.meta.type && /^[a-z_]+$/.test(f.meta.type)) args.push("--type", f.meta.type);
     // A scope as the store writes one: it starts with a letter, so it is never read as an option.
     if (f.meta.scope && /^[a-z][\w./@-]*$/.test(f.meta.scope)) args.push("--scope", f.meta.scope);
-    return [...args, "--desc", one.slice(0, 200), "--body", `Corrects ${name}, which the owner marked wrong in Keel. ${one}`, `${name.slice(0, 180)}-correction`];
+    return [...args, "--desc", one.slice(0, 200), "--body", body ?? `Corrects ${name}, which the owner marked wrong in Keel. ${one}`, `${name.slice(0, 180)}-correction`];
   }
 
   // The command a correction would run, kept under a one-time id for the
   // owner to confirm. The fact is read once, here: what is confirmed is this
   // argument list and no other.
-  async preview(name: string, text: string, o: { cwd?: string; session?: string; page?: boolean } = {}): Promise<Preview> {
+  // `body`: what the note says of where it came from, when it is not an owner's correction (the daily sweep's).
+  async preview(name: string, text: string, o: { cwd?: string; session?: string; page?: boolean; body?: string } = {}): Promise<Preview> {
     const got = await this.fact(name, o.cwd);
     if (got.state !== "ok") return { state: got.state, error: got.error };
-    const argv = this.correctionArgs(name, text, got.fact!);
+    const argv = this.correctionArgs(name, text, got.fact!, o.body);
     const now = Date.now();
     for (const [k, p] of this.pending) if (p.until < now) this.pending.delete(k);
     while (this.pending.size >= PENDING_MAX) this.pending.delete(this.pending.keys().next().value!);

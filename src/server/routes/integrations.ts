@@ -10,6 +10,8 @@ import { watchFell } from "../../integrations/memory-fell.ts";
 import { isWriter, MemoryStore, memoryWriter as writer } from "../../integrations/memory-store.ts";
 import { readsOf } from "../reads.ts";
 import { memoryRoutes } from "./memory.ts";
+import { sweepRoutes } from "./sweep.ts";
+import { wireNativeLog } from "../../integrations/native-log.ts";
 import { findBin, Tacit } from "../../integrations/tacit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -20,6 +22,8 @@ export const integrationRoutes: RouteModule = (deps) => {
   const { store, engine, errors } = deps;
   const tacit = new Tacit(store, deps.bus, errors);
   tacit.install();
+  // The model's own harness's memory is divided with the owner's store where the store is on for the session; each load is noted for the sweep.
+  wireNativeLog(store, (s) => !!tacit.bin && tacit.flags(s.id).use_memory);
 
   // Under `bun --hot` this module runs again: close the old socket first.
   const g = globalThis as { __keelMomentum?: { stop(): void } };
@@ -65,8 +69,10 @@ export const integrationRoutes: RouteModule = (deps) => {
     },
   });
 
+  const mem = new MemoryStore(() => tacit.bin, store.stateDir, writer);
   return {
-    ...memoryRoutes(deps, new MemoryStore(() => tacit.bin, store.stateDir, writer), memoryMeter(store)),
+    ...memoryRoutes(deps, mem, memoryMeter(store)),
+    ...sweepRoutes(deps, mem, { on: () => !!tacit.bin }, { on: () => !!findBin("MOMENTUM_BIN", "momentum") }),
     "/api/integrations": {
       GET: () => json({ tacit: { available: !!tacit.bin, bin: tacit.bin, writer: writer(), writer_from: isWriter(process.env.TACIT_HARNESS?.trim()) ? "TACIT_HARNESS" : "settings" }, momentum: { available: !!findBin("MOMENTUM_BIN", "momentum"), socket } }),
     },

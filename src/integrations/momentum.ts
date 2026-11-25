@@ -39,6 +39,16 @@ function pendingApprovals(store: Store): Map<string, string> {
   }
 }
 
+// Each nudge momentum sent that Keel took (its action, its session, when), without its text: the
+// daily sweep (src/helper/sweep.ts) reads what each was followed by.
+export function noteAct(store: Store, sessionId: string, action: string, ts = Date.now()) {
+  try {
+    store.db.exec("CREATE TABLE IF NOT EXISTS momentum_acts (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, action TEXT NOT NULL); CREATE INDEX IF NOT EXISTS momentum_acts_ts ON momentum_acts(ts)");
+    store.db.query("INSERT INTO momentum_acts (session_id, ts, action) VALUES (?, ?, ?)").run(sessionId, ts, action);
+    store.db.query("DELETE FROM momentum_acts WHERE ts < ?").run(ts - 90 * 86_400_000);
+  } catch {}
+}
+
 export function handleLine(line: string, c: Ctx): Record<string, unknown> {
   let cmd: any;
   try {
@@ -76,6 +86,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     if (!s || isOutside(s)) return { ok: false, code: "not_found", error: "unknown session" };
     if (action === "interrupt") {
       void c.engine.interrupt(s.id, "supervisor");
+      noteAct(c.store, s.id, action);
       return { ok: true, accepted: action };
     }
     if (!text.trim()) return { ok: false, code: "empty_text", error: "queue and steer need text" };
@@ -90,6 +101,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     // nothing resumed it): then it waits there for the owner.
     if (action === "steer" && c.deliver && !c.engine.isRunning(s.id)) c.deliver(s.id, tagged, { origin: "momentum" });
     else c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });
+    noteAct(c.store, s.id, action);
     return { ok: true, accepted: action };
   }
   return { ok: false, error: "invalid command json" };
