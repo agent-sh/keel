@@ -301,6 +301,23 @@ describe("a Codex session answered in place", () => {
     } finally { other.kill(); orphan.kill(); r.done(); }
   }, 30_000);
 
+  test("who holds the rows a page shows is read from one look at /proc/locks a tick", async () => {
+    const r = rig();
+    try {
+      await r.session();
+      // Two more threads of the same Codex.
+      for (const n of [1, 2]) {
+        const id = `${r.thread.slice(0, -2)}9${n}`;
+        const path = r.rollout.replace(r.thread, id);
+        appendFileSync(path, readFileSync(r.rollout, "utf8").replaceAll(r.thread, id));
+      }
+      await until(() => r.store.sessions({ outside: true }).length === 3);
+      const before = r.o.stats.lock_reads;
+      (r.o as any).tick();
+      expect(r.o.stats.lock_reads - before).toBe(1);
+    } finally { r.done(); }
+  });
+
   test("a session another process holds takes nothing, and says who holds it", async () => {
     const r = rig({ holder: () => ({ kind: "terminal", pid: 4242 }) });
     try {

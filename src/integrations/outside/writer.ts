@@ -58,7 +58,7 @@ export function lockHolder(path: string, locks: Lock[]): number | undefined {
   return same ? Math.max(0, same.pid) : undefined;
 }
 
-const readLocks = (): Lock[] => { try { return parseLocks(readFileSync("/proc/locks", "utf8")); } catch { return []; } };
+export const readLocks = (): Lock[] => { try { return parseLocks(readFileSync("/proc/locks", "utf8")); } catch { return []; } };
 
 // A process's state letter and start time (field 22, clock ticks since boot, as text) from /proc/<pid>/stat.
 // The name in parentheses can hold spaces and parentheses: the fields are counted after its last ")".

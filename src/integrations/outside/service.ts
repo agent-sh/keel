@@ -36,7 +36,7 @@ import { itemsOf, storedData, type Found } from "../import/types.ts";
 import { filesStored } from "../import/service.ts";
 import { aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader } from "./facts.ts";
 import { excluded, outsideSettings, type OutsideSettings } from "./settings.ts";
-import { alive as running, claudeHolder, claudeKind, codexHolder, codexKeepsLocks, FREE, readClaudeRecord, type Holder } from "./writer.ts";
+import { alive as running, claudeHolder, claudeKind, codexHolder, codexKeepsLocks, FREE, readClaudeRecord, readLocks, type Holder, type Lock } from "./writer.ts";
 
 export const LABEL: Record<OutsideHarness, string> = { claude: "Claude Code", codex: "Codex" };
 
@@ -155,6 +155,8 @@ export type OutsideStatus = {
   copy_ms: number;
   copy_bytes: number;
   full_copies: number;
+  // Looks at /proc/locks (who holds a Codex thread): one a tick for the rows pages show, one for each other read.
+  lock_reads: number;
   unwatched?: string;
 };
 
@@ -211,7 +213,7 @@ export class Outside {
   private holders?: ReturnType<typeof setInterval>;
   private unsettle?: () => void;
   private cfg: OutsideSettings;
-  stats: OutsideStatus = { enabled: false, days: 0, roots: [], watches: 0, tracked: 0, sessions: 0, reads: 0, bytes: 0, first_reads: 0, first_bytes: 0, copies: 0, copy_ms: 0, copy_bytes: 0, full_copies: 0 };
+  stats: OutsideStatus = { enabled: false, days: 0, roots: [], watches: 0, tracked: 0, sessions: 0, reads: 0, bytes: 0, first_reads: 0, first_bytes: 0, copies: 0, copy_ms: 0, copy_bytes: 0, full_copies: 0, lock_reads: 0 };
 
   constructor(private d: OutsideDeps) {
     d.store.migrate(SCHEMA);
@@ -258,10 +260,23 @@ export class Outside {
     this.prune = setInterval(() => void this.pruneOld(), DAY);
     (this.prune as any).unref?.();
     // Who holds a session a page shows, read again (a row tells only a change).
-    this.holders = setInterval(() => {
-      for (const t of this.files.values()) if (t.session && t.found && this.d.viewed?.(t.session)) this.tell(t);
-    }, HOLDER_MS);
+    this.holders = setInterval(() => this.tick(), HOLDER_MS);
     (this.holders as any).unref?.();
+  }
+
+  // Who holds each row a page shows, read again: one look at /proc/locks for all of them.
+  private tick() {
+    let locks: Lock[] | undefined;
+    for (const t of this.files.values()) {
+      if (!t.session || !t.found || !this.d.viewed?.(t.session)) continue;
+      if (t.harness === "codex") locks ??= this.locks();
+      this.tell(t, locks);
+    }
+  }
+
+  private locks(): Lock[] {
+    this.stats.lock_reads++;
+    return readLocks();
   }
 
   // Every watch closed; the sessions stay as they are.
@@ -661,8 +676,8 @@ export class Outside {
   }
 
   // What a source's records say now, with the staleness the settings give.
-  private factsOf(t: Tracked) {
-    const holder = this.holderOf(t);
+  private factsOf(t: Tracked, locks?: Lock[]) {
+    const holder = this.holderOf(t, locks);
     const keeps = t.harness === "codex" ? codexKeepsLocks(this.roots().codexHome) : this.keeps;
     const { facts: said, vouched } = withOwn(t, this.own, keeps, holder);
     const staleMs = this.cfg.stale_minutes * 60_000;
@@ -672,10 +687,10 @@ export class Outside {
 
   // Who holds a source now, as this record knows it: Keel's own child, else Claude Code's record of its
   // running session (watched), else the holder of Codex's writer lock (read now).
-  private holderOf(t: Tracked): Holder {
+  private holderOf(t: Tracked, locks?: Lock[]): Holder {
     if (!t.found) return FREE;
     if (t.session && this.d.ours?.(t.session)) return { kind: "keel" };
-    if (t.harness === "codex") return codexHolder(this.roots().codexHome, t.found.id);
+    if (t.harness === "codex") return codexHolder(this.roots().codexHome, t.found.id, locks ?? this.locks());
     const w = this.own.get(t.found.id);
     return w && running(w.pid, w.procStart) ? { kind: claudeKind(w), pid: w.pid } : FREE;
   }
@@ -686,7 +701,7 @@ export class Outside {
     const row = this.row(sessionId);
     if (!row) return undefined;
     if (this.d.ours?.(sessionId)) return { kind: "keel" };
-    return row.harness === "codex" ? codexHolder(this.roots().codexHome, row.source_id) : claudeHolder(this.roots().claudeRunning, row.source_id);
+    return row.harness === "codex" ? codexHolder(this.roots().codexHome, row.source_id, this.locks()) : claudeHolder(this.roots().claudeRunning, row.source_id);
   }
 
   // The row told again (Keel's child began or ended in it).
@@ -729,12 +744,13 @@ export class Outside {
   }
 
   // The session's row from what its records say now: made the first time, then written only when it changed.
-  private tell(t: Tracked) {
+  // `locks`: the look at /proc/locks a tick made for every row it tells (else one is made now).
+  private tell(t: Tracked, locks?: Lock[]) {
     const f = t.found!;
     clearTimeout(t.aging);
     // A folder the owner excluded: not made, not told.
     if (excluded(f.cwd, this.cfg.exclude)) return;
-    const { facts, said, vouched, seen, staleMs, holder } = this.factsOf(t);
+    const { facts, said, vouched, seen, staleMs, holder } = this.factsOf(t, locks);
     // Told again when it would go stale with no record before then.
     if (facts !== said || vouched || (said.state !== "working" && said.state !== "waiting")) t.aging = undefined;
     else { t.aging = setTimeout(() => this.tell(t), Math.max(0, seen + staleMs - Date.now()) + 50); (t.aging as any).unref?.(); }
