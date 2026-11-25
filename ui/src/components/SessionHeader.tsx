@@ -362,19 +362,22 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   const pinned = isPinned(session);
   const panes = useStations((x) => x.count);
   const alone = phone() || panes < 2;
+  const rename: Act = { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) };
   const acts: Act[] = [
     ...(alone ? [
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
       { id: "menu-close", label: "Close the session here", icon: <X />, command: "station.close", run: () => runCommand("station.close") },
     ] : []),
     // A phone's head holds no tools, and while a question waits not even the Panels button: the panels at hand and
-    // Stop are here, so they stay a tap away (bridge.css, data-question).
+    // Stop are here, so they stay a tap away (bridge.css, data-question). Rename comes before them: below the panels it was
+    // past the foot of the screen, a scroll of the menu away, and a phone has no double press on the title.
     ...(phone() ? [
       ...(session.phase === "working" ? [{ id: "menu-stop", label: "Stop the turn", icon: <Square />, run: () => void actions.interrupt(session.id).catch(reportError) }] : []),
+      rename,
       ...hand.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "Panels", gap: true } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })),
       ...(crowded ? rest.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "More panels", gap: !hand.length } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })) : []),
     ] : []),
-    { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) },
+    ...(phone() ? [] : [rename]),
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
     { id: "menu-path", label: "Copy folder path", icon: <Copy />, run: () => void copyOrSay(session.workspace, menuButton.current) },
     { id: "menu-new-here", label: "New session here", icon: <FolderPlus />, run: () => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); } },

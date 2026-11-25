@@ -712,6 +712,8 @@ for (const size of SIZES) {
         const more = page.getByTestId("header-more");
         await expect(more.getByTestId("menu-stop")).toBeVisible();
         await shoot(page, `phone-surfaces-22-question-menu-open-${size.width}`);
+        // Rename is a tap away, in view as the menu opens: it was below the panels, past the foot of the screen.
+        await expect(more.getByTestId("menu-rename")).toBeInViewport({ ratio: 1 });
         // The panels the Panels button holds are in the menu as a group of their own: the five at hand, the work board among them.
         const panelRows = more.locator('[data-testid^="menu-panel-"]');
         await expect(more.getByTestId("menu-panels")).toBeVisible();
