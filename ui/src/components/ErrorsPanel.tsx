@@ -185,6 +185,8 @@ function Row({ e }: { e: ErrorRecord }) {
             and the source, the places and the acts are under it. */}
         <span className={cn("min-w-0 flex-1 truncate max-md:group-open:whitespace-normal max-md:group-open:break-words", unread ? "font-medium text-fg" : "text-muted")} data-testid="error-message">{e.message}</span>
         <span className="shrink-0 text-micro text-faint max-sm:hidden max-sm:group-open:inline" data-testid="error-source">{e.source}</span>
+        {/* Where it happened, on the folded line (a phone has it on a line of its own below). */}
+        {e.session_id && <span className="max-w-[7rem] shrink-0 truncate text-micro text-muted max-sm:hidden pointer-coarse:hidden" title={where} data-testid="error-in">in {session?.title || e.sites?.[0]?.title || "its session"}</span>}
         {state === "recovered" && <span className="shrink-0 text-micro text-ok" title={`Every time, a retry of the request passed. Last healed ${when(e.recovered_ts!)}`} data-testid="error-recovered">{ERROR_STATE.recovered}</span>}
         {n > 1 && (
           <span className="k-face-figure shrink-0 text-micro text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}${(e.sites?.length ?? 0) > 1 ? `, in ${e.sites!.length} sessions` : ""}`}>

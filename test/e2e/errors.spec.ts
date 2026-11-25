@@ -381,6 +381,8 @@ test("a row offers the acts that fit its failure, and Fix this only where an age
     // The session and the model are the row's tooltip, not a line of it.
     await expect(row.getByTestId("error-head")).toHaveAttribute("title", new RegExp(`^in Nightly report ${tag} · \\S`));
     await expect(row.getByTestId("error-where")).toBeHidden();
+    // And the folded line names the session, so the owner need not open the row or hover it to know which failed.
+    await expect(row.getByTestId("error-in")).toHaveText(`in Nightly report ${tag}`);
     // The acts show on the row when it is hovered or a key is in it, and are in the tab order meanwhile.
     const shown = () => acts.evaluate((el) => getComputedStyle(el).opacity);
     expect(await shown()).toBe("0");
