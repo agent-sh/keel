@@ -153,6 +153,33 @@ function Together({ r, below }: { r: BoardRow; below: Board["rows"] }) {
   );
 }
 
+// What the overlap forecast (git merge-tree, src/worktree/overlap-scan.ts) says would conflict at the branch's head: Land is
+// held for it, and each block names the other branch (or the base) and the files.
+function Forecast({ r, below }: { r: BoardRow; below: Board["rows"] }) {
+  const f = r.forecast ?? [];
+  if (!f.length) return null;
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="board-forecast">
+      {f.map((p) => {
+        const other = below.find((x) => x.id === p.with_agent);
+        return (
+          <div key={`${p.base}:${p.with}`} className="flex flex-col gap-1 rounded-md bg-danger-soft px-2 py-1.5" data-testid="board-forecast-conflict" data-with={p.with} data-base={p.base ? "yes" : "no"}>
+            <span className="flex min-w-0 items-center gap-1.5 text-caption text-danger">
+              <GitMerge className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 truncate">
+                Would conflict with{" "}
+                {p.base ? <>the base <span className="font-mono">{p.with}</span></> : other ? <button type="button" className="font-mono hover:underline" onClick={() => openSession(other.session_id)} title={other.title}>{short(p.with)}</button> : <span className="font-mono">{short(p.with)}</span>}
+                , Land is held
+              </span>
+            </span>
+            {p.files.length > 0 && <span className="truncate pl-5 font-mono text-micro text-fg" title={p.files.join(", ")} data-testid="board-forecast-files">{p.files.slice(0, 3).join(", ")}{p.files.length > 3 ? ` and ${p.files.length - 3} more` : ""}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // A reviewer's own words under a card, named as its.
 function Quote({ by, how, title, line, below, testid }: { by: string; how: string; title: string; line: string; below: Board["rows"]; testid: string }) {
   const agent = below.find((x) => x.id === by);
@@ -326,6 +353,7 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
           </div>
         )}
         {r.branch && !branchGone(r) && <Together r={r} below={below} />}
+        {r.branch && !branchGone(r) && r.landed?.state !== "yes" && <Forecast r={r} below={below} />}
         {r.branch && !branchGone(r) && r.pictures && <PicturesArea fact={r.pictures} sessionId={r.session_id} repo={r.repo} />}
         {r.review?.line && <Quote by={r.review.by} how={r.review.how} title={r.review.title} line={r.review.line} below={below} testid="board-verdict" />}
         {r.review?.against && <Quote by={r.review.against.by} how={r.review.against.how} title={r.review.against.title} line={r.review.against.line || "(no words)"} below={below} testid="board-verdict-against" />}

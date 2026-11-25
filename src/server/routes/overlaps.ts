@@ -16,7 +16,13 @@ export const overlapPassed: { tell?: (repo: string) => void } = {};
 export const overlapRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const ov = new Overlaps(store, {
-    changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "overlap", session_id: id, data: { changed: true } }); },
+    changed: (ids) => {
+      for (const id of ids) bus.emit({ t: "feature", name: "overlap", session_id: id, data: { changed: true } });
+      // The Board of each session above a branch's owner shows its forecast conflicts (src/board/board.ts): it reads again.
+      const above = new Set<string>();
+      for (const id of ids) for (let s: string | null | undefined = id, i = 0; s && i < 16; i++, s = store.session(s)?.parent_id) above.add(s);
+      for (const id of above) bus.emit({ t: "feature", name: "pairs", session_id: id, data: { changed: true } });
+    },
     failed: (e, at) => void errors.capture("server", e, { at }),
     passed: (repo) => overlapPassed.tell?.(repo),
   });

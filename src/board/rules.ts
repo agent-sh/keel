@@ -88,6 +88,10 @@ export type PairFact = {
   checks: { name: string; tests?: string[]; branch?: string }[]; error: string | null; at: number;
 };
 
+// A conflict the overlap forecast (git merge-tree, src/worktree/overlap-scan.ts) names for the row's head: with the
+// base (`base`, `with` its name), or with another live branch (`with_agent` its agent when it is on this board).
+export type ForecastFact = { with: string; with_agent: string | null; base: boolean; files: string[] };
+
 // The before and after pictures of the row's head (src/pictures/run.ts), as the board shows them: the run's state,
 // what differs, and up to a few of the pairs that differ (the rest are read by its id).
 export type PictureFact = {
@@ -119,6 +123,7 @@ export type BoardRow = {
   live: Live | null;            // null: no branch, or not landed
   work: Work | null;            // what its worktree changes; null: not read
   together: PairFact[] | null;  // null: no branch; the pairs it was checked in at its head
+  forecast?: ForecastFact[];    // what the overlap forecast says would conflict at its head and the tips now; empty when nothing
   pictures?: PictureFact | null; // the before and after pictures of its head, when its repository names them
 };
 
@@ -355,7 +360,7 @@ export function liveFrom(held: readonly { deploy: Deploy; holds: Landed }[]): Li
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 9) : "?");
 const STATE_WORD: Record<string, string> = { running: "working", waiting: "waiting", completed: "done", incomplete: "incomplete", failed: "failed", stopped: "stopped" };
 export const stateWord = (s: string) => STATE_WORD[s] ?? s;
-const live = (s: string) => s === "running" || s === "waiting";
+export const live = (s: string) => s === "running" || s === "waiting";
 
 // A row's words. Terse (the board's own lines): a fact that says nothing is left out ("review: none", no
 // checks named); `full` (one agent asked for) says every fact and why one is not known.
@@ -440,6 +445,7 @@ export function rowLine(r: BoardRow, full = false): string {
     landedWords(r, full),
     queueWords(r.queue, full),
     togetherWords(r.together, full),
+    forecastWords(r.forecast, full),
     picturesWords(r.pictures),
   ].filter(Boolean);
   return parts.join(" · ");
@@ -451,10 +457,11 @@ export const branchGone = (r: BoardRow) => !!r.branch && !r.head && r.worktree =
 // Work a coordinator still owes a landing: a branch not landed, or one git could not read.
 export const toLand = (r: BoardRow) => !!r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing" && !branchGone(r);
 // Why a branch that could land is held back, in words: a pair of branches that fails together (the landing would
-// conflict in what runs), a check that failed on its head, or a reviewer's refusal. null: nothing holds it back.
+// conflict in what runs), a branch the overlap forecast says would conflict with the base or another branch, a check that failed on its head, or a reviewer's refusal. null: nothing holds it back.
 export const landBlock = (r: BoardRow): string | null => {
   const pair = (r.together ?? []).find((p) => p.state === "red");
   if (pair) return `Fails its checks together with ${pair.with.replace(/^keel\//, "")}: land one of them first`;
+  if (r.forecast?.length) return `It ${forecastWords(r.forecast)}`;
   if (r.checks?.state === "known" && r.checks.failed.length) return `${r.checks.failed.join(", ")} failed on its head`;
   if (r.review?.verdict === "refused" || r.review?.verdict === "disputed") return `Its review is ${r.review.verdict}`;
   return null;
@@ -467,6 +474,32 @@ const inQueue = (r: BoardRow) => !!(r.queue?.current && ["queued", "building", "
 // action a card leads with.
 export const canLand = (r: BoardRow) =>
   toLand(r) && r.landed?.state === "no" && !!r.head && !live(r.state) && !inQueue(r) && landBlock(r) === null;
+
+// Where unlanded branches would conflict, from what git's merge said (src/board/board.ts): each branch's files in
+// conflict with the base (null: it merges clean), and each pair of branches' files in conflict. A file a branch
+// conflicts with the base in is the base's to settle, so it is taken out of a pair: what is left, if anything, is where
+// the two meet. Each side of a pair names the other (`agent`: its agent on this board).
+export type Meeting = { branch: string; agent: string | null; base: string; baseFiles: string[] | null };
+export function forecastFrom(rows: Meeting[], pairs: { a: string; b: string; files: string[] }[]): Map<string, ForecastFact[]> {
+  const out = new Map<string, ForecastFact[]>();
+  const by = new Map(rows.map((x) => [x.branch, x]));
+  const put = (branch: string, f: ForecastFact) => out.set(branch, [...(out.get(branch) ?? []), f]);
+  for (const x of rows) if (x.baseFiles) put(x.branch, { with: x.base, with_agent: null, base: true, files: x.baseFiles });
+  for (const p of pairs) {
+    const a = by.get(p.a), b = by.get(p.b);
+    if (!a || !b) continue;
+    const taken = new Set([...(a.baseFiles ?? []), ...(b.baseFiles ?? [])]);
+    const files = p.files.filter((f) => !taken.has(f));
+    if (!files.length && p.files.length) continue;
+    put(a.branch, { with: b.branch, with_agent: b.agent, base: false, files });
+    put(b.branch, { with: a.branch, with_agent: a.agent, base: false, files });
+  }
+  return out;
+}
+
+// What holds Land back for the forecast, in a line that names the other branch of each pair.
+export const forecastWords = (f: ForecastFact[] | undefined, full = true): string =>
+  (f ?? []).map((x) => `would conflict with ${x.base ? `the base ${x.with}` : x.with}${x.with_agent ? ` (${x.with_agent})` : ""}${full && x.files.length ? ` in ${x.files.slice(0, 3).join(", ")}${x.files.length > 3 ? ` and ${x.files.length - 3} more` : ""}` : ""}`).join(" · ");
 
 // A branch with nothing left but the landing: not landed, no agent at work on it, its named checks all passed on its head,
 // nothing uncommitted in its worktree, and no reviewer's refusal. (A worktree not read is not known clean.)

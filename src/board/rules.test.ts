@@ -118,3 +118,46 @@ describe("live of a head the queue landed", () => {
     expect(fn!({ head: "c".repeat(40), landed: { state: "yes", how: "patch" }, queue: q })).toBe("c".repeat(40));
   });
 });
+
+// UX-S140: the overlap forecast holds Land for the branch it names, and says which branch.
+describe("the overlap forecast", () => {
+  const tipA = "a".repeat(40);
+  const heads = (a: string[] | null, b: string[] | null): R.Meeting[] => [
+    { branch: "keel/a", agent: "a1", base: "main", baseFiles: a }, { branch: "keel/b", agent: "b2", base: "main", baseFiles: b },
+  ];
+  const pair = (files: string[]) => [{ a: "keel/a", b: "keel/b", files }];
+  const row = (o: Partial<BoardRow> = {}): BoardRow => ({
+    id: "a1", session_id: "s1", parent_id: "root", depth: 1, title: "Lane", type: "general-purpose", model: "m", state: "completed", created: 1, ended: 2, machine: null,
+    branch: "keel/a", repo: "/r", base: "main", head: tipA, ahead: 1, behind: 0, worktree: "here",
+    checks: { state: "known", passed: ["typecheck"], failed: [], notRun: [] }, review: null, reviews: [],
+    landed: { state: "no", missing: 1 }, queue: null, live: null, work: null, together: [], ...o,
+  });
+
+  test("a conflict between two branches names the other, from either side of the pair", () => {
+    const m = R.forecastFrom(heads(null, null), pair(["notes.md"]));
+    expect(m.get("keel/a")).toEqual([{ with: "keel/b", with_agent: "b2", base: false, files: ["notes.md"] }]);
+    expect(m.get("keel/b")).toEqual([{ with: "keel/a", with_agent: "a1", base: false, files: ["notes.md"] }]);
+  });
+  test("a conflict with the base names the base and its files", () => {
+    const m = R.forecastFrom(heads(["notes.md"], null), []);
+    expect(m.get("keel/a")).toEqual([{ with: "main", with_agent: null, base: true, files: ["notes.md"] }]);
+    expect(m.has("keel/b")).toBe(false);
+  });
+  test("a file a branch conflicts with the base in is the base's, not where two branches meet", () => {
+    const m = R.forecastFrom(heads(["notes.md"], null), pair(["notes.md"]));
+    expect(m.get("keel/a")?.map((f) => f.with)).toEqual(["main"]);
+    expect(m.has("keel/b")).toBe(false);
+    // Another file of the pair still is.
+    expect(R.forecastFrom(heads(["notes.md"], null), pair(["notes.md", "b.ts"])).get("keel/b")).toEqual([{ with: "keel/a", with_agent: "a1", base: false, files: ["b.ts"] }]);
+    // A conflict git names no file for is kept.
+    expect(R.forecastFrom(heads(null, null), pair([])).get("keel/a")).toHaveLength(1);
+  });
+  test("Land is offered with no conflict and held with one", () => {
+    expect(R.canLand(row())).toBe(true);
+    expect(R.canLand(row({ forecast: [] }))).toBe(true);
+    const held = row({ forecast: R.forecastFrom(heads(null, null), pair(["notes.md"])).get("keel/a") });
+    expect(R.canLand(held)).toBe(false);
+    expect(R.rowLine(held)).toContain("would conflict with keel/b (b2)");
+    expect(R.rowLine(held, true)).toContain("would conflict with keel/b (b2) in notes.md");
+  });
+});

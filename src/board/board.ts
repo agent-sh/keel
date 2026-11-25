@@ -12,12 +12,14 @@ import { join } from "node:path";
 import { checksOnTree } from "../automation/landing.ts";
 import { namedFor, repoOf } from "../checks/ledger.ts";
 import { git, gitNames } from "../core/git.ts";
+import { forecastOf } from "../worktree/overlap-scan.ts";
+import type { Result } from "../worktree/overlap.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, PairCheckRow, PictureRow, TreeRun } from "./facts.ts";
 import { baseHolds } from "./held.ts";
 import { FILE as PICTURES_FILE, readPictures } from "../pictures/config.ts";
-import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type PairFact, type PictureFact, type Work } from "./rules.ts";
+import { forecastFrom, live, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type Meeting, type PairFact, type PictureFact, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -26,6 +28,9 @@ export type BoardDeps = {
   revision(): string | null;
 };
 
+const MERGES = 4_096;           // merges whose answer is kept (a pair of commits never changes)
+const FORECAST_ROWS = 24;       // branches of one repository the forecast reads
+const FORECAST_PAIRS = 80;      // pairs of them it merges in one board
 const KEEP_MS = 3_000;          // a board read again within this is the same answer
 const GIT_MS = 15_000;          // one git call of the board
 const BOARD_MS = 30_000;        // every git call of one board: past it the rest is not asked, and says so
@@ -47,6 +52,7 @@ async function pool<T>(items: T[], n: number, f: (t: T) => Promise<void>) {
 export class WorkBoard {
   private boards = new Map<string, { at: number; board: Promise<Board> }>();
   private pairs = new Map<string, Promise<Landed>>();
+  private merges = new Map<string, Promise<Result>>();
   stats = { reads: 0, built: 0, git: 0 };
 
   constructor(private store: Store, private deps: BoardDeps) {}
@@ -63,6 +69,40 @@ export class WorkBoard {
     if (this.boards.size > 64) this.boards.delete(this.boards.keys().next().value!);
     board.catch(() => { if (this.boards.get(root)?.board === board) this.boards.delete(root); });
     return board;
+  }
+
+  // Where the unlanded branches of a repository would conflict (git merge-tree, as the overlap forecast runs it,
+  // src/worktree/overlap-scan.ts mergeTips): each with the base, and each pair where one of the two has ended. The
+  // forecast's own table holds the branches of live agents only (an ended agent's branch is left out of it), and Land
+  // is offered for ended ones, so the board asks for them. Nothing is written to the repository.
+  private async forecast(repo: string, base: string | null, baseTip: string | null, rows: BoardRow[], by: number): Promise<void> {
+    const ov = forecastOf(this.store);
+    const shortBase = base?.replace(/^refs\/(heads|remotes)\//, "");
+    if (!ov || !baseTip || !shortBase) return;
+    const open = rows.filter((r) => r.branch && r.head && r.landed?.state === "no").slice(0, FORECAST_ROWS);
+    if (!open.some((r) => !live(r.state))) return;
+    const merge = (ta: string, tb: string): Promise<Result> => {
+      const key = `${ta} ${tb}`;
+      let p = this.merges.get(key);
+      if (!p) {
+        if (this.merges.size >= MERGES) this.merges.clear();
+        p = ov.mergeTips(repo, ta, tb).catch((e) => ({ error: String(e?.message ?? e) }));
+        this.merges.set(key, p);
+      }
+      return p;
+    };
+    const late = () => by - performance.now() < 250;
+    const files = (r: Result) => ("conflict" in r && r.conflict ? r.files : null);
+    const meet: (string[] | null)[] = open.map(() => null);
+    await pool(open.map((r, i) => i), AT_ONCE, async (i) => { if (!late()) meet[i] = files(await merge(baseTip, open[i]!.head!)); });
+    const heads: Meeting[] = open.map((r, i) => ({ branch: r.branch!, agent: r.id, base: shortBase, baseFiles: meet[i] ?? null }));
+    const todo: { a: BoardRow; b: BoardRow }[] = [];
+    for (let i = 0; i < open.length; i++) for (let j = i + 1; j < open.length; j++) if (!live(open[i]!.state) || !live(open[j]!.state)) todo.push({ a: open[i]!, b: open[j]! });
+    const found: (string[] | null)[] = todo.map(() => null);
+    await pool(todo.slice(0, FORECAST_PAIRS).map((_, i) => i), AT_ONCE, async (i) => { if (!late()) found[i] = files(await merge(todo[i]!.a.head!, todo[i]!.b.head!)); });
+    const pairs = todo.flatMap((p, i) => (found[i] ? [{ a: p.a.branch!, b: p.b.branch!, files: found[i]! }] : []));
+    const made = forecastFrom(heads, pairs);
+    for (const r of open) r.forecast = made.get(r.branch!) ?? [];
   }
 
   // A git call of the board being built: none once the board's time for git is spent (`by`, a
@@ -159,6 +199,7 @@ export class WorkBoard {
     const repos: Board["repos"] = [];
     const trees = new Map<string, string>(); // head -> its tree
     const work: (() => Promise<void>)[] = [];
+    const forecasts: (() => Promise<void>)[] = []; // after every landed fact is known
     const revision = this.deps.revision();
     let worktrees = 0;
     await pool([...byRepo.keys()], AT_ONCE, async (repo) => {
@@ -202,6 +243,7 @@ export class WorkBoard {
           r.landed = await this.holds(repo, tip.sha, baseTip, a.base_commit, by, a.created);
         });
       }
+      forecasts.push(() => this.forecast(repo, base, baseTip, agents.map((a) => rows.get(a.id)!), by));
       // The heads' trees, in one call.
       const uniq = [...new Set(heads)];
       if (uniq.length) {
@@ -211,6 +253,7 @@ export class WorkBoard {
       }
     });
     await pool(work, AT_ONCE, (f) => f());
+    await pool(forecasts, AT_ONCE, async (f) => f());
 
     // The checks on each head's tree, by the names its repository gives them.
     const runs = trees.size ? await reads.run("board.checks", { trees: [...new Set(trees.values())], heads: [...rows.values()].filter((r) => r.head && r.branch).map((r) => ({ head: r.head!, session: r.session_id })) }) as TreeRun[] : [];
@@ -318,7 +361,7 @@ function rowOf(a: AgentFact): BoardRow {
     checks: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
     review: null, reviews,
     landed: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
-    queue: null, live: null, work: null, together: branch ? [] : null, pictures: null,
+    queue: null, live: null, work: null, together: branch ? [] : null, forecast: [], pictures: null,
   };
 }
 
