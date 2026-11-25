@@ -3487,7 +3487,7 @@ export class Engine {
       const by = this.stoppedBy.get(ctx.sessionId);
       return {
         type: "tool_result", tool_use_id: u.id,
-        ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u) : { content: running ? stoppedWhile(by) : stoppedBefore(by), is_error: true }),
+        ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u) : { content: running ? stoppedWhile(by, !tools.find((t) => t.name === u.name)?.readOnly) : stoppedBefore(by), is_error: true }),
       };
     };
     if (ctx.signal.aborted) return interrupted();

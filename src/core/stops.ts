@@ -22,19 +22,27 @@ export const APPROVAL_CUT = "The daemon restarted while this call waited for the
 // parent or a hook did would take that for the owner's wish.
 export const STOPPED_BEFORE = "Interrupted by the user before this tool ran.";
 export const STOPPED_WHILE = "Interrupted by the user while this tool ran.";
+// A call that changes things (not a read) may have finished or partly run after Keel stopped waiting for it:
+// a tool that works elsewhere (a server, a peer, an agent) goes on. Its stop says so, as a restart's cut does.
+export const CHECK_FIRST = " It may have partly run: check its effects before running it again.";
+export const STOPPED_WHILE_CHANGING = STOPPED_WHILE + CHECK_FIRST;
 const BEFORE = "Interrupted before this tool ran: the turn ";
 const WHILE = "Interrupted while this tool ran: the turn ";
 // `by`: the stopper's word, as Engine.interrupt was given it. None known: the user's words, as before stops were named.
 export const stoppedBefore = (by?: string): string => (by === undefined || ownerStop(by) ? STOPPED_BEFORE : `${BEFORE}${stopSays(by)}.`);
-export const stoppedWhile = (by?: string): string => (by === undefined || ownerStop(by) ? STOPPED_WHILE : `${WHILE}${stopSays(by)}.`);
+// `changes`: the call is not a read, so its stop adds the sentence that tells to check first.
+export const stoppedWhile = (by?: string, changes = false): string =>
+  (by === undefined || ownerStop(by) ? STOPPED_WHILE : `${WHILE}${stopSays(by)}.`) + (changes ? CHECK_FIRST : "");
 // Whether the words are the user's own stop (the owner's Stop, or a stop from before stops were named).
-export const stoppedByUser = (content: unknown): boolean => content === STOPPED_BEFORE || content === STOPPED_WHILE;
+export const stoppedByUser = (content: unknown): boolean => content === STOPPED_BEFORE || content === STOPPED_WHILE || content === STOPPED_WHILE_CHANGING;
+// A stop's words without the sentence that tells to check first.
+const plain = (content: string): string => (content.endsWith(CHECK_FIRST) ? content.slice(0, -CHECK_FIRST.length) : content);
 // Who stopped a call, as a line under it says it: "you" for the owner's own
 // stop (and one from before stops were named), else what the turn's stop
 // was ("stopped by its parent"). Nothing for a result that is not a stop.
 export const stoppedByWords = (content: unknown): string | undefined =>
   stoppedByUser(content) ? "you"
-    : typeof content === "string" && (content.startsWith(BEFORE) || content.startsWith(WHILE)) ? content.slice((content.startsWith(BEFORE) ? BEFORE : WHILE).length).replace(/\.$/, "") : undefined;
+    : typeof content === "string" && (content.startsWith(BEFORE) || content.startsWith(WHILE)) ? plain(content).slice((content.startsWith(BEFORE) ? BEFORE : WHILE).length).replace(/\.$/, "") : undefined;
 // What a command's output pane says when the command printed nothing and its
 // call has ended: who stopped it or that a restart cut it, else that it printed nothing.
 export const quietEnd = (content: unknown): string => {
@@ -43,12 +51,12 @@ export const quietEnd = (content: unknown): string => {
   return by === "you" ? "Nothing printed before you stopped the turn." : by ? `Nothing printed before the stop: the turn ${by}.` : "No output.";
 };
 // Whether a stop reached the call while it ran (it may have partly run), whoever stopped it.
-export const stoppedRunning = (content: unknown): boolean => content === STOPPED_WHILE || (typeof content === "string" && content.startsWith(WHILE));
+export const stoppedRunning = (content: unknown): boolean => content === STOPPED_WHILE || content === STOPPED_WHILE_CHANGING || (typeof content === "string" && content.startsWith(WHILE));
 
 const CUT: readonly string[] = [RESTART_CUT, QUESTION_CUT, APPROVAL_CUT];
 export const stopKind = (content: unknown): "stopped" | "cut" | undefined =>
   typeof content !== "string" ? undefined
-    : content === STOPPED_BEFORE || content === STOPPED_WHILE || content.startsWith(BEFORE) || content.startsWith(WHILE) ? "stopped"
+    : content === STOPPED_BEFORE || content === STOPPED_WHILE || content === STOPPED_WHILE_CHANGING || content.startsWith(BEFORE) || content.startsWith(WHILE) ? "stopped"
       : CUT.includes(content) || content.startsWith(RESTART_RAN) ? "cut" : undefined;
 
 // A call the turn never ran for a reason of the turn's own: its reply was cut at the

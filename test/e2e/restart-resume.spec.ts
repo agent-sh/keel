@@ -541,7 +541,7 @@ test("a background agent is continued across restarts and its record matches wha
     await expect.poll(async () => (await reports()).length, { timeout: 30_000 }).toBe(2);
     // The agent's model is told its parent stopped the call, not the user.
     const stoppedCall = ((await view(child)).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).at(-1);
-    expect(stoppedCall.content).toBe("Interrupted while this tool ran: the turn stopped by its parent.");
+    expect(stoppedCall.content).toBe("Interrupted while this tool ran: the turn stopped by its parent. It may have partly run: check its effects before running it again.");
 
     // Continued three times in a row with the daemon down again before a step
     // ended: it is not continued a fourth time. It fails, nothing runs in its

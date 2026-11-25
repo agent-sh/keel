@@ -456,9 +456,9 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     expect(await endsOf(unnamed)).toEqual([["interrupted", "api"], ["end_turn", null]]);
     // The model is told who stopped its call: the API, not the user. (Every stop read "Interrupted by the user".)
     const stopResult = async (id: string) => str((await results(id)).find((r) => /^Interrupted /.test(str(r))));
-    expect(await stopResult(unnamed)).toBe("Interrupted while this tool ran: the turn stopped through the API.");
-    expect(await stopResult(stopd)).toBe("Interrupted by the user while this tool ran.");
-    expect(await stopResult(sentNow)).toBe("Interrupted while this tool ran: the turn ended when the owner sent a new message.");
+    expect(await stopResult(unnamed)).toBe("Interrupted while this tool ran: the turn stopped through the API. It may have partly run: check its effects before running it again.");
+    expect(await stopResult(stopd)).toBe("Interrupted by the user while this tool ran. It may have partly run: check its effects before running it again.");
+    expect(await stopResult(sentNow)).toBe("Interrupted while this tool ran: the turn ended when the owner sent a new message. It may have partly run: check its effects before running it again.");
     expect((await call(`/api/sessions/${unnamed}/queue`)).held).toBe(false);
     expect(await text(`/api/sessions/${unnamed}/timeline?format=text`)).toContain(", stopped through the API");
     expect(await text(`/api/sessions/${unnamed}/timeline?format=text`)).not.toContain("the owner");
