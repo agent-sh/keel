@@ -763,7 +763,7 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
 // the whole transcript above it.
 // `onTail`: told in the frame what stands here changes (the working line, the reply, a status row, a
 // question that takes the line's place), so the transcript keeps the height of its end through it.
-function Live({ sessionId, working, asking, since, elsewhere, onTail }: { sessionId: string; working: boolean; asking: boolean; since?: number; elsewhere: "branch" | "earlier" | null; onTail: () => void }) {
+function Live({ sessionId, working, asking, since, elsewhere, onTail, onDraft }: { sessionId: string; working: boolean; asking: boolean; since?: number; elsewhere: "branch" | "earlier" | null; onTail: () => void; onDraft?: () => void }) {
   const draft = useStore((s) => s.drafts[sessionId]);
   // (Asked without a copy of the text: it grows with every delta, and `trim` would copy it each time.)
   const hasDraft = draft && Object.values(draft).some((b) => b.kind !== "text" || WORDS.test(b.text));
@@ -772,6 +772,9 @@ function Live({ sessionId, working, asking, since, elsewhere, onTail }: { sessio
   // Only a session another harness runs has no such line (its bar takes the box's place): there the working line says it.
   const docked = useStore((x) => !x.sessions[sessionId]?.outside);
   useLayoutEffect(() => onTail(), [working, !!hasDraft, asking, status]);
+  // When a delta adds wrapped lines the draft commits by itself. Follow it at
+  // that commit, not a later size notification with the scroll still behind.
+  useLayoutEffect(() => { if (hasDraft && !elsewhere) onDraft?.(); }, [draft, hasDraft, elsewhere, onDraft]);
   // The reply streams at the end of the current branch: under another branch,
   // or under an earlier part of this one, it would read as written there.
   if (elsewhere) {
@@ -1484,11 +1487,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   };
 
   // Follow the end while it grows (streaming, a tool row opening), unless the reader scrolled up.
-  // The streaming draft grows inside `content`, so the ResizeObserver below follows it.
-  // Here only when the transcript opens or shows another run of events: the
-  // end is on screen at the first paint. Events added to the run shown grow
-  // the content, which the size observer below follows in the same frame
-  // without a layout made on the spot for every event.
+  // A new run and events added to a run keep the end in view in their own commit.
+  // The size observer also follows changes that are not a transcript commit.
   const shownFrom = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -1503,7 +1503,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     drawn.current = events;
     // The owner comes back to where they were, before the first paint.
     comeBack();
-    if (el && !same && stick.current && !reading?.end) pin(el);
+    if (el && stick.current && !reading?.end) pin(el);
     // (The end as it stands now: two changes in one frame are each measured against the one before.)
     if (content.current) standing(content.current);
   }, [events]);
@@ -1520,6 +1520,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (content.current) standing(content.current);
   };
   const onTail = useRef(() => tailChanged.current()).current;
+  const onDraft = useRef(() => {
+    const el = scroller.current;
+    if (el && stick.current && !short.current) pin(el);
+  }).current;
   const viewSize = useRef(0);
   const holdView = useRef<(el: HTMLDivElement) => void>(() => {});
   // A reply drawn near the view changed by itself (its math set, lib Markdown.tsx): the reader's
@@ -1594,10 +1598,22 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // The view's own height too: the message box under it grows with a draft, and a transcript
     // that follows its end keeps the end in view (its last lines would go under the box).
     if (scroller.current) ro.observe(scroller.current);
+    // The dock can insert its action line while a reply is already streaming.
+    // Re-pin in that commit as well: the line takes height from the viewport,
+    // not from the transcript the draft just measured.
+    const el = scroller.current;
+    const dock = el?.closest(".k-session")?.querySelector(":scope > .k-compose");
+    let dockView = el?.clientHeight;
+    const dockChanged = new MutationObserver(() => {
+      if (!el || !stick.current || short.current || dockView === el.clientHeight) return;
+      dockView = el.clientHeight;
+      pin(el);
+    });
+    if (dock) dockChanged.observe(dock, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "style", "data-bar", "data-watch"] });
     // End is for the pane worked in: the command names its session.
     const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
-    return () => { ro.disconnect(); cancelAnimationFrame(late); cancelAnimationFrame(lateUnder); removeEventListener("keel:end", onEnd); };
+    return () => { ro.disconnect(); dockChanged.disconnect(); cancelAnimationFrame(late); cancelAnimationFrame(lateUnder); removeEventListener("keel:end", onEnd); };
   }, [!!events, sessionId]);
 
   // History read away from the end stays whole in the store meanwhile, also under a cover (a
@@ -2163,7 +2179,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           )}
           {/* (Once the turn's end is on the page nothing says it works: its footer takes the working line's
               place in the same frame, so the lines above do not drop when the session's state follows.) */}
-          <Live sessionId={sessionId} working={session.phase === "working" && events?.at(-1)?.kind !== "turn_end"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} onTail={onTail} />
+          <Live sessionId={sessionId} working={session.phase === "working" && events?.at(-1)?.kind !== "turn_end"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} onTail={onTail} onDraft={onDraft} />
         </div>
       </div>
       {at && (

@@ -860,8 +860,18 @@ const watchLine = (page: Page, id: string, needle: string, after: string) => pag
   // (Following a reply, its line is not looked for in the owner's own message: a scripted prompt holds the words of its reply.)
   const sc = ([...document.querySelectorAll<HTMLElement>(sel)].find((x) => !x.closest("[inert]")) ?? document.querySelector<HTMLElement>(sel))!, c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
   const w = window as any;
-  const m = (w.__line = { frames: 0, tracked: 0, largestDown: 0, largestUp: 0, snaps: 0, drift: 0, lost: 0, at: [] as string[] });
+  const m = (w.__line = { frames: 0, tracked: 0, largestDown: 0, largestUp: 0, snaps: 0, drift: 0, lost: 0, draftGap: 0, snapLayout: "", at: [] as string[] });
+  // A streamed commit must already be at the foot, even before the frame's
+  // resize notification. Otherwise it can draw the new lines at the old scroll.
+  const changed = new MutationObserver((records) => {
+    if (after && records.some(({ target }) => (target instanceof Element ? target : target.parentElement)?.closest('[data-testid="draft"]'))) {
+      m.draftGap = Math.max(m.draftGap, sc.scrollHeight - sc.scrollTop - sc.clientHeight);
+    }
+  });
+  changed.observe(c, { subtree: true, childList: true, characterData: true });
+  w.__lineStop = () => changed.disconnect();
   let was: number | null = null, first: number | null = null, on = !after;
+  let layout = "";
   const tick = () => {
     m.frames++;
     const said = [...c.querySelectorAll<HTMLElement>("p, li, td, pre")].filter((p) => !after || !p.closest('[data-testid="user-message"]'));
@@ -874,15 +884,16 @@ const watchLine = (page: Page, id: string, needle: string, after: string) => pag
         // moves the foot, and the lines with it.) A reader further up reads against the view's head.
         const view = sc.getBoundingClientRect();
         const y = el.getBoundingClientRect().top - (after ? view.bottom : view.top);
+        const now = `view ${Math.round(view.top)}..${Math.round(view.bottom)}, scroll ${sc.scrollTop} of ${sc.scrollHeight - sc.clientHeight}`;
         if (was !== null) {
           const d = y - was;
           if (d > m.largestDown) m.largestDown = Math.round(d);
-          if (d > 3) m.snaps++;
+          if (d > 3) { m.snaps++; m.snapLayout ||= `${layout} -> ${now}`; }
           if (Math.abs(d) > 3 && m.at.length < 12) m.at.push(`scroll ${Math.round(w.__top ?? 0)} to ${Math.round(sc.scrollTop)}`);
           if (-d > m.largestUp) m.largestUp = Math.round(-d);
           if (Math.abs(d) > 3 && m.at.length < 12) m.at.push(`${d > 0 ? "down" : "up"} ${Math.round(Math.abs(d))}px at frame ${m.frames}`);
         }
-        first ??= y; was = y; m.drift = Math.round(y - first); m.tracked++;
+        first ??= y; was = y; layout = now; m.drift = Math.round(y - first); m.tracked++;
         w.__top = sc.scrollTop;
       }
     }
@@ -890,7 +901,7 @@ const watchLine = (page: Page, id: string, needle: string, after: string) => pag
   };
   w.__lineRaf = requestAnimationFrame(tick);
 }, [READING(id), needle, after] as const);
-const lineSeen = (page: Page) => page.evaluate(() => { const w = window as any; cancelAnimationFrame(w.__lineRaf); return w.__line as { frames: number; tracked: number; largestDown: number; largestUp: number; snaps: number; drift: number; lost: number; at: string[] }; });
+const lineSeen = (page: Page) => page.evaluate(() => { const w = window as any; cancelAnimationFrame(w.__lineRaf); w.__lineStop(); return w.__line as { frames: number; tracked: number; largestDown: number; largestUp: number; snaps: number; drift: number; lost: number; draftGap: number; at: string[] }; });
 // How the conversation stands in its view: how far its last child in the flow ends above the view's
 // foot, how many lines of it are on screen, and how much blank its rows keep (a row that took a taller
 // draft's place stands at the draft's height until it has left the view).
@@ -972,6 +983,7 @@ for (const view of [{ name: "1920x1040", width: 1920, height: 1040 }, { name: "3
           // The reply's row takes the draft's place where it stood: no line drops, the last line is at
           // the view's foot, and nothing is kept once the turn has ended.
           expect(seen.snaps, where).toBe(0);
+          if (reply.prompt === "script:fill") expect(seen.draftGap, where).toBeLessThanOrEqual(1);
           expect(end.lastToViewBottom, where).toBeGreaterThanOrEqual(0);
           expect(end.lastToViewBottom, where).toBeLessThanOrEqual(100);
           expect([end.gap, end.kept], where).toEqual([0, ""]);
