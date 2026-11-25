@@ -201,4 +201,3 @@ export function stop() {
   sentSeq = null;
   if (had || view.phase !== "off") publish({ ...IDLE, note: null });
 }
-

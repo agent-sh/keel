@@ -125,4 +125,3 @@ test("rows are marked together and archived, stopped or sent one message at once
   await shoot(phone, "select-04-phone");
   await ctx.close();
 });
-

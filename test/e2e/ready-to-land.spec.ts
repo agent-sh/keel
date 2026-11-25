@@ -109,4 +109,3 @@ test("branches ready to land are listed in Home and the Inbox, uncounted, and La
   expect(git(repo, "show", "main:notes.md")).toContain("line 1 ALPHA");
   await shoot(page, "ready-03-landed");
 });
-
