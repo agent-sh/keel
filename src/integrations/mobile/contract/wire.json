@@ -7,7 +7,7 @@
   "examples: per shape, answers and frames as the daemon sends them (for send and answer: bodies as the app sends them).",
   "Both directions are checked. The daemon sends every field of every shape under its name and type. The app has a reader for every field, and reads no field of the daemon's that no shape names: its JSON reading is in Wire.kt and Feed.kt only, and ContractTest reads those sources.",
   "The daemon may add fields to any shape; the app ignores a field it does not know. Renaming or dropping a listed field, or changing the signed bytes, breaks one of the checks.",
-  "The shapes by route: sync (GET /v1/sync, and `sync` in the stream's hello), page (GET /v1/chats/:id/messages?paged=1), receipt (POST /v1/chats/:id/messages), created (POST /v1/chats), resolved (POST /v1/approvals/:id), pulse (GET /v1/pulse), usage (GET /v1/chats/:id/usage), me (GET /v1/me), push_config (GET /v1/push-config), paired (POST /v1/pair), revoked (DELETE /v1/devices/:id), errors (GET /v1/errors), error_marked (POST /v1/errors/:id/read, /unread or /resolve), error (the body of any refusal), push (the data of one push), and the frames of GET /v1/events by their type.",
+  "The shapes by route: command (GET /v1/chats/:id/command: the command the turn waits on now, `front`, or null) and moved (POST /v1/chats/:id/background, optional body `call`: moved behind its call, or no longer in front), sync (GET /v1/sync, and `sync` in the stream's hello), page (GET /v1/chats/:id/messages?paged=1), receipt (POST /v1/chats/:id/messages), created (POST /v1/chats), resolved (POST /v1/approvals/:id), pulse (GET /v1/pulse), usage (GET /v1/chats/:id/usage), me (GET /v1/me), push_config (GET /v1/push-config), paired (POST /v1/pair), revoked (DELETE /v1/devices/:id), errors (GET /v1/errors), error_marked (POST /v1/errors/:id/read, /unread or /resolve), error (the body of any refusal), push (the data of one push), and the frames of GET /v1/events by their type.",
   "errors lists the daemon's open errors as the page's Errors panel does, the newest first: each kind of failure once with its whole message, `count` the times it happened, `first` and `last` in seconds, `read` out of the count, `recovered` healed by a retry, and the session it last happened in (`chat_id`, `title`) while that session is there; `sessions` says in how many it happened when more than one. `unread` is the page's badge: open, not read, not recovered. An `unwritten-` id is one the store could not take yet; read or resolved, it is let go, and it cannot be marked unread.",
   "sync.more is false from this daemon; an app reads it for a daemon that pages its catch-up.",
   "upload and upload_ref are the daemon's side of attaching a file: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png), and how a prompt names it in `attachments`. The app uploads each file when it is picked and sends a prompt that names the uploads (send.attachments, each an upload_ref). It checks a file against me.uploads.max_bytes before it sends the bytes, and scales a photo to me.uploads.image_edge on its long edge (the edge the daemon stores a photo at). The stored message lists what it carried in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves.",
@@ -379,6 +379,18 @@
    "pri": "string?",
    "who": "string?",
    "face": "string?"
+  },
+  "command": {
+   "chat_id": "string",
+   "front": "object|null",
+   "front.job": "string?",
+   "front.call": "string|null?",
+   "front.command": "string?",
+   "front.since": "number?"
+  },
+  "moved": {
+   "chat_id": "string",
+   "moved": "boolean"
   },
   "changes": {
    "turns": "array",
@@ -2704,6 +2716,31 @@
     "added": 0,
     "removed": 0,
     "files": []
+   }
+  ],
+  "command": [
+   {
+    "chat_id": "s-1",
+    "front": {
+     "job": "job_ab12",
+     "call": "toolu_9",
+     "command": "Run the unit tests",
+     "since": 1795195000.5
+    }
+   },
+   {
+    "chat_id": "s-2",
+    "front": null
+   }
+  ],
+  "moved": [
+   {
+    "chat_id": "s-1",
+    "moved": true
+   },
+   {
+    "chat_id": "s-1",
+    "moved": false
    }
   ],
   "changes": [

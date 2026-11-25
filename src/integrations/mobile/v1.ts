@@ -18,6 +18,7 @@ import { closedWhy, type Approval, type Gate } from "../../safety/gate.ts";
 import { cardLines, fromSaid, type CardForm } from "../../safety/card.ts";
 import { spelled } from "../../safety/chars.ts";
 import type { Deps } from "../../server/app.ts";
+import { commandInFront, moveToBackground } from "../../tools/jobs.ts";
 import { answer, askedOf, closedQuestions, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
@@ -160,6 +161,8 @@ export function pairLink(base: string, code: string, app: PairApp = "keel") {
 
 // The longest action line a row carries: a row says one line, and the phone cuts it to its width.
 const ACTION_CHARS = 160;
+// The longest command a phone is shown: a line, cut to the screen's width there.
+const COMMAND_CHARS = 200;
 
 // Where a chat stands, as the phone's list shows it: a card waits for the
 // owner, a turn runs or its agents still work (agents: how many), or how the
@@ -1423,6 +1426,28 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/chats/:cid/stop": { POST: signed(async (req) => { await engine.interrupt(req.params.cid!, "phone"); return json({ ok: true }); }) },
+    // The command the session's turn waits on now, which the owner can move behind its call (the page's Move to the background):
+    // its words (the description the model gave it, else the command) and when it began, or none. A session whose tools run on
+    // another machine says none: that command is moved on the computer.
+    "/v1/chats/:cid/command": {
+      GET: signed(async (req) => {
+        const s = await warmed(req.params.cid!);
+        if (!s) return err("unknown chat", 404);
+        const c = s.machine ? undefined : commandInFront(s.id);
+        return json({ chat_id: s.id, front: c ? { job: c.job, call: c.call ?? null, command: c.command.slice(0, COMMAND_CHARS), since: secs(c.started) } : null });
+      }),
+    },
+    // Moves it behind its call: the call returns at once with the command's ID, the command goes on and its end starts the
+    // next turn. `moved` is false when it ended or moved meanwhile (the owner is told it is no longer in front).
+    "/v1/chats/:cid/background": {
+      POST: signed(withBody(async (req, _d, b) => {
+        const s = await warmed(req.params.cid!);
+        if (!s) return err("unknown chat", 404);
+        if (s.machine) return err(`This session's commands run on ${s.machine}: move it on the computer.`, 409);
+        const call = typeof b.call === "string" && b.call ? b.call : undefined;
+        return json({ chat_id: s.id, moved: moveToBackground(s.id, call ? { call } : {}) });
+      })),
+    },
     "/v1/chats/:cid/run": {
       GET: signed(async (req) => {
         const s = await warmed(req.params.cid!);

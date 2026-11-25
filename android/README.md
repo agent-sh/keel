@@ -70,6 +70,17 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## Moving a command to the background
+
+While a session works, its screen reads the command its call waits on
+(`GET /v1/chats/:id/command`: the model's description of it, else the command)
+every four seconds and when the session says something new. Beside it, Move to
+the background (`POST /v1/chats/:id/background`, naming the call the owner saw)
+ends the call's wait: the call returns with the command's ID, the command goes
+on and its end starts the next turn. When the command ended or moved first, the
+screen says it is no longer in front of a call. A session whose commands run on
+another machine shows none: that command is moved on the computer.
+
 ## Pushes the daemon folds together
 
 The daemon's push budget sends what is over the hour's limit as one push of kind

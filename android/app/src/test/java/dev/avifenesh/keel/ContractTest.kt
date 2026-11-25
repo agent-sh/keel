@@ -151,6 +151,8 @@ class ContractTest {
         "start_model" to { o -> Start.of(JSONObject().put("models", JSONArray().put(o))).models.toString() },
         "start_folder" to { o -> Start.of(JSONObject().put("folders", JSONArray().put(o))).folders.toString() },
         "start_machine" to { o -> Start.of(JSONObject().put("machines", JSONArray().put(o))).machines.toString() },
+        "command" to { o -> CommandNow.of(o).toString() },
+        "moved" to { o -> Moved.of(o).toString() },
         "changes" to { o -> Changes.of(o).toString() },
         "change_turn" to { o -> ChangeTurn.of(o).toString() },
         "file_change" to { o -> FileChange.of(o).toString() },

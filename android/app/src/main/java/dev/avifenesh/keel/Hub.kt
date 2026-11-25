@@ -241,6 +241,12 @@ object Hub {
     suspend fun fileDiff(chat: String, path: String, turn: Long?): FileDiff =
         FileDiff.of(Api.get("/v1/chats/${Uri.encode(chat)}/changes/diff?path=${Wire.enc(path)}${turn?.let { "&turn=$it" }.orEmpty()}"))
     suspend fun pulse(): Pulse = Pulse.of(Api.get("/v1/pulse"))
+    /** The command the session's call waits on now, which can be moved behind the call. */
+    suspend fun front(chat: String): Front? = CommandNow.of(Api.get("/v1/chats/${Uri.encode(chat)}/command")).front
+    /** Moves it behind its call (`call`: the one the owner saw, else the newest in front); false when it is no longer in front. */
+    suspend fun moveToBackground(chat: String, call: String? = null): Boolean =
+        Moved.of(Api.post("/v1/chats/${Uri.encode(chat)}/background", JSONObject().apply { if (call != null) put("call", call) })).moved
+
     /** The owner's helper: its state, turned on or off, its memory (all, or found by words), one record forgotten. */
     suspend fun helper(): HelperView = HelperView.of(Api.get("/v1/helper"))
     suspend fun setHelper(on: Boolean): HelperView = HelperView.of(Api.patch("/v1/helper", JSONObject().put("on", on)))

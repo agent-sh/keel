@@ -534,6 +534,12 @@ export function moveToBackground(sessionId: string, which: { job?: string; call?
   return true;
 }
 
+// The command a session's call waits on now, the one the owner can move behind it (the newest of the session's), or none.
+export function commandInFront(sessionId: string): { job: string; call?: string; command: string; started: number } | undefined {
+  const j = [...jobs.values()].findLast((x) => x.sessionId === sessionId && x.mover && !x.mover.signal.aborted && x.ended === undefined && !x.background);
+  return j ? { job: j.id, ...(j.callId ? { call: j.callId } : {}), command: j.description?.trim() || j.command, started: j.started } : undefined;
+}
+
 // What a background command's end wakes: its session, which the daemon starts a turn of with `text`
 // and calls `sent` once that input is stored, or calls `note` where the end starts no turn (someone
 // stopped the command, the owner stopped the session, an agent that has ended): it then goes with the

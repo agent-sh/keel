@@ -64,6 +64,8 @@ import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.Wire
 import dev.avifenesh.keel.earlierAfter
+import dev.avifenesh.keel.Front
+import dev.avifenesh.keel.NOT_IN_FRONT
 import dev.avifenesh.keel.actionLine
 import dev.avifenesh.keel.elapsed
 import dev.avifenesh.keel.newestTs
@@ -151,6 +153,7 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
                     if (isWorking && !pending) StateTag(State.WORKING, working[id]?.let { elapsed(it, now) }.orEmpty())
                     // What the turn does now, under its state: the page's line over the box.
                     val doing = chat?.let { actionLine(it, State.WORKING) }.orEmpty()
+                    if (isWorking && !pending) FrontCommand(id, newest?.id)
                     if (isWorking && !pending && doing.isNotEmpty()) Txt(doing, T.small, k.muted, Modifier.padding(top = 2.dp).semantics { contentDescription = "action-line" }, maxLines = 2)
                 }
             }
@@ -357,6 +360,49 @@ private fun Trace(m: Msg) {
         }
     }
 }
+
+/**
+ * The command the turn's call waits on, with the way to move it behind the call (the page's Move to the background): the call
+ * returns at once with the command's ID, the command goes on and its end starts the next turn. Read again when the session says
+ * something new and every few seconds while the session works and this screen is open.
+ */
+@Composable
+fun FrontCommand(
+    id: String, newest: String?,
+    read: suspend () -> Front? = { Hub.front(id) }, move: suspend (String?) -> Boolean = { Hub.moveToBackground(id, it) }, every: Long = FRONT_EVERY_MS,
+) {
+    val k = k()
+    val scope = rememberCoroutineScope()
+    var front by remember(id) { mutableStateOf<Front?>(null) }
+    var said by remember(id) { mutableStateOf("") }
+    var busy by remember(id) { mutableStateOf(false) }
+    LaunchedEffect(id, newest) {
+        while (true) {
+            front = runCatching { read() }.getOrNull()
+            kotlinx.coroutines.delay(every)
+        }
+    }
+    val f = front
+    if (f == null && said.isEmpty()) return
+    Column(Modifier.padding(top = 6.dp)) {
+        if (f != null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics { contentDescription = "command-in-front" }) {
+            Txt(f.command, T.code, k.muted, Modifier.weight(1f), maxLines = 1)
+            Spacer(Modifier.width(S.sm))
+            Btn(if (busy) "Moving" else "Move to the background", {
+                busy = true; said = ""
+                scope.launch {
+                    runCatching { move(f.call) }
+                        .onSuccess { moved -> said = if (moved) "Moved to the background. Its end starts the next turn." else NOT_IN_FRONT; front = null }
+                        .onFailure { said = dev.avifenesh.keel.reach(it) }
+                    busy = false
+                }
+            }, Tone.LINE, enabled = !busy, compact = true, tag = "move-to-background")
+        }
+        if (said.isNotEmpty()) Txt(said, T.small, k.muted, Modifier.padding(top = 2.dp).semantics { contentDescription = "move-said" })
+    }
+}
+
+private const val FRONT_EVERY_MS = 4_000L
 
 @Composable
 private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (String) -> Unit) {

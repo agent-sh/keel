@@ -743,6 +743,24 @@ data class Changes(val turns: List<ChangeTurn>, val session: List<FileChange>, v
     }
 }
 
+/** The command a session's call waits on, which the owner can move behind the call: its ID, its call's, its words, when it began. */
+data class Front(val job: String, val call: String?, val command: String, val since: Double)
+
+/** GET /v1/chats/:id/command: the command in front of the session's call now, or none. */
+data class CommandNow(val chatId: String, val front: Front?) {
+    companion object {
+        fun of(o: JSONObject) = CommandNow(o.str("chat_id"), o.optJSONObject("front")?.let { Front(it.str("job"), it.str("call").ifBlank { null }, it.str("command"), it.optDouble("since", 0.0)) })
+    }
+}
+
+/** POST /v1/chats/:id/background: whether the command moved behind its call (false: it was no longer in front of one). */
+data class Moved(val chatId: String, val moved: Boolean) {
+    companion object { fun of(o: JSONObject) = Moved(o.str("chat_id"), o.optBoolean("moved")) }
+}
+
+/** What the owner is told when the command they moved had ended or moved already. */
+const val NOT_IN_FRONT = "That command is no longer in front of a call."
+
 /** One line of a diff: a hunk's head, an added, removed or unchanged line, or a note ("No newline at end of file"), with its numbers in the old and new file. */
 data class DiffLine(val kind: Char, val text: String, val old: Int?, val new: Int?)
 

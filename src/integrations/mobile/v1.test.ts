@@ -23,6 +23,7 @@ import { pushData, testMessage } from "./push.ts";
 import { liveData, liveStatus } from "./live.ts";
 import { landMessage } from "./landings.ts";
 import { landCard } from "../../board/card.ts";
+import { startJob, stopJob } from "../../tools/jobs.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
 import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
@@ -1378,6 +1379,24 @@ describe("the wire contract", () => {
     expect(told.data).toMatchObject({ who: "Pip", face: named.face });
     expect(alertPush({ id: "al5", ts: Date.now(), kind: "finished", session_id: s.id, title: "x", body: "x", read: false, data: {}, channels: [] } as any).data).not.toHaveProperty("who");
     take("helper", (await call("GET", "/v1/helper")).body);
+    // A command a call waits on, which the owner can move behind it: it is told, moved once, and then no longer in front.
+    const waiting = session("Waiting on a command");
+    const job = startJob({ sessionId: waiting.id, command: "sleep 30", description: "Run the unit tests", cwd: dir, logDir: join(dir, "jobs"), callId: "toolu_9" });
+    job.mover = new AbortController();
+    try {
+      take("command", (await call("GET", `/v1/chats/${waiting.id}/command`)).body);
+      expect((await call("GET", `/v1/chats/${waiting.id}/command`)).body.front).toMatchObject({ job: job.id, call: "toolu_9", command: "Run the unit tests" });
+      expect((await call("GET", `/v1/chats/${s.id}/command`)).body.front).toBeNull();
+      const moved = await call("POST", `/v1/chats/${waiting.id}/background`, {});
+      take("moved", moved.body);
+      expect(moved.body.moved).toBe(true);
+      expect(job.mover.signal.aborted).toBe(true);
+      // Moved already: the command is no longer in front, and a second move says so.
+      const again = await call("POST", `/v1/chats/${waiting.id}/background`, {});
+      take("moved", again.body);
+      expect(again.body.moved).toBe(false);
+      expect((await call("GET", `/v1/chats/${waiting.id}/command`)).body.front).toBeNull();
+    } finally { await stopJob(job, "test over"); }
     take("memory", (await call("GET", "/v1/helper/memory")).body);
     // A question from the helper row, asked twice under one id, and its answer: the session it read, named.
     const ask = (await call("POST", "/v1/helper/ask", wire.examples.helper_ask[0])).body;
