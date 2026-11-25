@@ -7,7 +7,7 @@
 // bar says who and offers nothing that writes. One press copies it into Keel
 // (a copy that goes on here; the original keeps running where it runs).
 import { ArrowUp, ChevronDown, ChevronRight, CornerDownRight, Square, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Holder, Session, Usage } from "../../../src/core/types.ts";
 import { shortPath } from "../../../src/core/tool-line.ts";
 import { holderSaid, OUTSIDE_LABEL } from "../../../src/core/watch.ts";
@@ -37,6 +37,10 @@ export function OutsideBar({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [text, setText] = useState("");
+  // The draft's own key: a draft sent twice (a double press, Send again after a failure) is stored once.
+  const draftKey = useRef<string>(crypto.randomUUID());
+  const textNow = useRef(text);
+  textNow.current = text;
   const [sends, setSends] = useState<Send[] | null>(null);
   const holder = o.holder ?? d?.holder;
   // Read when the bar shows and again when what it shows changed (a file more, the state, who holds it): the transcript catches up first.
@@ -64,10 +68,14 @@ export function OutsideBar({ session }: { session: Session }) {
   const send = async (words: string, again?: string) => {
     if (!words.trim()) return;
     setNote("");
+    const key = again ? `again-${again}` : draftKey.current;
+    // The box is cleared before the request goes, and the next draft gets a key of its own.
+    if (!again) { setText(""); draftKey.current = crypto.randomUUID(); }
     try {
-      await api(`/api/sessions/${session.id}/outside/send`, { method: "POST", body: JSON.stringify({ text: words, client_id: crypto.randomUUID(), ...(again ? { again } : {}) }) });
-      if (!again) setText("");
+      await api(`/api/sessions/${session.id}/outside/send`, { method: "POST", body: JSON.stringify({ text: words, client_id: key, ...(again ? { again } : {}) }) });
     } catch (e) {
+      // Not taken: the draft comes back with its key, unless a new one was typed since.
+      if (!again && !textNow.current) { setText(words); draftKey.current = key; }
       setNote(failed(e, { at: "OutsideBar send" }));
     }
   };

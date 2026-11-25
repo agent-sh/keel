@@ -55,7 +55,8 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
 
     // A send: Codex resumes the thread and asks before it runs a command.
     await input.fill(`Run the tests ${tag}`);
-    await bar.getByTestId("outside-send").click();
+    // Pressed twice: one draft is one send.
+    await bar.getByTestId("outside-send").dblclick();
     const card = page.getByTestId("approval");
     await expect(card).toBeVisible({ timeout: 15_000 });
     await expect(card.getByTestId("approval-summary")).toContainText("make test");
