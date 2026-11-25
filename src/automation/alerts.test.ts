@@ -718,3 +718,18 @@ test("an outside session's in-place card is an alert for the owner's own devices
   alerts.saveSettings({ route: { kind: "approval", channel: "elsewhere", on: false } });
   alerts.saveSettings({ route: { kind: "finished", channel: "elsewhere", on: false } });
 });
+
+test("at a start, the questions a Codex child of the last daemon asked are closed as not answered; Keel's own stay", () => {
+  const { store, session } = scratch();
+  const s = session("Codex work"), mine = session("Keel work");
+  store.updateSession(s, { outside: { harness: "codex", source_id: "t-2", state: "working", since: Date.now(), files: 0, failures: 0 } });
+  alerts.raise("question", s, "Question: Codex work", "Which color?", { call_id: "codex-n1-q1", open_session: s, ask_id: "a1" });
+  alerts.raise("question", mine, "Question: Keel work", "Which day?", { call_id: "codex-like", open_session: mine, ask_id: "a2" });
+  alerts.raise("question", s, "Question: Codex work", "Answered", { call_id: "codex-n0-q1", open_session: s, ask_id: "a0" });
+  alerts.keepOutcome("ask_id", "a0", s, "answered");
+  expect(alerts.closeAsks("codex-", (id) => !!store.session(id)?.outside)).toBe(1);
+  const by = (ask: string) => alerts.list({}).find((a) => a.data?.ask_id === ask)!;
+  expect([by("a1").read, by("a1").data.outcome]).toEqual([true, "not answered"]);
+  expect([by("a2").read, by("a2").data.outcome]).toEqual([false, undefined]);
+  expect(by("a0").data.outcome).toBe("answered");
+});

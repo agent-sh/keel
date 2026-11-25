@@ -1153,6 +1153,19 @@ export function readWhere(key: string, value: string, askedIn?: string) {
 // the owner any more, so its alert is read, as an approval's is when its turn is stopped. The
 // notice of a question that expired unanswered is an alert of its own and stays, and so does
 // what the owner marked unread.
+// The questions a child of an earlier daemon asked for a session answered in place (their call ids begin with
+// `prefix`, codex-app.ts): the child ended with that daemon, so none of them waits on the owner any more. Each
+// is kept as not answered and read. Only an outside session's: a call id of Keel's own is never one of them.
+export function closeAsks(prefix: string, outside: (sessionId: string) => boolean): number {
+  const rows = D().store.db.query<{ id: string; sid: string | null; ask: string | null }, [string]>(
+    `SELECT id, ${ASKED_IN} AS sid, json_extract(data, '$.ask_id') AS ask FROM alerts WHERE far_id IS NULL AND kind = 'question' AND json_extract(data, '$.expired') IS NULL AND json_extract(data, '$.outcome') IS NULL AND substr(json_extract(data, '$.call_id'), 1, length(?1)) = ?1`,
+  ).all(prefix).filter((r) => r.sid && r.ask && outside(r.sid));
+  for (const r of rows) keepOutcome("ask_id", r.ask!, r.sid!, "not answered");
+  const unread = rows.map((r) => r.id).filter((id) => D().store.db.query("SELECT 1 FROM alerts WHERE id = ? AND read = 0").get(id));
+  if (unread.length) markRead({ ids: unread });
+  return rows.length;
+}
+
 export function settleAsks(sessionId: string) {
   const rows = D().store.db.query<Row, [string]>(`SELECT * FROM alerts WHERE read = 0 AND kept = 0 AND kind = 'question' AND ${ASKED_IN} = ?`).all(sessionId);
   const ids = rows.map(toAlert).filter((a) => !a.data?.expired && !stillOpen(a)).map((a) => a.id);

@@ -2,13 +2,17 @@
 // a running session (this test's own process stands in for it), a Codex writer lock and an agy presence lock
 // held by a scratch process (flock), and the lines of /proc/locks.
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agyHolder, claudeHolder, claudeKind, codexHolder, codexLock, devParts, lockHolder, parseLocks, statFields } from "./writer.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-writer-"));
 afterAll(() => rmSync(top, { recursive: true, force: true }));
+// What the holder is read from on Linux: /proc (a process's start time) and /proc/locks. Elsewhere those tests
+// are skipped by name: every lock reads as free there, and the harness's own refusal is the guard.
+const PROC = existsSync("/proc/self/stat");
+const LOCKS = existsSync("/proc/locks");
 
 test("lines of /proc/locks: holders, not waiters, with the device and inode", () => {
   const locks = parseLocks([
@@ -33,7 +37,7 @@ test("a process's start time is field 22, counted after a name with spaces and p
   expect(statFields("no name")).toBeUndefined();
 });
 
-test("Claude Code: the live process whose record names the session, of the kind it says", () => {
+test.skipIf(!PROC)("Claude Code: the live process whose record names the session, of the kind it says", () => {
   const dir = join(top, "claude-sessions");
   mkdirSync(dir, { recursive: true });
   const me = statFields(readFileSync(`/proc/${process.pid}/stat`, "utf8"))!;
@@ -53,7 +57,7 @@ test("Claude Code: the live process whose record names the session, of the kind 
 });
 
 const flock = Bun.which("flock");
-test.skipIf(!flock)("Codex and agy: the holder of the lock file's write lock, read and never taken", async () => {
+test.skipIf(!flock || !LOCKS)("Codex and agy: the holder of the lock file's write lock, read and never taken", async () => {
   const home = join(top, "codex");
   mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
   const lock = codexLock(home, "t-1");

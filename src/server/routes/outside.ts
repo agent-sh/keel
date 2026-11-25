@@ -20,6 +20,8 @@ import { ownerLookup } from "../../core/paths.ts";
 import { gate } from "./permissions.ts";
 import { modelFor, sharedImports } from "../../integrations/import/service.ts";
 import { record } from "../../automation/failures.ts";
+import { closeAsks } from "../../automation/alerts.ts";
+import { isOutside } from "../../core/outside.ts";
 import { classOf } from "../../automation/failure-groups.ts";
 import type { RouteModule } from "../app.ts";
 import { seesOutside } from "../admission.ts";
@@ -61,6 +63,7 @@ export const outsideRoutes: RouteModule = (deps) => {
     trouble: (e, at) => errors.capture("server", e, { at }),
     asked: (sid, call, text, ask) => tell((h) => h.ownerAsked?.(sid, call, text, ask)),
     answered: (sid, call, answered, ask) => tell((h) => h.ownerAnswered?.(sid, call, answered, ask)),
+    cutAsks: () => void closeAsks("codex-", (id) => isOutside(store.session(id))),
   });
   sharedImports(store).onCopy("outside", (h, id) => { if (h === "claude" || h === "codex") outside?.copiedNow(h, id); });
   outside.start();
