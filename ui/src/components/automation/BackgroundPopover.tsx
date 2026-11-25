@@ -9,6 +9,7 @@ import { STATE_WORD, agentTally } from "../../../../src/core/state-words.ts";
 import { useToldStates } from "../../lib/watch.ts";
 import { listedOnItsOwn, useFold, useNow } from "../../lib/agent-fold.ts";
 import { useAgentsSeen } from "../../lib/agent-seen.ts";
+import { ceilingWords } from "../../../../src/automation/mcp-call-words.ts";
 import { EarlierRow } from "./Earlier.tsx";
 import { AgentMark, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
 
@@ -161,7 +162,10 @@ export function BackgroundPopup({ sessionId, agents, waits, loops, side }: Pick<
                   <div className="truncate text-micro text-faint max-md:whitespace-normal max-md:break-words">
                     {w.note || "no note"} · {w.kind === "monitor" || w.kind === "websocket" ? `${w.events} events · ` : ""}
                     {/* A timer fires at its time (on the next check), it does not give up. */}
-                    {w.kind === "timer" ? `due ${inMs((w.spec as any).at_ms)}, fires on the next check` : `gives up ${inMs(w.deadline)}`}{w.last_error ? ` · ${w.last_error}` : ""}
+                    {w.kind === "timer" ? `due ${inMs((w.spec as any).at_ms)}, fires on the next check`
+                      // A call has its own ceiling (its server's tool_max_secs, else the client's): that is what ends it, said as it is.
+                      : w.kind === "mcp_call" ? <span data-testid="bg-wait-ceiling">{(w.spec as any).max_ms ? `stopped at its limit of ${ceilingWords((w.spec as any).max_ms)}` : `gives up ${inMs(w.deadline)}`}</span>
+                      : `gives up ${inMs(w.deadline)}`}{w.last_error ? ` · ${w.last_error}` : ""}
                   </div>
                 </div>
                 <IconButton title="Cancel" danger onClick={() => auto.cancelWait(w.id).catch(reportError)}><X className="size-3.5" /></IconButton>

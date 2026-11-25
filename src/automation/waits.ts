@@ -39,7 +39,7 @@ export type WaitSpec =
   | { kind: "pr_checks"; repo: string; pr_number: number }
   | { kind: "session"; machine: string; session: string; title?: string; message_id?: string }
   // An MCP call that went on in the background (src/automation/mcp-calls.ts). Keel makes it; nobody sets it by hand.
-  | { kind: "mcp_call"; entry: string; tool: string; label: string; started: number; call_id: string; task_id?: string; remote?: true; file: string; spill_dir: string };
+  | { kind: "mcp_call"; entry: string; tool: string; label: string; server?: string; max_ms?: number; started: number; call_id: string; task_id?: string; remote?: true; file: string; spill_dir: string };
 
 // A wait kind another module probes (the fleet's session notices): how a spec
 // is read, how often it is probed, and the probe itself (an outcome fires it;

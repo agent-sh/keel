@@ -97,9 +97,19 @@ test("a call that runs long goes on in the background, and its end wakes the ses
     await expect.poll(async () => await k.ends(id), { timeout: 20_000 }).toBe(1);
     await (await inHead(page, "background-button")).click();
     await expect(page.getByTestId("bg-wait")).toContainText("MCP call long__nap");
+    // Its own limit is said in words, not the time the wait gives up (a day away, where the call's limit is 28 hours).
+    await expect(page.getByTestId("bg-wait-ceiling")).toHaveText("stopped at its limit of 28 hours");
+    await expect(page.getByTestId("bg-wait")).not.toContainText("gives up");
     await shoot(page, "mcp-background-01-listed");
     await page.keyboard.press("Escape");
     await leaveHead(page);
+    // The session's jobs list above the box names its server and its tool, and the row goes when the call ends.
+    await page.getByTestId("dock-jobs").click();
+    await expect(page.getByTestId("dock-job")).toHaveCount(1);
+    await expect(page.getByTestId("dock-mcp-tool")).toHaveText("nap");
+    await expect(page.getByTestId("dock-mcp-server")).toHaveText("long");
+    await shoot(page, "mcp-background-01b-jobs");
+    await page.keyboard.press("Escape");
 
     // Its end starts the next turn, with the file its result is in.
     await expect.poll(async () => (await k.wakes(id)).length, { timeout: 30_000 }).toBe(1);
@@ -110,6 +120,7 @@ test("a call that runs long goes on in the background, and its end wakes the ses
     expect(wake).not.toContain("napped 6 seconds"); // a server's words are read from the file, not given as the harness's
     expect(readFileSync(file!, "utf8")).toBe("napped 6 seconds\n");
     await expect.poll(async () => await k.ends(id), { timeout: 30_000 }).toBe(2);
+    await expect(page.getByTestId("dock-job")).toHaveCount(0);
     await shoot(page, "mcp-background-02-woken");
     // Called once, woken once.
     expect(readFileSync(log, "utf8").trim().split("\n").filter((l) => l.startsWith("start nap"))).toHaveLength(1);
@@ -167,6 +178,32 @@ test("a task a remote server made of the call is followed after a restart, and t
     expect(await k.wakes(id)).toHaveLength(1);
   } finally {
     srv.kill("SIGKILL");
+    await k.stop();
+  }
+});
+
+test("Settings > Integrations sets the time an MCP call goes on in the background", async ({ page }) => {
+  const k = await setup("setting");
+  try {
+    await page.goto(`${k.at.d.url}/settings/integrations`);
+    const field = page.getByTestId("mcp-background-after");
+    await expect(field).toHaveValue("2"); // (setup gave it two seconds)
+    await field.fill("45");
+    await field.press("Enter");
+    await expect.poll(async () => (await k.call("/api/settings")).settings.mcp_background.after_secs).toBe(45);
+    await expect(page.getByText("has run 45 s")).toBeVisible();
+    await shoot(page, "mcp-background-03-setting");
+    // A value the daemon would refuse is not sent, and the field says why.
+    await field.fill("-3");
+    await field.press("Enter");
+    await expect(page.getByText("Seconds, 0 or more.")).toBeVisible();
+    expect((await k.call("/api/settings")).settings.mcp_background.after_secs).toBe(45);
+    // 0: calls wait in their turn.
+    await field.fill("0");
+    await field.press("Enter");
+    await expect.poll(async () => (await k.call("/api/settings")).settings.mcp_background.after_secs).toBe(0);
+    await expect(page.getByText("Off: every MCP call waits in its turn.")).toBeVisible();
+  } finally {
     await k.stop();
   }
 });

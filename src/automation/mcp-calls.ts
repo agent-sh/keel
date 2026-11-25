@@ -81,7 +81,7 @@ export function bindMcpCalls(m: McpManager) {
       const token = Bun.randomUUIDv7().slice(-8);
       const label = `${at.shown}__${at.tool}`;
       const spec: McpCallSpec = {
-        kind: "mcp_call", entry: at.entry, tool: at.tool, label, started: at.started, call_id: ctx.callId,
+        kind: "mcp_call", entry: at.entry, tool: at.tool, label, server: at.shown, max_ms: at.maxMs, started: at.started, call_id: ctx.callId,
         ...(at.taskId && at.remote ? { task_id: at.taskId, remote: true } : {}),
         file: join(ctx.spillDir, `mcp-call-${token}.txt`), spill_dir: ctx.spillDir,
       };

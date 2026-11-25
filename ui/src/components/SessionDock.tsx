@@ -3,7 +3,7 @@
 // branch is ready).
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Popover } from "@base-ui/react/popover";
-import { ChevronRight, FileDiff, ListChecks, Square, SquareTerminal } from "lucide-react";
+import { ChevronRight, FileDiff, ListChecks, Plug, Square, SquareTerminal } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { readyToLand, toLand } from "../../../src/board/rules.ts";
@@ -25,6 +25,7 @@ import { DockNow } from "./DockNow.tsx";
 // The tree review (land, send back or drop each area), the one action the work board offers for landing.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
 import { AgentsDock, useAgentsTally } from "./automation/AgentsDock.tsx";
+import { auto, useAuto, type WaitRecord } from "../lib/automation.ts";
 
 const since = (t: number) => {
   const s = Math.max(0, Math.round((liveNow() - t) / 1000)); // stopped while the daemon is unreachable
@@ -104,20 +105,24 @@ function BoardChangesPart({ sessionId, root, changed }: { sessionId: string; roo
 
 // The session's background commands: one chip in the line of the plan and the agents that opens each command, its
 // last line and its end, with Stop for one that runs.
-function JobsChip({ sessionId, jobs, cut }: { sessionId: string; jobs: JobView[]; cut: Set<string> }) {
-  const running = jobs.filter((j) => j.running).length;
-  const words = `${jobs.length} ${jobs.length === 1 ? "command" : "commands"}`;
+function JobsChip({ sessionId, jobs, calls, cut }: { sessionId: string; jobs: JobView[]; calls: WaitRecord[]; cut: Set<string> }) {
+  const n = jobs.length + calls.length;
+  const running = jobs.filter((j) => j.running).length + calls.length;
+  // Commands, MCP calls that went on in the background, or both under one word.
+  const word = !calls.length ? (n === 1 ? "command" : "commands") : !jobs.length ? (n === 1 ? "call" : "calls") : "in the background";
+  const words = `${n} ${word}`;
   return (
     <Popover.Root>
       <Popover.Trigger className="k-docket-line k-docket-jobs" data-testid="dock-jobs" data-running={running > 0 || undefined} aria-label={`${words}${running ? `, ${running} running` : ""}`} title={words}>
         <SquareTerminal className="k-docket-glyph" aria-hidden="true" />
-        <span className="k-docket-jobs-n k-face-figure">{jobs.length}</span>
-        <span className="k-docket-jobs-word">{jobs.length === 1 ? "command" : "commands"}</span>
+        <span className="k-docket-jobs-n k-face-figure">{n}</span>
+        <span className="k-docket-jobs-word">{word}</span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={8} align="end" side="top" className="z-50 outline-none">
           <Popover.Popup data-testid="dock-jobs-popup" className="w-[min(30rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-lg border border-line bg-raised py-1 shadow-3 outline-none">
             {jobs.map((j) => <JobRow key={j.id} sessionId={sessionId} j={j} cut={cut} />)}
+            {calls.map((w) => <McpCallRow key={w.id} w={w} />)}
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
@@ -154,6 +159,32 @@ function JobRow({ sessionId, j, cut }: { sessionId: string; j: JobView; cut: Set
           <Square className="size-3" />
         </button>
       )}
+    </div>
+  );
+}
+
+// An MCP call that went on in the background is a wait of the session (src/automation/mcp-calls.ts): listed beside
+// the commands with its server and tool, and stopping it cancels the wait.
+function McpCallRow({ w }: { w: WaitRecord }) {
+  const c = w.spec as Extract<WaitRecord["spec"], { kind: "mcp_call" }>;
+  const server = c.server ?? c.label.slice(0, Math.max(0, c.label.length - c.tool.length - 2));
+  return (
+    <div className="k-docket-line k-docket-job" data-testid="dock-job" data-kind="mcp" data-running>
+      <Plug className="k-docket-glyph" />
+      <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg max-md:max-w-none max-md:shrink max-md:flex-1 max-md:whitespace-normal max-md:break-words" title={w.id} data-testid="dock-mcp-tool">{c.tool}</span>
+      <span className="k-job-meta">
+        <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" data-testid="dock-mcp-server">{server}</span>
+        <span className="k-face-figure shrink-0 text-micro text-faint">{since(c.started)}</span>
+      </span>
+      <button
+        type="button"
+        title={`Stop ${c.label}`}
+        data-testid="dock-job-stop"
+        onClick={() => auto.cancelWait(w.id).catch(reportError)}
+        className="k-job-stop -mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
+      >
+        <Square className="size-3" />
+      </button>
     </div>
   );
 }
@@ -199,6 +230,8 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   }, [key]);
   const plan = held?.plan ?? (older?.key === key ? older.plan : null);
   const jobs = useJobs(sessionId, working);
+  const allWaits = useAuto((s) => s.waits);
+  const calls = useMemo(() => Object.values(allWaits).filter((w) => w.session_id === sessionId && w.kind === "mcp_call" && w.status === "active").sort((a, b) => (a.spec as any).started - (b.spec as any).started), [allWaits, sessionId]);
   const changed = useChanged(sessionId);
   const root = useStore((s) => rootOf((id) => s.sessions[id]?.parent_id, sessionId));
   const tree = useTreeMark(root);
@@ -228,11 +261,11 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
       <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />
     </Collapsible.Trigger>
   ) : null;
-  const row = (planLineEl || agents || jobs.length > 0) ? (
+  const row = (planLineEl || agents || jobs.length > 0 || calls.length > 0) ? (
     <div className="k-docket-row">
       {planLineEl}
       {agents && <AgentsDock sessionId={sessionId} />}
-      {jobs.length > 0 && <JobsChip sessionId={sessionId} jobs={jobs} cut={cut} />}
+      {(jobs.length > 0 || calls.length > 0) && <JobsChip sessionId={sessionId} jobs={jobs} calls={calls} cut={cut} />}
     </div>
   ) : null;
   return (

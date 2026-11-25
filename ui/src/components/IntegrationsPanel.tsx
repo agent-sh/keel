@@ -7,6 +7,7 @@ import { reportError } from "../lib/store.ts";
 import { clock, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
+import { useSettings } from "./StoragePanel.tsx";
 
 type Item = { id: string; title: string; detail?: string; at?: string };
 type Report = { available: boolean; report?: { generated_at: string; counts: Record<string, number>; needs_you: Item[]; problems: Item[]; running: Item[] } };
@@ -77,6 +78,46 @@ function Writer({ info, onSaved }: { info: Info["tacit"]; onSaved: (w: string) =
   );
 }
 
+// The seconds an MCP call may run in a turn before it goes on in the background (mcp_background.after_secs); 0 keeps
+// every call in its turn. Saved when the field is left or Enter is pressed; a value the daemon refuses is said.
+function BackgroundAfter() {
+  const [settings, patch] = useSettings();
+  const [text, setText] = useState<string | null>(null);
+  const [why, setWhy] = useState("");
+  if (!settings) return null;
+  const saved = Number(settings.mcp_background?.after_secs ?? 120);
+  const shown = text ?? String(saved);
+  const save = () => {
+    if (text === null) return;
+    const v = Number(text.trim());
+    if (text.trim() === "" || !Number.isFinite(v) || v < 0) return setWhy("Seconds, 0 or more.");
+    if (v === saved) return setText(null), setWhy("");
+    patch({ mcp_background: { after_secs: v } }).then(() => (setText(null), setWhy(""))).catch((e) => setWhy(e.message));
+  };
+  return (
+    <Card>
+      <SettingRow
+        label="MCP calls go on in the background after"
+        hint={why || (saved > 0 ? `A call to an MCP server that has run ${saved} s is moved to a wait of its session: the model gets a handle and its turn goes on, and the call's end wakes it once. 0 keeps every call in its turn.` : "Off: every MCP call waits in its turn.")}
+      >
+        <label className={cn("flex h-8 items-center gap-2 rounded-md border bg-raised px-2.5 text-ui", why ? "border-danger" : "border-line-strong")}>
+          <input
+            aria-label="Seconds before an MCP call goes on in the background"
+            data-testid="mcp-background-after"
+            inputMode="numeric"
+            value={shown}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={save}
+            onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.currentTarget as HTMLInputElement).blur()}
+            className="w-16 bg-transparent text-right tabular-nums outline-none"
+          />
+          <span className="text-muted">seconds</span>
+        </label>
+      </SettingRow>
+    </Card>
+  );
+}
+
 export function IntegrationsSettings() {
   const [info, setInfo] = useState<Info | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -111,6 +152,7 @@ export function IntegrationsSettings() {
           <SettingRow label="Control socket"><span className="block max-w-[26rem] k-truncate font-mono text-caption text-muted" title={info.momentum.socket} data-testid="momentum-socket">{info.momentum.socket}</span></SettingRow>
         )}
       </Card>
+      <BackgroundAfter />
       {r && (
         <Card>
           <div className="flex items-center gap-3 border-b border-line py-3">
