@@ -61,6 +61,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS outside_sends_key ON outside_sends(session_id,
 // only by the owner. failed: refused before it went (`said` says why). cut: the rollout holds it and the
 // turn it started stopped with a restart of Keel's (Keel's child ended with the daemon), said until put away.
 export type SendState = "stored" | "started" | "delivered" | "lost" | "failed" | "cut";
+const KEEP_MS = 24 * 3600_000;
 const CUT = "Keel restarted while Codex worked: the turn stopped there";
 const UNLOCKED = "this Codex keeps no writer locks (a Codex before 0.172), so Keel cannot tell whether a terminal has the session open: it sends nothing. Answer it in Codex, or update Codex";
 export type Send = { id: string; session_id: string; key: string; text: string; state: SendState; offset: number | null; said: string | null; created: number };
@@ -290,6 +291,7 @@ export class CodexApp {
     if (!mine && !codexKeepsLocks(this.d.home())) return { error: UNLOCKED, status: 409 };
     const send: Send = { id: Bun.randomUUIDv7(), session_id: sessionId, key, text, state: "stored", offset: null, said: null, created: Date.now() };
     this.said.delete(sessionId);
+    this.prune();
     this.d.store.db.transaction(() => {
       if (again) this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed')").run(again, sessionId);
       this.d.store.db.query("INSERT INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)").run(send.id, sessionId, key, text, "stored", send.created);
@@ -297,6 +299,10 @@ export class CodexApp {
     this.told(sessionId);
     void this.deliver(sessionId, send.id).catch((e) => { this.d.trouble(e, "answering a Codex session in place"); this.set(send.id, "lost", { said: `it could not go to Codex: ${(e as Error).message}` }); });
     return { send };
+  }
+
+  private prune() {
+    this.d.store.db.query("DELETE FROM outside_sends WHERE state = 'delivered' AND created < ?").run(Date.now() - KEEP_MS);
   }
 
   // A lost or refused send, put away by the owner.
@@ -558,6 +564,8 @@ export class CodexApp {
   // At the daemon's start: a send a restart cut after it started is looked for in the rollout (never sent
   // again by itself); one that never started goes now if the thread is free.
   start() {
+    // A delivered send is kept a day, so its key still stores a resend once; then it goes.
+    this.prune();
     // A card Codex raised before the restart answers nothing now: the child that asked ended with the daemon.
     const gate = this.d.gate();
     for (const a of gate?.approvals({ pending: true }) ?? []) {

@@ -265,6 +265,20 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
+  test("a delivered send is kept a day (its key stores a resend once), then let go", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      const put = r.store.db.query("INSERT INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES (?, ?, ?, 'x', ?, 0, NULL, ?)");
+      put.run("old", s.id, "k-old", "delivered", Date.now() - 25 * 3600_000);
+      put.run("new", s.id, "k-new", "delivered", Date.now() - 3600_000);
+      put.run("lost", s.id, "k-lost", "lost", Date.now() - 25 * 3600_000);
+      r.app().stop();
+      r.make().start();
+      expect(r.store.db.query<{ id: string }, []>("SELECT id FROM outside_sends ORDER BY id").all().map((x) => x.id)).toEqual(["lost", "new"]);
+    } finally { r.done(); }
+  });
+
   test("a session another process holds takes nothing, and says who holds it", async () => {
     const r = rig({ holder: () => ({ kind: "terminal", pid: 4242 }) });
     try {
