@@ -81,6 +81,8 @@ test("import sheet: a machine's sessions under its separator, running ones first
     const running = far.getByTestId("import-machine-running");
     await expect(running.getByTestId("import-machine-running-row")).toHaveCount(1, { timeout: 30_000 });
     await expect(running.getByTestId("original-strip")).toHaveAttribute("data-state", "active", { timeout: 30_000 });
+    // It is under Running now once, not again in the stored list below.
+    await expect(far.locator(`[data-id="${sid(2)}"]`)).toHaveCount(1);
     await expect(sheet.getByTestId("import-machine-jump")).toContainText(m.name);
     await shoot(page, "fleet-sessions-sheet-01-machine-part");
 

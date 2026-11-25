@@ -172,7 +172,8 @@ export function MachineSections({ machines, far, pickedKey, onPick, onOpen, more
                 <button type="button" onClick={() => again(m.id)} className="flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-accent hover:bg-accent-soft"><RefreshCw className="size-3" />Retry</button>
               </div>
             )}
-            {f.rows?.map((r) => <SessionRow key={key(r) + r.path} r={r} testid="import-machine-row" picked={pickedKey === key(r)} onPick={() => onPick(r, null)} strip={strip(r)} />)}
+            {/* A session shown under Running now is not shown again below it. */}
+            {f.rows?.filter((r) => !f.running.some((x) => key(x) === key(r))).map((r) => <SessionRow key={key(r) + r.path} r={r} testid="import-machine-row" picked={pickedKey === key(r)} onPick={() => onPick(r, null)} strip={strip(r)} />)}
             {f.rows?.length === 0 && <p className="k-empty px-3 py-3">No sessions match.</p>}
             {f.next !== undefined && !kept && <button type="button" onClick={() => more(m.id)} className="w-full py-2 text-caption text-accent hover:bg-hover">More</button>}
           </section>
