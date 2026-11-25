@@ -57,7 +57,7 @@ export function CodeCall({ use, result, live, sessionId, cwd, event }: Props) {
           <span className="k-line-verb">Code</span>{" "}
           {state === "error" && <><span className="k-line-state" data-tone="fail">failed</span>{" "}</>}
           {own.map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
-          <span className="k-line-what">{firstLine}</span>
+          <span className="k-line-what" data-code="">{firstLine}</span>
         </span>
         <span className="k-line-end">
           <Apart />

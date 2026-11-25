@@ -87,6 +87,15 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
     await expect(failedRun.getByTestId("call-state")).toHaveText("exit 1");
     await expect(failedRun.getByTestId("call-state")).toHaveAttribute("data-tone", "fail");
     await expect(failedRun.getByTestId("tool-why")).toContainText("expect(received).toEqual(expected)");
+    // One line: the step, the tool and a short reason, in the UI face; the reason in the danger ink, its whole text the tooltip.
+    const why = failedRun.getByTestId("tool-why");
+    const face = (l: typeof why) => l.evaluate((el) => getComputedStyle(el).fontFamily);
+    expect(await face(why), "the reason is in the UI face").toMatch(/Plex Sans/);
+    expect(await face(failedRun.locator(".k-line-what").first()), "what it ran on is in the UI face").toMatch(/Plex Sans/);
+    const rem1 = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+    expect((await failedRun.locator(".k-line").boundingBox())!.height, "the failed call is one line").toBeLessThanOrEqual(2 * rem1);
+    await expect(why).toHaveAttribute("title", /expect\(received\)\.toEqual\(expected\)/);
+    expect(await why.evaluate((el) => getComputedStyle(el).color)).toBe(await failedRun.getByTestId("call-state").evaluate((el) => getComputedStyle(el).color));
 
     // A step opens to its calls by the pointer and by the keyboard, and says so to a screen reader.
     const line = explored.locator(".k-line").first();

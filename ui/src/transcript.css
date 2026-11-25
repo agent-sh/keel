@@ -115,8 +115,13 @@ button.k-heard-line:hover { color: var(--fg); }
 .k-line-mark { white-space: normal; }
 /* How many: never given up for room, at any width. */
 .k-line-count { margin-right: 0.25rem; white-space: nowrap; }
-.k-line-what { font-family: var(--font-mono); font-size: var(--text-caption); }
-.k-line-what[data-words] { font-family: var(--font-sans); font-size: var(--text-ui); }
+/* What a call was done to (a path, a command's first line, a question) is in the UI face like the rest of the line;
+   a marked call's command, which the owner reads to the letter, keeps the code face. */
+.k-line-what { font-family: var(--font-sans); font-size: var(--text-ui); }
+.k-tool-call[data-marked] > .k-line .k-line-what, .k-line-what[data-code] { font-family: var(--font-mono); font-size: var(--text-caption); }
+/* Why a call failed, short, at the end of its line (its whole output is the opened call): one line, cut at its end. */
+.k-line-why { margin-left: 0.25rem; color: var(--muted); }
+.k-line-why[data-tone="fail"] { color: var(--danger-ink); }
 /* Several targets on a line are told apart by a hairline on the page, and by a comma in a copied selection:
    the comma is there as text, set outside what its box shows, and the box draws the hairline. */
 .k-sep {
@@ -263,9 +268,9 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-under-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.5rem; min-width: 0; }
 .k-under-name { flex: 0 0 auto; min-width: var(--k-verb, 4.25rem); font-weight: 500; white-space: nowrap; }
 .k-under-what { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
-.k-under-what[data-code], .k-under-code { font-family: var(--font-mono); font-size: var(--text-caption); }
-/* A reason in the call's own output: whole on a wide line, at most three rows where it wraps. */
-.k-under-what[data-code] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.k-under-code { font-family: var(--font-mono); font-size: var(--text-caption); }
+/* A reason taken from a call's output: one line in the UI face, cut at its end; the output has the rest. */
+.k-under-what[data-code] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-under-what[data-tone="fail"] { color: var(--danger-ink); }
 .k-under-what[data-tone="warn"] { color: var(--warn-ink); }
 .k-under-what[data-tone="note"] { color: var(--muted); }
@@ -352,7 +357,6 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
   .k-work[data-said] > .k-step > .k-did { flex: 1 1 8rem; }
   /* A call's own line takes a second row there before its words are cut: how it stands is never cut. */
   .k-line-text:not([data-wrap]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
-  .k-under-what[data-code] { -webkit-line-clamp: 5; }
 }
 /* A pane too narrow for the reading size: the reply is a size down, and so are the words on the rail. */
 @container reading (max-width: 28rem) {

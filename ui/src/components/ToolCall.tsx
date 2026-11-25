@@ -292,6 +292,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {/* (When more than one call of its step waits, each line names its call, trimmed: it matches its card.) */}
           {/* (A change's line keeps its path while its card is open: the card shows the lines, not where they go.) */}
           {(state !== "waiting" || named || change) && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{state === "waiting" && !change && what.length > NAMED_CHARS ? `${what.slice(0, NAMED_CHARS).trimEnd()}…` : what}</span>}
+          {/* Why it failed, short, at the end of the line: the whole output is under the line when it opens. */}
+          {why && <>{" "}<span className="k-line-why" data-tone={soft ? "note" : "fail"} data-testid="tool-why" title={why}>{why}</span></>}
         </span>
         <span className="k-line-end">
           {(more > 0 || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}
@@ -307,9 +309,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {(state === "running" || state === "live") && <span className="k-line-run" aria-label="running" />}
         </span>
       </Collapsible.Trigger>
-      {(why || rejected || ownReason || turned || (refused && sessionId)) && (
+      {(rejected || ownReason || turned || (refused && sessionId)) && (
         <div className="k-under">
-          {why && <Under code tone={soft ? "note" : "fail"} testid="tool-why">{why}</Under>}
           {rejected && <Under tone="fail" testid="plan-rejected">{rejected} The plan before it stays.</Under>}
           {/* The owner's own words with their denial; none given, none shown. */}
           {ownReason && <Under name="You" testid="tool-denial">{ownReason}</Under>}
