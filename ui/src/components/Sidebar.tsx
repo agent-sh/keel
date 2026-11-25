@@ -361,7 +361,10 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       <span className="k-row-main">
         {renaming
           ? <RowName s={s} done={() => { setRenaming(false); requestAnimationFrame(() => row.current?.focus()); }} />
-          : <span className="k-row-title">{s.title || "New session"}</span>}
+          : (
+            /* Another harness's session says which in its tooltip, not in a chip beside the title. */
+            <span className="k-row-title" title={s.outside ? outsideTip(s.outside) : undefined}>{s.title || "New session"}</span>
+          )}
         <span className="k-row-sub">
           {/* A machine that does not answer says nothing new: the row's word is Offline (at the line's end), with when it last told here and what under the pointer. */}
           {offline
@@ -401,8 +404,9 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           // One slot: the age of every row, and before it the word of a row that waits on the owner or was declined.
           // (A reader hears the state before the word: the line's own state word gives way to it.)
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live={timed(st) || undefined} data-calm={(!timed(st) && !SPELLED.includes(w) && calm) || undefined} data-on={on || undefined}
-              title={timed(st) ? (st.until ? `Due ${when(st.until)}` : on && w === "need" ? `${STATE_WORD.need} since ${when(st.since!)}` : `Since ${when(st.since!)}`) : on ? `${STATE_WORD[w]} ${when(st.since ?? s.updated)}` : w === "fail" ? `${[STATE_WORD.fail, agents || cls].filter(Boolean).join(": ")}, ${when(s.updated)}` : when(s.updated)}>
-              {on && <span className="k-row-on" data-testid="row-on" data-on={w}>{w === "need" && <span className="sr-only">{STATE_WORD.need.slice(0, -WAITS_ON_YOU.length - 1)} </span>}{on}</span>}{on && " "}
+              title={timed(st) ? (st.until ? `Due ${when(st.until)}` : w === "need" ? `${STATE_WORD.need} since ${when(st.since!)}` : `Since ${when(st.since!)}`) : on ? `${STATE_WORD[w]} ${when(st.since ?? s.updated)}` : w === "fail" ? `${[STATE_WORD.fail, agents || cls].filter(Boolean).join(": ")}, ${when(s.updated)}` : when(s.updated)}>
+              {/* What waits on the owner is its dot's yellow and its title's weight: no word of its own in the slot (a reader has it here). */}
+              {on && <span className="k-row-on" data-testid="row-on" data-on={w}>{w === "need" ? <span className="sr-only">{STATE_WORD.need} </span> : on}</span>}{on && w !== "need" && " "}
               {timed(st) ? rowClock(st, now) : said ?? ago(s.updated)}
             </span>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
@@ -938,6 +942,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
         {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={offline ? "offline" : st.why}>{why}</p>}
         {line && line !== why && <p className="k-rail-card-line">{line}</p>}
         <dl className="k-rail-card-meta">
+          {s.outside && <><dt>Runs in</dt><dd>{OUTSIDE_LABEL[s.outside.harness] ?? s.outside.harness}</dd></>}
           <dt>Model</dt><dd>{modelOf(s.model)}</dd>
           <dt>Path</dt><dd title={s.workspace}>{home(s.workspace)}{s.machine ? ` on ${machineName(s.machine)}` : ""}</dd>
           <dt>Active</dt><dd>{when(s.updated)}</dd>
@@ -963,6 +968,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
       {line && line !== why && <p className="k-rail-card-line">{line}</p>}
       {unread > 0 && w !== "need" && <p className="k-rail-card-new">{NEW_SINCE}</p>}
       <dl className="k-rail-card-meta">
+        {s.outside && <><dt>Runs in</dt><dd>{OUTSIDE_LABEL[s.outside.harness] ?? s.outside.harness}</dd></>}
         <dt>Folder</dt><dd title={s.workspace}><b>{folderOf(s)}</b>{s.machine ? ` on ${machineName(s.machine)}` : ""} in {home(s.workspace.replace(/\/[^/]*\/?$/, "")) || "/"}</dd>
         <dt>Model</dt><dd>{modelOf(s.model)}</dd>
         <dt>Active</dt><dd>{when(s.updated)}</dd>
@@ -1522,13 +1528,13 @@ export function Sidebar({ open }: { open: boolean }) {
   );
 }
 
-// A row of a session another harness runs: which one. A stale one (no record for a while, nothing to vouch for it) says so.
-export function OutsideTag({ o }: { o: NonNullable<Session["outside"]> }) {
+// A row of a session another harness runs: which one is in the title's tooltip and the hover card. A stale one (no record for
+// a while, nothing to vouch for it) says so beside the title, in a word.
+const outsideTip = (o: NonNullable<Session["outside"]>) => {
   const where = OUTSIDE_LABEL[o.harness] ?? o.harness;
-  const stale = o.state === "stale";
-  return (
-    <span className="k-row-outside" data-testid="row-outside" data-state={o.state} title={stale ? `Runs in ${where}: no record${o.since ? ` since ${hhmm(o.since)}` : ""}, read-only here` : `Runs in ${where}: read-only here`}>
-      {where}{stale && <span className="k-row-outside-stale"> · {STALE_WORD.toLowerCase()}</span>}
-    </span>
-  );
+  return o.state === "stale" ? `Runs in ${where}: no record${o.since ? ` since ${hhmm(o.since)}` : ""}, read-only here` : `Runs in ${where}: read-only here`;
+};
+export function OutsideTag({ o }: { o: NonNullable<Session["outside"]> }) {
+  if (o.state !== "stale") return null;
+  return <span className="k-row-outside" data-testid="row-outside" data-state="stale" title={outsideTip(o)}>{STALE_WORD.toLowerCase()}</span>;
 }

@@ -54,7 +54,9 @@ test("a live Claude Code session shows in the list read-only and goes on in Keel
     made.push(sid);
     const row = page.locator(`[data-testid="session-row"][data-session="${sid}"]`);
     await expect(row).toBeVisible();
-    await expect(row.getByTestId("row-outside")).toHaveText("Claude Code");
+    // Which harness runs it is in the title's tooltip, not a chip beside the title (a stale one says "stale" there).
+    await expect(row.getByTestId("row-outside")).toHaveCount(0);
+    await expect(row.locator(".k-row-title")).toHaveAttribute("title", "Runs in Claude Code: read-only here");
     await expect(row).toHaveAttribute("data-watch", "work");
 
     // Opened: its transcript in Keel's view, its bar in the composer's place.

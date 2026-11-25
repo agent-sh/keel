@@ -496,8 +496,8 @@ test("with four panes the list is still titles, one line a session, and folds to
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${ids.reader}`);
     await page.getByTestId("show-sidebar").first().click();
-    // Who it waits on stands where its time would be.
-    await expect(row(ids.need!).getByTestId("row-on")).toBeVisible();
+    // The dot says it: the slot draws no word, and a reader has it.
+    await expect(row(ids.need!).getByTestId("row-on")).toHaveText("Needs you");
     await expect(page.getByTestId("sum-need")).toBeVisible();
     await shoot(page, "rail-stable-05-phone");
   } finally {

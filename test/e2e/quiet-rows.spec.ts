@@ -66,8 +66,9 @@ test("a row says one state, in one weight, and the line above the list is one qu
     // owner (you) or was declined; a failure's class is not in the slot (it is on the row's line and in the tooltip).
     const slot = (id: string) => row(page, id).locator(".k-row-end").getByTestId("row-time");
     await expect(slot(asks)).toHaveCount(1);
-    await expect(slot(asks).getByTestId("row-on")).toBeVisible();
+    // What waits on the owner is its yellow dot: the slot draws no "you" beside the age (a reader still has the words).
     await expect(slot(asks).getByTestId("row-on")).toHaveText("Needs you");
+    expect((await slot(asks).getByTestId("row-on").boundingBox())!.width, "the word is not drawn").toBeLessThanOrEqual(1);
     await expect(slot(asks)).toHaveText(/^Needs you (now|\d+[smh])$/);
     await expect(slot(failed)).toHaveText(/^(now|\d+[smh])$/);
     await expect(slot(failed)).toHaveAttribute("title", /^Failed: billing, /);
