@@ -230,3 +230,13 @@ test("a digest is kept however long ago it was sent and wherever its transcript 
     setSystemTime();
   }
 });
+
+test("a model command the drive sends is kept as sent, as the harness records it at its prompt", async () => {
+  const store = fresh();
+  await backfillSent(store, read(store));
+  const row = { id: "claude:k", name: "here", kind: "claude", state: "idle", live: true, drive: { send: true, resume: true, model: true } };
+  const drive = { find: async () => ({ key: "k", raw: {}, row }), model: async () => "sent" } as any;
+  const tool = driveTools(drive, store, {} as any).find((t) => t.name === "session_model")!;
+  await tool.run({ id: "claude:k", model: "other-model-2" }, {} as any);
+  expect(await wasSent(store, "/model other-model-2")).toBe(true);
+});

@@ -136,7 +136,11 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       { id: { type: "string" }, model: { type: "string" } }, ["id", "model"], false,
       async (i) => {
         try {
-          return ok(await drive.model(i.id, String(i.model ?? ""), judged.get(i)));
+          // The command is words at the session's prompt too: kept as sent before it goes.
+          const f = judged.get(i) ?? (await drive.find(i.id));
+          const name = String(i.model ?? "").trim();
+          if (name && !/\s/.test(name) && f.row.drive.model) await sent(f, modelCommand(f.row.kind, name).text);
+          return ok(await drive.model(i.id, String(i.model ?? ""), f));
         } catch (e) {
           return fmt(e);
         }
