@@ -9,7 +9,8 @@ import { stuckText, type After, type StuckItem } from "../core/stuck.ts";
 import { stateLine, WATCH_LABEL, type SessionState } from "../core/watch.ts";
 import { stopSays } from "../core/stoppers.ts";
 import { questions as askedOf, type UiQuestion } from "../../ui/src/lib/tools.ts";
-import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
+import { openSession } from "./open.ts";
+import { ago, ApiError, clean, Client, command, EXIT, line, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
 import { ask, cardRow, cardShown, formOf, interactive, shortId, showCard, whyHeld } from "./cards.ts";
 import { holdSaid, type CardForm } from "../safety/card.ts";
@@ -695,7 +696,8 @@ const attach = command("attach", ATTACH_USAGE, { thoughts: { type: "boolean" } }
 
 const OPEN_USAGE = `keel open [DIR] [--resume ID] [--print-url] [-m MODEL]
   Opens the workbench on the directory's newest session (making one when it has none),
-  or on the session named. The browser is KEEL_BROWSER, else the desktop's opener.`;
+  or on the session named. In the desktop app when one is attached to the daemon (KEEL_DESKTOP, else
+  keel-desktop on the PATH), else the browser: KEEL_BROWSER, else the desktop's opener.`;
 
 const open = command("open", OPEN_USAGE, { resume: { type: "string" }, "print-url": { type: "boolean" }, model: { type: "string", short: "m" }, provider: { type: "string" } }, async (v, pos, c) => {
   let s: any;
@@ -712,7 +714,7 @@ const open = command("open", OPEN_USAGE, { resume: { type: "string" }, "print-ur
   const url = c.url(s.id);
   if (v.json) console.log(JSON.stringify({ session_id: s.id, url }));
   else console.log(url);
-  if (!v["print-url"] && !openUrl(url)) console.error("keel open: no browser could be started; open the address above");
+  if (!v["print-url"] && !(await openSession(c, s.id))) console.error("keel open: no browser could be started; open the address above");
   return EXIT.ok;
 });
 
@@ -723,15 +725,18 @@ keel resume --last [PROMPT] [run options]
   Continues a session: with a prompt (or piped input) it runs like \`keel run --session ID\`
   (so -p, --output-format and --wait work); with neither, on a terminal, it attaches.
       --last    the newest session of this directory (or --cwd)
+      --open    show the session in the workbench: the desktop app when one is attached, else the browser
+                (with no prompt it does not attach)
 
 ${RUN_USAGE.split("\n").slice(4).join("\n")}`;
 
-const resumeCmd = command("resume", RESUME_USAGE, { ...RUN_OPTIONS, last: { type: "boolean" }, thoughts: { type: "boolean" } }, async (v, pos, c, found) => {
+const resumeCmd = command("resume", RESUME_USAGE, { ...RUN_OPTIONS, last: { type: "boolean" }, thoughts: { type: "boolean" }, open: { type: "boolean" } }, async (v, pos, c, found) => {
   const args = [...pos];
   if (!v.last && !args.length) return usageError("resume", "name the session, or pass --last", RESUME_USAGE);
   const target = v.last ? undefined : args.shift();
-  const hasInput = args.length > 0 || !process.stdin.isTTY;
-  if (!hasInput) {
+  // (--open with no words opens: a pipe it was not given input on is not a prompt.)
+  const hasInput = args.length > 0 || (!v.open && !process.stdin.isTTY);
+  const named = async () => {
     if (!(await c.alive())) throw new ApiError(`no daemon answers at ${c.base}: attaching needs one (keel serve); with a prompt the run starts its own`, 0);
     let id = target;
     if (!id) {
@@ -740,9 +745,17 @@ const resumeCmd = command("resume", RESUME_USAGE, { ...RUN_OPTIONS, last: { type
       id = all.filter((x) => !x.parent_id && x.workspace === dir).sort((a, b) => b.updated - a.updated)[0]?.id;
       if (!id) throw new ApiError(`no session in ${dir}`, 404);
     }
-    return attachTo(c, (await c.resolve(id)).id, v);
+    return (await c.resolve(id)).id as string;
+  };
+  // --open: the workbench shows the session (the desktop app when one is attached, else the browser), and a prompt goes on as it would.
+  let id: string | undefined;
+  if (v.open) {
+    id = await named();
+    if (!(await openSession(c, id))) console.error(`keel resume: no browser could be started; open ${c.url(id)}`);
+    if (!hasInput) return EXIT.ok;
   }
-  return runPrompt({ ...v, session: target, continue: v.last && !target ? true : undefined }, args, c, found, "resume");
+  if (!hasInput) return attachTo(c, id ?? (await named()), v);
+  return runPrompt({ ...v, session: id ?? target, continue: v.last && !target && !id ? true : undefined }, args, c, found, "resume");
 });
 const resume = (argv: string[]) => resumeCmd(worktreeArg(argv));
 

@@ -3,7 +3,9 @@
 // 500 or a dropped answer only when something in it breaks).
 import { expect, spyOn, test } from "bun:test";
 import { ApiError, Client } from "./client.ts";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ownEnv, tempTree } from "../../test/env.ts";
 import { answerOf, sendFailure, sessionCommands } from "./sessions.ts";
 
 const SID = "0a1b2c3d-0000-7000-8000-000000000001";
@@ -140,3 +142,53 @@ test("attach reads a question again after a failed read, and does not answer one
     server.stop(true);
   }
 }, 30_000);
+
+// keel open and keel resume --open land in the desktop app when the daemon says one is attached, else in the browser.
+test("keel open and keel resume --open hand the session to an attached desktop app, else the browser", async () => {
+  const dir = tempTree("keel-open-");
+  // A recorder for each: it writes its words to a file named by its first word.
+  const recorder = (name: string) => {
+    const script = join(dir, `${name}.ts`);
+    writeFileSync(script, `Bun.write(${JSON.stringify(join(dir, name))}, JSON.stringify(Bun.argv.slice(2)));`);
+    return `${process.execPath} ${script}`;
+  };
+  ownEnv({ KEEL_BROWSER: recorder("browser"), KEEL_DESKTOP: recorder("desktop") });
+  const seen = (name: string) => (existsSync(join(dir, name)) ? JSON.parse(readFileSync(join(dir, name), "utf8")) : undefined);
+  const gone = (name: string) => { try { Bun.spawnSync(["rm", "-f", join(dir, name)]); } catch {} };
+  const wait = async (name: string) => { for (let i = 0; i < 200 && !seen(name); i++) await Bun.sleep(25); };
+  let attached = true;
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(req) {
+      const u = new URL(req.url);
+      if (u.pathname === "/api/health") return Response.json({ pid: 1 });
+      if (u.pathname === "/api/cli/resolve") return Response.json({ session: { id: SID, workspace: "/w" } });
+      if (u.pathname === "/api/shell") return Response.json({ attached, shells: [], running: [] });
+      return new Response("", { status: 404 });
+    },
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    expect(await sessionCommands.open(["--url", base, "--resume", SID])).toBe(0);
+    await wait("desktop");
+    expect(seen("desktop")).toEqual(["--url", base, `keel://session/${SID}`]);
+    expect(seen("browser")).toBeUndefined();
+    gone("desktop");
+    // The same for resume --open with no prompt: it opens, and does not attach.
+    expect(await sessionCommands.resume(["--url", base, "--open", SID])).toBe(0);
+    await wait("desktop");
+    expect(seen("desktop")).toEqual(["--url", base, `keel://session/${SID}`]);
+    expect(seen("browser")).toBeUndefined();
+    gone("desktop");
+    // No app attached: the browser.
+    attached = false;
+    expect(await sessionCommands.open(["--url", base, "--resume", SID])).toBe(0);
+    await wait("browser");
+    expect(seen("browser")).toEqual([`${base}/s/${SID}`]);
+    expect(seen("desktop")).toBeUndefined();
+  } finally {
+    log.mockRestore();
+    server.stop(true);
+  }
+});
