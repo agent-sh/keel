@@ -337,7 +337,10 @@ export function ownerAddresses(text: string): string[] {
 const RELATIVE = /\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|\bhref\s*=\s*["']([^"']+)["']/gi;
 // A long page a reader model read for the request: the answer is the reader's (src/tools/web.ts, fetchFor).
 const READER_ANSWER = /\n\n\[[^\n\]]+ read (?:part of )?the page \(\d+ chars\) for this request/;
-export const readerAnswered = (text: string) => READER_ANSWER.test(text);
+// A long file a reader model read for the session (src/tools/reading.ts): the result opens with these words, and
+// what follows is the reader's account of the file, not the file.
+export const READING_HEAD = "[Compiled reading of ";
+export const readerAnswered = (text: string) => text.trimStart().startsWith(READING_HEAD) || READER_ANSWER.test(text);
 
 // What a fetch call makes known: the addresses it fetched, where they ended
 // and where a redirect pointed, and the same-origin links of its pages.

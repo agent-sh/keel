@@ -23,6 +23,7 @@
 import { isAbsolute, relative } from "node:path";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/reader.ts";
+import { READING_HEAD } from "../safety/addresses.ts";
 import { FLOOR } from "./carry.ts";
 import { diffLines, splitLines } from "./diff.ts";
 import type { ToolContext } from "./types.ts";
@@ -346,7 +347,8 @@ export async function throughReader(p: string, ctx: ToolContext, page: Page, o: 
   if (!o2.text.trim() || unread.length) return failed(unread[0]?.error?.slice(0, 160) ?? "it gave no answer");
   const { text, quoted } = expandReading(o2.text, page, size.excerpt);
   const who = o2.models.join(" and ") || "a reader";
-  const head = `[Compiled reading of ${source}, lines ${page.first}-${page.last}${page.total ? ` of ${page.total}` : ""}, by ${who}: not the file's text. ` +
+  // (The opening words are what marks the result as a reader's: provenance reads them, src/safety/addresses.ts.)
+  const head = `${READING_HEAD}${source}, lines ${page.first}-${page.last}${page.total ? ` of ${page.total}` : ""}, by ${who}: not the file's text. ` +
     `Lines shown with their number (N<tab>text) are the file's own and can be edited as they are; to see or change any other lines, ${form.how}.]`;
   const content = `${head}\n${text}${page.more ? `\n\n${page.more}` : ""}`;
   // A reader answered: the next failure is said again.

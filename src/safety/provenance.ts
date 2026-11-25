@@ -768,7 +768,8 @@ export function plainFetcher(command: string): boolean {
 }
 
 // How the book reads a stored call: whether what it brings back is outside content, and how a card names it.
-// `listed`: a search's result. `linked`: the page's own text from a plain read (a reader's answer is `outside`).
+// `listed`: a search's result. `linked`: the page's own text from a plain read (a reader's answer is `outside`,
+// and so is a reader's compiled reading of a file that holds such a page: src/tools/reading.ts).
 export type SourceOf = (name: string, input: any) => { listed?: boolean; linked?: boolean; where: string } | undefined;
 
 // The servers Keel brings itself, whose results are not a third party's words. Every other MCP server is a source of

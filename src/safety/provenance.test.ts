@@ -326,6 +326,22 @@ test("a page's text and a search's are the web's; a reader's answer, an issue an
   expect(c("issue.example")).toBe("listed");
 });
 
+test("a reader's compiled reading of a saved page is the reader's words, not the page's: what it names is outside", async () => {
+  const spill = "/home/x/state/spill/s1/1795483351597-page-78c209c6.txt";
+  const b = new ProvenanceBook((name) => (name === "page" ? { linked: true, where: "a page result" } : undefined));
+  await b.take([
+    ev(1, "assistant", use("c1", "page", { url: "https://docs.example/guide" })),
+    ev(2, "tool_result", result("c1", `start of the page https://docs.example/a ... [full output saved to ${spill}]`)),
+    ev(3, "assistant", use("c2", "Read", { file_path: spill })),
+    ev(4, "tool_result", result("c2", `[Compiled reading of ${spill}, lines 1-900 of 900, by Small: a reader model's account of the file, not the file's text.]\nA docs page.\nThe full guide is at https://typed-by-reader.example/guide\n12\tsee https://in-the-reading.example/real`)),
+    ev(5, "assistant", use("c3", "Read", { file_path: spill, raw: true, offset: 300 })),
+    ev(6, "tool_result", result("c3", "300\tmore at https://in-the-page.example/next")),
+  ]);
+  const o = (h: string) => b.get(`host:${h}`);
+  expect([o("typed-by-reader.example")?.cls, o("in-the-reading.example")?.cls, o("in-the-page.example")?.cls]).toEqual(["outside", "outside", "listed"]);
+  expect(o("typed-by-reader.example")?.where).toBe("the saved output of page");
+});
+
 test("held: a plain read of a host a page linked or a search listed goes on; a read that carries data, and every send, is held", () => {
   const o = (cls: Origin["cls"]): Origin => ({ cls, where: "a page result", seq: 1, ts: 0 });
   const table: Record<string, Origin> = { "host:l.example": o("listed"), "host:o.example": o("outside") };

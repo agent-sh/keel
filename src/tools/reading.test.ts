@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { toolMarks } from "../core/build.ts";
 import { emptyUsage } from "../core/types.ts";
 import { chunkMaterial } from "../engine/reader.ts";
+import { readerAnswered } from "../safety/addresses.ts";
 import { claudeTools } from "./claude.ts";
 import { FLOOR } from "./carry.ts";
 import { geminiTools } from "./gemini.ts";
@@ -66,6 +67,9 @@ describe("which reads go to the reader", () => {
     const said = text(out);
     expect(said).toStartWith(`[Compiled reading of ${p.slice(dir.length + 1)}, lines 1-600 of 600, by Small: not the file's text.`);
     expect(said).toContain("Read it with raw: true");
+    // Provenance knows the result as a reader's words (a reading of a saved page stays outside content).
+    expect(readerAnswered(said)).toBe(true);
+    expect(readerAnswered(text(await Read.run({ file_path: p, raw: true }, ctx)))).toBe(false);
     expect(said).toContain(`120\t${line(120)}\n121\t${line(121)}\n122\t${line(122)}`);
     expect(said).not.toContain(line(300));
     expect(said.length).toBeLessThan(LONG.length / 10);
