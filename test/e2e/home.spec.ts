@@ -834,8 +834,9 @@ for (const scale of [1, 1.5]) {
 }
 
 // One count unit everywhere: sessions, as the lists show them. A session whose two agents each ask is one
-// session that needs the owner: the headline, the tab's title and the Inbox's count say one, and the things
-// that wait are said in the count's tooltip.
+// session that needs the owner: the headline, the tab's title and the Inbox's count say one, the things
+// that wait are said in the count's tooltip, and a failed session's page counts the other sessions that
+// wait, not their agents.
 test("home: every count of what needs you counts sessions, not their agents' requests", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const spawn = (title: string, command: string) => ({ name: "spawn_agent", input: { message: `${title}\nscript:calls ${JSON.stringify([bash(command)])}`, isolation: "none" } });
@@ -855,6 +856,10 @@ test("home: every count of what needs you counts sessions, not their agents' req
     expect(await ink("home-count-fail"), "a failure is in ink").toBe(await ink("home-count-need"));
     await expect(page.getByTestId("inbox-count")).toHaveText("1");
     await shoot(page, "home-12-counted-sessions");
+    // The failed session's page: one other session waits, however many of its agents ask.
+    await page.goto(`/s/${failed.id}`);
+    await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 other session waits");
+    await shoot(page, "home-13-elsewhere-sessions");
   } finally {
     await drop(request, [lead.id, failed.id]);
   }

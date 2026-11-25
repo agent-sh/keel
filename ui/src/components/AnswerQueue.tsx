@@ -359,9 +359,15 @@ export function useOthersWaiting(sessionId: string | null): number {
 
 // Above what a session asks: how many other sessions wait, and how to get to
 // them. In a sequence it says that the next one opens by itself. The session's
-// own agents are not elsewhere: what they ask is reached from this page.
+// own agents are not elsewhere: what they ask is reached from this page. It counts
+// sessions as the list shows them: the agents of one tree that wait are its one row.
 export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
-  const others = useQueue((s) => (s.order.includes(sessionId) ? s.order.filter((id) => id !== sessionId && !s.above[id]?.includes(sessionId)).length : 0));
+  const others = useQueue((s) => {
+    if (!s.order.includes(sessionId)) return 0;
+    const top = (id: string) => s.above[id]?.at(-1) ?? id;
+    const mine = top(sessionId);
+    return new Set(s.order.map(top).filter((t) => t !== mine)).size;
+  });
   const on = useQueue((s) => s.on && s.at === sessionId);
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
   const slot = useSyncExternalStore(slotSub, () => slots.get(sessionId) ?? null);
