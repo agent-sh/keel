@@ -440,14 +440,14 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
  className="k-import fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto max-md:inset-0 max-md:rounded-none max-md:border-0 flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 max-md:px-3 max-md:py-2 md:flex-nowrap">
-            <History className="size-4 text-muted" />
-            <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold max-md:flex-1">Import sessions</Dialog.Title>
+            <History className="size-4 text-muted max-md:hidden" />
+            <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold max-md:min-w-0 max-md:shrink max-md:flex-1 max-md:whitespace-normal">Import sessions</Dialog.Title>
             <Seg
               kind="tabs"
               // Each source is listed over the network and a change drops the pick: the arrows only move, Space or Enter chooses.
               manual
               panel={panel}
-              className="min-w-0 basis-full max-md:order-3 md:ml-2 md:basis-auto"
+              className="min-w-0 basis-full max-md:order-4 md:ml-2 md:basis-auto"
               wrap={narrow}
               label="Where to import from"
               value={harness}
@@ -463,23 +463,31 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               }))}
             />
             <input ref={pick} type="file" accept=".jsonl,application/x-ndjson,application/jsonl" hidden data-testid="import-keel-file-input" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importKeelFile(f); }} />
-            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 shrink-0 items-center max-md:order-4 max-md:ml-0 gap-1.5 whitespace-nowrap rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
+            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 shrink-0 items-center max-md:order-1 max-md:ml-0 gap-1.5 whitespace-nowrap rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
               <FileUp className="size-3.5" />
               <span className="max-md:sr-only">Import a Keel file</span>
             </button>
             {linked.length > 0 && (
-              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint max-md:order-5 max-md:ml-auto">
-                On
+              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint max-md:order-6 max-md:ml-auto">
+                <span className="max-md:sr-only">On</span>
                 <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="k-field-sm">
                   <option value="">all machines</option>
                   {linked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </Select>
               </label>
             )}
-            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg max-md:order-1">
+            {narrow && !from && (
+              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint max-md:order-5" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
+                Imported
+                <Switch.Root checked={copies} onCheckedChange={setCopies} className="k-switch" data-testid="import-copies">
+                  <Switch.Thumb className="k-switch-thumb" />
+                </Switch.Root>
+              </label>
+            )}
+            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg max-md:order-2">
               <RefreshCw className={cn("size-3.5", building && "animate-spin")} />
             </button>
-            <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg max-md:order-2" aria-label="Close"><X className="size-4" /></Dialog.Close>
+            <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg max-md:order-3" aria-label="Close"><X className="size-4" /></Dialog.Close>
           </div>
           {keelFile && (
             <div data-testid="import-keel-result" data-state={keelFile.state} className={cn("flex items-start gap-3 border-b border-line px-4 py-2.5 text-caption", keelFile.state === "failed" ? "bg-danger-soft text-danger" : "bg-sunken text-muted")}>
@@ -500,10 +508,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
           )}
           <div className="flex min-h-0 flex-1">
             <div className={cn("flex w-[26rem] shrink-0 flex-col border-r border-line", narrow && "w-full min-w-0 border-r-0", narrow && sel && "hidden")}>
-              <div className="flex items-center gap-2 border-b border-line px-3 py-2 max-md:flex-wrap">
+              <div className="flex items-center gap-2 border-b border-line px-3 py-2">
                 <Search className="size-4 shrink-0 text-faint" />
-                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={narrow ? "Search sessions" : "Title, folder, prompt or reply"} className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint max-md:basis-[calc(100%-2rem)]" />
-                {!from && (
+                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={narrow ? "Search sessions" : "Title, folder, prompt or reply"} className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
+                {!from && !narrow && (
                   <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
                     Imported
                     <Switch.Root checked={copies} onCheckedChange={setCopies} className="k-switch" data-testid="import-copies">
