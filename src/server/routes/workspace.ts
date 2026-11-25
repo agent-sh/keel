@@ -5,8 +5,9 @@ import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { heldFile } from "../../core/store-files.ts";
+import { credentialAt, linkedCredential, realPlaces } from "../../safety/credentials.ts";
 import { git } from "../../core/git.ts";
-import { contains, homeDir } from "../../core/paths.ts";
+import { contains, defaultConfigDir, homeDir } from "../../core/paths.ts";
 import { rankFolders } from "../../core/folder-match.ts";
 import { findRoots, folderIndex } from "../folder-index.ts";
 import { countLines, HTML_MAX, imageFacts, shapeOf, tarEntries, textRange, zipEntries } from "../file-preview.ts";
@@ -82,6 +83,15 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     try { real = realpathSync(p); } catch { return null; }
     return readable(real) ? real : null;
   };
+  // The daemon's own secrets (its token, its placeholder key, its sign-ins), the owner's credential stores
+  // under the home (~/.ssh and the like) and a hard link to any of them are never shown or streamed, by
+  // what they are and not by the name they were asked for. (Not the rule of file names: a project's own
+  // `.env` is the owner's to open in their panel.)
+  const credentialHeld = (real: string): string | undefined => {
+    const at = realPlaces(HOME, { state: store.stateDir, config: defaultConfigDir() });
+    const c = credentialAt(real, { ...at, names: false }) ?? linkedCredential(real, at);
+    return c ? `${c.what}: it is not shown here` : undefined;
+  };
   // A file named by `root` and `path` of a request: inside the folder, a file, not held back.
   const fileIn = (u: URL): { root: string; real: string; size: number } | Response => {
     const root = allowed(u.searchParams.get("root"));
@@ -91,7 +101,7 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     if (!contains(root, real)) return bad("outside the folder", 403);
     const st = statSync(real);
     if (!st.isFile()) return bad("not a file", 400);
-    const held = heldFile(real);
+    const held = heldFile(real) ?? credentialHeld(real);
     if (held) return bad(held, 403);
     return { root, real, size: st.size };
   };
@@ -182,7 +192,8 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
           return json({ ...base, binary: true, archive: l });
         }
         if (shape.kind === "binary") return json({ ...base, binary: true });
-        const offset = Math.max(0, Math.floor(Number(u.searchParams.get("offset") ?? 0)) || 0);
+        const asked = Number(u.searchParams.get("offset") ?? 0);
+        const offset = Number.isFinite(asked) ? Math.max(0, Math.floor(asked)) : 0;
         const r = await textRange(f, size, offset);
         const more = r.to < size;
         const rows = (shape.kind === "csv" || shape.kind === "tsv") && offset === 0 ? await countLines(f, size) : null;
@@ -203,7 +214,12 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
         if (shape.kind === "image") h["content-type"] = shape.mime!;
         else if (shape.kind === "html" && file.size <= HTML_MAX && u.searchParams.get("as") !== "text") {
           h["content-type"] = "text/html; charset=utf-8";
-          h["content-security-policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; sandbox";
+          // No script (the sandbox has no allow-scripts) and no network (default-src 'none'); base-uri
+          // and form-action close what is left in the page itself. navigate-to is not yet in every
+          // engine and is ignored where it is not. A <meta http-equiv="refresh"> cannot be blocked by
+          // any policy: a link or a refresh in the page can still send the frame to another address,
+          // but the frame has no script, no cookies (opaque origin) and nothing of the daemon to read.
+          h["content-security-policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; navigate-to 'none'; sandbox";
         } else if (shape.kind === "archive" || shape.kind === "binary") {
           h["content-type"] = "application/octet-stream";
           h["content-disposition"] = `attachment; filename="${basename(file.real).replace(/["\\\r\n]/g, "_")}"`;
