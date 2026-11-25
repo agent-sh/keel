@@ -37,7 +37,7 @@ const wait = (path: string) => waits.create(s.id, waits.normalize({ kind: "log",
 const status = (id: string) => waits.get(id)!.status;
 // The wakes of a wait stored in the session's transcript.
 const wakes = (id: string) => store.events(s.id).filter((e) => e.kind === "user" && String(e.data.text).includes(`<wait_fired id="${id}"`)).map((e) => String(e.data.text));
-const until = async (ok: () => boolean) => { for (let i = 0; i < 150 && !ok(); i++) await Bun.sleep(20); };
+const until = async (ok: () => boolean, ms = 3000) => { for (let i = 0; i < ms / 20 && !ok(); i++) await Bun.sleep(20); };
 // A new daemon: what was only in memory is gone, and it recovers from the store.
 const restart = () => { busy.clear(); dropPending(s.id); waits.recover(); flush(s.id); };
 
@@ -761,14 +761,17 @@ test("a log wait on a file a job writes inside itself ends at the job's end, wit
   const { startJob, waitJob } = await import("../tools/jobs.ts");
   const out = join(dir, "inside.log");
   const script = join(dir, "inside.sh");
-  writeFileSync(script, `exec 3>>"${out}"\necho started >&3\nsleep 0.6\necho finished >&3\n`);
+  const go = join(dir, "inside.go");
+  // The job holds the file open until the test says go: no time decides whether it still runs when the wait is made.
+  writeFileSync(script, `exec 3>>"${out}"\necho started >&3\nwhile [ ! -e "${go}" ]; do sleep 0.02; done\necho finished >&3\n`);
   const job = startJob({ sessionId: s.id, command: `bash ${script}`, cwd: dir, logDir: join(dir, "jobs") });
-  await until(() => existsSync(out) && readFileSync(out, "utf8").includes("started"));
+  await until(() => existsSync(out) && readFileSync(out, "utf8").includes("started"), 60_000);
   const w = waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 });
   expect(waits.carries(w)).toContain(`job ${job.id} that writes it`);
-  await waitJob(job, 5000);
-  await Bun.sleep(2100);
-  await waits.tick();
+  writeFileSync(go, "");
+  await waitJob(job, 60_000);
+  // The wait ends once the writer has been gone for its grace: tick until it says so.
+  for (let i = 0; i < 600 && status(w.id) !== "ended"; i++) { await waits.tick(); await Bun.sleep(50); }
   expect(status(w.id)).toBe("ended");
   expect(wakes(w.id)[0]).toContain(`The job that writes ${out} ended and no line of it matched ^DONE$.`);
 });
