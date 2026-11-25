@@ -31,6 +31,7 @@ import { cutTitle } from "../engine/title.ts";
 import { homeOf } from "../safety/credentials.ts";
 import { shellText } from "../safety/policy.ts";
 import { globMatch, splitCommand } from "../safety/shell.ts";
+import { spell, spellPattern } from "../safety/spellings.ts";
 import { timed } from "../admin/stall.ts";
 import { headHold } from "../safety/head-trust.ts";
 import { enabledUnits, type Unit } from "../plugins/registry.ts";
@@ -434,8 +435,11 @@ export function matches(matcher: string | undefined, values: string[] | undefine
 // A hook's `if`: one permission rule, `Tool` or `Tool(pattern)`, where * in the
 // pattern stands for any text. A shell tool's pattern is tried on each command
 // of the line (leading VAR=value words aside), another tool's on the file it
-// names. What cannot be read runs the hook: the hook decides.
-export function ifHolds(rule: string, names: string[] | undefined, input: any, cwd: string): boolean {
+// names. What cannot be read runs the hook: the hook decides. The rule is a
+// block or an ask (a hook that stops a call, a skill's disallowed-tools), so a
+// path in it also holds for the path's other spellings (src/safety/spellings.ts):
+// `~/x`, `$HOME/x`, `./x`, `a/../x`, a doubled slash, a link to the folder.
+export function ifHolds(rule: string, names: string[] | undefined, input: any, cwd: string, home = homeDir()): boolean {
   const m = /^([\w.-]+)(?:\((.*)\))?$/s.exec(rule.trim());
   if (!m || !names) return true;
   if (!names.includes(m[1]!)) return false;
@@ -447,12 +451,15 @@ export function ifHolds(rule: string, names: string[] | undefined, input: any, c
   if (command !== null) {
     const parts = splitCommand(command);
     if (!parts) return true;
-    return parts.some((p) => glob.test(p.text.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")) || glob.test(p.words.join(" ")));
+    if (parts.some((p) => glob.test(p.text.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "")) || glob.test(p.words.join(" ")))) return true;
+    const same = { test: (x: string) => globMatch(spellPattern(rulePattern, cwd, home), x) };
+    return parts.some((p) => p.words.length > 0 && same.test(spell(p.words, cwd, home)));
   }
   const path = input?.file_path ?? input?.path ?? input?.notebook_path;
   if (typeof path !== "string") return true;
   const full = resolve(cwd, path);
-  return [path, full, relative(cwd, full), basename(full)].some((x) => glob.test(x));
+  if ([path, full, relative(cwd, full), basename(full)].some((x) => glob.test(x))) return true;
+  return globMatch(spellPattern(rulePattern, cwd, home), realOf(full));
 }
 
 // `limit_s`: set when the hook ran into its time limit (that many seconds).
