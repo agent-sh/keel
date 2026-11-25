@@ -811,8 +811,11 @@ test.skipIf(!sandboxStatus().scope)("a job's scope ends by itself after the long
     j = startJob({ sessionId: "s-life", command: "sleep 30", cwd: root, logDir: join(root, "spill/s-life/jobs"), background: true });
     expect(j.contain).toBe("cgroup");
     const unit = j.cgroup!.split("/").pop()!;
-    const shown = Bun.spawnSync(["systemctl", "--user", "show", unit, "-p", "RuntimeMaxUSec", "--value"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
-    expect(shown).toBe("10min 54s");
+    // startJob returns while systemd-run still sets the scope up: a unit the manager has not loaded yet shows the
+    // default (infinity), so read the limit once the scope is active.
+    const show = (p: string) => Bun.spawnSync(["systemctl", "--user", "show", unit, "-p", p, "--value"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
+    for (let i = 0; i < 200 && show("ActiveState") !== "active"; i++) await Bun.sleep(25);
+    expect(show("RuntimeMaxUSec")).toBe("10min 54s");
   } finally {
     if (keep === undefined) delete process.env.KEEL_JOB_MAX_SEC; else process.env.KEEL_JOB_MAX_SEC = keep;
     if (j && running(j)) await stopJob(j);
