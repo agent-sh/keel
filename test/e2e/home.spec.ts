@@ -77,6 +77,15 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
     await expect(row(page, failed.id).getByTestId("home-kind")).toHaveText("Failed: billing");
     await expect(row(page, failed.id)).toContainText("credit balance");
     await expect(row(page, failed.id).getByTestId("home-see")).toHaveText("Open");
+    // A row is one line in the wide list, as the work board's is: the title, why, and the action at its end.
+    const line = await row(page, failed.id).evaluate((el) => {
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      const mid = (sel: string) => { const r = el.querySelector(sel)!.getBoundingClientRect(); return r.top + r.height / 2; };
+      return { height: el.getBoundingClientRect().height / rem, title: mid(".k-home-row-title"), kind: mid('[data-testid="home-kind"]'), act: mid('[data-testid="home-see"]') };
+    });
+    expect(line.height).toBeLessThan(3.5);
+    expect(Math.abs(line.title - line.kind)).toBeLessThan(8);
+    expect(Math.abs(line.title - line.act)).toBeLessThan(8);
     // One action leads the screen.
     await expect(page.locator(".k-home-act-lead")).toHaveCount(1);
     // A finished session is not there; a working one is listed under what needs the owner, with its step.
