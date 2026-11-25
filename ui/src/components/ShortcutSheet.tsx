@@ -34,6 +34,8 @@ const fixed = (enterSends: boolean): [string, string, string, string?][] => [
   ["Message box", "Conversation down a page, from an empty box", "pagedown"],
   // Before the reply starts or after the turn ends (lib/edit-last.ts); Enter sends it as a new version.
   ["Message box", "Edit the last prompt, from an empty box", "arrowup"],
+  // Twice in a row, with no turn running (components/Composer.tsx); the same as /rewind.
+  ["Message box", "Rewind to before a prompt, Escape twice in an empty box", "escape"],
 ];
 
 export function ShortcutList() {

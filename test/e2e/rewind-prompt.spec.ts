@@ -59,8 +59,8 @@ test("chat and files go back together from a prompt, and one Undo brings both ba
 
 test("Undo takes back the chat and the files", async ({ page, request }) => {
   const { id, ws } = await twoTurns(request, page);
-  await page.getByTestId("user-message").nth(1).hover();
-  await page.getByRole("button", { name: "Rewind to before this prompt" }).nth(1).click();
+  await page.getByTestId("composer").fill("/rewind");
+  await page.getByTestId("composer").press("Enter");
   const dialog = page.getByTestId("rewind-dialog");
   await dialog.getByTestId("rewind-prompt").nth(1).click();
   await dialog.getByTestId("rewind-prompt-go").click();
@@ -77,6 +77,16 @@ test("Undo takes back the chat and the files", async ({ page, request }) => {
   // The box let go of the prompt the rewind had given it back.
   await expect(page.getByTestId("composer")).toHaveValue("");
   await shoot(page, "rewind-prompt-03-undone");
+  // /redo is the same Undo while nothing newer was sent: with the rewind undone there is nothing to redo.
+  await page.getByTestId("user-message").nth(1).hover();
+  await page.getByRole("button", { name: "Rewind to before this prompt" }).nth(1).click();
+  await page.getByTestId("rewind-prompt-go").click();
+  await expect(page.getByTestId("user-message")).toHaveCount(1);
+  expect(read(ws, "a.txt")).toBe("one\n");
+  await page.getByTestId("composer").fill("/redo");
+  await page.getByTestId("composer").press("Enter");
+  await expect(page.getByTestId("user-message")).toHaveCount(2);
+  expect(read(ws, "a.txt")).toBe("two\n");
 });
 
 test("chat only keeps the files and tells the next request; files only keeps the chat", async ({ page, request }) => {
@@ -154,4 +164,47 @@ test("an edit names what the abandoned branch left; it can put the files back to
   await page.getByTestId("edit-send").click();
   await endsAre(page, 3, 60_000, true);
   expect(notes(await branch(request, plain.id), "branch_files")).toHaveLength(0);
+});
+
+test("/rewind, /undo and Escape twice open the dialog; a box with words is left alone", async ({ page, request }) => {
+  const { id } = await twoTurns(request, page);
+  const box = page.getByTestId("composer");
+  const dialog = page.getByTestId("rewind-dialog");
+  await box.fill("/undo");
+  await box.press("Enter");
+  await expect(dialog.getByTestId("rewind-prompt")).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  // Escape twice in an empty box.
+  await expect(box).toHaveValue("");
+  await expect(box).toBeFocused();
+  await box.press("Escape");
+  await expect(dialog).toBeHidden();
+  await box.press("Escape");
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  // With words in the box nothing is cleared and nothing opens.
+  await box.fill("keep these words");
+  await box.press("Escape");
+  await box.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(box).toHaveValue("keep these words");
+  await box.fill("");
+
+  // A session whose turns changed no file: the rewind offers the chat only.
+  const plain = await twoTurns(request, page, { files: false });
+  await page.getByTestId("composer").fill("/rewind");
+  await page.getByTestId("composer").press("Enter");
+  await expect(dialog.getByTestId("rewind-prompt-files")).toHaveText(["no files", "no files"]);
+  await expect(dialog.getByRole("radio")).toHaveCount(2 + 1);
+  await expect(dialog.getByRole("radio", { name: "Chat only" })).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: "Chat and files" })).toHaveCount(0);
+  await shoot(page, "rewind-prompt-06-no-files");
+  await dialog.getByTestId("rewind-prompt-go").click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByTestId("user-message")).toHaveCount(1);
+  expect(id).not.toBe(plain.id);
 });

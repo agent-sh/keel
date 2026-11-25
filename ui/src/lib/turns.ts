@@ -3,6 +3,8 @@
 import { createElement } from "react";
 import { GitBranch, GitFork, Split, Undo2 } from "lucide-react";
 import { shownAsPrompt } from "../../../src/core/owner.ts";
+import { lastRewind } from "./rewind.ts";
+import { sessionLine, undoRewindOrReport } from "./rewind-act.ts";
 import { rowActions, slash } from "./extend.ts";
 import { chooseFallback, setFallback } from "../components/Fallback.tsx";
 import { fuzzy, registerCommand } from "./keys.ts";
@@ -18,10 +20,18 @@ const current = () => {
 const fork = (id: string, eventId: string, opts: { before?: boolean; title?: string; worktree?: boolean } = {}) => actions.fork(id, eventId, opts).then((s) => openPlaced(s.id, id));
 const efforts = (model: string) => getState().models.find((m) => m.id === model)?.efforts ?? [];
 
-// The chat, the files or both go back to before a prompt (components/RewindDialog.tsx).
+// The chat, the files or both go back to before a prompt (components/RewindDialog.tsx); /redo takes the last rewind back.
 const rewind = (id: string, eventId?: string) => void import("../components/RewindDialog.tsx").then((m) => m.openRewind({ sessionId: id, eventId }));
+const redo = (id: string) => {
+  const note = lastRewind(sessionLine(id));
+  if (!note) throw Object.assign(new Error("Nothing to redo: no rewind to take back, or a message was sent after it."), { usage: true });
+  return undoRewindOrReport(id, note.id);
+};
 
 slash.add(
+  { id: "rewind", label: "Rewind the chat, the files or both to before a prompt", when: ({ session }) => !!session?.head, run: (_a, { session }) => rewind(session!.id) },
+  { id: "undo", label: "Rewind to before a prompt (the same as /rewind)", when: ({ session }) => !!session?.head, run: (_a, { session }) => rewind(session!.id) },
+  { id: "redo", label: "Take back the last rewind, until a new message is sent", when: ({ session }) => !!session && !!lastRewind(sessionLine(session.id)), run: (_a, { session }) => redo(session!.id) },
   {
     id: "compact",
     label: "Summarize the history to free context",
@@ -73,6 +83,7 @@ slash.add(
 );
 
 registerCommand(
+  { id: "rewind", label: "Rewind the chat and files to before a prompt", group: "Session", words: "undo revert back restore checkpoint", when: () => !!current()?.head, run: () => rewind(current()!.id) },
   { id: "compact", label: "Compact the context", group: "Session", words: "summarize summary free tokens", when: () => !!current(), run: () => actions.compact(current()!.id).catch(reportError) },
   { id: "clear-context", label: "Clear the context, keep the session", group: "Session", words: "fresh reset", when: () => !!current(), run: () => actions.clear(current()!.id).catch(reportError) },
   { id: "fork", label: "Fork this session", group: "Session", words: "branch copy", when: () => !!current()?.head, run: () => fork(current()!.id, current()!.head!).catch(reportError) },

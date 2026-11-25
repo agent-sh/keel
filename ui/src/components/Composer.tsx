@@ -38,6 +38,8 @@ import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
 
+// The two presses of Escape that open the rewind come within this time.
+const ESC_TWICE_MS = 700;
 
 // The box's tools draw again only when what they show changes, not with every render of the box (a
 // turn that starts or ends, a key): a field drawn again is written again (React sets its name and
@@ -223,6 +225,7 @@ const SessionComposer = memo(function SessionComposer({
     if (modeSignal !== lastMode.current && focus) { setTapped(true); setModeOpen((n) => n + 1); }
     lastMode.current = modeSignal;
   }, [modeSignal]);
+  const lastEsc = useRef(0);
   const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
   // The desktop app's words for the daemon away, where its title bar says them (Stale.tsx).
@@ -1178,6 +1181,13 @@ const SessionComposer = memo(function SessionComposer({
             e.preventDefault();
             queueButton.current.focus();
             if (!queueKeySaid) { queueKeySaid = true; setNotice(`${queueKeys} queues`); }
+          }
+          // Escape twice in an empty box, with no turn to stop, opens the rewind (Claude Code and Gemini CLI do
+          // the same). With words in the box nothing happens: they are kept, not cleared into a history.
+          if (e.key === "Escape" && sid && !working && !onEscape && !e.currentTarget.value && !draft.current.images.length && !e.repeat && getState().sessions[sid]?.head) {
+            const now = Date.now();
+            if (now - lastEsc.current < ESC_TWICE_MS) { lastEsc.current = 0; e.preventDefault(); e.stopPropagation(); void import("./RewindDialog.tsx").then((m) => m.openRewind({ sessionId: sid })); return; }
+            lastEsc.current = now;
           }
           // (Escape right after the pane was uncovered, a look or the start page left, stops nothing: lib/looks.ts.)
           if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.(); }
