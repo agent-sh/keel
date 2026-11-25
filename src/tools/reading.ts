@@ -25,7 +25,7 @@ import { addUsage, emptyUsage } from "../core/types.ts";
 import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/reader.ts";
 import { READING_HEAD } from "../safety/addresses.ts";
 import { FLOOR } from "./carry.ts";
-import { diffLines, splitLines } from "./diff.ts";
+import { diffLines, splitLines, type Op } from "./diff.ts";
 import type { ToolContext } from "./types.ts";
 
 export type Span = { from: number; to: number };
@@ -65,19 +65,37 @@ export function merge(spans: Span[]): Span[] {
 }
 const has = (known: Span[], line: number) => known.some((s) => line >= s.from && line <= s.to);
 
+// What an edit changes is read between the first and the last line that differ. A line diff of that middle
+// (Myers, src/tools/diff.ts) keeps a row of 2(N+M) numbers for each of up to N+M steps, so its memory and
+// time grow with the square of the middle's lines: 32 MB at most for DIFF_LINES lines, both sides counted,
+// and sixteen times that for four times the lines. A longer middle is not diffed: all of it counts as changed.
+export const DIFF_LINES = 2_000;
+type Middle = { pre: number; a: string[]; b: string[]; suf: number; ops?: Op[] };
+function middle(before: string, after: string): Middle {
+  const A = splitLines(before), B = splitLines(after);
+  let pre = 0;
+  while (pre < A.length && pre < B.length && A[pre] === B[pre]) pre++;
+  let suf = 0;
+  while (suf < A.length - pre && suf < B.length - pre && A[A.length - 1 - suf] === B[B.length - 1 - suf]) suf++;
+  const a = A.slice(pre, A.length - suf), b = B.slice(pre, B.length - suf);
+  return { pre, a, b, suf, ops: a.length + b.length <= DIFF_LINES ? diffLines(a, b) : undefined };
+}
+
 // The lines of `before` an edit changes, as runs: the lines it removes or
 // replaces, and for lines it only adds, the two lines it adds them between
 // (`insert`: knowing either is knowing where they go).
 export type Touch = Span & { insert?: boolean };
 export function touched(before: string, after: string): Touch[] {
+  const m = middle(before, after);
+  if (!m.ops) return m.a.length ? [{ from: m.pre + 1, to: m.pre + m.a.length }] : m.b.length ? [{ from: m.pre, to: m.pre + 1, insert: true }] : [];
   const out: Touch[] = [];
-  let line = 0; // lines of `before` passed
+  let line = m.pre; // lines of `before` passed
   let run: { at: number; removed: number } | undefined;
   const flush = () => {
     if (run) out.push(run.removed ? { from: run.at + 1, to: run.at + run.removed } : { from: run.at, to: run.at + 1, insert: true });
     run = undefined;
   };
-  for (const op of diffLines(splitLines(before), splitLines(after))) {
+  for (const op of m.ops) {
     if (op.t === " ") { flush(); line++; continue; }
     run ??= { at: line, removed: 0 };
     if (op.t === "-") { line++; run.removed++; }
@@ -101,15 +119,27 @@ export function missing(known: Span[], touches: Touch[], total: number): Span[] 
 }
 
 // The known lines after an edit, in the new text's numbers: a kept line stays
-// known under its new number, and the lines the edit wrote are known.
+// known under its new number, and the lines the edit wrote are known. A middle
+// too long to diff is known in the new text only when all of it was known in
+// the old one: nothing the session did not have becomes known.
 export function rebase(known: Span[], before: string, after: string): Span[] {
+  const m = middle(before, after);
   const out: Span[] = [];
-  let old = 0, now = 0;
-  for (const op of diffLines(splitLines(before), splitLines(after))) {
-    if (op.t === "-") { old++; continue; }
-    now++;
-    if (op.t === "+" || has(known, ++old)) out.push({ from: now, to: now });
+  for (let i = 1; i <= m.pre; i++) if (has(known, i)) out.push({ from: i, to: i });
+  let old = m.pre, now = m.pre;
+  if (m.ops) {
+    for (const op of m.ops) {
+      if (op.t === "-") { old++; continue; }
+      now++;
+      if (op.t === "+" || has(known, ++old)) out.push({ from: now, to: now });
+    }
+  } else {
+    let all = true;
+    for (let i = 1; i <= m.a.length && all; i++) all = has(known, old + i);
+    if (all && m.b.length) out.push({ from: now + 1, to: now + m.b.length });
+    old += m.a.length; now += m.b.length;
   }
+  for (let i = 1; i <= m.suf; i++) if (has(known, old + i)) out.push({ from: now + i, to: now + i });
   return merge(out);
 }
 

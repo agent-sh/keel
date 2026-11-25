@@ -15,7 +15,7 @@ import { FLOOR } from "./carry.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { stopJob, jobsOf } from "./jobs.ts";
-import { expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, touched } from "./reading.ts";
+import { DIFF_LINES, expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, touched } from "./reading.ts";
 import type { Tool, ToolContext } from "./types.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "reading-"));
@@ -341,6 +341,46 @@ describe("an edit after a reading", () => {
     expect(rebase([{ from: 2, to: 3 }], before, "a\nb\nx\ny\nc\nd\ne\n")).toEqual([{ from: 2, to: 5 }]);
     expect(rebase([{ from: 4, to: 5 }], before, "b\nc\nd\ne\n")).toEqual([{ from: 3, to: 4 }]);
     expect(merge([{ from: 5, to: 6 }, { from: 1, to: 2 }, { from: 3, to: 3 }, { from: 9, to: 8 }])).toEqual([{ from: 1, to: 3 }, { from: 5, to: 6 }]);
+  });
+});
+
+describe("what the guard's diff costs", () => {
+  test("a change of thousands of lines is read from its first and last changed line, with no diff between", async () => {
+    const row = (i: number, f = "compute") => `const row${i} = ${f}(${i});`;
+    const before = Array.from({ length: 8_000 }, (_, i) => row(i + 1)).join("\n") + "\n";
+    const after = before.replaceAll("compute(", "calc(");
+    const sparse = before.split("\n").map((l, i) => (i >= 99 && i < 7_900 && i % 10 === 9 ? l.replace("compute(", "calc(") : l)).join("\n");
+    Bun.gc(true);
+    const rss = process.memoryUsage().rss, t0 = performance.now();
+    expect(touched(before, after)).toEqual([{ from: 1, to: 8_000 }]);
+    // Between the first and the last changed line every line counts as changed.
+    expect(touched(before, sparse)).toEqual([{ from: 100, to: 7_900 }]);
+    expect(touched(before, before.replace(`${row(4_000)}\n`, `${row(4_000)}\n${"// added\n".repeat(DIFF_LINES + 1)}`))).toEqual([{ from: 4_000, to: 4_001, insert: true }]);
+    // The lines outside the middle keep what was known of them, under their new numbers; the middle is
+    // known after the edit only when all of it was known before.
+    const shorter = before.split("\n").filter((_, i) => i < 99 || i >= 7_900 || i % 2 === 0).join("\n");
+    expect(rebase([{ from: 50, to: 120 }, { from: 7_950, to: 7_960 }], before, shorter)).toEqual([{ from: 50, to: 99 }, { from: 7_950 - 3_901, to: 7_960 - 3_901 }]);
+    expect(rebase([{ from: 1, to: 8_000 }], before, after)).toEqual([{ from: 1, to: 8_000 }]);
+    expect(performance.now() - t0).toBeLessThan(1_000);
+    expect(process.memoryUsage().rss - rss).toBeLessThan(200e6);
+    // A short middle is still diffed line by line.
+    const small = before.split("\n").map((l, i) => (i === 99 || i === 199 ? l.replace("compute(", "calc(") : l)).join("\n");
+    expect(touched(before, small)).toEqual([{ from: 100, to: 100 }, { from: 200, to: 200 }]);
+    expect(rebase([{ from: 150, to: 160 }], before, small)).toEqual([{ from: 100, to: 100 }, { from: 150, to: 160 }, { from: 200, to: 200 }]);
+  });
+
+  test("an edit over all of a long file read through a reader is refused and applied without holding the loop", async () => {
+    const { ctx } = rig();
+    const p = file(Array.from({ length: 8_000 }, (_, i) => line(i + 1)).join("\n") + "\n");
+    await Read.run({ file_path: p, limit: 3_000 }, ctx);
+    const every = { file_path: p, old_string: "the value of line", new_string: "line", replace_all: true };
+    const t0 = performance.now();
+    expect(text(await Edit.run(every, ctx))).toContain("lines 1-119, 123-8000 that this edit changes are not among the lines it showed");
+    expect((await Edit.run(every, ctx)).is_error).toBeFalsy();
+    expect(performance.now() - t0).toBeLessThan(1_500);
+    expect(readFileSync(p, "utf8")).toContain("const v8000 = 8000; // line 8000\n");
+    // What it wrote over lines it did not have is not known to it line by line.
+    expect(knownOf(ctx, p)!.lines).toEqual([]);
   });
 });
 
