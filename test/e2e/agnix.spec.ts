@@ -38,6 +38,9 @@ test("agnix: a folder's config error is a line in Health and in its instructions
     expect(notes).toHaveLength(1);
     expect(notes[0].data.text).toContain("CC-MEM-001");
     expect(notes[0].data.model).toBe(true);
+    // The findings quote the folder's files: user text, fenced, never the system role.
+    expect(notes[0].data.system).toBeUndefined();
+    expect(notes[0].data.text).toContain("<agnix-output>");
     expect((await lint()).at).toBe(at);
     await expect(page.getByTestId("note").filter({ hasText: "agnix found an error" })).toHaveCount(1);
     await shoot(page, "agnix-01-told");

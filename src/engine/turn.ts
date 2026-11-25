@@ -2254,7 +2254,7 @@ export class Engine {
       try {
         const n = h.turnNote?.(session, events);
         if (!n) continue;
-        this.append(session.id, "note", { ...n.data, kind: n.kind, model: true, system: true, text: n.text });
+        this.append(session.id, "note", { ...n.data, kind: n.kind, model: true, ...(n.system === false ? {} : { system: true }), text: n.text });
         told = true;
       } catch (e) {
         this.errors.capture("server", e, { hook: "turnNote", session: session.id });

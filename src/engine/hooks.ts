@@ -183,8 +183,9 @@ export type TurnHooks = {
   instructionsRendered?: (s: Session) => void;
   // The first request of a turn: a note of the harness for the model, stored at the tail so later
   // requests carry the same bytes, and shown as a line told to the model (`data.short`). `kind` names the note;
-  // `data` is kept with it (what the hook reads to tell a thing once).
-  turnNote?: (s: Session, line: readonly StoredEvent[]) => { kind: string; text: string; data?: Record<string, unknown> } | undefined;
+  // `data` is kept with it (what the hook reads to tell a thing once). `system: false`: a note that quotes
+  // what is not the harness's own words (a program's output) goes as user text, not in the system role.
+  turnNote?: (s: Session, line: readonly StoredEvent[]) => { kind: string; text: string; system?: boolean; data?: Record<string, unknown> } | undefined;
   // The first request of a turn: a note for the model about the files that turns off its branch left on
   // disk (src/safety/branch-note.ts). Asked once a turn; the engine stores the note, `turns` are the ones it tells.
   branchNote?: (s: Session, line: readonly StoredEvent[]) => Promise<{ short: string; text: string; turns: number[] } | undefined>;

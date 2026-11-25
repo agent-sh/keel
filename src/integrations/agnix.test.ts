@@ -2,10 +2,10 @@
 // that the same files run nothing again, that a changed file runs again, a program that hangs, and
 // a machine without agnix.
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempTree } from "../../test/env.ts";
-import { Agnix, configsOf, findingLine, parseLint } from "./agnix.ts";
+import { Agnix, configsOf, errorsKey, findingLine, keyOf, parseLint } from "./agnix.ts";
 
 const OUT = {
   version: "0.61.0", files_checked: 2,
@@ -92,4 +92,22 @@ test("without agnix: not installed, and a check runs nothing", async () => {
   expect(a.installed()).toBe(false);
   expect(await a.check(dir)).toBeNull();
   expect(a.runs).toBe(0);
+});
+
+test("a key's walk ends on a link to a folder above it, and counts folders against its bound", async () => {
+  const dir = tempTree("agnix-loop-");
+  const folder = join(dir, "repo");
+  mkdirSync(join(folder, ".claude", "skills", "x"), { recursive: true });
+  writeFileSync(join(folder, ".claude", "skills", "x", "SKILL.md"), "---\nname: x\n---\n");
+  symlinkSync("../..", join(folder, ".claude", "skills", "x", "up"));
+  const k = await keyOf(folder, [".claude/skills"], "/bin/true");
+  expect(k).toMatch(/^[0-9a-f]{64}$/);
+  expect(await keyOf(folder, [".claude/skills"], "/bin/true")).toBe(k);
+});
+
+test("a session is told the same errors once: a moved line or a warning changes nothing", () => {
+  const e = { level: "error" as const, rule: "CC-MEM-001", file: "CLAUDE.md", line: 3, message: "Import target not found" };
+  const w = { level: "warning" as const, rule: "W", file: "AGENTS.md", line: 1, message: "w" };
+  expect(errorsKey({ findings: [e, w] })).toBe(errorsKey({ findings: [{ ...e, line: 9 }] }));
+  expect(errorsKey({ findings: [e] })).not.toBe(errorsKey({ findings: [{ ...e, message: "other" }] }));
 });
