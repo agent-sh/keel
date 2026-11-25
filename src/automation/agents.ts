@@ -15,6 +15,7 @@ import { awaited, beingStopped, listens, sampleServing, unfinished } from "../to
 import { ownerPrompt } from "../core/owner.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
+import { plain } from "./plain.ts";
 import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, movePending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, whenPartsGo, withdraw } from "./core.ts";
 import { Line, limitWords } from "./slots.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -1663,7 +1664,7 @@ const collectResult = (a: AgentRecord, end?: string) => collect(a, end).text;
 export function reportBlock(a: AgentFull): string {
   const by = a.status === "stopped" && a.stopped_by ? ` stopped_by="${a.stopped_by}"` : "";
   const end = a.status === "incomplete" && a.end_reason ? ` ended="${a.end_reason}"` : "";
-  return `<subagent_result agent_id="${a.id}" title="${attr(a.title)}" status="${a.status}"${by}${end}>\n${inert(a.result ?? "", "subagent_result")}\n</subagent_result>`;
+  return `<subagent_result agent_id="${a.id}" title="${attr(a.title)}" status="${a.status}"${by}${end}>\n${plain(a.result ?? "")}\n</subagent_result>`;
 }
 
 // What its parent sent an ended agent that it never read, said with its report
