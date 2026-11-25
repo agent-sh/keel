@@ -82,18 +82,19 @@ test("a provider that cannot be reached is one row for every session it holds, a
   // A short wait held everything and failed nothing: no alert, for the incident or any session.
   expect(await outageAlerts(request, held.id)).toEqual([]);
 
-  // It answers: the work goes on by itself, and the row says it cleared, then goes.
-  await expect(band).toHaveAttribute("data-cleared", "", { timeout: 60_000 });
-  await expect(page.getByTestId("incident-title")).toContainText(/cannot be reached: cleared at \d\d:\d\d/);
+  // It answers: the work goes on by itself, and the band goes at once: a cleared incident is a row of the Errors
+  // panel, not a band over every page.
+  await expect(band).toHaveCount(0, { timeout: 60_000 });
   const after = await incidents(request);
   expect(after.open.filter((i) => i.key === "provider:scripted")).toEqual([]);
   const done = after.cleared.find((i) => i.id === held.id);
   expect(done.cleared_how).toMatch(/^it answers again, after/);
   expect(done.touched.map((t: any) => t.state)).toEqual(["went_on", "went_on", "went_on"]);
   for (const id of ids) await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "turn_end").map((e: any) => e.data.reason), { timeout: 30_000 }).toEqual(["end_turn"]);
+  await page.getByRole("button", { name: /Errors/ }).first().click();
+  await expect(page.locator(`[data-testid="errors-incident"][data-key="provider:scripted"][data-cleared]`).first()).toBeVisible();
   await shoot(page, "incidents-02-cleared");
-  await page.getByTestId("incident-dismiss").click();
-  await expect(band).toHaveCount(0);
+  await page.keyboard.press("Escape");
 });
 
 test("a credential refused in two sessions is one incident and one alert, and a turn that goes through clears it", async ({ page, request }) => {
@@ -132,7 +133,7 @@ test("a credential refused in two sessions is one incident and one alert, and a 
   // A turn on the provider goes through: it clears by itself, and its alert is read.
   const c = await open(request, "Credential: back");
   await say(request, c, "Hello again.");
-  await expect(band).toHaveAttribute("data-cleared", "", { timeout: 30_000 });
+  await expect(band).toHaveCount(0, { timeout: 30_000 });
   expect((await incidents(request)).cleared.find((i) => i.id === inc.id)?.cleared_how).toBe("a turn on it went through");
   await expect.poll(async () => (await outageAlerts(request, inc.id)).map((x) => x.read)).toEqual([true]);
 });

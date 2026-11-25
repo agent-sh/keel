@@ -2,19 +2,15 @@
 // cause the daemon counts as an incident (src/automation/incident-book.ts),
 // with what it touched and what Keel does about it, and a way to the details:
 // every session and agent it touched, what the owner can do, the last words
-// of the failure. It is gone when the incident clears; for a minute after,
-// the row says it cleared, so a look at the page tells it is over.
+// of the failure. It is gone when the incident clears: a cleared one is a row
+// of the Errors panel's Incidents list, not a band over every page.
 import { Popover } from "@base-ui/react/popover";
-import { CircleCheck, ExternalLink, Gauge, HardDrive, KeyRound, RotateCw, ShieldAlert, Unplug, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CircleCheck, ExternalLink, Gauge, HardDrive, KeyRound, RotateCw, ShieldAlert, Unplug } from "lucide-react";
+import { useState } from "react";
 import { doingOf, radiusOf, titleOf, youOf, type Incident } from "../../../src/automation/incident-book.ts";
-import { every } from "../lib/clock.ts";
 import { useIncidents } from "../lib/incidents.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { clock, cn } from "../lib/utils.ts";
-
-// A cleared incident stays on the row this long, in the words that it is over.
-const CLEARED_SHOWN_MS = 60_000;
 
 type Tone = "wait" | "warn" | "fail" | "ok";
 const toneOf = (i: Incident): Tone =>
@@ -70,32 +66,22 @@ function Details({ i, head = true }: { i: Incident; head?: boolean }) {
 }
 
 export function IncidentBand() {
-  const { open, cleared } = useIncidents();
-  const [now, setNow] = useState(Date.now());
-  const [gone, setGone] = useState<string[]>([]);
-  const fresh = cleared.filter((c) => (c.cleared ?? 0) > now - CLEARED_SHOWN_MS && !gone.includes(c.id));
-  // The clock runs only while a cleared row is up: it takes the row away when its minute is over.
-  useEffect(() => {
-    setNow(Date.now());
-    if (!cleared.some((c) => (c.cleared ?? 0) > Date.now() - CLEARED_SHOWN_MS)) return;
-    return every(15_000, () => setNow(Date.now()));
-  }, [cleared]);
-  const shown = open.length ? open : fresh.slice(0, 1);
+  const { open: shown } = useIncidents();
   const first = shown[0];
   if (!first) return null;
   const rest = shown.length - 1;
   const tone = toneOf(first);
   return (
-    <div role={first.cleared ? "status" : "alert"} data-testid="incident-band" data-key={first.key} data-cleared={first.cleared ? "" : undefined} data-count={open.length}
+    <div role="alert" data-testid="incident-band" data-key={first.key} data-count={shown.length}
       className={cn("flex min-h-9 shrink-0 items-center gap-3 border-b px-4 py-1 text-ui animate-in max-md:gap-2 max-md:px-3", TONE[tone].row)}>
       <Icon i={first} />
       <span className="flex min-w-0 flex-1 items-baseline gap-3 max-md:flex-col max-md:gap-0">
         <span className="shrink-0 truncate font-medium text-fg max-md:max-w-full max-md:whitespace-normal max-md:break-words" data-testid="incident-title">
-          {titleOf(first)}{first.cleared ? `: cleared at ${clock(first.cleared)}` : <span className="font-normal text-muted max-md:hidden"> since {clock(first.since)}</span>}
+          {titleOf(first)}<span className="font-normal text-muted max-md:hidden"> since {clock(first.since)}</span>
         </span>
         <span className="min-w-0 truncate text-caption text-muted max-md:max-w-full" data-testid="incident-line">
-          {!first.cleared && <span className="tabular-nums md:hidden">Since {clock(first.since)} · </span>}
-          {first.cleared || !radiusOf(first) ? radiusOf(first) || doingOf(first) : <>{radiusOf(first)}<span className="max-md:hidden">. {doingOf(first)}</span></>}
+          <span className="tabular-nums md:hidden">Since {clock(first.since)} · </span>
+          {!radiusOf(first) ? doingOf(first) : <>{radiusOf(first)}<span className="max-md:hidden">. {doingOf(first)}</span></>}
         </span>
       </span>
       {rest > 0 && <span className="shrink-0 text-caption text-muted" data-testid="incident-more">+{rest} more</span>}
@@ -116,9 +102,6 @@ export function IncidentBand() {
           </Popover.Positioner>
         </Popover.Portal>
       </Popover.Root>
-      {first.cleared && (
-        <button type="button" className="k-line-act shrink-0" aria-label="Dismiss" onClick={() => setGone((g) => [...g, first.id])} data-testid="incident-dismiss"><X className="size-3.5" /></button>
-      )}
     </div>
   );
 }
