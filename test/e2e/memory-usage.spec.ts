@@ -171,6 +171,24 @@ test("memory usage: a path whose recall fell against its day says so", async ({ 
   await shoot(page, "memory-usage-05-recall-fell");
 });
 
+// A tool call that read the model's own harness's memory is a row of its own path, with the tokens its result carried,
+// beside the store's: the daemon's report (a read of the folder is made in the unit test), given such a row here.
+test("memory usage: a read of the model's own memory is a row of its own", async ({ page }) => {
+  await page.route("**/api/telemetry/memory?*", async (route) => {
+    const r = await (await route.fetch()).json();
+    const base = r.paths[0] ?? r.total;
+    r.paths = [...r.paths.filter((p: any) => p.path !== "native_read"), { ...base, path: "native_read", asked: 3, recalls: 3, facts: 0, tokens: 1240, used: 0, facts_checked: 0, recalls_checked: 0, recalls_used: 0, empty: 0, repeat: 0, skipped: 0, late: 0, later: 0, timeouts: 0, failures: 0, rules: 0, followed: 0, broken: 0, rules_checked: 0, repeats: 0, cut: 0, wait_ms: 0, wait_max_ms: 0, proc_ms: 0 }];
+    await route.fulfill({ json: r });
+  });
+  await page.goto("/settings/usage");
+  await page.getByTestId("usage-panel").getByRole("radio", { name: "Memory" }).click();
+  const row = page.getByTestId("usage-memory").locator("tbody tr").filter({ hasText: "Native memory, read by a tool" });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("1.2k");
+  await row.scrollIntoViewIfNeeded();
+  await shoot(page, "memory-usage-06-native-read");
+});
+
 // A rule works by what the model leaves undone, so naming it says nothing: the store marks it a RULE, and
 // it is followed while the call its words forbid is not made in the session after it was given, broken once
 // it is. A note is used when the model names it. The stand-in gives a rule that forbids `git stash`

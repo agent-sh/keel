@@ -47,6 +47,7 @@ const PATH: Record<string, string> = {
   store_tool: "Memory store, with a tool call",
   store_owed: "Memory store, carried to a later step",
   helper: "Helper records",
+  native_read: "Native memory, read by a tool",
 };
 const HINT: Record<MemoryTab, string> = {
   usage: "what recall added to turns, and an estimate of whether they used it; counts only, no content",

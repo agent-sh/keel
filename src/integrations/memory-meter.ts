@@ -57,8 +57,10 @@ export function asksMemory(d: InputMeta): boolean {
 
 // store_owed: lines the store gave earlier that joined a later request (a
 // block was full, or the answer came after its request went).
-export type MemoryPath = "store_start" | "store_prompt" | "store_tool" | "store_owed" | "helper";
-export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store_tool", "store_owed", "helper"];
+// native_read: a tool call that read the model's own harness's memory (Claude's auto memory folder, Codex's memories):
+// the model's choice, not a recall; its row holds the tokens the call's result put into the context.
+export type MemoryPath = "store_start" | "store_prompt" | "store_tool" | "store_owed" | "helper" | "native_read";
+export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store_tool", "store_owed", "helper", "native_read"];
 // Rows are kept this long: three times the longest range the Usage views
 // show (a month), so this month can be read against the ones before it.
 export const KEEP_MS = 90 * 86_400_000;
@@ -317,10 +319,10 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
   // `row`: an earlier row of the same ask (a block that came late), written
   // over with how it ended. `by`: where the block came from; with it each
   // named fact gets its own row in memory_given, in the same commit.
-  record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number; procMs?: number; by?: GivenBy }, row?: number): number {
+  record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; bytes?: number; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number; procMs?: number; by?: GivenBy }, row?: number): number {
     this.prune();
     const per = bytesPerToken(this.store.session(sessionId)?.model);
-    const tokens = r.text ? Math.round(Buffer.byteLength(r.text) / per) : 0;
+    const tokens = r.text ? Math.round(Buffer.byteLength(r.text) / per) : r.bytes ? Math.round(r.bytes / per) : 0;
     const ts = Date.now();
     const values = [r.outcome, r.facts?.length ?? 0, tokens, r.repeats ?? 0, r.cut ?? 0] as const;
     const db = this.store.db;
@@ -471,7 +473,8 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
       ${added("1", checked)} AS recalls_checked, ${added("1", " AND used > 0")} AS recalls_used,
       COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms, COALESCE(SUM(proc_ms), 0) AS proc_ms`;
     const from = `FROM telemetry_memory WHERE ${where.join(" AND ")}`;
-    return { total: `SELECT ${cols} ${from}`, paths: `SELECT path, ${cols} ${from} GROUP BY path`, args };
+    // The total is what recall did: a read the model chose to make of its own memory is a row of its path.
+    return { total: `SELECT ${cols} ${from} AND path != 'native_read'`, paths: `SELECT path, ${cols} ${from} GROUP BY path`, args };
   }
   private reportOf(f: MemoryFilter, total: Sum, paths: (Sum & { path: MemoryPath })[]) {
     return {

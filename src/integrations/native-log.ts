@@ -11,6 +11,7 @@ import { nativeContext, nativePlaces, type Native } from "../engine/native-memor
 import { targetsOf } from "../engine/nested.ts";
 import type { Tool } from "../tools/types.ts";
 import { readFileSync } from "node:fs";
+import { memoryMeter } from "./memory-meter.ts";
 
 export const KEEP_MS = 90 * 86_400_000;
 export type NativeSystem = "claude" | "codex";
@@ -33,7 +34,10 @@ CREATE INDEX IF NOT EXISTS native_memory_log_ts ON native_memory_log(ts);`);
 
   // A call of the session's tool that touched a file of its native memory: noted, and for a write
   // that left the Claude index past what a start reads, what to tell the model with the result.
-  after(s: Session, tool: Pick<Tool, "name" | "kind">, input: unknown, result: Pick<ToolResultBlock, "is_error">): string | undefined {
+  // `onRead`: told once for a call that read it, with the bytes the call's result carried (the memory meter's row).
+  onRead?: (sessionId: string, bytes: number) => void;
+
+  after(s: Session, tool: Pick<Tool, "name" | "kind">, input: unknown, result: Pick<ToolResultBlock, "is_error" | "content">): string | undefined {
     if (s.parent_id || s.machine || result.is_error) return undefined;
     const family = familyOf(s.model);
     const places = nativePlaces(family, s.workspace);
@@ -42,19 +46,26 @@ CREATE INDEX IF NOT EXISTS native_memory_log_ts ON native_memory_log(ts);`);
     const edit = tool.kind === "edit";
     const text = JSON.stringify(input ?? "");
     let over: string | undefined;
+    let read = false;
     for (const dir of places.read) {
       const paths = targetsOf(tool, input, s.workspace).paths.map((p) => resolve(p)).filter((p) => p === dir || p.startsWith(`${dir}/`));
       // A shell command naming the folder is a look at it, whatever it is.
       if (!paths.length && !(tool.kind === "shell" && text.includes(dir))) continue;
       const write = places.write.some((w) => w === dir || paths.some((p) => p.startsWith(`${w}/`)));
       for (const p of paths.length ? paths : [dir]) this.note(s.id, system, edit && write ? "wrote" : "read", p === dir ? "" : p);
+      if (!(edit && write)) read = true;
       if (system === "claude" && edit && paths.includes(join(dir, "MEMORY.md"))) {
         try { over = memoryOver(readFileSync(join(dir, "MEMORY.md"), "utf8")); } catch {}
       }
     }
+    if (read) try { this.onRead?.(s.id, resultBytes(result.content)); } catch {}
     return over;
   }
 }
+
+// The bytes of a result's text (an image or a file it holds is not counted).
+const resultBytes = (c: ToolResultBlock["content"]): number =>
+  typeof c === "string" ? Buffer.byteLength(c) : c.reduce((n, b) => n + (b.type === "text" ? Buffer.byteLength(b.text) : 0), 0);
 
 const logs = new WeakMap<Store, NativeLog>();
 export function nativeLog(store: Store): NativeLog {
@@ -67,5 +78,6 @@ export function nativeLog(store: Store): NativeLog {
 export function wireNativeLog(store: Store, tacit: (s: Session) => boolean) {
   const log = nativeLog(store);
   nativeContext.store = tacit;
+  log.onRead = (id, bytes) => void memoryMeter(store).record(id, "native_read", { outcome: "added", bytes });
   nativeContext.loaded = (s: Session, n: Native) => log.note(s.id, n.system, "loaded", n.dir, Buffer.byteLength(n.text));
 }
