@@ -880,6 +880,39 @@ test("a call with a missing or unknown field is answered from the schema and doe
   }
 });
 
+// A Write sent with the text editor tool's name for the content (file_text) writes that text: the call the tool runs
+// is the normalised one, through the engine's own call path and the real tools.
+test("a Write sent with file_text, or write_file with it, writes the text to disk", async () => {
+  const { mkdtempSync, readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const { claudeTools } = await import("../tools/claude.ts");
+  const { geminiTools } = await import("../tools/gemini.ts");
+  const state = mkdtempSync(join(process.env.TMPDIR ?? ".", "write-alias-state-"));
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "write-alias-"));
+  const store = new Store(state);
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(state, "spill"));
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
+  try {
+    const call = (tools: any[], name: string, id: string, input: any) => (engine as any).runTool(s, tools, { type: "tool_use", id, name, input }, ctx);
+    const a = await call(claudeTools, "Write", "a", { file_path: join(dir, "a.txt"), file_text: "from file_text\n" });
+    expect(a.is_error).toBeUndefined();
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("from file_text\n");
+    const g = await call(geminiTools, "write_file", "g", { file_path: join(dir, "g.txt"), file_text: "from file_text in write_file\n" });
+    expect(g.is_error).toBeUndefined();
+    expect(readFileSync(join(dir, "g.txt"), "utf8")).toBe("from file_text in write_file\n");
+    // No content under any name is still refused, and nothing is written.
+    const none = await call(claudeTools, "Write", "n", { file_path: join(dir, "n.txt") });
+    expect(none.is_error).toBe(true);
+    expect(existsSync(join(dir, "n.txt"))).toBe(false);
+  } finally {
+    store.db.close();
+  }
+});
+
 // What a gate adds to a call's process environment (an agent's guard settings) ends with the call, also when the
 // call starts no process: a tool that ran no command, one that threw, a later gate's refusal. It is the session's:
 // another session's call of the same id neither gets it nor loses its own.
