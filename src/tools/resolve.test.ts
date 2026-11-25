@@ -30,10 +30,20 @@ test("two matches, or none, run nothing", () => {
   expect(resolveToolName("frobnicate", claude, {})).toEqual({ near: [] });
 });
 
-test("a stand-in name for doing nothing is told the pause tool and the shell tool of its family", () => {
+test("a word for waiting is told the pause tool and the shell tool of its family", () => {
   const withWait = [...claude, tool("WaitFor", ["kind"])];
-  expect(pauseNote("bash_placeholder", withWait)).toBe(' bash_placeholder does nothing: to pause, call WaitFor with kind "timer" and seconds; to run a command, call Bash.');
-  expect(pauseNote("noop", [...gpt, tool("wait_for", ["kind"])])).toBe(' noop does nothing: to pause, call wait_for with kind "timer" and seconds; to run a command, call exec_command.');
+  expect(pauseNote("pause", withWait)).toBe(' pause does nothing: to pause, call WaitFor with kind "timer" and seconds; to run a command, call Bash.');
+  expect(pauseNote("sleep", [...gpt, tool("wait_for", ["kind"])])).toBe(' sleep does nothing: to pause, call wait_for with kind "timer" and seconds; to run a command, call exec_command.');
   expect(pauseNote("frobnicate", withWait)).toBe("");
   expect(pauseNote("Read", withWait)).toBe("");
+});
+
+test("a placeholder name is told to make the call it meant, not to pause", () => {
+  const withWait = [...claude, tool("WaitFor", ["kind"])];
+  const full = [...withWait, tool("Write", ["file_path", "content"])];
+  const said = pauseNote("bash_placeholder", full);
+  expect(said).toContain("bash_placeholder is not a tool and ran nothing");
+  for (const name of ["Bash", "Write", "Edit", "Read", "WaitFor"]) expect(said).toContain(name);
+  expect(said).not.toContain("to pause");
+  expect(pauseNote("noop", [...gpt, tool("wait_for", ["kind"])])).toContain("exec_command to run a command");
 });

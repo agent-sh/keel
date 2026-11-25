@@ -53,14 +53,24 @@ export function resolveToolName(asked: string, offered: readonly Offered[], inpu
 export const resolvedNote = (asked: string, as: string) => `(There is no tool named ${asked}; ran as ${as}, the name of the tool here. Call it ${as}.)`;
 export const closestNote = (near: string[]) => (near.length ? ` The nearest tools offered: ${near.join(", ")}.` : "");
 
-// A name that is a stand-in for doing nothing ("bash_placeholder", "noop", "pause"): a model that has nothing to
-// run and calls one means to wait. It is told the tool that pauses and the tool that runs commands, in one line.
-const PAUSE_NAME = /placeholder|no[-_ ]?op|^(pause|sleep|wait|idle|nothing|continue|skip)$/i;
+// A name that is a stand-in for doing nothing. Two kinds: a word for waiting ("pause", "sleep", "wait"): the model
+// means to wait, and is told the tool that pauses and the tool that runs commands. A placeholder ("bash_placeholder",
+// "noop"): the model wrote a line about the next step and sent a call with no input in place of it; the calls that
+// followed such a name were a shell command, an edit, a write or a read, never a wait, so it is told to make the call
+// it meant, with the tools of its family that do each job.
+const WAIT_NAME = /^(pause|sleep|wait|idle|nothing|continue|skip)$/i;
+const PLACEHOLDER_NAME = /placeholder|no[-_ ]?op/i;
 export function pauseNote(asked: string, offered: readonly Offered[]): string {
-  if (!PAUSE_NAME.test(asked)) return "";
+  const wait = WAIT_NAME.test(asked);
+  if (!wait && !PLACEHOLDER_NAME.test(asked)) return "";
   const names = offered.map((t) => t.name);
   const pause = names.find((n) => n === "WaitFor" || n === "wait_for");
-  const shell = offered.find((t) => ALIASES[0]!.includes(t.name.toLowerCase()))?.name;
-  const parts = [pause && `to pause, call ${pause} with kind "timer" and seconds`, shell && `to run a command, call ${shell}`].filter(Boolean);
-  return parts.length ? ` ${asked} does nothing: ${parts.join("; ")}.` : "";
+  const of = (group: number) => offered.find((t) => ALIASES[group]!.includes(t.name.toLowerCase()))?.name;
+  const shell = of(0);
+  if (wait) {
+    const parts = [pause && `to pause, call ${pause} with kind "timer" and seconds`, shell && `to run a command, call ${shell}`].filter(Boolean);
+    return parts.length ? ` ${asked} does nothing: ${parts.join("; ")}.` : "";
+  }
+  const parts = [shell && `${shell} to run a command`, of(2) && `${of(2)} to write a file`, of(3) && `${of(3)} to change one`, of(1) && `${of(1)} to read one`, pause && `${pause} with kind "timer" to wait`].filter(Boolean);
+  return parts.length ? ` ${asked} is not a tool and ran nothing. Make the call you meant, with its input: ${parts.join("; ")}.` : "";
 }
