@@ -3618,6 +3618,8 @@ export class Engine {
         gate.catch(() => {});
         const g = await Promise.race([gate, stopped]);
         if (ctx.signal.aborted) return interrupted();
+        // (Who answered the call's card, when that was the owner's helper: kept on the call's line.)
+        if (call.card) { const sh = this.shown.get(u.id); this.shown.set(u.id, { ...(sh && typeof sh === "object" ? sh : {}), card: call.card }); }
         if (!g) continue;
         if ("deny" in g) return denied(g.deny);
         // (Marked for the transcript: the call did not run, and says so on its line.)
@@ -3656,7 +3658,7 @@ export class Engine {
       // A failed call keeps the whole cap: its error is what the model acts on.
       const held = await capResult(out.content, tool.resultCap ?? OUTPUT_CAP, runCtx.dispatch ? undefined : ctx.spillDir, u.name, out.is_error || tool.resultCap !== undefined || runCtx.dispatch ? undefined : ctx.inline);
       result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(held, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
-      if (out.shown !== undefined) this.shown.set(u.id, out.shown);
+      if (out.shown !== undefined) { const sh = this.shown.get(u.id) as { card?: unknown } | undefined; this.shown.set(u.id, sh?.card && out.shown && typeof out.shown === "object" ? { ...out.shown, card: sh.card } : out.shown); }
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {
       if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(true), "interrupted");

@@ -15,6 +15,9 @@ export type HelperView = {
   mail_every_min: number;
   wake_gap_min: number;
   last_wake: number | null;
+  // Whether it answers other sessions' approval cards on the owner's standing instruction (src/helper/cards.ts), and the instruction.
+  answer_cards: boolean;
+  instruction: { words: string; source: string };
   mail: { id: string; label: string; available: boolean; account?: string; can: { modify: boolean; send: boolean; calendar: boolean } };
   events: DigestEvent[];
   // Its look (src/helper/persona.ts): the name it answers to, the picture, and the pictures waiting to be picked.
@@ -48,7 +51,7 @@ onFeature({
   reconnect: readAtOpen(loadHelper),
 });
 
-export async function setHelper(p: Partial<Pick<HelperView, "on" | "mail_every_min" | "wake_gap_min">> & { name?: string | null }) {
+export async function setHelper(p: Partial<Pick<HelperView, "on" | "mail_every_min" | "wake_gap_min" | "answer_cards">> & { name?: string | null }) {
   set({ view: await api<HelperView>("/api/helper", { method: "PUT", body: JSON.stringify(p) }) });
 }
 
@@ -70,6 +73,9 @@ export type MemoryInput = { key?: string; value?: string; kind?: string; aliases
 export const addMemory = (p: MemoryInput) => api("/api/helper/memory", json(p));
 export const editMemory = (key: string, p: MemoryInput) => api(`/api/helper/memory/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify(p) });
 export const dropMemory = (key: string) => api(`/api/helper/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
+// The approval cards it answered on the owner's standing instruction, newest first.
+export type HelperAnswer = { id: string; session_id: string; title: string; tool: string; summary: string; state: "allowed" | "denied"; reason: string | null; resolved: number | null; source: string | null };
+export const helperAnswers = () => api<{ answers: HelperAnswer[] }>("/api/helper/answers").then((r) => r.answers);
 export const checkMail = () => api<{ new: number; important: number }>("/api/helper/check", { method: "POST" });
 
 // The name and the picture (src/helper/persona.ts).

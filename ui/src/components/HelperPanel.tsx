@@ -2,14 +2,15 @@
 // the owner searches, edits, adds and deletes), what it was told about
 // lately, and its mail source. Also the helper's settings section.
 import { Check, MailCheck, Pencil, Plus, Search, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { addMemory, checkMail, dropMemory, editMemory, openHelper, setHelper, useHelper, type MemoryRecord } from "../lib/helper.ts";
+import { addMemory, checkMail, dropMemory, editMemory, helperAnswers, openHelper, setHelper, useHelper, type HelperAnswer, type MemoryRecord } from "../lib/helper.ts";
 import { reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { MemorySweep } from "./MemorySweep.tsx";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
+import { Empty, Group, Item as SetItem, List, Status } from "./settings/kit.tsx";
 import { iconButton } from "./ui.tsx";
 import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { HelperIdentity } from "./HelperIdentity.tsx";
@@ -228,7 +229,36 @@ export function HelperSettings() {
         <SettingRow label="Memory" hint="Keyed records kept in this daemon's state, searched and edited in the helper's panel. Other agents' MCP servers set up in Settings reach the helper too.">
           <span className="text-ui tabular-nums text-muted">{memory} records</span>
         </SettingRow>
+        <SettingRow label="Answer approvals" hint={`Other sessions' approval cards go to the helper first, on your standing instruction: ${view.instruction.words}. An allow covers that one call. Spending, someone else's repository, what cannot be taken back, authority over your machine or rules, and targets outside content named stay yours, with a notification, and so does every card it leaves to you or does not answer.`}>
+          <button type="button" role="switch" aria-checked={view.answer_cards} data-testid="helper-answer-cards" aria-label="Answer approvals"
+            onClick={() => setHelper({ answer_cards: !view.answer_cards }).catch(reportError)} className="k-switch">
+            <span className="k-switch-thumb" />
+          </button>
+        </SettingRow>
       </Card>
+      <HelperAnswers />
     </div>
+  );
+}
+
+// The cards the helper answered, newest first: what, where, how and why.
+function HelperAnswers() {
+  const view = useHelper((s) => s.view);
+  const [list, setList] = useState<HelperAnswer[] | null>(null);
+  useEffect(() => { helperAnswers().then(setList, reportError); }, [view]);
+  if (!list) return null;
+  return (
+    <Group title="Answered by the helper" count={list.length || undefined} hint="Each answer covered its one call. Open the session to see the call and its line." testid="helper-answers">
+      {list.length ? (
+        <List label="Answered by the helper">
+          {list.map((a) => (
+            <SetItem key={a.id} testid="helper-answer" data-state={a.state} name={a.title} onOpen={() => navigate({ name: "session", id: a.session_id })}
+              sub={<><code className="font-mono">{a.tool}: {a.summary}</code>{a.reason ? <><br />{a.reason}</> : null}</>}
+              meta={a.resolved ? <span className="tabular-nums" title={when(a.resolved)}>{ago(a.resolved)}</span> : undefined}
+              status={<Status tone={a.state === "allowed" ? "ok" : "warn"}>{a.state === "allowed" ? "Allowed once" : "Denied"}</Status>} />
+          ))}
+        </List>
+      ) : <Empty>None yet.</Empty>}
+    </Group>
   );
 }

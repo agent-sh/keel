@@ -1,7 +1,8 @@
 // The owner's helper (src/helper/): its state, the remembered list, and a
 // mail check on demand.
 //   GET  /api/helper                 on, session, mail source, recent events
-//   PUT  /api/helper                 { on?, mail_every_min?, wake_gap_min?, name? } (name: "" or null: the default again)
+//   PUT  /api/helper                 { on?, mail_every_min?, wake_gap_min?, answer_cards?, name? } (name: "" or null: the default again)
+//   GET  /api/helper/answers         { answers }: the approval cards the helper answered on the owner's standing instruction, newest first
 //   POST /api/helper/check           look at new mail now
 //   POST /api/helper/ask             { text, key? } a question from the helper row on a phone: { id, chat_id }
 //   GET  /api/helper/ask/:id         its answer: state, words, the sessions it read and what each waits on
@@ -49,11 +50,16 @@ export const helperRoutes: RouteModule = (deps) => {
         } catch (e: any) {
           return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
         }
-        h.configure(b);
+        try {
+          h.configure(b);
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
+        }
         if (b.on !== undefined) await h.setOn(b.on);
         return json(h.view());
       },
     },
+    "/api/helper/answers": { GET: () => json({ answers: h.answers() }) },
     "/api/helper/keel-repo": { GET: () => json({ ...keelRepo(), setting: settings().helper?.keel_repo ?? null }) },
     "/api/helper/avatar": {
       GET: () => {

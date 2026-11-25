@@ -204,12 +204,20 @@ export function refusal(f: CardForm, choice: string, seen: unknown, client?: Cli
 // - `device`: the paired phone's name. `peer`: the linked machine the answer came through.
 // - `seen`: the client said the whole text was shown (a script and an editor were handed it).
 // - `grant`: the card was not answered itself: a standing answer this client gave on another card covers it.
+// - "helper": the owner's helper, on his standing instruction (src/safety/delegate.ts). No route takes it from a
+//   client: only the helper's own tool answers as it, and the gate checks the card's class first.
 export const CLIENTS = ["page", "phone", "notification", "cli", "script", "acp", "api"] as const;
-export type Client = (typeof CLIENTS)[number];
-export type AnsweredBy = { client: Client; device?: string; peer?: string; seen?: "whole"; grant?: true };
+export type Client = (typeof CLIENTS)[number] | "helper";
+// What the helper's answer is kept with: its conversation and the call that answered (who), the instruction it
+// answered on and where the owner gave it, and the reason it gave.
+export type HelperAnswer = { session: string; call?: string; instruction: string; source: string; reason?: string };
+export type AnsweredBy = { client: Client; device?: string; peer?: string; seen?: "whole"; grant?: true; helper?: HelperAnswer };
+// How the helper's answers are said, on the card, in the timeline and in the audit chain.
+export const HELPER_SAID = "the Helper, on the owner's standing instruction";
 
 const FROM: Record<Client, string> = {
   page: "the page", phone: "the phone", notification: "a notification", cli: "the command line", script: "a script", acp: "an editor", api: "the API",
+  helper: HELPER_SAID,
 };
 // Where an answer was given, in words: "the phone (Pixel)", "the page on studio",
 // and how: "the page, its text shown whole", "a script, its text given whole" (a
@@ -232,12 +240,14 @@ export function answerSaid(a: { state: string; choice?: string; by?: AnsweredBy 
   if (a.state === "pending") return undefined;
   if (a.state === "cancelled") return "closed with no answer";
   if (a.state === "allowed" && a.by?.grant) return `allowed by your rule for another request, from ${whereSaid(a.by)}`;
+  if (a.by?.client === "helper") return `${a.state === "denied" ? "denied" : "allowed once"} by ${HELPER_SAID}`;
   const said = CHOICE_SAID[a.choice ?? ""] ?? (a.state === "denied" ? "denied" : "allowed");
   return a.by ? `${said} from ${whereSaid(a.by)}` : said;
 }
 
 export function fromSaid(by: AnsweredBy | undefined): string {
   if (!by) return "";
+  if (by.client === "helper") return `${HELPER_SAID}${by.helper?.reason ? ` (its reason: ${spelled(by.helper.reason, "").slice(0, 200)})` : ""}`;
   const handed = by.client === "script" || by.client === "acp";
   const where = whereSaid(by);
   return by.grant ? `${where}, by its rule for another request` : `${where}${by.seen === "whole" ? `, its text ${handed ? "given" : "shown"} whole` : ""}`;

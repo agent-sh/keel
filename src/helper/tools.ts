@@ -87,7 +87,7 @@ const sessionRead: Tool = {
   readOnly: true,
   run: (input) => guard(async () => {
     const { store, engine } = H!.deps;
-    const s = find(String(input.session ?? ""));
+    const s = find(String(input.session));
     if (s.settings.helper) return "That is this conversation.";
     // A session that is not in memory is brought in off the loop first (its rows; the bodies read are the last turns').
     await store.warm(s.id, false);
@@ -229,8 +229,38 @@ const calendar: Tool = {
   }),
 };
 
+// Other sessions' approval cards, on the owner's standing instruction (cards.ts). Which cards are the helper's
+// to answer is decided by the gate's facts in code (src/safety/delegate.ts); the tool only carries its answer.
+const approvals: Tool = {
+  name: "helper__approvals",
+  description: "The approval cards other sessions wait on now, each whole: the session, the tool, the risk, why the gate asked, the facts it judged by, the reviewer's or judge's last verdict on the same shape, whether you may answer it, and the whole request.",
+  input_schema: { type: "object", properties: {}, additionalProperties: false },
+  readOnly: true,
+  run: () => guard(() => {
+    const open = H!.cards.open();
+    return open.length ? open.map((c) => c.text).join("\n\n") : "No card waits.";
+  }),
+};
+const approval: Tool = {
+  name: "helper__approval",
+  description: "Answer another session's approval card on the owner's standing instruction. answer: allow (this one call only; it grants nothing more), deny (the session reads your reason), or owner (leave it to the owner, who is notified). Give a short reason every time. Cards that stay the owner's are refused whatever you answer.",
+  input_schema: {
+    type: "object",
+    properties: { card: { type: "string", description: "the card's id" }, answer: { type: "string", enum: ["allow", "deny", "owner"] }, reason: { type: "string" } },
+    required: ["card", "answer", "reason"], additionalProperties: false,
+  },
+  readOnly: false, kind: "own",
+  run: (input, ctx) => guard(() => {
+    const how = String(input.answer);
+    if (how !== "allow" && how !== "deny" && how !== "owner") throw new Error("answer is allow, deny or owner");
+    const r = H!.cards.answer(String(input.card), how, String(input.reason), { session: ctx.sessionId, ...(ctx.callId ? { call: ctx.callId } : {}) });
+    if ("error" in r) throw new Error(r.error);
+    return r.ok;
+  }),
+};
+
 const memory = memoryTools(() => H!.records);
-const ALL = [...memory, sessions, sessionRead, activity, mailSearch, mailRead, mailLabel, mailSend, calendar];
+const ALL = [...memory, sessions, sessionRead, activity, approvals, approval, mailSearch, mailRead, mailLabel, mailSend, calendar];
 
 // The helper whose deps the tools read (a test gives its own and puts back undefined).
 export function useHelper(h: Helper | undefined) { H = h; }

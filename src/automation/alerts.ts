@@ -4,6 +4,7 @@ import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { allPendingQuestions, closedQuestions, pendingQuestions } from "../tools/interact.ts";
 import { answerSaid } from "../safety/card.ts";
+import { spelled } from "../safety/chars.ts";
 import { QUESTION_CUT } from "../core/stops.ts";
 import { planWaits, plansWaiting } from "../server/routes/plan.ts";
 import { sessionState } from "./state.ts";
@@ -555,6 +556,26 @@ export function waitsNow(ids: string[]): Record<string, WaitNow> {
     if (w) out[id] = w;
   }
   return out;
+}
+
+// The owner's helper may take an approval card first, on his standing instruction (src/helper/cards.ts): then its
+// alert is kept in the inbox and told on no channel, and raised again for the owner, with a notification, when the
+// helper leaves it to him or cannot answer. `take`: whether the helper takes this card now.
+// A string: the helper does not take it, and the owner is told why before the card's line.
+export const helperFirst: { take?: (a: { id: string; session_id: string }) => boolean | string } = {};
+
+// An open approval card into the inbox. `silent`: kept and told nowhere (the helper answers it first).
+// `note`: why it comes to the owner after all (the helper's words, or that it did not answer), before the card's line.
+export function raiseApproval(a: { id: string; session_id: string; tool: string; summary: string; risk: string }, silent = false, note?: string): Alert | undefined {
+  const s = D().store.session(a.session_id);
+  // The line a notification shows: the tool, where it runs when that is not here, then the text
+  // with each hidden character written out. `hold`: why the request is opened before it is
+  // allowed; `glance`: a collapsed notification shows all of the line, so it may carry Allow once.
+  const card = perm.gate?.approval(a.id);
+  const form = card ? perm.gate!.form(card) : undefined;
+  const line = form?.line ?? `${a.tool}: ${spelled(a.summary)}`.slice(0, 500);
+  return raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, note ? `${note} ${line}`.slice(0, 500) : line,
+    { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(form ? { hold: form.hold, glance: form.glance } : {}), ...(note ? { helper_note: note } : {}) }, silent);
 }
 
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {

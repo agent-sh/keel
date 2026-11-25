@@ -11,7 +11,10 @@ import type { Crossing } from "../safety/route-rule.ts";
 // with its reason; `skipped`: that allow answered an ask in the owner's place.
 // `hook.failed`: hooks of the call that failed (src/integrations/hooks.ts hookFailureText): shown under it.
 // `ruled`: what the gate's rules decided of the call, stored with its result (src/safety/trial.ts).
-export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] }; ruled?: Ruled };
+// `card`: the call's approval card was answered by the owner's helper on his standing instruction (src/safety/delegate.ts):
+// kept with the call's result for the transcript.
+export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] }; ruled?: Ruled; card?: CardAnswer };
+export type CardAnswer = { by: "helper"; approval: string; choice: "once" | "deny"; said: string; reason?: string; helper_session: string };
 
 // A server's question to the owner (MCP elicitation), as the owner's Elicitation hooks see it before its card opens,
 // and the answer a hook may give in the owner's place (or, for ElicitationResult, in place of the owner's).

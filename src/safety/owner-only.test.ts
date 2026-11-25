@@ -202,7 +202,7 @@ test("a one-call card a restart left parked closes when its call went on without
     const call: ToolCall = { id: "c1", tool: note, input: { text: "x" }, ctx: { sessionId: "s1", cwd: dir, signal: stop.signal, spillDir: dir, seen: new Map() } };
     let gate = new Gate(store, bus);
     // A hook asked the owner about the call; the daemon stopped with the card open.
-    const asked = gate.askOnce(session, call, "note", "a hook asks: look at this one");
+    const asked = gate.askOnce(session, call, "note", "a hook asks: look at this one", "hook");
     for (let i = 0; i < 200 && !gate.approvals({ session: "s1", pending: true }).length; i++) await Bun.sleep(5);
     const [card] = gate.approvals({ session: "s1", pending: true });
     gate.park("s1");

@@ -1980,6 +1980,37 @@ script and an editor), and for a card a standing answer settled, whose rule
 it was. The timeline, a trace's wait and the activity list say it ("allowed
 once from the phone").
 
+### The helper answers for the owner
+
+With the helper on, other sessions' cards go to it first, on the owner's
+standing instruction: allow what they ask for unless it is really risky
+(Settings > Helper > Answer approvals, on by default). The helper reads the
+whole card: the request, its risk, why the gate asked, the facts it judged by
+and the last verdict of the reviewer or the judge on a call of the same shape.
+It allows the one call, denies it with a reason the session reads, or leaves it
+to the owner.
+
+Some cards never go to it, decided in code from what the gate stored with the
+card (`src/safety/delegate.ts`), whatever the helper answers: a target outside
+content named first, what only the owner allows (a tool that confirms every
+call, a hook of his that asks, a write beyond his accounts), spending or
+renting machines, an irreversible publish or deletion, authority over his
+machines or the rules (leaving the sandbox, root, services, sign-ins,
+credentials, Keel's permissions and settings), and a card that does not hold
+its whole request. Those reach the owner at once, as before. A card the helper
+leaves to him, or does not answer in its turn or within two minutes, reaches
+him then, with a notification. Until then its alert waits in the inbox and is
+told nowhere. After the helper denied three of a session's cards in a row, that
+session's next cards are the owner's.
+
+An allow covers that one call: no rule and no grant for the session. The card
+keeps the answer (the helper's conversation and call, the instruction and
+where the owner gave it, the reason), and so do the chain of cards, the
+session's timeline and the call's line ("allowed by the Helper"). Settings >
+Helper lists the helper's answers. The helper is told of each open card once,
+as a row of its digest, and again only when the card changed.
+
+
 ## Memory observability
 
 `GET /api/integrations/tacit/stats` reports in-memory totals since `since_ms`

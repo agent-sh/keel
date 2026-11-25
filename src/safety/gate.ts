@@ -35,7 +35,9 @@ import { nativeWrites } from "../engine/native-memory.ts";
 import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart, type AskedPart } from "./summary.ts";
-import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
+import { agoSaid, answerSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
+import { ownerClass, type CardFacts, type Held as HeldBy } from "./delegate.ts";
+import type { RiskRule } from "./risk-words.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
@@ -48,7 +50,7 @@ import { importOf, inCopy, ownersImported } from "./imported.ts";
 import { headHold } from "./head-trust.ts";
 import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
-import { ownerDenial } from "../core/stops.ts";
+import { helperDenial, ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
 export const HOOK_ASKS = "A hook of yours asks";
 import { landing, type MarkArgs } from "./marks.ts";
@@ -161,6 +163,7 @@ export type Approval = {
   suggest: Suggest[];   // the grant "allow always" would store
   once?: boolean;       // only the owner answers it (a hook asked)
   autoOwner?: true;     // Auto only: no judge, rule change or recovery grants this card
+  facts?: CardFacts;    // what the gate knew of why it asked (owner only, an account, the risk classes, what held it): delegate.ts
   bind?: string;        // the source a tool grant is for
   state: "pending" | "allowed" | "denied" | "cancelled";
   choice?: "once" | "session" | "always" | "deny";
@@ -1311,6 +1314,21 @@ export class Gate {
     return cardOrder(rows.map((r) => JSON.parse(r.data) as Approval));
   }
 
+  // The cards the owner's helper answered, newest first (Settings > Helper lists them).
+  helperAnswers(limit = 50): Approval[] {
+    return this.store.db.query<{ data: string }, [number]>("SELECT data FROM approvals WHERE state IN ('allowed', 'denied') AND json_extract(data, '$.by.client') = 'helper' ORDER BY created DESC LIMIT ?")
+      .all(limit).map((r) => JSON.parse(r.data) as Approval);
+  }
+  // The newest verdict of the reviewer or the judge on a call of this card's shape in its session, within a day.
+  verdictOf(a: Approval): { by: string; decision: string; risk: string | null; model: string | null; created: number } | undefined {
+    try {
+      return this.store.db.query<{ by: string; decision: string; risk: string | null; model: string | null; created: number }, [string, string, number]>(
+        "SELECT by, decision, risk, model, created FROM judge_verdicts WHERE session_id = ? AND shape = ? AND created > ? ORDER BY created DESC LIMIT 1").get(a.session_id, shapeOf(a.tool, a.summary), Date.now() - 86_400_000) ?? undefined;
+    } catch { return undefined; }
+  }
+  // Whether a session is the owner's helper itself (set by src/helper/): its own cards are never its to answer.
+  helperSession?: (sessionId: string) => boolean;
+
   approval(id: string): Approval | undefined {
     const r = this.store.db.query<{ data: string }, [string]>("SELECT data FROM approvals WHERE id = ?").get(id);
     return r ? JSON.parse(r.data) : undefined;
@@ -1759,7 +1777,7 @@ export class Gate {
   private async checked(session: Session, call: ToolCall): Promise<CheckResult> {
     { const moved = this.rootMoved(session); if (moved) return (this.ruled(session, call, "folder moved"), { deny: moved }); }
     if (call.tool.confirm) this.ruled(session, call, "the tool confirms each call");
-    if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
+    if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, "confirm", call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const name = target?.name ?? call.tool.name;
     // A page fetch to an address the session has not seen is judged as the send it is (src/safety/addresses.ts).
@@ -1880,7 +1898,7 @@ export class Gate {
       words = await this.privateWords(session, cls.command, cwdOf(call) ?? call.ctx.cwd);
       if (words) {
         if (session.parent_id) return { deny: heldRefusal(words) };
-        const out = await this.askOnce(session, call, name, heldWhy(words));
+        const out = await this.askOnce(session, call, name, heldWhy(words), "words");
         if (out) return out;
       }
     }
@@ -1890,7 +1908,7 @@ export class Gate {
       const now = Date.now();
       if (session.parent_id) return { deny: provRefusal(provHeld.hits, now) };
       const why = [provReason(provHeld.hits, now), "ask" in d ? d.ask.why : undefined].filter(Boolean).join("; and ");
-      const out = await this.askOnce(session, call, name, why);
+      const out = await this.askOnce(session, call, name, why, "provenance");
       if (out) return out;
       // Answered: the owner has said these targets (they are theirs from here on in this session).
       this.provenance.clear(provHeld.ids, provHeld.hits);
@@ -2150,11 +2168,12 @@ export class Gate {
   // A card for this one call that only the owner answers (a hook asked): no
   // grant, mode change or reviewer settles it.
   // `shown`: what the card shows of the call (a mail as its recipients, subject and text).
-  async askOnce(session: Session, call: ToolCall, name: string, why: string, shown?: string): Promise<{ deny: string } | void> {
+  // `held`: what makes it a one-call card, kept with it (delegate.ts: none of these is the helper's to answer).
+  async askOnce(session: Session, call: ToolCall, name: string, why: string, held: HeldBy, shown?: string): Promise<{ deny: string } | void> {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const short = inShort(cls, call.input);
-    return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined }, true);
+    return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined, held }, true);
   }
 
   // A hook of the owner's asks about a call the gate let through. The card is answered once, as askOnce's,
@@ -2167,7 +2186,7 @@ export class Gate {
     const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const d = this.evaluate(session, target?.name ?? call.tool.name, callClass(call, target), target?.source, undefined, undefined, "ask");
     const own = "ask" in d ? { risk: d.ask.risk, why: d.ask.why } : "deny" in d ? { risk: "high" as const, why: d.deny } : { risk: "low" as const };
-    return this.card(session, call, name, cls, short.summary, { ...own, notice: `${HOOK_ASKS}: ${reason.replace(/\s+$/, "")}`, suggest: [], cut: short.cut }, true);
+    return this.card(session, call, name, cls, short.summary, { ...own, notice: `${HOOK_ASKS}: ${reason.replace(/\s+$/, "")}`, suggest: [], cut: short.cut, held: "hook" }, true);
   }
 
   // Set by the hooks module: what the owner's PermissionRequest hooks answer for a card about to open.
@@ -2179,7 +2198,8 @@ export class Gate {
   }
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
-    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string }; part?: AskedPart }, once = false): Promise<{ deny: string } | void> {
+    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string }; part?: AskedPart;
+      ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -2204,6 +2224,7 @@ export class Gate {
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)), reply: call.ctx.reply,
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
       ...(ask.mine ? { mine: ask.mine } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}), ...(ask.part && cls.kind === "shell" ? { part: ask.part } : {}),
+      ...factsOf(ask),
     };
     return this.wait(a, session, call, name, cls);
   }
@@ -2314,6 +2335,15 @@ export class Gate {
     const session = w?.session ?? (parked ? this.store.session(sessionId) : undefined);
     // A closed card says how it ended; an open one nothing waits on can no longer be answered.
     if (a.state !== "pending" || !session) return { error: closedWhy(a), status: 409, approval: a };
+    // The helper answers on the owner's standing instruction: once or a denial, never a standing answer, and only a
+    // card whose class is not the owner's alone (delegate.ts), decided here from what the gate stored, whatever it says.
+    const helper = c.by?.client === "helper";
+    if (helper) {
+      if (c.choice !== "once" && c.choice !== "deny") return { error: "the helper answers a card once or denies it: it gives no standing answer", status: 400, approval: a };
+      if (!c.by?.helper) return { error: "a helper's answer says who answered and on what instruction", status: 400 };
+      const owners = ownerClass(a, this.helperSession?.(a.session_id) ?? false);
+      if (owners) return { error: `this card stays the owner's: ${owners.why}`, status: 403, approval: a };
+    }
     // Do not turn a parked or pre-Auto card into a standing grant under Auto.
     const auto = this.perm(sessionId).mode === "auto";
     if (c.choice !== "deny" && !a.once && (auto || a.autoOwner) && (parked || !auto || !a.autoOwner))
@@ -2332,9 +2362,13 @@ export class Gate {
     // (A notification shows one line: an answer from one never counts as having shown the text.)
     const seen = c.seen === "whole" && c.by?.client !== "notification" ? ("whole" as const) : undefined;
     const by: AnsweredBy = { client: "api", ...c.by, ...(seen ? { seen } : {}) };
+    const said = (choice: "once" | "deny") => {
+      if (helper && w) w.call.card = { by: "helper", approval: a.id, choice, said: answerSaid({ state: choice === "deny" ? "denied" : "allowed", choice, by }) ?? "", ...(by.helper?.reason ? { reason: by.helper.reason } : {}), helper_session: by.helper!.session };
+    };
     if (c.choice === "deny") {
+      said("deny");
       this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined, by });
-      w?.resolve({ deny: ownerDenial(c.reason?.trim()) });
+      w?.resolve({ deny: helper ? helperDenial(c.reason?.trim()) : ownerDenial(c.reason?.trim()) });
       return { ok: true };
     }
     // The read-first rule, for every client: an allow of a text one line does
@@ -2348,9 +2382,10 @@ export class Gate {
       // A tool grant is for the source the card judged (taken from the card, never the client).
       for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
     }
+    if (c.choice === "once") said("once");
     this.finish(a, { state: "allowed", choice: c.choice, by });
     // (An allow of a call the judge or the rules refused in this session before: the owner took that refusal back.)
-    this.overridden("card", { session_id: a.session_id, shape: shapeOf(a.tool, a.summary) });
+    if (!helper) this.overridden("card", { session_id: a.session_id, shape: shapeOf(a.tool, a.summary) });
     w?.resolve({ allow: true });
     // A new grant may settle other open cards it covers: the ones a line shows
     // whole. A card that is read first stays open for its own answer.
@@ -2493,6 +2528,14 @@ function placeOf(session: Session, cls: CallClass): { at?: Approval["at"] } {
 }
 
 // How long an input was, kept only when the card holds its start alone.
+// What the gate knew of why it asked, kept with a card for whoever answers it (src/safety/delegate.ts).
+function factsOf(ask: { ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }): { facts?: CardFacts } {
+  const f: CardFacts = {
+    ...(ask.ownerOnly ? { owner_only: true as const } : {}), ...(ask.account !== undefined ? { account: ask.account } : {}),
+    ...(ask.risks?.length ? { risks: [...new Set(ask.risks.map((r) => r.rule))] } : {}), ...(ask.held ? { held: ask.held } : {}),
+  };
+  return Object.keys(f).length ? { facts: f } : {};
+}
 const inputLen = (v: any): { input_len?: number } => { const n = JSON.stringify(v ?? {}).length; return n > 20_000 ? { input_len: n } : {}; };
 
 function clip(v: any): any {

@@ -262,6 +262,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const more = kind === "shell" && !whole ? moreLines(use) : 0;
   // A check the ledger answered (src/checks): it passed on these same files before, and did not run.
   const ledger = !!(result as (ToolResultBlock & { shown?: { ledger?: boolean } }) | undefined)?.shown?.ledger;
+  // Its approval card was answered by the owner's helper, on his standing instruction (src/helper/cards.ts).
+  const card = (result as (ToolResultBlock & { shown?: { card?: { by: "helper"; choice: "once" | "deny"; said: string; reason?: string } } }) | undefined)?.shown?.card;
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
   const verb = rejected ? "Plan update not applied" : state === "unrun" ? NOT_RUN : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
@@ -300,6 +302,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {!quiet && marks.filter((m) => m.kind !== "denied").map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
           {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="warn" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
           {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="warn" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
+          {card?.choice === "once" && <><span className="k-line-state k-line-mark" data-tone="own" data-testid="call-helper" title={`Its card was ${card.said}. This one call only: nothing more was granted.`}>allowed by the Helper</span>{" "}</>}
           {/* While its approval card is open the card carries what is asked: the line says only that it waits. */}
           {/* (When more than one call of its step waits, each line names its call, trimmed: it matches its card.) */}
           {/* (A change's line keeps its path while its card is open: the card shows the lines, not where they go.) */}
@@ -321,8 +324,10 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {(state === "running" || state === "live") && <span className="k-line-run" aria-label="running" />}
         </span>
       </Collapsible.Trigger>
-      {(rejected || ownReason || turned || (refused && sessionId)) && (
+      {(rejected || ownReason || turned || (refused && sessionId) || card) && (
         <div className="k-under">
+          {/* Who answered its card when it was the helper: on the owner's standing instruction, with its reason. */}
+          {card && card.choice === "once" && <Under name="Helper" testid="tool-helper-answer">{`Allowed once on your standing instruction (Settings > Helper)${card.reason ? `: ${card.reason}` : "."}`}</Under>}
           {rejected && <Under tone="fail" testid="plan-rejected">{rejected} The plan before it stays.</Under>}
           {/* The owner's own words with their denial; none given, none shown. */}
           {ownReason && <Under name="You" testid="tool-denial">{ownReason}</Under>}

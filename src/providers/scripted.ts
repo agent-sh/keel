@@ -513,6 +513,18 @@ export class ScriptedProvider implements Provider {
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
     switch (scenario) {
+      case "helper-card": {
+        // The helper's input of approval cards (src/helper/cards.ts): each card's request says
+        // `script:helper-card allow|deny|owner`, and the stand-in answers each with helper__approval,
+        // one call per round, in the cards' order, then a line.
+        const cards = [...owner.matchAll(/<card id="([^"]+)"[^>]*>([\s\S]*?)<\/card>/g)].map((m) => ({ id: m[1]!, how: m[2]!.match(/script:helper-card[ \t]+(allow|deny|owner)/)?.[1] })).filter((c) => c.how);
+        const done = msgs.slice(ownerAt + 1).filter((m) => m.role === "assistant").length;
+        const next = cards[done];
+        if (next) return reply(`Answering card ${done + 1} of ${cards.length}.`, "tool_use", [{ type: "tool_use", id: `card-${msgs.length}-${done}`, name: "helper__approval", input: { card: next.id, answer: next.how, reason: `the stand-in answers ${next.how}` } }]);
+        const got = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
+        const said = typeof got?.content === "string" ? got.content : (got?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
+        return reply(`Answered ${cards.length} card${cards.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
+      }
       case "outage":
         return reply("Answered after the outage.");
       case "overloaded":

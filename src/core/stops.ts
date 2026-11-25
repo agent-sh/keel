@@ -77,6 +77,11 @@ export const notRun = (content: unknown): string | undefined => (typeof content 
 // the words after the colon are the owner's reason.
 export const OWNER_DENIED = "The owner denied this call";
 export const ownerDenial = (why?: string) => (why ? `${OWNER_DENIED}: ${why}` : `${OWNER_DENIED}. Do not retry it; take another way or ask.`);
+// What the model gets for a call the owner's helper denied on its card, on his standing instruction
+// (src/safety/delegate.ts): refused, not the owner's own act; the words after the colon are the helper's reason.
+// (The page reads who refused it and the reason from these words: ui/src/lib/work.ts refusalOf.)
+export const HELPER_DENIED = "Refused by the Helper (on the owner's standing instruction)";
+export const helperDenial = (why?: string) => `${HELPER_DENIED}: ${why || "no reason given"}. Do not retry it as it is; take another way, or ask the owner.`;
 // What the model gets for a call a PreToolUse hook of the owner's blocked,
 // followed by the hook's reason. The call never ran.
 export const HOOK_BLOCKED = "A hook blocked this call";

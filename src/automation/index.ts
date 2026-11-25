@@ -358,13 +358,10 @@ function init(deps: Deps) {
     if (f.t !== "feature" || f.name !== "approval") return;
     const a = f.data as { id: string; session_id: string; tool: string; summary: string; risk: string; state: string; by?: AnsweredBy };
     if (a.state === "pending") {
-      const s = deps.store.session(a.session_id);
-      // The line a notification shows: the tool, where it runs when that is not here, then the text
-      // with each hidden character written out. `hold`: why the request is opened before it is
-      // allowed; `glance`: a collapsed notification shows all of the line, so it may carry Allow once.
-      const card = perm.gate?.approval(a.id);
-      const form = card ? perm.gate!.form(card) : undefined;
-      alerts.raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, form?.line ?? `${a.tool}: ${spelled(a.summary)}`.slice(0, 500), { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(form ? { hold: form.hold, glance: form.glance } : {}) });
+      // (The owner's helper may answer it first: then the alert waits in the inbox, told nowhere, until it leaves it to him.)
+      let first: boolean | string = false;
+      try { first = alerts.helperFirst.take?.(a) ?? false; } catch (e) { capture(e, { at: "helper takes a card" }); }
+      alerts.raiseApproval(a, first === true, typeof first === "string" ? first : undefined);
     } else {
       alerts.readWhere("approval_id", a.id);
       // (Where the owner answered it: "allowed from the phone (Pixel)". A card a grant or a stop closed has no such place.)

@@ -35,12 +35,15 @@ import type { Look } from "./error-look.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { pendingQuestions } from "../tools/interact.ts";
 import { ASK_LINE, askRefusal, answerOf, type Answer, type AskFrom } from "./ask.ts";
+import { HelperCards, INSTRUCTION, SOURCE } from "./cards.ts";
 
 export type HelperSettings = {
   on: boolean;
   session_id: string | null;
   mail_every_min: number; // 0: no periodic mail check
   wake_gap_min: number;
+  // Answer other sessions' approval cards on the owner's standing instruction (cards.ts). Absent: on.
+  answer_cards?: boolean;
 };
 type State = HelperSettings & { last_wake: number; mail_baseline: boolean; labels_synced?: number; persona?: Persona };
 
@@ -87,6 +90,8 @@ export class Helper {
   // The name and the picture (persona.ts), and the looks at errors (looks.ts).
   readonly files: PersonaFiles;
   readonly looks: Looks;
+  // Other sessions' approval cards, answered on the owner's standing instruction (cards.ts).
+  readonly cards: HelperCards;
   private toldLooks = new Set<string>();
 
   constructor(readonly deps: Deps, source = mailSource()) {
@@ -100,6 +105,7 @@ ${TOLD_SCHEMA}`);
     this.records = new Memory(deps.store.db, () => deps.bus.emit({ t: "feature", name: "helper_memory", data: { items: this.memory() } }));
     this.meter = memoryMeter(deps.store);
     this.files = new PersonaFiles(join(deps.store.stateDir, "helper"));
+    this.cards = new HelperCards(this);
     this.looks = new Looks(deps, { session: () => this.session(), on: () => this.state().on, isHelper: this.isHelper }, (l) => this.onLook(l));
   }
 
@@ -126,6 +132,7 @@ ${TOLD_SCHEMA}`);
     const s = this.session();
     return {
       on: st.on && !!s, session_id: s?.id ?? null, mail_every_min: st.mail_every_min, wake_gap_min: st.wake_gap_min, last_wake: st.last_wake || null,
+      answer_cards: st.answer_cards !== false, instruction: { words: INSTRUCTION, source: SOURCE },
       ...this.look(),
       mail: { id: this.source.id, label: this.source.label, available: this.source.available(), account: this.source.available() ? this.source.account() : undefined, can: this.source.can },
       events: this.events(40),
@@ -133,6 +140,15 @@ ${TOLD_SCHEMA}`);
   }
   private emit() {
     this.deps.bus.emit({ t: "feature", name: "helper", data: this.view() });
+  }
+  // What it shows changed from outside this file (cards.ts).
+  changed() { this.emit(); }
+  // The cards it answered, newest first, for Settings > Helper.
+  answers() {
+    return (perm.gate?.helperAnswers(50) ?? []).map((a) => ({
+      id: a.id, session_id: a.session_id, title: this.deps.store.session(a.session_id)?.title || "untitled", tool: a.tool, summary: a.summary.slice(0, 300),
+      state: a.state, reason: a.by?.helper?.reason ?? null, resolved: a.resolved ?? null, source: a.by?.helper?.source ?? null,
+    }));
   }
 
   // Turned on: the session is made once (or made again when they deleted or
@@ -152,7 +168,9 @@ ${TOLD_SCHEMA}`);
     this.start();
     this.emit();
   }
-  configure(p: { mail_every_min?: unknown; wake_gap_min?: unknown }) {
+  configure(p: { mail_every_min?: unknown; wake_gap_min?: unknown; answer_cards?: unknown }) {
+    if (p.answer_cards !== undefined && typeof p.answer_cards !== "boolean") throw Object.assign(new Error("answer_cards is true or false"), { status: 400 });
+    if (typeof p.answer_cards === "boolean") this.save({ answer_cards: p.answer_cards });
     const n = (v: unknown, k: string) => {
       if (!Number.isFinite(v) || (v as number) < 0 || (v as number) > 1440) throw Object.assign(new Error(`${k} is minutes from 0 to 1440`), { status: 400 });
       return Number(v);
@@ -322,11 +340,12 @@ ${TOLD_SCHEMA}`);
     for (const e of list) q.run(e.id);
   }
 
-  record(kind: string, sessionId: string | null, title: string, body: string, level: Level) {
+  // `fed`: told already by the input that carries it (a card sent to the helper to answer: cards.ts).
+  record(kind: string, sessionId: string | null, title: string, body: string, level: Level, fed = false) {
     if (!this.state().on || !this.session()) return;
     const e: DigestEvent = { id: Bun.randomUUIDv7(), ts: Date.now(), kind, session_id: sessionId, title: title.slice(0, 200), body: body.slice(0, 400), level };
     const db = this.deps.store.db;
-    db.query("INSERT INTO helper_events (id, ts, kind, session_id, title, body, level) VALUES (?, ?, ?, ?, ?, ?, ?)").run(e.id, e.ts, e.kind, e.session_id, e.title, e.body, e.level);
+    db.query("INSERT INTO helper_events (id, ts, kind, session_id, title, body, level, fed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(e.id, e.ts, e.kind, e.session_id, e.title, e.body, e.level, fed ? 1 : 0);
     db.query("DELETE FROM helper_events WHERE ts < ?").run(Date.now() - 30 * 86400_000);
     if (level === "wake") this.schedule();
     this.emit();
@@ -496,6 +515,8 @@ ${TOLD_SCHEMA}`);
         return { ...req, messages: toMessages(h.deps.store.lineage(s.id)) };
       },
     });
+    this.cards.install();
+    this.off.push(() => this.cards.stop());
     // The turn of a question asked on a phone only reads (ask.ts).
     perm.gate?.toolLimits.set("helper-ask", (s) => (s.settings.helper ? (tool) => askRefusal(this.deps.store.lineage(s.id), tool) : undefined));
     this.off.push(() => perm.gate?.toolLimits.delete("helper-ask"));
@@ -534,7 +555,9 @@ ${TOLD_SCHEMA}`);
     // A frame is not an event: a delivery, a mark or a card put back at a restart is the same alert again.
     if (!this.state().on || !this.session() || !isNews(this.deps.store.db, a)) return;
     const who = a.data?.child_title ? ` (agent ${a.data.child_title})` : "";
-    this.record(a.kind, a.session_id, `${a.title}${who}`, a.body, level);
+    // An approval card says who answers it (cards.ts): the owner, by its class, or the helper, which was sent it whole.
+    const card = a.kind === "approval" && typeof a.data?.approval_id === "string" ? this.cards.said(a.data.approval_id) : undefined;
+    this.record(a.kind, a.session_id, `${a.title}${who}`, card ? `${a.body} (${card.words})` : a.body, level, !!card?.sent);
   }
 
   private onError(err: { session_id?: string; turnSession?: string; context?: unknown }) {
