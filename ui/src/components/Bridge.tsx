@@ -28,7 +28,6 @@ import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, ta
 import { getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
 import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
-import { usePhoneWidth } from "../lib/list-hold.ts";
 import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
@@ -158,10 +157,9 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // The head does not say the card's words again, but the reason a session needs the owner stays in view: a faint line after the folder.
   const ask = !offline && carded && w === "need" ? askSuffix(st) : "";
   // A session at work: the bar keeps the title, the dot, the word and the timer; what it runs is the word's tooltip and the
-  // folder is the title's (the transcript shows the command).
-  // (A phone has no tooltip: there the reason stays in the bar, wrapped under the word.)
-  const touchWidth = usePhoneWidth();
-  const working = w === "work" && !offline && !touchWidth && !backgroundOf(st);
+  // folder is the title's. What it does now is the line over the message box (DockNow.tsx): a reason here would change with
+  // each step and move the conversation under the bar a line at every one, on a phone too.
+  const working = w === "work" && !offline && !backgroundOf(st);
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded || working ? "" : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
