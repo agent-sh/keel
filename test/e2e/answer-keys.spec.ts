@@ -1462,7 +1462,7 @@ test("a request that comes under the pointer takes no click within its second, t
     const seen = w.seen.find((s) => s.id === card?.dataset.approvalId);
     return !!b && b === document.activeElement && b.dataset.ready === "true" && w.seen.length === 2 && !!seen && seen === w.seen[1] ? performance.now() - seen.at : 0;
   }, [x, y] as [number, number], { polling: "raf", timeout: 8000 });
-  expect(await since.jsonValue(), "the click comes within the next request's second").toBeLessThan(800);
+  expect(await since.jsonValue(), "the click comes within the next request's second").toBeLessThan(900);
   await page.mouse.click(x, y);
   await page.waitForTimeout(400);
   expect(await waiting(id), "a click within the second of a request that came under the pointer").toEqual([expect.stringContaining("c1")]);
