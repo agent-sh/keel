@@ -1,9 +1,11 @@
 import { Check, CircleDashed, GitBranch, GitMerge, Loader2, RefreshCw, Undo2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Clash } from "../../../src/worktree/overlap.ts";
 import { openSession } from "../lib/automation.ts";
-import { isLive, queueBranches, removeEntry, useLanding, type LandingEntry, type LandingView } from "../lib/landing.ts";
+import { canLand } from "../../../src/board/rules.ts";
+import { useBoard, type BoardRow } from "../lib/board.ts";
+import { isLive, landInOrder, queueBranches, removeEntry, useLanding, type LandingEntry, type LandingView, type LandRun } from "../lib/landing.ts";
 import { loadOverlap, otherOf, useOverlap, type OverlapView, type Pair } from "../lib/overlap.ts";
 import { failed, useStore } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -160,6 +162,63 @@ function LandingQueue({ session, q }: { session: Session; q: LandingView }) {
   );
 }
 
+// The branches whose agents ended and that wait to land (the board's own rule, src/board/rules.ts canLand), in the
+// order their agents were started, next to the live branches: one place to land what is ready. Land queues one;
+// Land all ready queues them in order, each after the one before it landed, and stops at the first that fails.
+function ReadyToLand({ session, q, ready }: { session: Session; q: LandingView | undefined; ready: BoardRow[] }) {
+  const [run, setRun] = useState<{ at: string; of: number; n: number } | null>(null);
+  const [out, setOut] = useState<LandRun | null>(null);
+  const [err, setErr] = useState("");
+  const stop = useRef(false);
+  useEffect(() => () => { stop.current = true; }, []);
+  if (!ready.length && !run && !out) return null;
+  const land = (branch: string) => {
+    setErr("");
+    queueBranches(session.id, [branch]).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${short(x.branch)}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "ReadyToLand" })));
+  };
+  const all = async () => {
+    const list = ready.map((r) => r.branch!);
+    stop.current = false;
+    setErr(""); setOut(null);
+    let n = 0;
+    try {
+      const done = await landInOrder(session.id, list, (at) => setRun({ at, of: list.length, n: ++n }), () => stop.current);
+      setOut(done);
+    } catch (e) { setErr(failed(e, { at: "ReadyToLand" })); }
+    setRun(null);
+  };
+  return (
+    <section className="flex flex-col gap-1.5" data-testid="ready-section">
+      <div className="flex items-center gap-2 px-1">
+        <h3 className="k-label">Ready to land</h3>
+        {run
+          ? <><span className="min-w-0 flex-1 truncate text-micro text-muted" role="status" data-testid="ready-run">Landing {run.n} of {run.of}: {short(run.at)}</span><button type="button" className="k-btn" data-quiet="" onClick={() => { stop.current = true; }} data-testid="ready-stop">Stop after this</button></>
+          : <><span className="flex-1" />{ready.length > 1 && <button type="button" className="k-btn" data-ink="" onClick={() => void all()} disabled={!q?.rules} title={`Queue ${ready.length} branches one after the other on ${q?.base ?? "the base"}; it stops at the first that does not land`} data-testid="ready-land-all"><GitMerge /> Land all ready · {ready.length}</button>}</>}
+      </div>
+      {err && <p className="px-1 text-caption text-danger" data-testid="ready-error">{err}</p>}
+      {out && (
+        <p className={cn("px-1 text-caption", out.stopped ? "text-danger" : "text-muted")} data-testid="ready-result">
+          {out.landed.length ? `Landed ${out.landed.length}: ${out.landed.map(short).join(", ")}. ` : ""}{out.stopped ? `Stopped at ${short(out.stopped.branch)}: ${out.stopped.why}` : "Nothing else is ready."}
+        </p>
+      )}
+      {ready.length > 0 && (
+        <ul className="flex flex-col" data-testid="ready-rows">
+          {ready.map((r) => (
+            <li key={r.id} className="flex min-w-0 items-center gap-2 rounded-lg px-1 py-1 text-caption hover:bg-hover" data-testid="ready-row" data-branch={r.branch ?? undefined}>
+              <GitBranch className="size-3.5 shrink-0 text-ok" />
+              <span className="min-w-0 truncate font-mono text-fg" title={r.branch ?? undefined}>{short(r.branch!)}</span>
+              <button type="button" className="min-w-0 flex-1 truncate text-left text-muted hover:text-accent" onClick={() => openSession(r.session_id)}>{r.title}</button>
+              {r.work?.branch && <span className="shrink-0 font-mono text-micro tabular-nums"><span className="text-ok">+{r.work.branch.added}</span> <span className="text-danger">-{r.work.branch.removed}</span></span>}
+              <button type="button" onClick={() => land(r.branch!)} disabled={!q?.rules || !!run} data-testid="ready-land" aria-label={`Queue ${short(r.branch!)} to land on ${q?.base ?? "the base"}`}
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-micro text-muted hover:bg-hover hover:text-accent disabled:opacity-40"><GitMerge className="size-3" /> Land</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 // The Branches panel: the live branches of the session's repository (worktrees
 // Keel made, branches sessions committed to), which pairs would conflict and
 // in which files, and what the last check cost.
@@ -169,6 +228,10 @@ export function BranchesPanel({ session }: { session: Session }) {
   const titles = useStore((s) => s.sessions);
   const [busy, setBusy] = useState(false);
   const queued = new Set((q?.entries ?? []).filter(isLive).map((e) => e.branch));
+  // Finished branches that wait to land are listed once, in their own section above, with their Land.
+  const board = useBoard(session.id);
+  const ready = (board?.rows ?? []).filter(canLand).sort((x, y) => x.created - y.created);
+  const readyBranches = new Set(ready.map((r) => r.branch));
   const land = (branch: string) => {
     setErr("");
     queueBranches(session.id, [branch]).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${x.branch}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "BranchesPanel" })));
@@ -205,10 +268,13 @@ export function BranchesPanel({ session }: { session: Session }) {
       </div>
       {err && <p className="px-1 text-caption text-danger">{err}</p>}
 
+      <ReadyToLand session={session} q={q} ready={ready} />
+
       <section className="flex flex-col gap-1.5">
         <h3 className="k-label px-1">Live branches</h3>
         {v.branches.length === 0 ? (
-          v.unheld?.length ? <Unheld list={v.unheld} /> : <p className="k-empty px-1">No session holds a branch of this repository: a worktree Keel makes, or a branch a session commits to, shows here.</p>
+          v.unheld?.some((u) => !readyBranches.has(u.branch)) ? <Unheld list={v.unheld.filter((u) => !readyBranches.has(u.branch))} />
+          : ready.length ? <p className="k-empty px-1">No other live branch.</p> : <p className="k-empty px-1">No session holds a branch of this repository: a worktree Keel makes, or a branch a session commits to, shows here.</p>
         ) : (
           <ul className="flex flex-col" data-testid="overlap-branches">
             {v.branches.map((b) => {

@@ -254,3 +254,65 @@ test("the Branches panel names a worktree with no commit yet instead of saying n
   await shoot(page, "landing-05-no-commit-yet");
   expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
 });
+
+// Feature: one place to land every ready branch. The Branches panel lists the branches whose agents
+// ended and that wait to land, each with Land, and "Land all ready" queues them in order, each after
+// the one before it landed, and stops at the first that does not land. Here the second fails its
+// check once the first is on main, so the third is never asked for.
+test("the Branches panel lands every ready branch in order and stops at the first that fails", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const top = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `landing-ready-${Date.now()}`);
+  const repo = join(top, "repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "notes.md"), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  // Passes on each change alone; fails once the first and the second are both on the tree.
+  writeFileSync(join(repo, "check.sh"), "! (grep -q ALPHA notes.md && grep -q BETA notes.md) || { echo 'ALPHA and BETA together'; exit 1; }\n");
+  mkdirSync(join(repo, ".keel"));
+  writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { notes: "sh check.sh" }, land: { checks: ["notes"] } }));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+  const commit = (sed: string, msg: string) => `sed -i '${sed}' notes.md && git -c user.name=k -c user.email=k@k commit -qam '${msg}'`;
+  const idle = (id: string) => expect.poll(async () => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);
+  const lane = (title: string, sed: string) => ({ name: "spawn_agent", input: { message: `${title}\n${scriptBash(commit(sed, title))}` } });
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Ready coordinator" } })).json()).session.id as string;
+  try {
+    await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([lane("Lane alpha", "s/^line 1$/line 1 ALPHA/"), lane("Lane beta", "s/^line 6$/line 6 BETA/"), lane("Lane gamma", "s/^line 12$/line 12 GAMMA/")])}`) } });
+    const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+    await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(3);
+    await idle(coord);
+    const branchOf = async (title: string) => (await agentsOf()).find((a) => a.title === title)!.branch as string;
+    const alpha = await branchOf("Lane alpha"), beta = await branchOf("Lane beta"), gamma = await branchOf("Lane gamma");
+
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${coord}`);
+    await openPanel(page, "branches");
+    const panel = page.getByTestId("branches-panel");
+    const section = panel.getByTestId("ready-section");
+    await expect(section.getByTestId("ready-row")).toHaveCount(3, { timeout: 30_000 });
+    for (const b of [alpha, beta, gamma]) await expect(section.locator(`[data-testid="ready-row"][data-branch="${b}"]`).getByTestId("ready-land")).toBeEnabled();
+    await expect(section.getByTestId("ready-land-all")).toHaveText(/Land all ready · 3/);
+    // Listed once: the same branches are not repeated as ended ones further down.
+    await expect(panel.getByTestId("overlap-unheld-row")).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await shoot(page, "landing-04-ready");
+
+    await section.getByTestId("ready-land-all").click();
+    // Alpha lands; beta is checked on top of it and leaves; gamma is never asked for.
+    await expect(section.getByTestId("ready-result")).toContainText(`Stopped at ${beta.replace(/^keel\//, "")}`, { timeout: 120_000 });
+    await expect(section.getByTestId("ready-result")).toContainText(`Landed 1: ${alpha.replace(/^keel\//, "")}`);
+    const view = (await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as { branch: string; state: string }[];
+    expect(view.find((e) => e.branch === alpha)?.state).toBe("landed");
+    expect(view.find((e) => e.branch === beta)?.state).toBe("left");
+    expect(view.some((e) => e.branch === gamma)).toBe(false);
+    expect(git(repo, "log", "--format=%s", "-2", "main").trim().split("\n")).toEqual(["Lane alpha", "init"]);
+    // What is left to land is still listed, with its own Land: gamma.
+    await expect(section.locator(`[data-testid="ready-row"][data-branch="${gamma}"]`).getByTestId("ready-land")).toBeEnabled();
+    await page.mouse.move(0, 0);
+    await shoot(page, "landing-05-ready-stopped");
+  } finally {
+    await request.post(`/api/sessions/${coord}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+    await request.delete(`/api/sessions/${coord}`).catch(() => {});
+  }
+});

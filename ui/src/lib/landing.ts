@@ -42,6 +42,34 @@ export async function removeEntry(sessionId: string, entry: string) {
   await loadLanding(sessionId);
 }
 
+// The owner lands several branches in order: each is queued after the one before it landed, and the run stops at the
+// first that is refused or leaves the queue (what is behind it was meant to be built on it). `step` is told each
+// branch as it is queued. The queue itself decides what passes: this only decides when the next is asked for.
+export type LandRun = { landed: string[]; stopped?: { branch: string; why: string } };
+export async function landInOrder(id: string, branches: string[], step: (branch: string) => void, stop?: () => boolean): Promise<LandRun> {
+  const landed: string[] = [];
+  for (const branch of branches) {
+    if (stop?.()) return { landed };
+    step(branch);
+    const had = new Set((byId[id]?.entries ?? []).map((e) => e.id));
+    const r = await queueBranches(id, [branch]);
+    if (r.refused.length) return { landed, stopped: { branch, why: r.refused.map((x) => x.why).join("; ") } };
+    // The entry this call made: one of the branch that the queue did not hold before.
+    const mine = () => byId[id]?.entries.filter((e) => e.branch === branch && !had.has(e.id)).sort((a, b) => b.created - a.created)[0];
+    for (;;) {
+      const e = mine();
+      if (e && !isLive(e)) {
+        if (e.state === "landed") { landed.push(branch); break; }
+        return { landed, stopped: { branch, why: e.why ?? (e.state === "removed" ? "it was taken out of the queue" : "it left the queue") } };
+      }
+      if (stop?.()) return { landed };
+      await new Promise<void>((done) => { const f = () => { subs.delete(f); clearTimeout(t); done(); }; const t = setTimeout(f, 3000); subs.add(f); });
+      if (!mine() || isLive(mine()!)) await loadLanding(id).catch(() => {});
+    }
+  }
+  return { landed };
+}
+
 export const isLive = (e: Entry) => e.state === "queued" || e.state === "building" || e.state === "checking" || e.state === "resolving";
 
 onFeature({
