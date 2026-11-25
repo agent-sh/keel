@@ -29,7 +29,7 @@ import { actions, getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
 import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useCrowded, useUI } from "../lib/ui.ts";
 import { watchPanes } from "../lib/automation.ts";
-import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
+import { ago, clock, scrollMotion, when, whenIdle } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { askSuffix } from "../../../src/core/watch.ts";
@@ -388,11 +388,38 @@ const Shown = memo(function Shown({ s, helm, quiet, back }: { s: Session; helm: 
   return <SessionView id={s.id} panel={helm && !quiet} focus={helm && !quiet} back={back} header={head(s, helm)} />;
 }, (was, now) => (was.quiet && now.quiet) || (was.s === now.s && was.helm === now.helm && was.quiet === now.quiet && !was.back === !now.back));
 
+// A phone's page beside the one in view: `rank` places it in the line, `behind` is the session in view.
+type Late = { rank: number; behind: string };
+// Whether it is its turn to be drawn. A page that is not in view is drawn after the one in view has its
+// conversation, one idle moment and a step of its rank later: at the first load each page reads its session
+// and draws its conversation, and six of them together stand between the owner and the page in view.
+// A page swiped to is the helm and is drawn at once (the station says so).
+function useLate(late: Late | undefined): boolean {
+  const [turn, setTurn] = useState(!late);
+  const behind = useStore((x) => !late || !!x.events[late.behind]);
+  const rank = late?.rank ?? 0;
+  // (A session in view that never loads does not keep the others back for more than LATE_MAX_MS.)
+  useEffect(() => {
+    if (turn) return;
+    const t = setTimeout(() => setTurn(true), LATE_MAX_MS);
+    return () => clearTimeout(t);
+  }, [turn]);
+  useEffect(() => {
+    if (turn || !behind) return;
+    let live = true, t: ReturnType<typeof setTimeout> | undefined;
+    whenIdle(() => { if (live) t = setTimeout(() => setTurn(true), rank * LATE_STEP_MS); }, 2000);
+    return () => { live = false; clearTimeout(t); };
+  }, [turn, behind, rank]);
+  return turn;
+}
+const LATE_STEP_MS = 150;
+const LATE_MAX_MS = 5000;
+
 // A pane and the session it holds (`s`). What lies over it for now is drawn on
 // top, first in the pane so that whoever asks the pane for its message box or
 // its cards finds the ones on top: the start page (`fresh`), a look (`look`).
 // The pane's own session stays drawn under them, out of reach, as it was.
-function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boolean; slot?: number; grow?: number; look?: { id: string; s?: Session }; fresh?: boolean }) {
+function Station({ s, helm, slot, grow, look, fresh, late }: { s: Session; helm: boolean; slot?: number; grow?: number; look?: { id: string; s?: Session }; fresh?: boolean; late?: Late }) {
   // What the pane shows on top: nothing of a session under the start page, the look, else its own.
   const top = fresh ? null : look ? look.s ?? null : s;
   const face = top ?? s;
@@ -412,8 +439,9 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
   const aimed = !!useAim(slot);
   const beside = usePanelBesideShown(top ?? undefined, helm && !fresh);
   // The pane's own session is drawn from the first time it shows: a page that opens on a look draws only the look.
-  const drawn = useRef(!covered);
-  if (!covered) drawn.current = true;
+  const turn = useLate(late);
+  const drawn = useRef(!covered && (turn || helm));
+  if (!covered && (turn || helm)) drawn.current = true;
   return (
     <section
       ref={ref}
@@ -911,7 +939,7 @@ export function Bridge() {
         {phone && helm && !sessions[helm] && missing(helm, helm)}
         {/* One keyed list for both layouts: a session keeps its pane (and what its panel shows) when the window crosses phone width. */}
         {/* Of several empty panes, one lists what needs the owner (the one the next session opens in, else the first); the others point to it. */}
-        {[...(phone ? pages.map((s) => <Station key={pageKey(s.id)} s={s} helm={s.id === helm} />) : []), ...slots.flatMap(({ id, i }, n) => {
+        {[...(phone ? pages.map((s, n) => <Station key={pageKey(s.id)} s={s} helm={s.id === helm} late={helm && s.id !== helm ? { rank: n, behind: helm } : undefined} />) : []), ...slots.flatMap(({ id, i }, n) => {
           const grow = focus ? 1 : weights[i]!;
           const key = st.keys[i]!;
           const own = id && sessions[id] && !gone(id) ? sessions[id]! : null;
