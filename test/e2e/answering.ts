@@ -132,7 +132,7 @@ export async function open(page: Page, ids: string[], drafts: Record<string, str
   // From a page of this origin that runs none of the app: an open page would write its own panes back.
   await page.goto("/api/daemon");
   await page.evaluate(([slots, drafts]) => {
-    localStorage.setItem("keel.focus", "false");
+    localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true");
     localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 }));
     for (const [id, text] of Object.entries(drafts)) localStorage.setItem(`keel.draft.${id}`, text);
   }, [ids, drafts] as const);

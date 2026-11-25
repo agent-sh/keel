@@ -242,7 +242,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     // Four panes: an agent's row may be too narrow for its title and its word. The title stays, the mark says the state, and the tooltip has both.
     const four = [coord, elsewhere, (await by("Port the parser")).session_id, (await by("Watch CI on main")).session_id];
     await page.evaluate((slots) => {
-      localStorage.setItem("keel.focus", "false");
+      localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true");
       localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 }));
     }, four);
     await page.goto(`/s/${coord}`);
@@ -405,7 +405,7 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   // or a touch was in it within the last half minute), not because it is on screen.
   const at = async (id: string) => { const b = (await station(page, id).boundingBox())!; await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); await page.mouse.move(b.x + b.width / 2 + 3, b.y + b.height / 2 + 3); };
   await page.evaluate(([a, b]) => {
-    localStorage.setItem("keel.focus", "false");
+    localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true");
     localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [a, b], sizes: {}, active: 0 }));
   }, [changelog, notes]);
   await page.goto(`/s/${changelog}`);
@@ -530,7 +530,7 @@ test("a failure in a pane scrolled off the window is unread and notified; one in
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(d.url);
     await page.evaluate((slots) => {
-      localStorage.setItem("keel.focus", "false");
+      localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true");
       localStorage.setItem("keel.panes", JSON.stringify({ count: 6, slots, sizes: {}, active: 0 }));
     }, ids);
     await page.goto(`${d.url}/s/${ids[0]}`);

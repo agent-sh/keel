@@ -325,8 +325,10 @@
   --spacing-tap: 2.75rem;
   /* The top edge of the window: the rail's brand row and a pane's top bar (its band included) are
      one height, so what is under each starts on one line across the window. The band is the
-     state's strip across a pane's top at rest (a state that calls the owner draws it thicker). */
-  --spacing-bar: 3.5rem;
+     state's strip across a pane's top at rest (a state that calls the owner draws it thicker).
+     One text line of the title and a small pad: room for a pane beside others to keep its title
+     and its preview line in it. */
+  --spacing-bar: 2.875rem;
   /* The row under a narrow pane's head: the helm's tools, another pane's preview line. */
   --spacing-bar-sub: 2.375rem;
   --spacing-band: 0.3125rem;

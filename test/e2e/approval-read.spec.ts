@@ -896,7 +896,7 @@ test("every way to a waiting session lands the keyboard on its list, then on All
   const made = [quiet.id, other.id];
   const panes = async (ids: string[]) => {
     await page.goto("/api/daemon");
-    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 })); }, ids);
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 })); }, ids);
   };
   const palette = async (title: string) => {
     await page.keyboard.press("Control+k");
@@ -994,7 +994,7 @@ test("a card reached by the Inbox's Review stands still from its first frame, an
   const made = [reader.id, other.id];
   try {
     await page.goto("/api/daemon");
-    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })); }, [reader.id, other.id]);
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })); }, [reader.id, other.id]);
     const takes: string[] = [];
     for (let rep = 0; rep < 3; rep++) {
       const s = await asking(request, `Review: rotate ${rep}`, [bash(`touch rotated-${rep}.txt`)]);

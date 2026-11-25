@@ -92,7 +92,7 @@ test("five and six panes: a titled list, and a map that brings in a pane off the
     await expect.poll(() => pending(ids[4]!), { timeout: 30_000 }).toBe(1);
     await page.setViewportSize({ width: 1920, height: 1040 });
     for (const n of [5, 6]) {
-      await page.addInitScript(([panes]) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", panes!); }, [JSON.stringify({ count: n, slots: ids.slice(0, n), sizes: {}, active: 0 })]);
+      await page.addInitScript(([panes]) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); localStorage.setItem("keel.panes", panes!); }, [JSON.stringify({ count: n, slots: ids.slice(0, n), sizes: {}, active: 0 })]);
       await page.goto(`/s/${ids[0]}`);
       await expect(page.locator("section.k-station[data-station]")).toHaveCount(n);
       // The list of titles, not the column of marks: each session's name reads on its row.

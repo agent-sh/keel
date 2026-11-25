@@ -173,7 +173,7 @@ test("a look over a pane, four panes and a phone keep each conversation's place"
     await page.emulateMedia({ reducedMotion: "reduce" });
     // (Not by `open`: on a phone the message box does not take the keyboard by itself.)
     await page.goto("/api/daemon");
-    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 })); }, [a, b]);
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 })); }, [a, b]);
     await page.goto(`/s/${a}`);
     await expect(pane(page, a)).toBeVisible();
     const onPhone = await readAt(page, a, "T2 line 15 of");

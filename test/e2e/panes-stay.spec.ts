@@ -935,7 +935,7 @@ test("the first pane is drawn once, a double click places only the row it began 
   const asked: string[] = [];
   page.on("request", (r) => { if (r.method() === "GET" && new URL(r.url()).pathname === `/api/sessions/${reader}`) asked.push(r.url()); });
   await page.goto("/api/daemon");
-  await page.evaluate(() => { localStorage.removeItem("keel.panes"); localStorage.setItem("keel.focus", "false"); });
+  await page.evaluate(() => { localStorage.removeItem("keel.panes"); localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); });
   await page.goto(`/s/${reader}`);
   await expect(slot(page, 0).locator(".k-reading")).toContainText("lorem ipsum");
   await page.waitForTimeout(1500);

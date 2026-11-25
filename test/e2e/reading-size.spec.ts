@@ -30,7 +30,7 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
   });
 
   await page.setViewportSize({ width: 1920, height: 1040 });
-  await page.addInitScript(([panes]) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", panes!); }, [JSON.stringify({ count: 4, slots: [long, ...others], sizes: {}, active: 0 })]);
+  await page.addInitScript(([panes]) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); localStorage.setItem("keel.panes", panes!); }, [JSON.stringify({ count: 4, slots: [long, ...others], sizes: {}, active: 0 })]);
   await page.goto(`/s/${long}`);
   await expect(page.locator("section.k-station")).toHaveCount(4);
   await page.locator(`section.k-station[data-station="${long}"] .prose-keel p`).first().waitFor();

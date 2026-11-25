@@ -136,7 +136,7 @@ test.describe("the bar in the workbench", () => {
       expect(look.weight).toBe("400");
       // One text line and a small pad.
       const head = (await page.getByTestId("station-head").boundingBox())!, t = (await title.boundingBox())!;
-      expect(head.height, `the bar is ${head.height}px for a title of ${t.height}px`).toBeLessThanOrEqual(t.height + 1.25 * px);
+      expect(head.height, `the bar is ${head.height}px for a title of ${t.height}px`).toBeLessThanOrEqual(t.height + 1.5 * px);
       // The state is its dot; the word is its tooltip.
       const word = page.getByTestId("station-word");
       await expect(word).toHaveAttribute("title", /\S/);

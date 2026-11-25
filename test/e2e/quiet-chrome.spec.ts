@@ -14,7 +14,7 @@ const settles = (l: Locator, to: number) => expect.poll(() => opacity(l)).toBe(t
 
 // Two panes side by side, laid out before the page loads: the pane's tools rest only where there are panes to choose between.
 const twoPanes = (page: Page, a: string, b: string) => page.addInitScript(([x, y]) => {
-  localStorage.setItem("keel.focus", "false");
+  localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true");
   localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [x, y], sizes: {}, active: 0 }));
 }, [a, b]);
 

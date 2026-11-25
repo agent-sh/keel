@@ -331,7 +331,7 @@ test("home: a new-session pane beside others lists what needs the owner", async 
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const asks = await asking(request, "Home: clean the build output", [bash("rm -rf dist build")]);
   try {
-    await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("keel.focus", "false"); } });
+    await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); } });
     await page.goto("/");
     await setPanes(page, 2);
     await page.getByRole("button", { name: "New session" }).first().click();

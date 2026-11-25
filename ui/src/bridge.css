@@ -1972,16 +1972,11 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 
 /* ---------- The quiet bar ----------
    The session's title at the body's size, in regular weight and quiet ink; its state is the dot, the word its
-   tooltip and the reader's. A pane alone (and Focus) has a bar of one text line and a small pad. Beside other
-   panes a head keeps its two rows (the title, then a preview line under another pane's), so every head ends on
-   one line. The pane's tools and the panel button rest out of sight and come under the pointer or the keys. */
+   tooltip and the reader's. The bar is one text line and a small pad (--spacing-bar). The pane's tools and the panel button rest out of sight and come under the pointer or the keys. */
 @media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   .k-station .k-top-in > .k-station-head .k-station-title { font-size: var(--text-base); font-weight: 400; line-height: 1.35; color: var(--muted); letter-spacing: 0; }
   .k-station .k-station-word-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .k-station-identity .k-station-word { cursor: default; }
-  .k-stations[data-count="1"] .k-top-in > .k-station-head { height: auto; min-height: 0; padding-block: 0.5rem; }
-  .k-stations[data-count="1"] .k-top-in > .k-station-head :is(.k-station-row, .k-station-rest) { min-height: 0; }
-  .k-stations[data-count="1"] .k-top-in > .k-session-header { align-items: center; }
+  .k-station-identity .k-station-word { position: relative; cursor: default; }
   .k-station .k-top:not(:hover, :focus-within) :is(.k-station-tools, .k-session-header .k-hand, .k-station-clock, .k-station-where) { opacity: 0; }
   .k-station .k-top :is(.k-station-tools, .k-session-header .k-hand, .k-station-clock, .k-station-where) { transition: opacity var(--dur-move) var(--ease-out); }
 }

@@ -5,7 +5,7 @@ import { shoot, setPanes } from "./shots.ts";
 // desk width, in one title size, whichever pane holds the keys. The bar rests with the permission
 // mode, a worktree when the session has one, Panels and the session's one menu; the rest is in that
 // menu. Whether the head is one line or two is the width's choice, never the turn's: a reason that
-// comes and goes moves no line. The pane's own tools are seen at rest, quietly, and take their own
+// comes and goes moves no line. The pane's own tools come under the pointer or the keys and take their own
 // room. A row red for its agents says how many failed; a quiet row's time shows only where it says
 // something the row above did not, and a row with news has its dot in the time's place.
 
@@ -128,17 +128,19 @@ test("a turn that starts or ends moves no line of the head, and its tools rest b
     // They rest where there are panes to choose between: this is the busy session's pane beside another.
     await page.setViewportSize({ width: 1050, height: 900 });
     await page.addInitScript(([x, y]) => {
-      localStorage.setItem("keel.focus", "false");
+      localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true");
       localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [x, y], sizes: {}, active: 0 }));
     }, [busy, idle]);
     await page.goto(`/s/${busy}`);
     const head = pane(page, busy).getByTestId("station-head");
     const tools = head.locator(".k-station-tools");
+    // At rest they are out of sight; under the pointer they come.
     await page.mouse.move(700, 800);
-    expect(Number(await tools.evaluate((el) => getComputedStyle(el).opacity))).toBe(1);
-    await expect(head.getByTestId("station-pin")).toBeVisible();
+    await expect.poll(() => tools.evaluate((el) => Number(getComputedStyle(el).opacity))).toBe(0);
     const h = (await head.boundingBox())!;
     await page.mouse.move(h.x + h.width - 30, h.y + h.height / 2);
+    await expect.poll(() => tools.evaluate((el) => Number(getComputedStyle(el).opacity))).toBe(1);
+    await expect(head.getByTestId("station-pin")).toBeVisible();
     const why = (await head.getByTestId("station-why").boundingBox())!, box = (await tools.boundingBox())!;
     const rows = Math.abs(why.y + why.height / 2 - (box.y + box.height / 2)) < why.height;
     if (rows) expect(why.x + why.width, "the pane's tools lie over the reason").toBeLessThanOrEqual(box.x + 1);

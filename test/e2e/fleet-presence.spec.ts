@@ -114,7 +114,7 @@ test("another machine is named in a narrow pane's head, and its part of the list
     // Four panes: each about 440 px. The far session's head names its machine.
     // Set from a page of this origin that runs none of the app: an open page writes its own panes back over them.
     await page.goto("/api/daemon");
-    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })); }, [local[0], farId, local[1], local[2]]);
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })); }, [local[0], farId, local[1], local[2]]);
     await page.goto(`/s/${local[0]}`);
     const pane = page.locator(`section.k-station[data-station="${farId}"]`);
     await expect(pane).toBeVisible({ timeout: 15_000 });
