@@ -1178,5 +1178,35 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("the dock's agents line says its counts and that it waits whole at a large text size", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(180_000);
+      const id = await fullDock(request, "Phone agents line");
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            const line = page.getByTestId("dock-agents");
+            await expect(line.getByTestId("dock-agents-waiting")).toBeVisible({ timeout: 30_000 });
+            await page.waitForTimeout(400);
+            // Each count shows all its words: the line grows a row rather than cut a part or the word that it waits.
+            const cut = await line.evaluate((el) => [...el.querySelectorAll<HTMLElement>('[data-testid="dock-agents-part"], [data-testid="dock-agents-waiting"]')].filter((p) => {
+              const r = p.getBoundingClientRect();
+              for (let a = p.parentElement; a && a !== el.parentElement; a = a.parentElement) {
+                const b = a.getBoundingClientRect();
+                if (r.right > b.right + 0.5 || r.bottom > b.bottom + 0.5 || r.left < b.left - 0.5) return true;
+              }
+              return false;
+            }).map((p) => p.textContent));
+            expect(cut, `counts cut at ${scale * 100}% text`).toEqual([]);
+            expect(await phoneProblems(line), `the agents line at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-30-agents-line-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }

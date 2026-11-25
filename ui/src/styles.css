@@ -876,6 +876,11 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 @media (pointer: coarse) and (max-width: 767px) {
   .k-docket-line { height: auto; min-height: var(--spacing-tap); }
   .k-docket-job { flex-wrap: wrap; row-gap: 0; }
+  /* The agents line: its counts keep their words, and what it waits on goes under them where the row is short. */
+  .k-agents-line { flex-wrap: wrap; row-gap: 0; }
+  .k-agents-parts { flex: 0 1 auto; height: auto; overflow: visible; }
+  .k-agents-waits { white-space: normal; }
+  .k-agents-line > .k-docket-more { margin-left: auto; }
   /* The plan's count already says how far it is; the bar would take the step's words their room. */
   .k-docket-track { display: none; }
   .k-docket-job > .k-job-meta { flex-basis: 100%; order: 2; padding-left: 1.375rem; }
