@@ -5,7 +5,7 @@
 import { boundedFeed, FEED_LIMIT } from "../streams.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
-import { farCatchUp, farTeller, noteDigests, onFarSent } from "../../drive/sent.ts";
+import { farCatchUp, farTeller, noteCaughtUp, noteDigests, onFarSent } from "../../drive/sent.ts";
 import { instructionFiles } from "../../engine/turn.ts";
 import { Fleet, RELAY_PING_MS } from "../../fleet/fleet.ts";
 import { bindFollow } from "../../fleet/follow.ts";
@@ -74,14 +74,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   // A model's send through the drive into a session on another machine: that machine's Keel is told its digests
   // first (src/drive/sent.ts). The agent view names a machine as the fleet does (its name or its ssh host). A Keel
   // of a build before the route answers 404: it keeps no typed marks, so the send goes, and its digests wait until
-  // it takes them, tried again each time a link to it comes up (farTeller says what each answer means).
+  // it takes them, tried again each time a link to it comes up, which also tells it nothing more waits
+  // (farCatchUp; farTeller says what each answer means).
   const farMachine = (host: string) => {
     const h = host.toLowerCase();
     return f.rows().find((r) => r.name.toLowerCase() === h || r.ssh_host?.toLowerCase() === h);
   };
   onFarSent(farTeller({
     machine: (host) => { const m = farMachine(host); return m && { id: m.id, ssh: f.isSsh(m) }; },
-    post: (id, digests) => f.handsJson(id, "/api/fleet/drive-sent", { method: "POST", body: JSON.stringify({ digests }), timeout: 10_000 }),
+    post: (id, digests, caughtUp) => f.handsJson(id, "/api/fleet/drive-sent", { method: "POST", body: JSON.stringify(caughtUp ? { digests, caught_up: true } : { digests }), timeout: 10_000 }),
     unknown: (host) => errors.capture("server", new Error(`a model's words went through the drive into a session on ${host}, a machine the fleet does not know: a Keel there was not told they are a model's, so a copy it makes may count them as the owner's`), { at: "drive far send", host }),
   }));
   const gfar = globalThis as { __keelFarCatchUp?: () => void };
@@ -89,7 +90,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   gfar.__keelFarCatchUp = bus.on((fr: any) => {
     if (fr.t !== "feature" || fr.name !== "fleet_sessions" || typeof fr.data?.machine !== "string") return;
     const id = fr.data.machine;
-    void farCatchUp(store, (host) => farMachine(host)?.id === id).catch((e) => errors.capture("server", e, { at: "drive far catch-up", machine: id }));
+    const m = f.rows().find((r) => r.id === id);
+    if (!m || f.isSsh(m)) return;
+    void farCatchUp(store, id, [m.name, m.ssh_host ?? ""]).catch((e) => errors.capture("server", e, { at: "drive far catch-up", machine: id }));
   });
   // The state of each message as it moves: read, handled, dropped (message-state.ts).
   const gs = globalThis as { __keelMessageStates?: MessageStates };
@@ -666,12 +669,14 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     },
 
     // A paired daemon's model is about to send words into a session another harness runs here: their digests, so a
-    // copy made here does not count them as the owner's (src/drive/sent.ts).
+    // copy made here does not count them as the owner's (src/drive/sent.ts); caught_up: it has told every send it
+    // made, and until each paired daemon has said so no copy here keeps a typed mark.
     "/api/fleet/drive-sent": {
-      POST: linked(async (req) => {
+      POST: linked(async (req, c) => {
         const b = await body(req);
         if (!Array.isArray(b.digests)) return bad("give digests");
         noteDigests(store, b.digests);
+        if (b.caught_up === true) noteCaughtUp(store, c.daemonId);
         return json({ ok: true });
       }),
     },

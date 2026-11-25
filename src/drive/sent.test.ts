@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { backfillSent, farCatchUp, farTeller, noteSent, onFarSent, wasSent } from "./sent.ts";
+import { backfillSent, farCatchUp, farTeller, noteCaughtUp, noteSent, onFarSent, wasSent } from "./sent.ts";
 import { digestsOf, sentCalls } from "./sent-read.ts";
 import { driveTools } from "./tools.ts";
 
@@ -82,15 +82,17 @@ test("a send to a session on another machine: its Keel is told first; one too ol
   const send = (text: string) => tool.run({ to: "claude:far::k", text }, {} as any).then((o) => JSON.stringify(o));
   let keel: "old" | "new" | "down" = "old";
   const posted: [string, string[]][] = [];
+  const caught: string[] = [];
   const unknown: string[] = [];
   const machines: Record<string, { id: string; ssh: boolean }> = { far: { id: "m1", ssh: false }, box: { id: "m2", ssh: true } };
   try {
     onFarSent(farTeller({
       machine: (h) => machines[h],
-      post: async (id, digests) => {
+      post: async (id, digests, caughtUp) => {
         if (keel === "old") throw Object.assign(new Error("not found"), { status: 404 });
         if (keel === "down") throw new Error("link down");
-        posted.push([id, digests]);
+        if (digests.length) posted.push([id, digests]);
+        if (caughtUp) caught.push(id);
       },
       unknown: (h) => unknown.push(h),
     }));
@@ -99,11 +101,18 @@ test("a send to a session on another machine: its Keel is told first; one too ol
     await send("second");
     expect(sends).toEqual(["hello there", "second"]);
     expect(posted).toEqual([]);
-    // Once it takes them, a link to it brings it everything that waited, once.
+    // An old Keel is not told it is caught up.
+    await farCatchUp(store, "m1", ["FAR"]);
+    expect(caught).toEqual([]);
+    // Once it takes them, a link to it brings it everything that waited, once, and then that nothing more waits;
+    // every later link says so again.
     keel = "new";
-    await farCatchUp(store, (h) => h === "far");
+    await farCatchUp(store, "m1", ["FAR"]);
     expect(posted.map(([id, d]) => [id, new Set(d)])).toEqual([["m1", new Set([...digestsOf("hello there"), ...digestsOf("second")])]]);
-    await farCatchUp(store, (h) => h === "far");
+    expect(caught).toEqual(["m1"]);
+    await farCatchUp(store, "m1", ["far"]);
+    expect(posted.length).toBe(1);
+    expect(caught).toEqual(["m1", "m1"]);
     await send("third");
     expect(posted.map(([, d]) => d)[1]).toEqual(digestsOf("third"));
     // That Keel cannot be reached: nothing is sent.
@@ -115,12 +124,27 @@ test("a send to a session on another machine: its Keel is told first; one too ol
     await send("to the ssh box");
     host = "nowhere";
     await send("to a host nobody knows");
-    await farCatchUp(store, () => true);
     expect(sends.slice(3)).toEqual(["to the ssh box", "to a host nobody knows"]);
     expect(unknown).toEqual(["nowhere"]);
   } finally {
     onFarSent(undefined);
   }
+});
+
+test("a Keel paired with a daemon that has not said it told every send counts no prompt as the owner's", async () => {
+  const store = fresh();
+  await backfillSent(store, read(store));
+  expect(wasSent(store, "typed by the owner")).toBe(false);
+  store.migrate("CREATE TABLE IF NOT EXISTS fleet_pairs (daemon_id TEXT PRIMARY KEY, name TEXT, key TEXT NOT NULL, created INTEGER NOT NULL)");
+  const pair = (id: string) => store.db.query("INSERT INTO fleet_pairs VALUES (?, ?, 'k', 0)").run(id, id);
+  pair("d1");
+  pair("d2");
+  // A peer of an older build never says it: every copy here stays unmarked.
+  expect(wasSent(store, "typed by the owner")).toBe(true);
+  noteCaughtUp(store, "d1");
+  expect(wasSent(store, "typed by the owner")).toBe(true);
+  noteCaughtUp(store, "d2");
+  expect(wasSent(store, "typed by the owner")).toBe(false);
 });
 
 test("a digest is kept however long ago it was sent and wherever its transcript moved", async () => {

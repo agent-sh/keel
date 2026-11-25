@@ -13,7 +13,8 @@ import type { Store } from "../core/store.ts";
 import { digestsOf, sentBy, type SentAsk } from "./sent-read.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT PRIMARY KEY, sent_ms INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`;
+CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS drive_sends_caught (daemon_id TEXT PRIMARY KEY, at INTEGER NOT NULL)`;
 
 function keep(store: Store, digests: string[]) {
   if (!digests.length) return;
@@ -35,11 +36,27 @@ export function noteDigests(store: Store, digests: unknown[]) {
   keep(store, digests.filter((d): d is string => typeof d === "string" && /^\d{1,24}$/.test(d)).slice(0, 4096));
 }
 
+// A paired daemon said it has told this Keel every send it made into a session here (farCatchUp, on each of its
+// links; the fleet's paired route).
+export function noteCaughtUp(store: Store, daemonId: string) {
+  store.migrate(SCHEMA);
+  store.db.query("INSERT OR REPLACE INTO drive_sends_caught (daemon_id, at) VALUES (?, ?)").run(daemonId, Date.now());
+}
+
+// Whether a paired daemon has not yet said it told every send (a Keel of a build before the word never does: a pair
+// with one keeps every copy here unmarked, failing closed).
+function pairNotCaughtUp(store: Store): boolean {
+  if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fleet_pairs'").get()) return false;
+  return !!store.db.query("SELECT 1 FROM fleet_pairs p WHERE NOT EXISTS (SELECT 1 FROM drive_sends_caught c WHERE c.daemon_id = p.daemon_id) LIMIT 1").get();
+}
+
 // Whether a recorded prompt is words a model sent through the drive. True while the history's sends are not read
-// yet: a prompt is the owner's only once it is known that no model sent it.
+// yet, and while a paired daemon has not said it told this Keel its sends: a prompt is the owner's only once it is
+// known that no model sent it.
 export function wasSent(store: Store, text: string): boolean {
   try {
     if (!store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return true;
+    if (pairNotCaughtUp(store)) return true;
     const q = store.db.query<unknown, [string]>("SELECT 1 FROM drive_sends WHERE digest = ? LIMIT 1");
     return sentBy(text, (d) => !!q.get(d));
   } catch {
@@ -64,35 +81,41 @@ export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ 
 }
 
 // A far machine's Keel, told the digests of a send into a session it may copy: set by the fleet
-// (src/server/routes/fleet.ts). "told": it keeps them; "old": a paired Keel of a build before the route, which
-// keeps no typed marks at all; "none": no Keel the fleet can reach there (a machine reached over ssh, or a host
-// the fleet does not know). It throws when that machine's Keel could not be reached. `quiet`: a catch-up, not a
-// send.
+// (src/server/routes/fleet.ts). `machine`: the paired machine whose Keel a host names, or none (a machine reached
+// over ssh runs no Keel that could copy the session; a host the fleet does not know is told to the owner on a send,
+// not on a catch-up: `quiet`). `post` gives that Keel digests, and with `caughtUp` says nothing more waits for it;
+// "old": a Keel of a build before the route, which keeps no typed marks at all. It throws when that Keel could not
+// be reached.
 export type FarAnswer = "told" | "old" | "none";
-let far: ((host: string, digests: string[], quiet: boolean) => Promise<FarAnswer>) | undefined;
-export const onFarSent = (fn: typeof far) => { far = fn; };
+type Far = { machine: (host: string, quiet: boolean) => string | undefined; post: (id: string, digests: string[], caughtUp: boolean) => Promise<"told" | "old"> };
+let far: Far | undefined;
+export const onFarSent = (fn: Far | undefined) => { far = fn; };
 
 // The teller the fleet sets: `machine` is the fleet's machine a host names, `post` gives it the digests (a LinkError
-// with the status of an answer that is not ok). A Keel of a build before the route answers 404. A machine reached
-// over ssh with no daemon runs no Keel that could copy the session. A host the fleet does not know is told to the
-// owner (`unknown`, an Errors row) on a send: a Keel there, paired or not, was not told.
-export function farTeller(o: { machine: (host: string) => { id: string; ssh: boolean } | undefined; post: (id: string, digests: string[]) => Promise<unknown>; unknown: (host: string) => void }) {
-  return async (host: string, digests: string[], quiet: boolean): Promise<FarAnswer> => {
-    const m = o.machine(host);
-    if (!m) { if (!quiet) o.unknown(host); return "none"; }
-    if (m.ssh) return "none";
-    try {
-      await o.post(m.id, digests);
-      return "told";
-    } catch (e) {
-      if ((e as { status?: number }).status === 404) return "old";
-      throw e;
-    }
+// with the status of an answer that is not ok). A Keel of a build before the route answers 404.
+export function farTeller(o: { machine: (host: string) => { id: string; ssh: boolean } | undefined; post: (id: string, digests: string[], caughtUp: boolean) => Promise<unknown>; unknown: (host: string) => void }): Far {
+  return {
+    machine: (host, quiet) => {
+      const m = o.machine(host);
+      if (!m) { if (!quiet) o.unknown(host); return undefined; }
+      return m.ssh ? undefined : m.id;
+    },
+    post: async (id, digests, caughtUp) => {
+      try {
+        await o.post(id, digests, caughtUp);
+        return "told";
+      } catch (e) {
+        if ((e as { status?: number }).status === 404) return "old";
+        throw e;
+      }
+    },
   };
 }
 
-// What waits for a far machine's Keel: kept with the host the send went to until that Keel took it, so a Keel that
-// could not keep it yet (an older build) gets it once it can, before it copies a session the drive sent into.
+// What waits for a far machine's Keel: kept with the host the send went to (as the fleet names it, in lower case)
+// until that Keel took it, so a Keel that could not keep it yet (an older build) gets it once it can, before it
+// copies a session the drive sent into. A host with no Keel the fleet reaches keeps its digests too: a Keel paired
+// there later is told them.
 const FAR = "CREATE TABLE IF NOT EXISTS drive_sends_far (host TEXT NOT NULL, digest TEXT NOT NULL, sent_ms INTEGER NOT NULL, PRIMARY KEY (host, digest))";
 const PART = 4096; // what the route takes at once (noteDigests)
 
@@ -100,33 +123,34 @@ const PART = 4096; // what the route takes at once (noteDigests)
 // waits for it) before the words go. The send may go unless this throws.
 export async function farSent(store: Store, host: string, digests: string[]): Promise<FarAnswer | undefined> {
   if (!host || !digests.length || !far) return undefined;
+  const h = host.toLowerCase();
   store.migrate(FAR);
   const q = store.db.query("INSERT OR IGNORE INTO drive_sends_far (host, digest, sent_ms) VALUES (?, ?, ?)");
   const now = Date.now();
-  store.db.transaction(() => { for (const d of digests) q.run(host, d, now); })();
-  return pushFar(store, host, false);
+  store.db.transaction(() => { for (const d of digests) q.run(h, d, now); })();
+  const id = far.machine(host, false);
+  return id ? pushFar(store, far, h, id) : "none";
 }
 
-async function pushFar(store: Store, host: string, quiet: boolean): Promise<FarAnswer | undefined> {
-  if (!far) return undefined;
+async function pushFar(store: Store, to: Far, host: string, id: string): Promise<"told" | "old"> {
   const waiting = store.db.query<{ digest: string }, [string]>("SELECT digest FROM drive_sends_far WHERE host = ? ORDER BY sent_ms").all(host).map((r) => r.digest);
-  let answer: FarAnswer = "told";
   for (let i = 0; i < waiting.length; i += PART) {
     const part = waiting.slice(i, i + PART);
-    answer = await far(host, part, quiet);
-    if (answer !== "told") return answer;
+    if ((await to.post(id, part, false)) === "old") return "old";
     const del = store.db.query("DELETE FROM drive_sends_far WHERE host = ? AND digest = ?");
     store.db.transaction(() => { for (const d of part) del.run(host, d); })();
   }
-  return answer;
+  return "told";
 }
 
-// Every host whose Keel still waits for digests and that `reached` says a link to it just came up: told again.
-// A host still out of reach or still too old waits for its next link.
-export async function farCatchUp(store: Store, reached: (host: string) => boolean) {
-  let hosts: string[];
-  try { hosts = store.db.query<{ host: string }, []>("SELECT DISTINCT host FROM drive_sends_far").all().map((r) => r.host); } catch { return; } // nothing ever waited
-  for (const h of hosts.filter(reached)) {
-    try { await pushFar(store, h, true); } catch {} // out of reach again: its next link tries
-  }
+// A link to machine `id` came up (`hosts`: the names the fleet knows it by): its Keel is told what still waits for
+// it, then that nothing more does (caught up), even when nothing waited. Until every Keel paired with it has said
+// so, a Keel counts no prompt of a copy as the owner's (wasSent): a send it was not told of may be in its sessions.
+// Throws when that Keel is out of reach again: its next link tries.
+export async function farCatchUp(store: Store, id: string, hosts: string[]) {
+  const to = far;
+  if (!to) return;
+  store.migrate(FAR);
+  for (const h of new Set(hosts.filter(Boolean).map((x) => x.toLowerCase()))) if ((await pushFar(store, to, h, id)) === "old") return;
+  await to.post(id, [], true);
 }
