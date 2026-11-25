@@ -1,10 +1,11 @@
-// The Keel mark: a hull over its keel, on a deep-sea tile.
-export function Logo({ size = 22 }: { size?: number }) {
+// The Keel mark: a level waterline and the keel under it, in one stroke of the ink around it. No
+// tile, and no size of its own: where it stands says how large it is (the rail: its icons' size,
+// bridge.css). The same path is the page's icon (ui/public/icon.svg) and the apps' (desktop/assets,
+// android).
+export function Logo() {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" className="shrink-0">
-      <rect width="32" height="32" rx="8" className="fill-accent" />
-      <path d="M6 11.5h20c-1.1 4.9-5 7.6-10 7.6s-8.9-2.7-10-7.6z" className="fill-accent-fg" />
-      <path d="M14.6 18.6h2.8l-.7 6.4h-1.4z" className="fill-accent-fg" />
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      <path d="M2.5 6.5H8L11.5 17.5H14.5L15.5 6.5H21.5" />
     </svg>
   );
 }

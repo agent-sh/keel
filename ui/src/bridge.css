@@ -55,13 +55,17 @@
 .k-scrim[data-over] { display: block; position: fixed; inset: 0; z-index: 35; background: color-mix(in oklch, var(--overlay) 45%, transparent); }
 /* The brand row is the top bar's height, and its middle is the bar's below the band: the name and a pane's title stand on one line. */
 .k-rail-brand { display: flex; align-items: center; justify-content: center; gap: 0.5625rem; height: var(--spacing-bar); padding-top: var(--spacing-band); flex-shrink: 0; }
-.k-rail[data-open] .k-rail-brand { justify-content: flex-start; padding: 0 0.5rem 0 1.125rem; }
-.k-logo { display: grid; place-items: center; color: var(--fg); }
+.k-rail[data-open] .k-rail-brand { justify-content: flex-start; padding: 0 0.5rem 0 1.1875rem; }
+/* The mark and the name are a line of the rail, not a banner over it: the mark is the size of the rail's
+   icons and stands in their column, the name is a label of the rail (its size, its weight, its ink), and
+   the fold beside them is fainter until the pointer is on it. */
+.k-logo { display: grid; place-items: center; color: var(--muted); }
+.k-logo svg { width: 1.0625rem; height: 1.0625rem; }
 .k-logo:not([data-live]) { opacity: 0.4; }
-/* The product's name in the text face, at the step and weight of the session's title beside it in the top bar. */
-.k-brand-name { display: none; font-weight: 600; font-size: var(--text-read); letter-spacing: -0.012em; }
+.k-brand-name { display: none; font-size: var(--text-ui); font-weight: 400; color: var(--muted); }
 .k-rail[data-open] .k-brand-name { display: inline; }
 .k-fold { margin-left: auto; }
+.k-rail-brand .k-fold { color: var(--faint); }
 
 .k-rail-acts, .k-rail-foot { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0 0.75rem; flex-shrink: 0; }
 .k-rail[data-open] .k-rail-acts { align-items: stretch; padding: 0 0.625rem 0.5rem; }

@@ -238,8 +238,8 @@ test("the foot names its places, and they open from one side in one style", asyn
 
 // The session list (its top block, its rows, its foot) and the top bar beside it are one block of the
 // text face: names and actions, state words, clocks and counts. The sizes and weights step alike: the
-// product's name is the session title's step, and New session, Search and every row's title share one
-// weight, whatever the row's state.
+// product's name is a label of the rail (its size, the regular weight) beside a mark the height of the
+// rail's icons, and New session, Search and every row's title share one weight, whatever the row's state.
 test("the list's top block, its rows and the top bar are set in one face, at the same steps", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   test.skip(!models.some((m) => m.id === "scripted:stand-in"), "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
@@ -284,7 +284,12 @@ test("the list's top block, its rows and the top bar are set in one face, at the
     }, asks);
     expect(Object.keys(faces), `faces in the list and the top bar: ${JSON.stringify(faces)}`).toEqual(["IBM Plex Sans Variable"]);
     const font = (sel: string) => page.locator(sel).first().evaluate((el) => { const c = getComputedStyle(el); return `${c.fontSize} ${c.fontWeight}`; });
-    expect(await font(".k-brand-name"), "the product's name and the session's title are two steps").toBe(await font(`section.k-station[data-station="${asks}"] [data-testid="station-title"]`));
+    // The brand is a line of the rail, not a banner over it.
+    expect(await font(".k-brand-name"), "the product's name is a label of the rail").toBe(await font('[data-testid="open-palette"] .k-act-label'));
+    expect((await font(".k-brand-name")).split(" ")[1], "the product's name is in the regular weight").toBe("400");
+    const high = (sel: string) => page.locator(sel).first().evaluate((el) => el.getBoundingClientRect().height);
+    expect(await high(".k-logo svg"), "the mark is the height of the rail's icons").toBe(await high('[data-testid="open-palette"] svg'));
+    expect(await high(".k-logo svg"), "the mark is no taller than the name's line").toBeLessThanOrEqual(await high(".k-brand-name"));
     expect(await font('[data-testid="new-session"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${asks}"] .k-row-title`));
     expect(await font('[data-testid="open-palette"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
     expect(await font(`[data-testid="session-row"][data-session="${failed}"] .k-row-title`), "a failed row's title is a read row's weight").toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
