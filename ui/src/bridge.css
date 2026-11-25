@@ -1287,9 +1287,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      (its tools, Stop among them, come back with the tap). */
   .k-session:has(.k-tray[data-asking]) > .k-reading-room { min-height: clamp(0px, calc((100% - 24rem) / 2), var(--spacing-tap)); }
   .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-compose-tools { display: none; }
-  /* An open question takes the room of the session's tools row and of the state line, which the card
-     says (Composer marks the pane): the title stays above it, and both come back once it is answered. */
-  .k-station[data-question] .k-station-identity .k-station-rest { display: none; }
+  /* An open question takes the room of the session's tools row, which comes back once it is answered (Composer marks the
+     pane). The bar keeps the state's dot and its age as it does for any other state: the title is what gives way. */
   /* The tools row folds into the session's one menu button, at the end of the title's row, while any card waits
      (an approval, a plan, a secret too): Work board, Stop and Archive stay a tap away, the card has the room, and the
      row's other tools stay mounted, hidden. */

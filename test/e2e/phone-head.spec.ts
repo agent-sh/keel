@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { calls } from "./answering.ts";
+import { calls, colors } from "./answering.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a finished session on a phone spends its first screen on the conversation. The top bar is
@@ -83,6 +83,46 @@ for (const size of SIZES) {
           expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
         } finally {
           await request.delete(`/api/sessions/${session.id}`);
+        }
+      });
+    });
+  }
+}
+
+// Feature (UX-S141): while a question or an approval waits, a phone's bar still shows the state's dot and its age,
+// and the menu: the title is what gives way, cut with an ellipsis, however long it is and at any text size.
+const LONG = "Decide how the checkout service should shard its order tables across the three regions before Friday";
+for (const [what, ask] of [["a question", colors], ["an approval", { name: "Bash", input: { command: "git push origin release" } }]] as const) {
+  for (const scale of [1, 1.5]) {
+    test.describe(`on a phone, ${what} at ${scale * 100}% text`, () => {
+      test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+      test.setTimeout(60_000);
+      test("the bar keeps the state's dot and age, and the long title gives way", async ({ page, request }) => {
+        const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+        test.skip(!models.includes(MODEL), "requires the scripted provider");
+        await page.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+        const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title: LONG } })).json();
+        try {
+          await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: ask === colors ? "full-auto" : "default", sandbox: "off" } });
+          await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([ask]) } });
+          await page.goto(`/s/${session.id}`);
+          const pane = page.locator(".k-station[data-helm]");
+          await expect(pane).toHaveAttribute("data-watch", "need", { timeout: 30_000 });
+          await expect(pane.getByTestId(ask === colors ? "question" : "approval")).toBeVisible();
+          const bar = (await pane.locator(".k-top").boundingBox())!;
+          const [title, word, clock, menu] = await Promise.all(["station-title", "station-word", "station-clock", "session-menu"].map(async (id) => (await pane.getByTestId(id).first().boundingBox())!));
+          for (const [id, b] of [["the state's dot", word], ["its age", clock], ["the menu", menu]] as const) {
+            expect(b, id).toBeTruthy();
+            expect(b!.width, `${id} has a width`).toBeGreaterThan(4);
+            expect(b!.x + b!.width, `${id} is inside the page`).toBeLessThanOrEqual(390);
+            expect(b!.y + b!.height, `${id} is in the bar`).toBeLessThanOrEqual(bar.y + bar.height + 1);
+          }
+          expect(title!.x + title!.width, "the title ends where the dot begins").toBeLessThanOrEqual(word!.x + 1);
+          expect(await pane.getByTestId("station-title").evaluate((e) => e.scrollWidth > e.clientWidth), "the title is the one that is cut").toBe(true);
+          await shoot(page, `phone-head-card-${scale}-${ask === colors ? "question" : "approval"}`);
+        } finally {
+          await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+          await request.delete(`/api/sessions/${session.id}`).catch(() => {});
         }
       });
     });
