@@ -1996,8 +1996,13 @@ content named first, what only the owner allows (a tool that confirms every
 call, a hook of his that asks, a write beyond his accounts), spending or
 renting machines, an irreversible publish or deletion, authority over his
 machines or the rules (leaving the sandbox, root, services, sign-ins,
-credentials, Keel's permissions and settings), and a card that does not hold
-its whole request. Those reach the owner at once, as before. A card the helper
+credentials, Keel's permissions and settings, a write to a service), and
+what the helper cannot see in the card: a card that does not hold its whole
+request, or a command that runs code the card does not show (a script, a
+package's script, a recipe of make or just, a git alias, code handed to a
+shell or an interpreter). The strings of a tool's input are read the same way
+as a command. Those reach the owner at once, as before. The classes are read
+from words, so a form they miss reaches the helper, and its prompt says so. A card the helper
 leaves to him, or does not answer in its turn or within two minutes, reaches
 him then, with a notification. Until then its alert waits in the inbox and is
 told nowhere. After the helper denied three of a session's cards in a row, that

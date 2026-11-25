@@ -27,7 +27,8 @@
 //   in part), so nobody but the owner can stand behind an allow.
 //
 // Pure: the card as stored in, a class or null out (delegate.test.ts).
-import type { RiskRule } from "./risk-words.ts";
+import { name as base, unwrap, type RiskRule } from "./risk-words.ts";
+import { splitCommand, type Simple } from "./shell.ts";
 
 // What made a one-call card (gate.ts askOnce): outside content named the target, a tool that confirms
 // each call, private words in a public place, a hook of the owner's that asks.
@@ -59,7 +60,8 @@ export type CardIn = {
 // The rule words the policy gives what leaves the sandbox, reads credentials or is Keel's own (policy.ts).
 const AUTHORITY_RULES = [/asks to leave the sandbox/, /reads credentials/, /Keel's own configuration/, /runs later, outside the sandbox/, /credential store/, /outside what the sandbox shows/, /runs as root/i, /acts in another session/];
 
-// One class for a card, or null: the helper may judge it.
+// One class for a card, or null: the helper may judge it. What the helper cannot see in the card is the owner's:
+// code the card does not show (a script, a package's script, an alias, code handed to an interpreter) is `unseen`.
 export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClass; why: string } | null {
   const say = (cls: OwnerClass, detail?: string) => ({ cls, why: detail ? `${CLASS_WORDS[cls]}: ${detail}` : CLASS_WORDS[cls] });
   const f = a.facts ?? {};
@@ -73,11 +75,19 @@ export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClas
   const rule = a.rule ?? "";
   const auth = AUTHORITY_RULES.find((r) => r.test(rule));
   if (auth) return say("authority", rule);
-  // What the command or the tool says it does names the class first; the rules' risk classes after it.
-  const text = a.kind === "shell" ? a.summary : "";
-  const hit = (text && shellClass(text)) || toolClass(toolWords(a.tool, a.input));
-  if (hit) return say(hit.cls, hit.what);
   const risks = new Set(f.risks ?? []);
+  // What the command or the tool says it does names the class first; the rules' risk classes after it.
+  if (a.kind === "shell") {
+    const hit = shellClass(a.summary);
+    if (hit) return say(hit.cls, hit.what);
+    const hidden = hiddenCode(a.summary);
+    if (hidden) return say("unseen", hidden);
+    if (risks.has("hidden")) return say("unseen", a.why);
+  } else {
+    // (An edit's strings are a file's text, which runs nothing by being written: the gate's rules judge where it lands.)
+    const hit = toolClass(toolWords(a.tool, a.input)) ?? (a.kind === "edit" ? null : valuesClass(a.tool, a.input));
+    if (hit) return say(hit.cls, hit.what);
+  }
   if (risks.has("destroys")) return say("delete", a.why);
   // A change on another machine or a service (its deletions and the files there that run later are among it),
   // credentials sent out, a reach past the session on this machine.
@@ -89,28 +99,23 @@ const isClipped = (v: unknown) => !!v && typeof v === "object" && "_clipped" in 
 
 // --- commands ------------------------------------------------------------------
 
-// The simple commands of a line, each as its words (quotes taken off). A rough split: the gate's own
-// reading already judged the line; this only names a class among what it let ask.
+// The simple commands of a line as the gate's own parser reads them (quotes taken off, a here-document's lines and
+// what a substitution runs among them), each with the program it runs past assignments and wrappers (`run`) and
+// the words before that (`pre`: the wrappers). Null: the parser cannot read the line.
+type Part = { s: Simple; run: string[]; at: number; pre: string[]; deep?: true };
+function partsOf(line: string): Part[] | null {
+  const parts = splitCommand(line);
+  if (!parts) return null;
+  return parts.map((s) => { const r = unwrap(s.words); return { s, run: r.words, at: r.at, pre: s.words.slice(0, r.at), ...(r.deep ? { deep: true as const } : {}) }; });
+}
+
+// A rough split, for a line the parser cannot read: the class words are still looked for in it.
 export function simpleCommands(line: string): string[][] {
   return line.split(/\|\||&&|[;|&\n]|\$\(|`|\(|\)/).map((part) => part.trim().split(/\s+/).map((w) => w.replace(/^['"]+|['"]+$/g, "")).filter(Boolean)).filter((w) => w.length);
 }
 
-// The program a part runs past assignments and the wrappers that only start it.
-const WRAPPERS = new Set(["env", "nice", "nohup", "time", "timeout", "command", "exec", "xargs", "stdbuf", "ionice", "chrt", "npx", "bunx", "uvx", "pnpx"]);
-function programOf(words: string[]): { p: string; args: string[] } | null {
-  let i = 0;
-  while (i < words.length) {
-    const w = words[i]!;
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) { i++; continue; }
-    const base = w.slice(w.lastIndexOf("/") + 1);
-    if (WRAPPERS.has(base)) { i++; while (i < words.length && /^-/.test(words[i]!)) i++; if (base === "timeout" && /^\d/.test(words[i] ?? "")) i++; continue; }
-    return { p: base, args: words.slice(i + 1) };
-  }
-  return null;
-}
-
 const ROOT = new Set(["sudo", "doas", "pkexec", "su", "run0"]);
-const MACHINE = new Set(["systemctl", "loginctl", "crontab", "launchctl", "chsh", "passwd", "usermod", "useradd", "userdel", "groupadd", "visudo", "ufw", "iptables", "ip6tables", "nft", "modprobe", "insmod", "mount", "umount", "swapon", "sysctl", "update-alternatives", "ssh-add", "ssh-copy-id"]);
+const MACHINE = new Set(["systemctl", "systemd-run", "loginctl", "crontab", "launchctl", "chsh", "passwd", "usermod", "useradd", "userdel", "groupadd", "visudo", "ufw", "iptables", "ip6tables", "nft", "modprobe", "insmod", "mount", "umount", "swapon", "sysctl", "update-alternatives", "ssh-add", "ssh-copy-id"]);
 const PACKAGE_PUBLISH = new Set(["npm", "pnpm", "yarn", "bun", "cargo", "poetry", "uv", "hatch", "flit", "gem", "vsce", "ovsx", "twine", "helm", "deno", "jsr"]);
 const CLOUD_RENT: Record<string, RegExp> = {
   vastai: /^(create|start|launch|rent|copy|transfer|deposit)$/,
@@ -127,58 +132,216 @@ const CLOUD_RENT: Record<string, RegExp> = {
   oci: /^(launch|create)$/,
 };
 const INFRA = new Set(["terraform", "tofu", "pulumi", "cdk", "cdktf"]);
+// Clients that send a request to a service, and the ones that open a raw connection (what they send is not shown).
+const HTTP_CLIENTS = new Set(["curl", "wget", "http", "https", "xh", "xhs", "httpie", "curlie", "grpcurl"]);
+const RAW_CLIENTS = new Set(["nc", "ncat", "netcat", "socat", "telnet", "websocat", "wscat"]);
 
 type Hit = { cls: OwnerClass; what: string } | null;
 
 // The class of a command line the gate asked about, or null.
 export function shellClass(line: string): Hit {
-  for (const words of simpleCommands(line)) {
-    const x = programOf(words);
-    if (!x) continue;
-    const { p, args } = x;
-    const said = words.join(" ").slice(0, 160);
-    const has = (re: RegExp) => args.some((a) => re.test(a));
-    const verb = args.find((a) => !a.startsWith("-")) ?? "";
-    if (ROOT.has(p)) return { cls: "authority", what: `${p} runs as root (${said})` };
-    if (MACHINE.has(p)) return { cls: "authority", what: said };
-    // Sign-ins, secrets and keys of the owner's accounts.
-    if ((p === "gh" || p === "glab") && /^(auth|secret|ssh-key|gpg-key|variable)$/.test(verb)) return { cls: "authority", what: said };
-    if ((p === "aws" && verb === "configure") || (p === "gcloud" && verb === "auth") || (p === "az" && verb === "login") || (p === "npm" && /^(login|adduser|token|owner|access)$/.test(verb)) || (p === "git" && verb === "config" && has(/^--(global|system)$/))) return { cls: "authority", what: said };
-    // Spend: renting machines, or infrastructure applied as written.
-    if (CLOUD_RENT[p] && args.some((a) => CLOUD_RENT[p]!.test(a))) return { cls: "spend", what: said };
-    if (p === "aws" && has(/^(run-instances|start-instances|request-spot-instances|request-spot-fleet|create-fleet|purchase-.*|create-capacity-reservation|create-cluster|create-db-instance|create-nodegroup)$/)) return { cls: "spend", what: said };
-    if (p === "gcloud" && has(/^(create|start)$/) && has(/^(instances|tpus|clusters|tpu-vm|instance-groups|reservations)$/)) return { cls: "spend", what: said };
-    if (p === "az" && has(/^(create|start)$/) && has(/^(vm|aks|vmss)$/)) return { cls: "spend", what: said };
-    if (INFRA.has(p) && has(/^(apply|up|deploy)$/)) return { cls: "spend", what: said };
-    if (INFRA.has(p) && has(/^destroy$/)) return { cls: "delete", what: said };
-    // Publication that cannot be taken back.
-    if (PACKAGE_PUBLISH.has(p) && has(/^(publish|unpublish|yank|push|release)$/)) return { cls: "publish", what: said };
-    if (p === "twine" && verb === "upload") return { cls: "publish", what: said };
-    if (p === "uv" && verb === "publish") return { cls: "publish", what: said };
-    if ((p === "docker" || p === "podman" || p === "buildah" || p === "skopeo") && /^(push|copy)$/.test(verb)) return { cls: "publish", what: said };
-    if (p === "dotnet" && has(/^push$/) && has(/^nuget$/)) return { cls: "publish", what: said };
-    if ((p === "gh" || p === "glab") && /^release$/.test(verb) && has(/^(create|upload|edit|delete)$/)) return { cls: "publish", what: said };
-    if ((p === "gh" || p === "glab") && verb === "repo" && has(/^(delete|archive|rename|transfer)$/)) return { cls: "delete", what: said };
-    if ((p === "gh" || p === "glab") && verb === "repo" && has(/^--visibility(=public)?$|^--public$/)) return { cls: "publish", what: said };
-    if (/^(wrangler|vercel|netlify|firebase|flyctl|fly|railway|heroku|surge)$/.test(p) && has(/^(deploy|publish|--prod|release)$/)) return { cls: "publish", what: said };
-    if (p === "git" && verb === "push") {
-      if (has(/^--tags$|^--follow-tags$|^refs\/tags\//) || args.some((a, k) => k > 0 && /^v?\d+\.\d+/.test(a))) return { cls: "publish", what: said };
-      if (has(/^(-d|--delete|--mirror|--prune|-f|--force|--force-with-lease.*|\+.*|:.*)$/)) return { cls: "delete", what: said };
-    }
-    // Deletion through a service's own client.
-    if ((p === "gh" || p === "glab") && (has(/^delete$/) || args.some((a, k) => (/^(-X|--method)$/.test(args[k - 1] ?? "") && /^delete$/i.test(a)) || /^--method=delete$/i.test(a)))) return { cls: "delete", what: said };
-    if (p === "curl" && args.some((a, k) => (/^(-X|--request)$/.test(args[k - 1] ?? "") && /^delete$/i.test(a)) || /^-XDELETE$/i.test(a))) return { cls: "delete", what: said };
-    if (p === "aws" && has(/^(rm|rb|delete-.*|terminate-instances)$/)) return { cls: "delete", what: said };
-    if ((p === "gsutil" || p === "gcloud") && has(/^(rm|delete)$/)) return { cls: "delete", what: said };
-    if ((p === "kubectl" || p === "helm") && /^(delete|uninstall)$/.test(verb)) return { cls: "delete", what: said };
-    if ((p === "docker" || p === "podman") && (/^(rm|rmi)$/.test(verb) || has(/^prune$/) || (has(/^(volume|network|image|container)$/) && has(/^rm$/)))) return { cls: "delete", what: said };
-    if (/^(dropdb|dropuser)$/.test(p)) return { cls: "delete", what: said };
-    if (/^(psql|mysql|sqlite3|mongosh|redis-cli|valkey-cli)$/.test(p) && /\b(drop\s+(table|database|schema)|truncate\b|delete\s+from|flushall|flushdb|dropDatabase)\b/i.test(line)) return { cls: "delete", what: said };
-    // Keel's own permissions and settings, through its command line or its API.
-    if (p === "keel" && /^(perm|permissions|rules|grant|mode|settings|sandbox|config)$/.test(verb)) return { cls: "authority", what: said };
-    if ((p === "curl" || p === "wget" || p === "http" || p === "xh") && /\/api\/(sessions\/[^/\s]+\/)?(permissions|rules|grants|settings|sandbox|approvals)\b/.test(said)) return { cls: "authority", what: said };
+  const parts = partsOf(line);
+  const list: { words: string[]; pre: string[] }[] = parts ? parts.map((x) => ({ words: x.run, pre: x.pre })) : simpleCommands(line).map((w) => ({ words: w, pre: [] }));
+  for (const { words, pre } of list) {
+    const lead = pre.map(base).find((w) => ROOT.has(w) || MACHINE.has(w));
+    if (lead) return { cls: "authority", what: `${lead} ${ROOT.has(lead) ? "runs as root" : "changes the machine"} (${[...pre, ...words].join(" ").slice(0, 160)})` };
+    if (!words.length) continue;
+    const hit = wordsClass(words, line);
+    if (hit) return hit;
   }
   return null;
+}
+
+function wordsClass(words: string[], line: string): Hit {
+  const p = base(words[0]!);
+  const args = words.slice(1);
+  const said = words.join(" ").slice(0, 160);
+  const has = (re: RegExp) => args.some((a) => re.test(a));
+  const verb = args.find((a) => !a.startsWith("-")) ?? "";
+  const method = methodOf(p, args);
+  if (ROOT.has(p)) return { cls: "authority", what: `${p} runs as root (${said})` };
+  if (MACHINE.has(p)) return { cls: "authority", what: said };
+  // Sign-ins, secrets and keys of the owner's accounts.
+  if ((p === "gh" || p === "glab") && /^(auth|secret|ssh-key|gpg-key|variable)$/.test(verb)) return { cls: "authority", what: said };
+  if ((p === "aws" && verb === "configure") || (p === "gcloud" && verb === "auth") || (p === "az" && verb === "login") || (p === "npm" && /^(login|adduser|token|owner|access)$/.test(verb)) || (p === "git" && verb === "config" && has(/^--(global|system)$/))) return { cls: "authority", what: said };
+  // Spend: renting machines, or infrastructure applied as written.
+  if (CLOUD_RENT[p] && args.some((a) => CLOUD_RENT[p]!.test(a))) return { cls: "spend", what: said };
+  if (p === "aws" && has(/^(run-instances|start-instances|request-spot-instances|request-spot-fleet|create-fleet|purchase-.*|create-capacity-reservation|create-cluster|create-db-instance|create-nodegroup)$/)) return { cls: "spend", what: said };
+  if (p === "gcloud" && has(/^(create|start)$/) && has(/^(instances|tpus|clusters|tpu-vm|instance-groups|reservations)$/)) return { cls: "spend", what: said };
+  if (p === "az" && has(/^(create|start)$/) && has(/^(vm|aks|vmss)$/)) return { cls: "spend", what: said };
+  if (INFRA.has(p) && has(/^(apply|up|deploy)$/)) return { cls: "spend", what: said };
+  if (INFRA.has(p) && has(/^destroy$/)) return { cls: "delete", what: said };
+  // Publication that cannot be taken back.
+  if (PACKAGE_PUBLISH.has(p) && has(/^(publish|unpublish|yank|push|release)$/)) return { cls: "publish", what: said };
+  if (p === "twine" && verb === "upload") return { cls: "publish", what: said };
+  if (p === "uv" && verb === "publish") return { cls: "publish", what: said };
+  if (/^(changeset|semantic-release|release-it|goreleaser|np|lerna)$/.test(p) && (p !== "changeset" || has(/^publish$/)) && (p !== "lerna" || has(/^publish$/))) return { cls: "publish", what: said };
+  if ((p === "docker" || p === "podman" || p === "buildah" || p === "skopeo") && /^(push|copy)$/.test(verb)) return { cls: "publish", what: said };
+  if (p === "dotnet" && has(/^push$/) && has(/^nuget$/)) return { cls: "publish", what: said };
+  if ((p === "gh" || p === "glab") && /^release$/.test(verb) && has(/^(create|upload|edit|delete)$/)) return { cls: "publish", what: said };
+  if ((p === "gh" || p === "glab") && verb === "repo" && has(/^(delete|archive|rename|transfer)$/)) return { cls: "delete", what: said };
+  if ((p === "gh" || p === "glab") && verb === "repo" && has(/^--visibility(=public)?$|^--public$/)) return { cls: "publish", what: said };
+  if ((p === "gh" || p === "glab") && /^(workflow|run)$/.test(verb) && has(/^(run|rerun|enable)$/)) return { cls: "authority", what: said };
+  if (/^(wrangler|vercel|netlify|firebase|flyctl|fly|railway|heroku|surge)$/.test(p) && has(/^(deploy|publish|--prod|release)$/)) return { cls: "publish", what: said };
+  if (p === "git" && verb === "push") {
+    if (has(/^--tags$|^--follow-tags$|^refs\/tags\//) || args.some((a, k) => k > 0 && /^v?\d+\.\d+/.test(a))) return { cls: "publish", what: said };
+    if (has(/^(-d|--delete|--mirror|--prune|-f|--force|--force-with-lease.*|\+.*|:.*)$/)) return { cls: "delete", what: said };
+  }
+  // Deletion through a service's own client.
+  if ((p === "gh" || p === "glab") && (has(/^delete$/) || method === "DELETE")) return { cls: "delete", what: said };
+  if (HTTP_CLIENTS.has(p) && method === "DELETE") return { cls: "delete", what: said };
+  if (p === "aws" && has(/^(rm|rb|delete-.*|terminate-instances)$/)) return { cls: "delete", what: said };
+  if ((p === "gsutil" || p === "gcloud") && has(/^(rm|delete)$/)) return { cls: "delete", what: said };
+  if ((p === "kubectl" || p === "helm") && /^(delete|uninstall)$/.test(verb)) return { cls: "delete", what: said };
+  if ((p === "docker" || p === "podman") && (/^(rm|rmi)$/.test(verb) || has(/^prune$/) || (has(/^(volume|network|image|container)$/) && has(/^rm$/)))) return { cls: "delete", what: said };
+  if (/^(dropdb|dropuser)$/.test(p)) return { cls: "delete", what: said };
+  if (/^(psql|mysql|sqlite3|mongosh|redis-cli|valkey-cli)$/.test(p) && SQL_DROPS.test(line)) return { cls: "delete", what: said };
+  // A write to a service: a request with a method or a body of its own (gh api's fields), or a raw connection.
+  if ((HTTP_CLIENTS.has(p) || ((p === "gh" || p === "glab") && verb === "api")) && method && method !== "GET" && method !== "HEAD") return { cls: "authority", what: `writes to a service (${said})` };
+  if (RAW_CLIENTS.has(p)) return { cls: "authority", what: `opens a raw connection (${said})` };
+  // Keel's own permissions and settings, through its command line or its API.
+  if (p === "keel" && /^(perm|permissions|rules|grant|mode|settings|sandbox|config)$/.test(verb)) return { cls: "authority", what: said };
+  if ((p === "curl" || p === "wget" || p === "http" || p === "xh") && /\/api\/(sessions\/[^/\s]+\/)?(permissions|rules|grants|settings|sandbox|approvals)\b/.test(said)) return { cls: "authority", what: said };
+  return null;
+}
+
+// Deletions in a database's own words.
+const SQL_DROPS = /\b(drop\s+(table|database|schema|index|view|user|role|collection)|truncate\b|delete\s+from|alter\s+table\s+\S+\s+drop|flushall|flushdb|dropDatabase|dropCollection|deleteMany)\b/i;
+
+// The method a request sends, upper case: the one an option names, POST for a body (curl's data, wget's post data,
+// httpie's items, gh api's fields); undefined when nothing says.
+function methodOf(p: string, args: string[]): string | undefined {
+  let m: string | undefined;
+  let body = false;
+  const gh = p === "gh" || p === "glab";
+  const httpie = /^(http|https|xh|xhs|httpie|curlie)$/.test(p);
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (/^(-X|--request|--method)$/.test(a)) { m = (args[k + 1] ?? "").toUpperCase(); k++; continue; }
+    const glued = /^(?:-X|--request=|--method=)(\w+)$/.exec(a);
+    if (glued) { m = glued[1]!.toUpperCase(); continue; }
+    if (gh && (/^(-f|-F|--field|--raw-field|--input)$/.test(a) || /^(-f|-F)./.test(a) || /^--(field|raw-field|input)=/.test(a))) body = true;
+    if (p === "curl" && (/^(-d|--data.*|-F|--form.*|-T|--upload-file|--json)$/.test(a) || /^(-d|-F|-T)./.test(a) || /^--(data|form|json|upload-file)[-=]/.test(a))) body = true;
+    if (p === "wget" && /^--(post-data|post-file|body-data|body-file)(=|$)/.test(a)) body = true;
+    // httpie's method word and items (key=value, key:=json, key@file, @file).
+    if (httpie && /^(POST|PUT|PATCH|DELETE)$/.test(a)) m = a;
+    if (httpie && !a.startsWith("-") && /^[^=:@/]+(==?|:=|@)|^@/.test(a) && !/^[^=]*==/.test(a) && !/^[a-z]+:\/\//i.test(a)) body = true;
+  }
+  return m ?? (body ? "POST" : undefined);
+}
+
+// --- code the card does not show ------------------------------------------------------
+
+// Programs that run a file or code they are given, and the forms of them that run none.
+const RUNS_CODE = /^(sh|bash|zsh|dash|ksh|fish|ash|mksh|python[0-9.]*|pypy[0-9.]*|node|nodejs|perl|ruby|php|lua(jit)?|Rscript|tsx|ts-node|esno|jiti|vite-node|osascript|pwsh|powershell|tclsh|julia|elixir|escript|guile|racket|runghc|runhaskell|groovy|expect|awk|gawk|mawk|nawk|eval|source|\.)$/;
+const ASKS_ONLY = /^(--version|-V|-v|--help|-h|version|help)$/;
+// python3 -m: the modules that run nothing of the project's but what they say.
+const PY_MODULES = /^(pip|pip3|venv|ensurepip|pytest|py_compile|compileall|json\.tool)$/;
+// A file of code by its name.
+const SCRIPT_FILE = /\.(sh|bash|zsh|fish|ksh|py|pyw|js|mjs|cjs|ts|mts|cts|tsx|jsx|rb|pl|pm|php|lua|r|ps1|bat|cmd|tcl|exs?|jl|kts|groovy)$/i;
+// A program named by a path: the system's own folders hold programs, anything else a script of the project.
+const SYSTEM_BIN = /^\/(usr\/(local\/)?)?s?bin\/[^/]+$|^\/opt\/homebrew\/bin\/[^/]+$/;
+// Build tools that run the recipes of a file the card does not show.
+const RECIPES = /^(make|gmake|bmake|just|task|go-task|rake|mage|invoke|inv|nox|tox|ninja|scons|waf)$/;
+// The package managers' own commands; any other word runs a script of the package (yarn build, pnpm dev).
+const PNPM_OWN = /^(add|install|i|update|up|upgrade|remove|rm|un|uninstall|link|ln|unlink|import|rebuild|rb|prune|fetch|patch|patch-commit|audit|list|ls|outdated|why|licenses|publish|pack|init|store|config|c|root|bin|env|setup|doctor|cache|dedupe|approve-builds|self-update|help|login|logout|whoami|info|view|owner|tag|set|plugin|constraints|npm|global|check|autoclean|version|deploy)$/;
+const NPM_SCRIPT = /^(run|run-script|rum|urn|exec|x|start|test|t|tst|stop|restart|explore|install-test|it|cit|install-ci-test)$/;
+const BUN_OWN = /^(install|i|add|a|remove|rm|update|outdated|pm|build|test|init|link|unlink|upgrade|publish|patch|audit|info|why)$/;
+const DENO_OWN = /^(fmt|lint|check|test|doc|info|upgrade|add|remove|compile|cache|types|bench|publish)$/;
+// git's own commands: any other word is an alias or a program of the machine, which the card does not show.
+const GIT_OWN = new Set(("add am annotate apply archive bisect blame branch bundle checkout cherry cherry-pick citool clean clone commit config count-objects describe diff difftool fetch format-patch fsck gc grep help init log ls-files ls-remote ls-tree maintenance merge merge-base mergetool mv notes pull push range-diff rebase reflog remote repack replace request-pull reset restore revert rev-list rev-parse rm shortlog show show-branch show-ref sparse-checkout stash status submodule switch tag worktree cat-file hash-object read-tree update-index update-ref write-tree symbolic-ref for-each-ref name-rev var verify-commit verify-tag whatchanged check-ignore check-attr check-ref-format checkout-index commit-tree diff-files diff-index diff-tree merge-file mktag mktree pack-objects prune prune-packed unpack-objects fast-export fast-import interpret-trailers column").split(" "));
+// Programs whose first word says what they do.
+const SUBCOMMANDS = /^(npm|pnpm|yarn|bun|deno|git|gh|glab|docker|podman|nerdctl|kubectl|helm|aws|gcloud|az|terraform|tofu|pulumi|cargo|go|uv|poetry|pip|pip3|keel|systemctl|brew|apt|apt-get|dnf|snap|flatpak|vastai|runpodctl|hcloud|doctl|wrangler|vercel|netlify|firebase|flyctl|fly|heroku|dotnet|gem|twine|hatch)$/;
+// git's options before its command, and the ones that take the next word.
+const GIT_VALUED = /^(-C|--git-dir|--work-tree|--namespace|--super-prefix|--list-cmds)$/;
+
+// What of the line runs code the card does not show, in words, or null. Read by the gate's own parser; a line it
+// cannot read, a part it cannot account for, or a program or a command word an expansion makes is not shown either.
+export function hiddenCode(line: string): string | null {
+  const parts = partsOf(line);
+  if (!parts) return "the rules cannot split the command into what it runs";
+  for (const { s, run, at, deep } of parts) {
+    // (A here-document's lines run only through the command they feed, which is read itself.)
+    if (s.heredoc) continue;
+    if (s.unknown) return `the rules cannot read part of it (${s.text.slice(0, 120)})`;
+    if (deep) return "it starts its program through more wrappers than the rules read";
+    if (!run.length) continue;
+    const said = run.join(" ").slice(0, 160);
+    const dyn = new Set(s.dyn ?? []);
+    if (dyn.has(at)) return `its program comes from an expansion (${said})`;
+    const first = run[0]!;
+    const p = base(first);
+    const args = run.slice(1);
+    // The command word of a program that has commands: an expansion there says nothing of what it does.
+    const verbAt = args.findIndex((a) => !a.startsWith("-"));
+    if (SUBCOMMANDS.test(p) && verbAt >= 0 && dyn.has(at + 1 + verbAt)) return `what it does comes from an expansion (${said})`;
+    if ((first.includes("/") && !SYSTEM_BIN.test(first)) || SCRIPT_FILE.test(first)) return `it runs a script the card does not show (${said})`;
+    if (args.length && args.every((a) => ASKS_ONLY.test(a))) continue;
+    if (RUNS_CODE.test(p)) {
+      if (/^python/.test(p) && args[0] === "-m" && PY_MODULES.test(args[1] ?? "")) continue;
+      return args.length ? `${p} runs code it is given (${said})` : `${p} runs what it reads from its input (${said})`;
+    }
+    if (p === "bun" && !BUN_OWN.test(args[0] ?? "")) return `bun runs a file or a package script (${said})`;
+    if (p === "deno" && !DENO_OWN.test(args[0] ?? "")) return `deno runs code (${said})`;
+    if (RECIPES.test(p)) return `${p} runs recipes the card does not show (${said})`;
+    if (p === "npm" && NPM_SCRIPT.test(verbOf(args))) return `npm runs a package script (${said})`;
+    if ((p === "pnpm" || p === "yarn") && args.length && !PNPM_OWN.test(verbOf(args))) return `${p} runs a package script (${said})`;
+    if (p === "git") {
+      const g = gitCommand(args);
+      if (g.config) return `git runs with configuration given for this call, which can name a program (${said})`;
+      if (g.verb && !GIT_OWN.has(g.verb)) return `"git ${g.verb}" is not git's own command: an alias or another program (${said})`;
+    }
+    if ((p === "docker" || p === "podman" || p === "nerdctl") && /^(run|exec|build|buildx|start|create)$/.test(args[0] ?? "")) return `${p} runs an image's code (${said})`;
+    if ((p === "docker" || p === "podman") && args[0] === "compose" && args.some((a) => /^(up|run|exec|build|start|restart|create)$/.test(a))) return `${p} compose runs images' code (${said})`;
+    if ((p === "go" || p === "cargo" || p === "dotnet" || p === "swift" || p === "zig") && /^(run|script|generate)$/.test(args[0] ?? "")) return `${p} ${args[0]} runs the project's code (${said})`;
+  }
+  return null;
+}
+
+// The first word of a package manager's arguments that is not an option or an option's value.
+function verbOf(args: string[]): string {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (/^(--prefix|-C|--dir|--filter|-F|-w|--workspace|--cwd)$/.test(a)) { k++; continue; }
+    if (!a.startsWith("-")) return a;
+  }
+  return "";
+}
+function gitCommand(args: string[]): { verb?: string; config?: true } {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (a === "-c" || a.startsWith("--config-env") || a.startsWith("--exec-path=")) return { config: true };
+    if (GIT_VALUED.test(a)) { k++; continue; }
+    if (a.startsWith("-")) continue;
+    return { verb: a };
+  }
+  return {};
+}
+
+// What the strings of a tool's input say, for a call the gate does not read as a command: each string read as a
+// command line, a database's deletions, and code handed to a tool that runs commands.
+const RUNS_WORDS = /(^|[^a-z])(shell|exec|execute|command|terminal|bash|script|eval|run_code|run_command|repl)([^a-z]|$)/i;
+export function valuesClass(tool: string, input: unknown): Hit {
+  const runs = RUNS_WORDS.test(tool) || (tool === "mcp_call" && RUNS_WORDS.test(String((input as { tool?: unknown } | undefined)?.tool ?? "")));
+  for (const v of stringsOf(input)) {
+    if (SQL_DROPS.test(v)) return { cls: "delete", what: `${tool}: ${v.slice(0, 160)}` };
+    const hit = shellClass(v);
+    if (hit) return hit;
+    if (runs) {
+      const hidden = hiddenCode(v);
+      if (hidden) return { cls: "unseen", what: hidden };
+    }
+  }
+  return null;
+}
+// Every string in a value, deep (the first STRINGS_MAX of them).
+const STRINGS_MAX = 500;
+export function stringsOf(v: unknown, out: string[] = []): string[] {
+  if (out.length >= STRINGS_MAX) return out;
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out);
+  else if (v && typeof v === "object") for (const x of Object.values(v)) stringsOf(x, out);
+  return out;
 }
 
 // --- other tools -----------------------------------------------------------------
