@@ -854,6 +854,10 @@ test("the answers of one step's reads each get a block of their own; a line long
   // A fact of 25,000 characters: its start in the prompt's block, the rest with the next requests, all of it.
   st.set("len", 25000);
   await w.say(s, "long kw9");
+  // The store builds 25,000 characters in a program of its own: slower than the request holds for the recall
+  // of a typed prompt (the hold's fraction of a second here), so the answer is in that request or comes after
+  // it and is owed. Either way it is here before the rest is asked for.
+  await until(() => w.last(s).includes("fact-kw9") || w.tacit.owed(s) > 0, 30_000);
   for (let i = 0; i < 6 && w.tacit.owed(s); i++) await w.say(s, "go on");
   expect(w.tacit.owed(s)).toBe(0);
   // Each rule reached the model, once.
