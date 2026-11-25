@@ -150,7 +150,16 @@ export type OutsideMark = {
   model?: string;  // the model its harness names
   files: number;   // files its tool calls changed
   failures: number;
+  // Who holds it now, from its harness's own records (src/integrations/outside/writer.ts).
+  holder?: Holder;
 };
+
+// The process that writes a session of another harness now. free: none. keel: Keel's own child answers in
+// it. The rest name the holder: a terminal, a background job (Claude Code's bg sessions, its daemon), the
+// vendor's desktop app, an editor extension, another app speaking the harness's server protocol, or a
+// process Keel cannot tell.
+export type HolderKind = "free" | "keel" | "terminal" | "background" | "desktop" | "editor" | "app" | "process";
+export type Holder = { kind: HolderKind; pid?: number };
 
 // Per-session turn settings. Values come from the model's listing (efforts) or
 // the owner; nothing here has a built-in model name.

@@ -36,6 +36,7 @@ import { itemsOf, storedData, type Found } from "../import/types.ts";
 import { filesStored } from "../import/service.ts";
 import { aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader } from "./facts.ts";
 import { excluded, outsideSettings, type OutsideSettings } from "./settings.ts";
+import { alive as running, claudeHolder, claudeKind, codexHolder, codexKeepsLocks, FREE, readClaudeRecord, type Holder } from "./writer.ts";
 
 export const LABEL: Record<OutsideHarness, string> = { claude: "Claude Code", codex: "Codex" };
 
@@ -76,6 +77,10 @@ const DAY = 86_400_000;
 // fs.watch: the last record of a burst went unread until the next write). It stops once a look finds
 // nothing new.
 const AGAIN_MS = 100;
+// While a page shows a session, who holds it is read again this often: a terminal opened or closed on it
+// writes nothing Keel is told of (a lock is taken or let go). It is what a person switching windows
+// notices; a send reads it again anyway, right before anything starts.
+const HOLDER_MS = 2000;
 // While the source works, its last event can still grow (a reply's next block, a round's next result)
 // and is held back. Once the file has had no write this long it is copied as it is: a tool result
 // the model now thinks over, a call that runs for minutes. A reply's records and a round's results
@@ -116,7 +121,7 @@ type Live = {
 };
 
 type Row = { session_id: string; harness: OutsideHarness; source_id: string; path: string; files: string; usage: string; failures: number };
-type OwnWord = { pid: number; status?: string; waitingFor?: string };
+type OwnWord = { pid: number; status?: string; waitingFor?: string; procStart?: string; kind?: string; entrypoint?: string };
 
 export type OutsideDeps = {
   store: Store;
@@ -131,6 +136,8 @@ export type OutsideDeps = {
   // Whether a Keel session holds a copy of the source (an import or a take-over): a source with a copy has
   // no session of its own here, it shows on the copy (its mark and, while it runs, its state).
   copied?: (harness: OutsideHarness, sourceId: string) => boolean;
+  // Whether Keel's own child answers in the session now (src/integrations/outside/codex-app.ts).
+  ours?: (sessionId: string) => boolean;
 };
 
 export type OutsideStatus = {
@@ -152,7 +159,6 @@ export type OutsideStatus = {
 };
 
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e?.code === "EPERM"; } };
 const turn = () => new Promise<void>((ok) => setImmediate(ok));
 // Claude Code's folder of a project: its path with every character but letters and digits as "-".
 const claudeSlug = (cwd: string) => cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -160,12 +166,19 @@ const claudeSlug = (cwd: string) => cwd.replace(/[^a-zA-Z0-9]/g, "-");
 // What its records say, and where Claude Code's own word on the running session differs, that word.
 // A Claude Code that keeps those words (`keeps`) and keeps none for this session runs it no more: a turn
 // its records leave open ended with its process. `vouched`: a running process says it is live.
-function withOwn(t: Tracked, own: Map<string, OwnWord>, keeps: boolean): { facts: Facts; vouched: boolean } {
+// Codex has no word of its own on its state, only its writer lock: a thread whose lock a process holds is
+// vouched for, and where Codex keeps locks (`keeps`) a thread whose lock nothing holds runs no more.
+function withOwn(t: Tracked, own: Map<string, OwnWord>, keeps: boolean, holder: Holder): { facts: Facts; vouched: boolean } {
   const facts = t.reader.facts();
-  if (t.harness !== "claude" || !t.found) return { facts, vouched: false };
+  if (!t.found) return { facts, vouched: false };
+  const ended = (f: Facts) => (f.state !== "done" ? withOwnWord(f, { status: "idle" }, f.last_ts || Date.now()) : f);
+  if (t.harness === "codex") {
+    if (holder.kind !== "free") return { facts, vouched: true };
+    return { facts: keeps ? ended(facts) : facts, vouched: false };
+  }
   const w = own.get(t.found.id);
-  if (w && alive(w.pid)) return { facts: withOwnWord(facts, w), vouched: true };
-  return { facts: keeps && facts.state !== "done" ? withOwnWord(facts, { status: "idle" }, facts.last_ts || Date.now()) : facts, vouched: false };
+  if (w && running(w.pid, w.procStart)) return { facts: withOwnWord(facts, w), vouched: true };
+  return { facts: keeps ? ended(facts) : facts, vouched: false };
 }
 
 // Work over many items, the loop turning every few milliseconds.
@@ -195,6 +208,7 @@ export class Outside {
   // Folders watched because they are recent, with the check that says they still are.
   private recent = new Map<string, { off?: () => void; still: () => Promise<boolean> }>();
   private prune?: ReturnType<typeof setInterval>;
+  private holders?: ReturnType<typeof setInterval>;
   private unsettle?: () => void;
   private cfg: OutsideSettings;
   stats: OutsideStatus = { enabled: false, days: 0, roots: [], watches: 0, tracked: 0, sessions: 0, reads: 0, bytes: 0, first_reads: 0, first_bytes: 0, copies: 0, copy_ms: 0, copy_bytes: 0, full_copies: 0 };
@@ -243,12 +257,18 @@ export class Outside {
     // A folder that held its last session more than `days` ago is let go (once a day).
     this.prune = setInterval(() => void this.pruneOld(), DAY);
     (this.prune as any).unref?.();
+    // Who holds a session a page shows, read again (a row tells only a change).
+    this.holders = setInterval(() => {
+      for (const t of this.files.values()) if (t.session && t.found && this.d.viewed?.(t.session)) this.tell(t);
+    }, HOLDER_MS);
+    (this.holders as any).unref?.();
   }
 
   // Every watch closed; the sessions stay as they are.
   private halt() {
     this.on = false;
     clearInterval(this.prune);
+    clearInterval(this.holders);
     for (const { w } of this.watchers.values()) try { w.close(); } catch {}
     this.watchers.clear();
     this.heard.clear();
@@ -556,17 +576,19 @@ export class Outside {
     const read = (name: string) => {
       if (!/^\d+\.json$/.test(name)) return;
       const pid = Number(name.slice(0, -5));
-      let r: any;
-      try { r = JSON.parse(readFileSync(join(dir, name), "utf8")); } catch {
+      const r = readClaudeRecord(join(dir, name));
+      if (!r) {
         for (const [id, w] of this.own) if (w.pid === pid) { this.own.delete(id); this.ownChanged(id); }
         return;
       }
-      if (typeof r?.sessionId !== "string") return;
+      if (!r.sessionId) return;
       this.keeps = true;
       const had = this.own.has(r.sessionId);
-      this.own.set(r.sessionId, { pid, status: r.status, waitingFor: r.waitingFor });
+      this.own.set(r.sessionId, { pid, status: r.status, waitingFor: r.waitingFor, procStart: r.procStart, kind: r.kind, entrypoint: r.entrypoint });
       this.ownChanged(r.sessionId);
-      if (!had && alive(pid)) this.named("claude", r.sessionId, typeof r.cwd === "string" ? r.cwd : undefined, false);
+      let cwd: unknown;
+      try { cwd = JSON.parse(readFileSync(join(dir, name), "utf8"))?.cwd; } catch {}
+      if (!had && running(pid, r.procStart)) this.named("claude", r.sessionId, typeof cwd === "string" ? cwd : undefined, false);
     };
     this.watchDir(dir, (_e, name) => read(name));
     let names: string[] = [];
@@ -640,10 +662,36 @@ export class Outside {
 
   // What a source's records say now, with the staleness the settings give.
   private factsOf(t: Tracked) {
-    const { facts: said, vouched } = withOwn(t, this.own, this.keeps);
+    const holder = this.holderOf(t);
+    const keeps = t.harness === "codex" ? codexKeepsLocks(this.roots().codexHome) : this.keeps;
+    const { facts: said, vouched } = withOwn(t, this.own, keeps, holder);
     const staleMs = this.cfg.stale_minutes * 60_000;
     const seen = Math.max(said.last_ts || 0, t.mtime || 0);
-    return { facts: aged(said, seen, staleMs, vouched), said, vouched, seen, staleMs };
+    return { facts: aged(said, seen, staleMs, vouched), said, vouched, seen, staleMs, holder };
+  }
+
+  // Who holds a source now, as this record knows it: Keel's own child, else Claude Code's record of its
+  // running session (watched), else the holder of Codex's writer lock (read now).
+  private holderOf(t: Tracked): Holder {
+    if (!t.found) return FREE;
+    if (t.session && this.d.ours?.(t.session)) return { kind: "keel" };
+    if (t.harness === "codex") return codexHolder(this.roots().codexHome, t.found.id);
+    const w = this.own.get(t.found.id);
+    return w && running(w.pid, w.procStart) ? { kind: claudeKind(w), pid: w.pid } : FREE;
+  }
+
+  // Who holds a session now, read from its harness's records at this moment (never an earlier read):
+  // what a send decides by.
+  holderNow(sessionId: string): Holder | undefined {
+    const row = this.row(sessionId);
+    if (!row) return undefined;
+    if (this.d.ours?.(sessionId)) return { kind: "keel" };
+    return row.harness === "codex" ? codexHolder(this.roots().codexHome, row.source_id) : claudeHolder(this.roots().claudeRunning, row.source_id);
+  }
+
+  // The row told again (Keel's child began or ended in it).
+  retell(sessionId: string) {
+    for (const t of this.files.values()) if (t.session === sessionId) { this.tell(t); return; }
   }
 
   // A source that was copied into Keel loses its session here: the copy carries it.
@@ -686,7 +734,7 @@ export class Outside {
     clearTimeout(t.aging);
     // A folder the owner excluded: not made, not told.
     if (excluded(f.cwd, this.cfg.exclude)) return;
-    const { facts, said, vouched, seen, staleMs } = this.factsOf(t);
+    const { facts, said, vouched, seen, staleMs, holder } = this.factsOf(t);
     // Told again when it would go stale with no record before then.
     if (facts !== said || vouched || (said.state !== "working" && said.state !== "waiting")) t.aging = undefined;
     else { t.aging = setTimeout(() => this.tell(t), Math.max(0, seen + staleMs - Date.now()) + 50); (t.aging as any).unref?.(); }
@@ -705,6 +753,7 @@ export class Outside {
     const mark: OutsideMark = {
       harness: t.harness, source_id: f.id, state: facts.state, ...(facts.waiting_for ? { waiting_for: facts.waiting_for } : {}),
       since: facts.since || Date.now(), ...(facts.model ? { model: facts.model } : {}), files: facts.files.length, failures: t.failures,
+      holder,
     };
     const usage = total(facts.usage, (m) => (u) => priceOf(u, this.d.price?.(m, t.harness)));
     const told = JSON.stringify([mark, usage]);
@@ -848,7 +897,7 @@ export class Outside {
     if (this.live.get(sessionId) !== l) return;
     // While it works, its last event may still grow (a reply's next block, a round's next result): it waits.
     // While it waits on the owner or is done, nothing more comes to it: the question it asks is shown.
-    const working = (t ? withOwn(t, this.own, this.keeps).facts.state : store.session(sessionId)?.outside?.state) === "working";
+    const working = (t ? this.factsOf(t).said.state : store.session(sessionId)?.outside?.state) === "working";
     const quiet = Date.now() - st.mtimeMs >= QUIET_MS;
     const events = l.conv.b.events;
     const base = l.base, len = base + events.length, stored = l.ids.length;
@@ -915,7 +964,7 @@ export class Outside {
     if (s) this.d.bus.emit({ t: "session", session: s });
   }
 
-  private row(sessionId: string): Row | undefined {
+  row(sessionId: string): Row | undefined {
     return this.d.store.db.query<Row, [string]>("SELECT session_id, harness, source_id, path, files, usage, failures FROM outside_sessions WHERE session_id = ?").get(sessionId) ?? undefined;
   }
 
@@ -929,7 +978,7 @@ export class Outside {
     const files: string[] = facts?.files ?? JSON.parse(row.files);
     const usage: Record<string, Usage> = facts?.usage ?? JSON.parse(row.usage);
     const by = Object.entries(usage).map(([model, u]) => ({ model, usage: u, cost: priceOf(u, this.d.price?.(model, row.harness)) ?? null }));
-    return { harness: row.harness, label: LABEL[row.harness], source_id: row.source_id, path: row.path, live: !!t, files, usage: by };
+    return { harness: row.harness, label: LABEL[row.harness], source_id: row.source_id, path: row.path, live: !!t, files, usage: by, holder: this.holderNow(sessionId) ?? FREE };
   }
 
   // The source a session shows, for the import that copies it into Keel.

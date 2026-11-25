@@ -26,7 +26,7 @@
 // An agent's own session keeps its own state.
 // The words are the vocabulary's (src/core/state-words.ts): one word per
 // state, for a session and an agent alike, on the page and in a tool's answer.
-import type { OutsideMark, Session, StoredEvent, TurnStatus } from "./types.ts";
+import type { Holder, OutsideMark, Session, StoredEvent, TurnStatus } from "./types.ts";
 import { classOfText } from "../admin/classes.ts";
 import { COMMAND_IN_BACKGROUND, STATE_WORD, UNREACHABLE, WAITS_FOR, agentsWait, failWord, stateLabel, unreachableSince, waitsFor } from "./state-words.ts";
 
@@ -352,6 +352,20 @@ export function stateLine(st: SessionState, now = Date.now()): string {
 }
 
 export const OUTSIDE_LABEL: Record<OutsideMark["harness"], string> = { claude: "Claude Code", codex: "Codex" };
+// What a row and a composer say of who holds a session of another harness.
+export function holderSaid(h: Holder | undefined, harness: string): string {
+  const pid = h?.pid ? ` (pid ${h.pid})` : "";
+  switch (h?.kind ?? "free") {
+    case "free": return "Free";
+    case "keel": return "Keel is answering";
+    case "terminal": return `Open in a terminal${pid}`;
+    case "background": return `Runs as a background job${pid}`;
+    case "desktop": return `Open in ${harness} Desktop${pid}`;
+    case "editor": return `Open in an editor${pid}`;
+    case "app": return `Open in another ${harness} app${pid}`;
+    default: return `Held by a process${pid}`;
+  }
+}
 // Why a session another harness runs refuses what would act on it here (a prompt, a command, a model, a clone).
 export const outsideRefusal = (s: { outside?: OutsideMark }) =>
   `this session runs in ${OUTSIDE_LABEL[s.outside?.harness ?? "claude"]} and is read-only here: copy it into Keel to act on it`;
