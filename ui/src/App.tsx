@@ -37,6 +37,7 @@ const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ def
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
 import { UpdateNotice } from "./components/UpdateNotice.tsx";
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
+const InboxPanel = lazy(() => import("./components/automation/InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
 // The page's own Find is the desktop app's only (a tab has the browser's): its chunk loads there alone.
 const PageFind = lazy(() => import("./components/FindBar.tsx").then((m) => ({ default: m.PageFind })));
 // The incident band is drawn only while an incident is open: its code comes with the first one.
@@ -244,11 +245,25 @@ function Overlays() {
   const palette = useUI((s) => s.palette);
   const shortcuts = useUI((s) => s.shortcuts);
   const errors = useUI((s) => s.errors);
+  const inbox = useUI((s) => s.inbox);
+  useEffect(() => {
+    // The phone's session drawer is not mounted until opened. Inbox links,
+    // commands and shell notifications work without it.
+    const open = () => setUI({ inbox: true });
+    const toggle = () => setUI({ inbox: !getUI().inbox });
+    addEventListener("keel-open-inbox", open);
+    addEventListener("keel:inbox", toggle);
+    return () => {
+      removeEventListener("keel-open-inbox", open);
+      removeEventListener("keel:inbox", toggle);
+    };
+  }, []);
   return (
     <>
       <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
+      <OnFirstOpen open={inbox}><InboxPanel open={inbox} onOpenChange={(o) => setUI({ inbox: o })} /></OnFirstOpen>
       <Switcher />
       <UpdateNotice />
     </>

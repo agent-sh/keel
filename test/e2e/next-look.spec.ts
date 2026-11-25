@@ -115,9 +115,12 @@ test("what waits is ordered by what the wait costs, and each row says it", async
     await expect.poll(() => new URL(page.url()).pathname, { timeout: 10_000 }).not.toBe("/");
     expect(tree).toContain(new URL(page.url()).pathname);
 
-    // On a phone: the same order and the same line.
+    // On a phone: open the Inbox directly, without opening the session drawer.
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`${d.url}/?inbox=1`);
+    await page.goto(`${d.url}/?inbox`);
+    await expect(page.getByRole("dialog", { name: "Inbox" })).toBeVisible();
+    await expect(page).toHaveURL(/\/\?inbox$/);
+    await expect(page.getByTestId("inbox-button")).toHaveCount(0);
     await expect(needRows(page)).toHaveCount(2, { timeout: 20_000 });
     expect(await words(page)).toEqual(["Approval", "Question"]);
     await expect(needRows(page).first().getByTestId("inbox-cost")).toBeVisible();

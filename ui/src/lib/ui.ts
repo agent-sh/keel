@@ -27,6 +27,7 @@ type UIState = {
   palette: boolean;
   shortcuts: boolean;
   errors: boolean;
+  inbox: boolean;
   modelMenu: number; // bumped to ask the composer's model picker to open
   effortMenu: number; // bumped to ask the composer's effort picker to open
   permMenu: number; // bumped to ask the session header's permission menu to open
@@ -97,6 +98,7 @@ let state: UIState = {
   shortcuts: false,
   // A failure notification with no session to open lands on the Errors panel (src/automation/alerts.ts alertPath).
   errors: new URLSearchParams(location.search).has("errors"),
+  inbox: new URLSearchParams(location.search).has("inbox"),
   modelMenu: 0,
   effortMenu: 0,
   permMenu: 0,
