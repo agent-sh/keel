@@ -2,6 +2,7 @@
 // read nothing from the machine, so a test gives them fixtures; what reads the
 // machine, and bounds each read in time, is src/admin/health.ts.
 import { matches } from "../integrations/hooks.ts";
+import { parseAttributes } from "./otlp-resource.ts";
 import type { Group, Level, Row } from "./health-rows.ts";
 
 type Verdict = { level: Level; why: string; fix: string };
@@ -152,6 +153,9 @@ export function telemetryRows(o: ObserveFacts, env: Record<string, string | unde
   }
   if (o.otlp_headers && !traces) rows.push({ id: "telemetry:headers", group: "telemetry", level: "warning", title: "export headers are set and no endpoint is", detail: "the headers are never sent", fix: "set the endpoint, or clear the headers", link });
   if (!rows.length) rows.push({ id: "telemetry:ok", group: "telemetry", level: "ok", title: traces ? "the exporter has an endpoint" : "telemetry export is off", link });
+  // One row for every pair of OTEL_RESOURCE_ATTRIBUTES that does not parse: the others are exported.
+  const { dropped } = parseAttributes(env.OTEL_RESOURCE_ATTRIBUTES);
+  if (dropped.length) rows.push({ id: "telemetry:resource", group: "telemetry", level: "warning", title: `OTEL_RESOURCE_ATTRIBUTES: ${dropped.length} pair${dropped.length === 1 ? "" : "s"} left out`, detail: `not key=value with a valid percent encoding: ${dropped.join(", ")}; the other pairs are exported`, fix: "write each pair as key=value, separated by commas, with % escapes for commas, equal signs and spaces", link });
   return rows;
 }
 

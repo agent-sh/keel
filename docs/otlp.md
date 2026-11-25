@@ -21,6 +21,13 @@ class.
 Auth headers are the same for all three: the reference in the settings, else the signal's own
 `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`, else `OTEL_EXPORTER_OTLP_HEADERS`.
 
+## Resource
+
+All three signals carry one resource: `service.name` (`keel`), the build, the process id and the SDK
+name. The daemon's `OTEL_RESOURCE_ATTRIBUTES` (comma separated `key=value` pairs, percent-encoded)
+adds to it or replaces a default, and `OTEL_SERVICE_NAME` sets `service.name` last. A pair that does
+not parse is left out alone and named once in Health.
+
 ## Metrics
 
 Delta temporality. A batch goes out `OTEL_METRIC_EXPORT_INTERVAL` milliseconds (default 60000)

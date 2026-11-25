@@ -17,6 +17,7 @@
 // POST /api/debug/export/flush                  sends what waits now, the measurements of the open window included -> the same state
 // GET  /api/logs?since_ms=&level=&q=&limit=     the daemon's kept log lines -> { lines, dir }
 // GET  /api/logs/stream?level=                  the same, live, as server-sent events
+import { resourceOf } from "../../admin/otlp-resource.ts";
 import { crossing } from "../../safety/content-routes.ts";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -76,7 +77,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
 
   // One exporter per process; hot reload re-points it.
   G.__keelOtlp?.stop();
-  const resource = { "service.name": "keel", "service.version": version, "process.pid": process.pid, "telemetry.sdk.name": "keel", "telemetry.sdk.language": "javascript" };
+  const { resource } = resourceOf(process.env, { "service.name": "keel", "service.version": version, "process.pid": process.pid, "telemetry.sdk.name": "keel", "telemetry.sdk.language": "javascript" });
   const fail = (e: Error) => errors.capture("server", e, { at: "otlp export" });
   const exporter = new OtlpExporter(resource, key, fail);
   G.__keelOtlp = exporter;
