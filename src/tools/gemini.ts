@@ -11,7 +11,7 @@ import { GEMINI_RAW } from "./reading.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { noMatch } from "./no-match.ts";
-import { headTail, runShell, shellCwd } from "./shell.ts";
+import { headTail, runShell, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
 import { fetched, fetchFor, webSearch } from "./web.ts";
@@ -27,6 +27,7 @@ const run_shell_command: Tool = {
   kind: "shell",
   cwdOf: (ctx, input) => input?.dir_path ? abs(input.dir_path, ctx) : shellCwd(ctx),
   tracesChecks: true, // runs on runShell (src/tools/shell.ts)
+  syntaxShell: () => syntaxBash(),
   autoShell: ({ command, ...options }) => typeof command === "string" ? { command, interpreter: "bash -c", options } : undefined,
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +

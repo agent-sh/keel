@@ -7,7 +7,7 @@ import { CLAUDE_RAW } from "./reading.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { noMatch } from "./no-match.ts";
-import { headTail, runShell, shellCwd } from "./shell.ts";
+import { headTail, runShell, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
 import { fetched, fetchFor, webSearch } from "./web.ts";
@@ -28,6 +28,7 @@ const Bash: Tool = {
   kind: "shell",
   cwdOf: shellCwd,
   tracesChecks: true, // runs on runShell (src/tools/shell.ts)
+  syntaxShell: () => syntaxBash(),
   autoShell: ({ command, ...options }) => typeof command === "string" ? { command, interpreter: "bash -c", options } : undefined,
   description:
     "Run a bash command and return its output (stdout and stderr together). The working directory carries over " +

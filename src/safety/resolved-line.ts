@@ -30,8 +30,18 @@ const NAMED = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
 // `home`: the folder a leading `~`, `~/` or `$HOME/` in a value stands for, as bash writes it out; without it they stay unread.
 export function resolvedLine(command: string, home?: string): string | null {
   if (!/[$~]/.test(command) || /\bIFS\b|\balias\b|\bfunction\b|\(\s*\)|\$[@*0-9]|\$\{[@*0-9]/.test(command)) return null;
-  const parts = splitCommand(command);
-  if (!parts || parts.some((p) => p.flow || p.unknown)) return null;
+  const parsed = splitCommand(command);
+  if (!parsed) return null;
+  // An unread document's prefix is kept for judging a shell that reads it, not for inferring bindings
+  // of the outer shell. Its raw text still counts below: a use inside the document is never rewritten.
+  let skip = 0;
+  const parts = parsed.some((p) => p.docUnread) ? parsed.filter((p) => {
+    if (skip === 0 && p.docUnread) skip = p.docSpan ?? 1;
+    if (skip === 0) return true;
+    skip--;
+    return false;
+  }) : parsed;
+  if (parts.some((p) => p.flow || p.unknown)) return null;
   const { runs } = laid(parts, null, "");
   const hist = new Map<string, SetEvent[]>();
   valuesOf(parts, runs, home, hist);
@@ -54,7 +64,7 @@ export function resolvedLine(command: string, home?: string): string | null {
   let last = -1;
   for (let j = 0; j < parts.length; j++) { outer.push(last); if (!parts[j]!.nested) last = j; }
   // Where each part stands in the text, when the parts follow one another there (no substitution, no here-document).
-  const spans: { from: number; to: number }[] | null = parts.some((p) => p.nested || p.heredoc) ? null : spansOf(command, parts);
+  const spans: { from: number; to: number }[] | null = parsed.some((p) => p.nested || p.heredoc) ? null : spansOf(command, parts);
   const given = (e: SetEvent): string | null => {
     // A leading `~` the line's HOME gives: `HOME=/x; S=~/f; cat $S`.
     if (e.text !== null && (e.text === "~" || e.text.startsWith("~/")) && !parts[e.at]!.quotes?.includes(e.k)) {

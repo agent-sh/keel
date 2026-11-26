@@ -15,7 +15,7 @@ import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, evalGiven, name as baseName, namesCdpath, scriptsOf, shellGiven, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
-import { unstartedAct, unstartedWhy } from "./unstarted.ts";
+import { TOO_DEEP, UNPARSED, unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { follow } from "./line-makes.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
@@ -140,7 +140,8 @@ export type CallClass =
 // `account`: a write with the owner's account beyond his namespaces (the namespace, or "" when it is not known): the owner's
 // alone in every mode, Full auto included, where it opens a card and does not go to the judge.
 // `interaction`: the tool's server requires the owner's answer on every call: his card opens in every mode, Full auto too.
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; interaction?: true; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[]; part?: AskedPart };
+// `unparsed`: the gate could not read the command; no rule or mode can allow it without the owner.
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; interaction?: true; unparsed?: true; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[]; part?: AskedPart };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -160,7 +161,7 @@ const naming = (d: Decision, parts: Simple[], i: number | null | undefined): Dec
   return part && "ask" in d ? { ask: { ...d.ask, part } } : d;
 };
 
-const onlyOwner = (why: string, rule = "yours alone to allow"): Decision => ({ ask: { risk: "high", why, rule, suggest: [], ownerOnly: true } });
+const onlyOwner = (why: string, rule = "yours alone to allow"): { ask: Ask } => ({ ask: { risk: "high", why, rule, suggest: [], ownerOnly: true } });
 
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
@@ -650,6 +651,7 @@ export function decide(c: CallClass, f: Facts): Decision {
       const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
       // What else the command is asked for, when that is a rule of its own.
       const rule = [ESCALATES, "ask" in inner && inner.ask.risk === "high" ? inner.ask.rule : undefined].filter(Boolean).join("; ");
+      if ("ask" in inner && inner.ask.unparsed) return { ask: { ...inner.ask, why, rule } };
       return f.mode === "auto" ? onlyOwner(why, rule) : { ask: { risk: "high", why, rule, suggest: [] } };
     }
     return decideShell(c.command, f, c.cwd, c.interpreter);
@@ -772,7 +774,7 @@ function credentialRead(what: string, f: Facts, by = "it reads", api?: string): 
 
 export { shellCredentialReads };
 
-const never = (why: string, f: Facts): Decision =>
+const never = (why: string, f: Facts): Exclude<Decision, { allow: true }> =>
   f.mode === "full-auto" ? { ask: { risk: "high", why: `the command ${why}`, rule: why, suggest: [] } }
   : f.mode === "auto" || f.mode === "reviewer"
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
@@ -1016,7 +1018,7 @@ function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign
 // cannot read: there the written line's verdict stands in its place (the line as it is counts only when it refuses or
 // asks as high risk; its low risk is the program word it cannot name). The owner's own sessions keep the high risk
 // of a program hidden in a variable, which the card shows him, and gain the written line's findings besides.
-const SEVERITY = (d: Decision) => ("deny" in d ? 3 : "ask" in d ? (d.ask.risk === "high" ? 2 : 1) : 0);
+const SEVERITY = (d: Decision) => ("deny" in d ? 4 : "ask" in d ? (d.ask.unparsed ? 3 : d.ask.risk === "high" ? 2 : 1) : 0);
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
   const written = interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter) ? resolvedLine(command, f.home ?? homeOf()) : null;
   if (written === null) return decideLine(command, f, cwd, interpreter);
@@ -1032,11 +1034,9 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // (A program of another language is not read as a shell line: the hook holds what git it starts, ref-guard.ts.)
   if (f.shared && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) { const why = sharedRefusal(command, cwd, home, f.shared, 0, resolved); if (why) return { deny: sharedMessage(why, f.shared) }; }
   // A turn nobody started merges, approves and force-pushes nothing, in any mode (unstarted.ts).
-  if (f.byOwner && parts && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) {
-    const act = unstartedAct(parts);
-    if (act && !f.byOwner()) return { deny: unstartedWhy(act) };
-  }
-  const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
+  const act = interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter) ? unstartedAct(parts) : null;
+  if (typeof act === "string" && f.byOwner && !f.byOwner()) return { deny: unstartedWhy(act) };
+  const worst = parts && f.mode !== "read-only" ? neverAllowed(parts, cwd, home) : null;
   // A standing rule is the owner's word for commands that change things: a mode that writes nothing runs none of it (a stored
   // `rm *` does not let `rm -rf build` run in Read only, nor `pnpm dlx *` any package).
   const shellRules = writesNothing(f.mode) ? [] : f.rules.filter((r) => r.kind === "shell");
@@ -1050,17 +1050,45 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     const said = /^it /.test(why) ? why : away ? `on ${away[1]}, it ${away[2]}` : `it ${why}`;
     return { ask: { ...d.ask, notice: `Your rule "${stands.pattern}" does not cover this one: ${said}.` } };
   };
-  if (worst) return uncovered(never(worst, f), worst);
-  if (!parts) {
-    if (f.mode === "full-auto") return { allow: true };
-    if (f.mode === "read-only") return { deny: "This session is read-only and the command could not be parsed to check it." };
-    return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", rule: "could not be parsed", suggest: [] } };
+  if (!parts) return unparsed(f, undefined, f.mode === "read-only" ? null : neverAllowedText(command, home));
+  // A script we could not read does not take away a refusal the rest of the line already earned.
+  const unread: Unread[] = [];
+  const d = decideParts({ command, parts }, f, cwd, interpreter, resolved, home, worst, shellRules, uncovered, unread);
+  // Before the parser kept a document's readable prefix, the fallback text rule could still flag
+  // the rest. Do not rely on identifying its consumer: it can run from a file or on another machine.
+  let docRisk: string | null = null;
+  if (f.mode !== "read-only") {
+    for (const p of parts) {
+      if (p.docUnread && p.doc !== undefined && (docRisk = neverAllowedText(p.doc, home))) break;
+    }
   }
+  if (act === UNPARSED || docRisk || unread.some((u) => u.unparsed)) return unparsed(f, d, docRisk);
+  if (act === TOO_DEEP && ("allow" in d || ("ask" in d && d.ask.risk === "low")))
+    return { ask: { risk: "high", why: "the command nests scripts deeper than the rules read", rule: RULE_WORDS.hidden, suggest: [] } };
+  return d;
+}
+
+function unparsed(f: Facts, previous?: Decision, textRisk?: string | null): Decision {
+  if (f.mode === "read-only") return { deny: "This session is read-only and the command could not be parsed to check it." };
+  if (previous && "deny" in previous) return previous;
+  const fallback = textRisk ? never(textRisk, f) : undefined;
+  if (fallback && "deny" in fallback) return fallback;
+  const other = previous && "ask" in previous ? previous.ask : undefined;
+  // Keep what the readable parts already called out, but a grant, a judge or Full auto cannot clear this card.
+  const retained = [...new Set([other?.why ?? other?.notice, fallback?.ask.why].filter(Boolean))].join("; and ");
+  const why = `the command could not be parsed, so no rule can cover it${retained ? `.\nAlso: ${retained}` : ""}`;
+  return { ask: { ...other, risk: "high", why, rule: other?.account === undefined ? "could not be parsed" : other.rule,
+    suggest: [], ownerOnly: true, unparsed: true, settles: undefined } };
+}
+
+function decideParts({ command, parts }: { command: string; parts: Simple[] }, f: Facts, cwd: string, interpreter: string | undefined, resolved: boolean, home: string, worst: string | null,
+  shellRules: Rule[], uncovered: (d: Decision, why: string) => Decision, unread: Unread[]): Decision {
   // A line of more commands than the rules read through is not read at all: high risk, said at once.
   if (parts.length > PARTS_MAX) {
     let n = 0;
     for (const p of parts) if (!p.heredoc) n++;
     if (n > PARTS_MAX) {
+      if (worst) return uncovered(never(worst, f), worst);
       const why = `holds ${n} commands, more than the rules read through (${PARTS_MAX})`;
       return f.mode === "read-only" ? { deny: `This session is read-only, and the command ${why}.` } : { ask: { risk: "high", why: `the command ${why}`, rule: RULE_WORDS.hidden, suggest: [] } };
     }
@@ -1073,6 +1101,10 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // it below.) Each part is read in the folder a `cd` before it leaves it in.
   // (Each part's command and folder, worked out once for this and for the risk classes.)
   const pre = laid(parts, cwd, home);
+  // Read document feeders before returning the visible parts' verdict. An unreadable document
+  // still asks the owner in Full auto if a different part already drew a high-risk label.
+  const scripts = f.mode === "read-only" ? [] : innerLines(parts, pre, home, 0, unread);
+  if (worst) return uncovered(never(worst, f), worst);
   if (f.mode !== "read-only" && f.accounts && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) {
     const writes = accountWrites(parts, pre, f);
     const hit = foreign(f.accounts.names, writes);
@@ -1082,8 +1114,6 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // The scripts the line hands a shell it starts (`bash -c '...'`, a here-document into sh, eval), each read as a line
   // of its own where its shell starts (nested-shell.ts): what is never allowed, a write of a file that is the owner's
   // alone to change and a read of a credential are judged in a script as they are in a plain line.
-  const unread: Unread[] = [];
-  const scripts = f.mode === "read-only" ? [] : innerLines(parts, pre, home, 0, unread);
   for (const s of scripts) {
     const inner = neverAllowed(s.parts, pre.dirs[s.at] ?? cwd, home);
     if (inner) return uncovered(never(inner, f), inner);
@@ -1192,7 +1222,8 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     if (d) return d;
     for (const s of scripts) { const inner = ownerWrites(s.parts, s.pre, pre.dirs[s.at] ?? null, s.at); if (inner) return inner; }
     // (A script the reading above left out: high risk, said at once, as one the risk classes do not read through.)
-    if (unread.length) return naming({ ask: { risk: "high", why: `the command ${unread[0]!.why}`, rule: RULE_WORDS.hidden, suggest: [] } }, parts, unread[0]!.at);
+    const extra = unread.find((u) => !u.unparsed);
+    if (extra) return naming({ ask: { risk: "high", why: `the command ${extra.why}`, rule: RULE_WORDS.hidden, suggest: [] } }, parts, extra.at);
   }
   const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)), ...(resolved ? { beside: true as const } : {}) }, pre);
   if (risks.length) {

@@ -10,7 +10,7 @@ import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
 import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
-import { goneCwd, logDir, shellCwd } from "./shell.ts";
+import { BASH_PROGRAM, goneCwd, logDir, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { typedTarget, typedWrite, typedWrote } from "./typed.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
@@ -67,7 +67,7 @@ async function runPatch(text: string, base: string, ctx: ToolContext) {
 const execCwd = (ctx: ToolContext, input: any) => input?.workdir ? resolve(shellCwd(ctx), input.workdir) : shellCwd(ctx);
 
 // The shell a call runs its command with: the one it names, else the owner's.
-const execShell = (input: any): string => (typeof input?.shell === "string" && input.shell) || process.env.SHELL || "bash";
+const execShell = (input: any): string => (typeof input?.shell === "string" && input.shell) || process.env.SHELL || BASH_PROGRAM;
 
 const exec_command: Tool = {
   name: "exec_command",
@@ -79,6 +79,7 @@ const exec_command: Tool = {
   cwdOf: execCwd,
   // The owner's own shell, when it is a bash, is bash wherever it is installed.
   interpreter: (input) => { const sh = execShell(input); return sh === process.env.SHELL && /(^|\/)bash$/.test(sh) ? "bash" : sh; },
+  syntaxShell: (input) => input.login === false ? syntaxBash(execShell(input)) : undefined,
   autoShell: ({ cmd, ...options }) => typeof cmd === "string" && options.shell === "bash" && options.login === false && !extractShellApplyPatch(cmd)
     ? { command: cmd, interpreter: "bash -c", options } : undefined,
   description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",

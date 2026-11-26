@@ -10,7 +10,7 @@ import { name, unwrap } from "./risk-words.ts";
 // `unknown`: the parser could not account for it, so it is never a read.
 // `heredoc`: a line of a here-document read as a script, for the risk rules
 // alone: it runs only if the command it feeds runs it, and that one is judged.
-// `doc`: on the first line of a here-document, its text as written
+// `doc`: on the first part of a here-document, its text, number of parts and whether only its prefix could be read.
 // `here`: the word of its here-string (`<<< WORD`), its quotes taken off and its expansions left as written.
 // `loop`: on the first command after a `for NAME in WORDS` header, the name and the words it takes in turn.
 // A redirect is kept wherever it stands: one after a group, a loop or a
@@ -25,7 +25,7 @@ import { name, unwrap } from "./risk-words.ts";
 // `|&` or `&`, whatever it follows (a command, a group, a subshell): it runs only when that failed, as one side of a
 // pipe, or after what stands before it was sent to the background. `def`: its words are a function's name, with the
 // `()` of a definition right after them (`cd () ...`, `function cd () ...`): they run nothing.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; here?: string; loop?: { name: string; items: string[] }; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; led?: string; flow?: true; def?: true };
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; docSpan?: number; docUnread?: true; here?: string; loop?: { name: string; items: string[] }; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; led?: string; flow?: true; def?: true };
 
 // What is known of a word an expansion makes. `one`: it stays one word (every
 // expansion in it is inside double quotes, and no glob or brace is). `lead`:
@@ -106,10 +106,21 @@ export function ansiC(body: string): string {
 // redirect with no target). A line with text and no part comes back as one
 // unknown part, never as nothing.
 export function splitCommand(cmd: string): Simple[] | null {
-  // A line continuation right after $ < > & ( is read by bash before it reads the operator: not followed here.
-  if (/[$<>&(]\\\n/.test(cmd)) return null;
+  return split(cmd);
+}
+
+// A shell reading stdin can run complete lines before a syntax error in the rest. A partial result
+// is a fact about that prefix only: it never turns a parse failure into an allowed script.
+type Prefix = { parts?: Simple[]; count: number };
+export function splitDocument(cmd: string): { parts: Simple[]; unread: boolean } {
+  const prefix: Prefix = { count: 0 };
+  const parts = split(cmd, prefix);
+  return parts ? { parts, unread: false } : { parts: prefix.parts?.slice(0, prefix.count) ?? [], unread: true };
+}
+
+function split(cmd: string, prefix?: Prefix): Simple[] | null {
   if (level === 0) { read = 0; allowed = 8 * cmd.length + 4096; }
-  const r = scan(cmd, 0, false);
+  const r = scan(cmd, 0, false, false, false, prefix);
   if (!r) return null;
   if (!r.parts.length && cmd.trim()) return [{ words: [], text: cmd.trim(), redirects: false, unknown: true }];
   return r.parts;
@@ -126,13 +137,14 @@ let read = 0;
 let allowed = 0;
 // `bare`: the text is the elements of an array assignment, A=( ... ): words, not a command. What the shell
 // runs in them (the substitutions) is read as commands; the words themselves are not one.
-function scan(cmd: string, start: number, inner: boolean, flow = false, bare = false): { parts: Simple[]; end: number } | null {
+function scan(cmd: string, start: number, inner: boolean, flow = false, bare = false, prefix?: Prefix): { parts: Simple[]; end: number } | null {
   if (level >= 64) return null;
   level++;
-  try { return scanIn(cmd, start, inner, flow, bare); } finally { level--; }
+  try { return scanIn(cmd, start, inner, flow, bare, prefix); } finally { level--; }
 }
-function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare: boolean): { parts: Simple[]; end: number } | null {
+function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare: boolean, prefix?: Prefix): { parts: Simple[]; end: number } | null {
   const out: Simple[] = [];
+  if (prefix) prefix.parts = out;
   let words: string[] = [];
   let dyn: number[] = [];
   let how: Made[] = [];
@@ -358,7 +370,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     }
   };
   // ` at j: the command between the backquotes, its own escapes removed.
-  const backquoted = (j: number, inDouble: boolean): number | null => {
+  const backquoted = (j: number, inDouble: boolean, inDoc = false): number | null => {
     let k = j + 1;
     let code = "";
     for (; k < cmd.length && cmd[k] !== "`"; k++) {
@@ -367,44 +379,60 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     }
     if (k >= cmd.length) return null;
     const r = scan(code, 0, false, flow);
-    if (!r) return null;
+    if (!r) {
+      // Backticks around literal angle-bracket placeholders are common in text. In an unquoted
+      // here-document Bash reads them as redirects, but a `>` followed by `<` has no target and no
+      // command precedes it. Do not discard a possibly executable prefix or a redirect expansion.
+      const words = inDoc ? code.trim().split(/[ \t]+/) : [];
+      return words.length > 1 && words.every((w) => /^<[A-Za-z0-9_.-]+>$/.test(w)) ? k : null;
+    }
     out.push(...nestedIn(r.parts));
     cur.subs.push(r.parts);
     return k;
   };
   // The here-documents opened on the line that ended before `from`: where the text after them starts.
   const bodies = (from: number): number | null => {
+    const source = cmd;
     let p = from;
     for (const d of docs) {
-      const first = p;
-      let last = cmd.length;
-      for (;;) {
-        const nl = cmd.indexOf("\n", p);
-        const line = cmd.slice(p, nl < 0 ? cmd.length : nl);
-        const done = (d.tabs ? line.replace(/^\t+/, "") : line) === d.delim;
-        if (done) last = p;
-        p = nl < 0 ? cmd.length : nl + 1;
-        if (done || nl < 0) break;
+      const lines: string[] = [];
+      let joined = "";
+      while (p < source.length) {
+        const to = source.indexOf("\n", p), end = to < 0 ? source.length : to;
+        let at = end;
+        if (!d.quoted && to >= 0) while (at > p && source[at - 1] === "\\") at--;
+        const continued = (end - at) % 2 !== 0;
+        joined += source.slice(p, continued ? end - 1 : end);
+        p = to < 0 ? source.length : to + 1;
+        if (continued) continue;
+        const line = d.tabs ? joined.replace(/^\t+/, "") : joined;
+        joined = "";
+        if (line === d.delim) break;
+        lines.push(line + (to < 0 ? "" : "\n"));
       }
+      const body = lines.join("") + joined;
       // An unquoted delimiter: the shell runs the substitutions in the text.
       if (!d.quoted) {
-        if (cmd.slice(first, last).includes("\\\n")) return null; // bash joins the lines before it compares one to the delimiter
         const word = [made, splits];
         const mine = cur;
         cur = fresh();
-        for (let k = first; k < last; k++) {
-          if (cmd[k] === "\\") { k++; continue; }
-          if (cmd[k] === "$" && cmd[k + 1] !== "(") dollar(k, true, 0);
-          const end = cmd[k] === "$" && cmd[k + 1] === "(" ? substitution(k) : cmd[k] === "`" ? backquoted(k, false) : k;
-          if (end === null) return null;
-          k = Math.min(end, last);
-        }
-        [made, splits] = word as [boolean, boolean];
-        cur = mine;
+        cmd = body;
+        try {
+          for (let k = 0; k < body.length; k++) {
+            if (body[k] === "\\") { k++; continue; }
+            if (body[k] === "$" && body[k + 1] !== "(") dollar(k, true, 0);
+            const end = body[k] === "$" && body[k + 1] === "(" ? substitution(k) : body[k] === "`" ? backquoted(k, false, true) : k;
+            if (end === null) return null;
+            k = end;
+          }
+        } finally { cmd = source; [made, splits] = word as [boolean, boolean]; cur = mine; }
       }
-      const script = splitCommand(cmd.slice(first, last));
-      // (The first line's part keeps the text as written, for a rule that reads it as code: python3 - <<EOF.)
-      if (script) out.push(...script.map((s, k) => ({ ...s, nested: true as const, heredoc: true as const, ...(k === 0 ? { doc: cmd.slice(first, last) } : {}) })));
+      const { parts: script, unread } = splitDocument(body);
+      // (The first line's part keeps the text Bash passes down, for a rule that reads it as code.)
+      if (!script.length && !unread) continue;
+      const parts = script.length ? script : [{ words: [], text: "", redirects: false }];
+      for (let k = 0; k < parts.length; k++) out.push({ ...parts[k]!, nested: true, heredoc: true,
+        ...(k === 0 ? { doc: body, docSpan: parts.length, docUnread: unread ? true : undefined } : {}) });
     }
     docs = [];
     return p;
@@ -415,7 +443,11 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     // Inside ${ ... } the shell reads these as text; here they would be read as syntax.
     if (param && /[<>(){;|&\n]/.test(c)) unknown = true;
     if (c === "\\" && i + 1 < cmd.length) {
-      if (cmd[i + 1] === "\n") { i++; continue; }
+      if (cmd[i + 1] === "\n") {
+        // Bash joins before reading a split operator. Outside here-documents those operators are not followed.
+        if (i > 0 && "$<>&(".includes(cmd[i - 1]!)) return null;
+        i++; continue;
+      }
       put(cmd[i + 1]); inWord = true; quoted = true; text += c + cmd[i + 1]; i++;
       continue;
     }
@@ -442,7 +474,10 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
       for (; j < cmd.length && cmd[j] !== '"'; j++) {
         if (cmd[j] === "\\" && j + 1 < cmd.length) {
           // Inside double quotes a backslash escapes only these.
-          if (cmd[j + 1] === "\n") j++;
+          if (cmd[j + 1] === "\n") {
+            if (j > i + 1 && cmd[j - 1] === "$") return null;
+            j++;
+          }
           else if (/[$`"\\]/.test(cmd[j + 1]!)) lit += cmd[++j];
           else lit += cmd[j];
           continue;
@@ -521,6 +556,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         if (next === null) return null;
         i = next - 1;
       }
+      if (prefix && op === "\n" && depth === 0 && !bad) prefix.count = out.length;
       continue;
     }
     // Parentheses always end a word: a subshell, a function's (), a case pattern's ).

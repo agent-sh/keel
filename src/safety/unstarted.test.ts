@@ -2,7 +2,9 @@
 import { expect, test } from "bun:test";
 import { decide, type Facts, type Mode } from "./policy.ts";
 import { splitCommand } from "./shell.ts";
-import { unstartedAct } from "./unstarted.ts";
+import * as unattended from "./unstarted.ts";
+
+const { unstartedAct } = unattended;
 
 const MODES = ["ask", "auto-edits", "auto", "full-auto", "read-only", "plan", "reviewer"] as const satisfies readonly Mode[];
 const facts = (mode: Mode, byOwner?: () => boolean): Facts => ({ mode, workspace: "/w/repo", sandboxed: false, rules: [], tool: "Bash", home: "/h", ...(byOwner ? { byOwner } : {}) });
@@ -77,4 +79,64 @@ test("the owner's check is asked only when a command could be one of those acts"
   expect(asked).toBe(0);
   run("auto", "gh pr merge 1", () => (asked++, false));
   expect(asked).toBe(1);
+});
+
+test("an unreadable shell needs the owner, without hiding a known act beside it", () => {
+  const line = "cat <<$X\ntext\n$X\nprintf done";
+  for (const mode of MODES) {
+    for (const command of [line, `bash -c '${line}'`]) {
+      const d = run(mode, command, () => false);
+      if (mode === "read-only" || mode === "plan") expect(d).toHaveProperty("deny", expect.stringContaining("could not be parsed"));
+      else expect(d).toEqual({ ask: expect.objectContaining({ unparsed: true, ownerOnly: true, suggest: [] }) });
+    }
+    expect(run(mode, `bash -c '${line}'; gh pr merge 12`, () => false)).toHaveProperty("deny", expect.stringContaining("no message of the owner's"));
+  }
+});
+
+test("an unreadable document fed to a shell asks, and its readable prefix keeps its verdict", () => {
+  const continued = "bash <<'EOF'\nprintf %s $\\\n(true)\nprintf after\nEOF";
+  const partial = "bash <<'EOF'\nprintf first\nprintf \"unfinished\nEOF";
+  for (const line of [continued, partial])
+    expect(run("full-auto", line, () => false)).toHaveProperty("ask.unparsed", true);
+  expect(run("full-auto", partial.replace("printf first", "gh pr merge 12"), () => false))
+    .toHaveProperty("deny", expect.stringContaining("no message of the owner's"));
+  const f: Facts = { ...facts("full-auto", () => true), keel: (p) => p === "/state/record" ? "it changes Keel's state" : null };
+  expect(decide({ kind: "shell", command: partial.replace("printf first", "printf note > /state/record"), cwd: f.workspace }, f))
+    .toHaveProperty("deny", expect.stringContaining("Keel's state"));
+  expect(run("full-auto", "cat <<'EOF'\nprintf \"unfinished\nEOF", () => false)).toHaveProperty("allow", true);
+});
+
+test("nesting above the old unstarted traversal limit is not a parse failure", () => {
+  const nest = (n: number): string => n ? `bash -c ${JSON.stringify(nest(n - 1))}` : "printf done";
+  for (let n = 5; n <= 8; n++) expect(run("full-auto", nest(n), () => false)).toHaveProperty("allow", true);
+  expect(unstartedAct(splitCommand(nest(9)))).toBe(unattended.TOO_DEEP);
+  expect(run("ask", nest(9), () => false)).toHaveProperty("ask.why", expect.stringContaining("deeper than the rules read"));
+});
+
+test("the unattended guard still reads long inline scripts", () => {
+  const script = (n: number) => `# ${"padding ".repeat(n)}\n`;
+  const merge = `bash -c '${script(2200)}gh pr merge 12'`;
+  const force = [...Array.from({ length: 5 }, () => `bash -c '${script(450)}:'`), "eval 'git push --force origin main'"].join("\n");
+  for (const line of [merge, force])
+    expect(run("full-auto", line, () => false)).toHaveProperty("deny", expect.stringContaining("no message of the owner's"));
+});
+
+test("unreadable documents keep the fallback text rules even where the shell feeder is not read", () => {
+  const body = "<<'DOC'\nprintf \"unfinished\nrm -rf /h\nDOC";
+  for (const line of [
+    `bash <(cat ${body}\n)`,
+    `cat > script.sh ${body}\nbash script.sh`,
+    `ssh example.invalid bash ${body}`,
+    `docker exec -i fixture sh ${body}`,
+  ]) {
+    expect(run("full-auto", line, () => false)).toMatchObject({ ask: { unparsed: true, ownerOnly: true, why: expect.stringContaining("deletes a root or home directory recursively") } });
+    expect(run("auto", line, () => false)).toHaveProperty("deny", expect.stringContaining("never runs without the owner"));
+  }
+});
+
+test("a readable high-risk part does not hide an unreadable document handed to another shell", () => {
+  for (const shell of ["bash /dev/stdin", "bash -c 'sh -s'"]) {
+    const line = `rm -rf /h\n${shell} <<'DOC'\nprintf "unfinished\nDOC`;
+    expect(run("full-auto", line, () => false)).toMatchObject({ ask: { unparsed: true, ownerOnly: true, why: expect.stringContaining("deletes the home directory recursively") } });
+  }
 });

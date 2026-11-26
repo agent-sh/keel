@@ -87,6 +87,21 @@ test("a here-document is text: its substitutions run, its lines are seen by the 
   expect(risksOf(split("bash <<EOF\ngit push --force origin main\nEOF"))).toEqual(["rewrites or deletes history on a remote"]);
 });
 
+test("an unquoted here-document joins continued lines before comparing the delimiter or reading substitutions", () => {
+  const line = "cat <<EOF\n$\\\n(printf value)\nEO\\\nF\nprintf after";
+  expect(split(line).filter((p) => !p.heredoc).map((p) => p.words)).toEqual([["cat"], ["printf", "value"], ["printf", "after"]]);
+  const even = "cat <<EOF\ntext\\\\\nEOF\nprintf after";
+  expect(split(even).filter((p) => !p.heredoc).map((p) => p.words)).toEqual([["cat"], ["printf", "after"]]);
+  expect(splitCommand("printf '%s' $(\\\n(1))")).toBeNull(); // a split arithmetic opener is still unreadable
+});
+
+test("a here-document with an invalid bare redirect in backticks still exposes the commands around it", () => {
+  const doc = "cat <<EOF\n$(printf start) `<source> <destination>` $(printf end)\nEOF\nprintf after";
+  expect(split(doc).filter((p) => !p.heredoc).map((p) => p.words)).toEqual([["cat"], ["printf", "start"], ["printf", "end"], ["printf", "after"]]);
+  const notJustRedirects = "cat <<EOF\n`printf start; <source> <destination>`\nEOF\nprintf after";
+  expect(splitCommand(notJustRedirects)).toBeNull();
+});
+
 test("a line with text and no part is unknown, not a read", () => {
   for (const c of ["fi", "done", "# a comment", "{ }", "for x in a b"]) expect([c, readOnlyCommand(c)]).toEqual([c, false]);
   expect(split("")).toEqual([]);

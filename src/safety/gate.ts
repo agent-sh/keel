@@ -13,6 +13,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
+import { bashSyntaxError } from "./bash-syntax.ts";
 import { bornDuring, endedWell, worktreesAdded } from "./made-places.ts";
 import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
@@ -29,7 +30,7 @@ import { checkoutsOf, checkoutsOfAsync, report, watch, type Watch } from "./refw
 import { settleMade } from "./made.ts";
 import { guardEnv } from "./ref-guard.ts";
 import { plantsSaid, scanPlants, settle, type Plants } from "./plants.ts";
-import { setCallEnv } from "../tools/jobs.ts";
+import { cleanTerm, setCallEnv } from "../tools/jobs.ts";
 import type { Shared } from "./shared-branches.ts";
 import { configDir } from "../providers/config.ts";
 import { familyOf } from "../providers/family.ts";
@@ -250,7 +251,7 @@ const SENDS = /\b(curl|wget|https?|xhs?|aria2c|lynx|w3m|links|elinks|nc|ncat|net
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };
-type CheckResult = { deny: string } | { cls: CallClass; authorization?: ToolAuthorization };
+type CheckResult = { deny: string } | { answer: string; isError: true } | { cls: CallClass; authorization?: ToolAuthorization };
 // The build that decides, once a process.
 let build: string | undefined;
 const rev = () => (build ??= buildId());
@@ -298,8 +299,8 @@ const ownConfig = () => [configDir(), process.env.KEEL_HOOKS, process.env.KEEL_M
 const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(input ?? {}) ?? "").digest("hex");
 
 // A card that opens in Full auto too, and goes to no judge: a write with the owner's account beyond his namespaces, and a
-// tool whose server requires his answer on every call.
-const staysOwners = (a: Ask) => a.account !== undefined || !!a.interaction;
+// tool whose server requires his answer on every call, or an unreadable shell line.
+const staysOwners = (a: Ask) => a.account !== undefined || !!a.interaction || !!a.unparsed;
 function callClass(call: ToolCall, target: Target): CallClass {
   // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
   // Its path keys, and every string anywhere in the input that is a path or a file: URL by itself.
@@ -1683,7 +1684,7 @@ export class Gate {
       if (web) return (this.ruled(session, call, "network off"), { deny: web });
     }
     const r = await this.check(session, call);
-    if ("deny" in r) return r;
+    if (!("cls" in r)) return r;
     if (!session.machine && (r.cls.kind === "read" || r.cls.kind === "shell")) await this.credentialValuesOf(session, r.cls);
     // An agent in a worktree Keel made: every git its command starts carries the hook that keeps the branches the
     // worktree shares where they are (ref-guard.ts).
@@ -1889,6 +1890,11 @@ export class Gate {
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);
+    if (!back && !session.machine && !target && !call.ctx.dispatch && cls.kind === "shell" && "ask" in dNow && dNow.ask.unparsed) {
+      const bash = call.tool.syntaxShell?.(call.input);
+      const error = bash && await bashSyntaxError(bash, cls.command, call.ctx.signal);
+      if (error) return { answer: vault.redact(cleanTerm(error), session.id, "output"), isError: true };
+    }
     if (back) {
       // A card that is read first waits for its own answer: a rule made after it opened does not settle it (see `recheck`).
       const d = back.state === "pending" && this.form(back).hold.length
@@ -1978,7 +1984,7 @@ export class Gate {
     }
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
-    // (A write with an account beyond the owner's namespaces is the exception: his card opens in Full auto too.)
+    // The forms in staysOwners still open the owner's card.
     if (mode === "full-auto" && !staysOwners(d.ask)) return this.alone(session, call, name, cls, summary, key, d.ask.why);
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
@@ -2557,7 +2563,7 @@ export class Gate {
       } else if ("deny" in d) {
         this.finish(a, { state: "denied", reason: d.deny });
         w.resolve({ deny: d.deny });
-      } else if (mode === "full-auto" && !("ask" in d && staysOwners(d.ask))) {
+      } else if (mode === "full-auto" && !staysOwners(d.ask)) {
         // The session went to full auto with a card open: the card closes, and
         // the call is settled the way full auto settles it.
         this.finish(a, { state: "cancelled", reason: "settled without the owner in full auto" });

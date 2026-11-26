@@ -35,12 +35,12 @@
 import { resolvedLine } from "./resolved-line.ts";
 import { laid, type Laid } from "./risk.ts";
 import { DEPTH, PARTS_MAX, PRINTS, SCRIPT_MAX, SHELLS, evalGiven, lineHanded, name, printed, scriptsOf, shellGiven, substituted, unwrap } from "./risk-words.ts";
-import { docOf, splitCommand, type Simple } from "./shell.ts";
+import { docOf, splitCommand, splitDocument, type Simple } from "./shell.ts";
 
 // One script: its commands, where each runs, and the part of the outer line that starts its shell.
 export type Inner = { parts: Simple[]; pre: Laid; at: number };
 // A script that was not read, by the part of the outer line that starts its shell.
-export type Unread = { at: number; why: string };
+export type Unread = { at: number; why: string; unparsed?: true };
 
 // Programs that hand their input to a shell somewhere else: a here-document they open is no script of this machine.
 const AWAY = /^(ssh|kubectl|oc|docker|podman)$/;
@@ -74,17 +74,20 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
   const out: Inner[] = [];
   if (depth >= DEPTH) return out;
   const st = state ?? { seen: new Set<string>(), left: NESTED_MAX };
-  const keyOf = (text: string, i: number) => `${pre.dirs[i] ?? ""}\0${pre.firm[i] === true}\0${text}`;
-  const read = (text: string, i: number, free: boolean, from: boolean) => {
-    const key = keyOf(text, i);
+  // The same text read as a document may yield a runnable prefix that no whole-script parse returned.
+  const keyOf = (text: string, i: number, document: boolean) => `${document ? "doc" : "cmd"}\0${pre.dirs[i] ?? ""}\0${pre.firm[i] === true}\0${text}`;
+  const read = (text: string, i: number, free: boolean, from: boolean, document: boolean) => {
+    const key = keyOf(text, i, document);
     if (st.seen.has(key)) return;
     st.seen.add(key);
     if (!free) {
       if (st.left < text.length) { if (st.left >= 0) unread?.push({ at: i, why: "nests more script text than the rules read through: put it in a file" }); st.left = -1; return; }
       st.left -= text.length;
     }
-    const inner = splitCommand(text);
-    if (!inner || inner.length > PARTS_MAX) return;
+    const doc = document ? splitDocument(text) : undefined;
+    const inner = doc ? doc.parts : splitCommand(text);
+    if (doc?.unread) unread?.push({ at: i, why: "feeds a shell a here-document it could not parse", unparsed: true });
+    if (!inner?.length || inner.length > PARTS_MAX) return;
     const l = laid(inner, pre.dirs[i] ?? null, home, pre.firm[i] === true);
     out.push({ parts: inner, pre: l, at: i });
     const deeper: Unread[] = [];
@@ -93,15 +96,15 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
   };
   // (A script is read as it stands and, as a plain line is, with the variables it gave a written-out value written
   // out: `f=~/.npmrc; cat $f`. `whole`: a here-document of the line itself, read whatever its length.)
-  const add = (text: string | undefined, i: number, whole = false) => {
+  const add = (text: string | undefined, i: number, whole = false, document = false) => {
     if (text === undefined || !/\S/.test(text) || (text.length > SCRIPT_MAX && !whole)) return;
-    const key = `${written ? "w" : ""}${keyOf(text, i)}`;
+    const key = `${written ? "w" : ""}${keyOf(text, i, document)}`;
     if (st.left < 0 || st.seen.has(key)) return;
     if (written) st.seen.add(key);
     const out = text.length > NESTED_MAX ? null : resolvedLine(text, home);
     const use = out !== null && out !== text && (out.length <= SCRIPT_MAX || whole) ? out : null;
-    if (!written || use === null) read(text, i, whole, written);
-    if (use !== null) read(use, i, whole, true);
+    if (!written || use === null) read(text, i, whole, written, document);
+    if (use !== null) read(use, i, whole, true, document);
   };
   // Whether the command of a part reads a script from its input: a shell with no script of its own, or one whose
   // -c script starts such a shell (its input is the outer shell's).
@@ -136,7 +139,7 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
         const doc = parts[k]!.heredoc ? parts[k]!.doc : undefined;
         if (doc === undefined) continue;
         docs.push(doc);
-        if (several) k += Math.max(1, splitCommand(doc)?.length ?? 1) - 1;
+        if (several) k += (parts[k]!.docSpan ?? Math.max(1, splitCommand(doc)?.length ?? 1)) - 1;
       }
       const owners: number[] = [];
       for (let k = since; k < i; k++) if (!parts[k]!.nested && docOf(parts[k]!) !== "none") owners.push(k);
@@ -158,7 +161,7 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
         // (An unquoted delimiter: the line's shell takes the backslash off \$, \` and \\ before the text is handed on.)
         const doc = paired && docOf(parts[owners[n]!]!) === "unquoted" ? text.replace(/\\([$`\\])/g, "$1") : text;
         if (depth > 0 && doc.length > SCRIPT_MAX) unread?.push({ at: feeder, why: `feeds ${name(pre.runs[feeder]!.words[0])} a here-document of ${doc.length} characters inside a script, longer than the rules read through: put it in a file` });
-        else add(doc, feeder, depth === 0);
+        else add(doc, feeder, depth === 0, true);
       });
       handled = end - 1;
       since = end;

@@ -1010,6 +1010,37 @@ test("a call with a missing or unknown field is answered from the schema and doe
   }
 });
 
+test("a gate's syntax error is a failed call in the tool ledger, without running the tool", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const { allHooks, registerHooks } = await import("./hooks.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "gate-result-"));
+  const store = new Store(dir);
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, dir);
+  const rows: string[] = [];
+  let runs = 0;
+  registerHooks({
+    beforeTool: (session) => session.id === s.id ? { answer: "syntax error", isError: true } : undefined,
+    toolRan: (session, call, _result, m) => { if (session.id === s.id) rows.push(`${call.id}:${m.outcome}`); },
+  });
+  const name = "fixture_shell";
+  const tool = { name, description: "", readOnly: false, input_schema: { type: "object" }, run: async () => (runs++, { content: "ran" }) };
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
+  const pinned: string[] = [];
+  (engine as any).pins.called = (_session: string, name: string) => { pinned.push(name); };
+  try {
+    const r = await (engine as any).runTool(s, [tool], { type: "tool_use", id: "syntax", name, input: {} }, ctx);
+    expect([r.is_error, r.content, runs, rows, pinned]).toEqual([true, "syntax error", 0, ["syntax:error"], [name]]);
+  } finally {
+    allHooks().pop();
+    store.db.close();
+  }
+});
+
 // A Write sent with the text editor tool's name for the content (file_text) writes that text: the call the tool runs
 // is the normalised one, through the engine's own call path and the real tools.
 test("a Write sent with file_text, or write_file with it, writes the text to disk", async () => {

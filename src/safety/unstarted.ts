@@ -10,9 +10,7 @@
 // an agent's own branch, because nobody who started the turn is there to answer for a rewritten or removed ref.
 // Pure: the policy gives it the line's parts.
 import { docsRun, splitCommand, type Simple } from "./shell.ts";
-import { SHELLS, evalGiven, name, scriptsOf, shellGiven, unwrap } from "./risk-words.ts";
-
-const DEPTH = 4;
+import { DEPTH, SHELLS, evalGiven, name, scriptsOf, shellGiven, unwrap } from "./risk-words.ts";
 
 // Options of gh (and of git before its subcommand) that take their value in the next word.
 const GH_VALUED = /^(-R|--repo|-t|--title|-b|--body|-F|--body-file|-B|--base|-H|--head|-a|--assignee|-l|--label|-m|--milestone|-p|--project|-r|--reviewer|--hostname|--header|--match-head-commit|--subject|--author-email|--body-env)$/;
@@ -139,12 +137,18 @@ function formOf(words: string[]): string | null {
   return request(words);
 }
 
-// The first act on the line that no turn nobody started may do, or null.
-export function unstartedAct(parts: Simple[] | null, depth = 0): string | null {
-  if (!parts || depth > DEPTH) return null;
+export const UNPARSED = Symbol("unparsed shell line");
+export const TOO_DEEP = Symbol("shell script nesting limit");
+
+// The first act no turn nobody started may do. An unreadable part does not hide a known act elsewhere.
+export function unstartedAct(parts: Simple[] | null, depth = 0): string | typeof UNPARSED | typeof TOO_DEEP | null {
+  if (!parts) return UNPARSED;
+  let unreadable = false;
+  let tooDeep = false;
   const docs = docsRun(parts);
   for (const part of parts) {
     if (part.heredoc && !docs) continue;
+    if (part.heredoc && part.docUnread) unreadable = true;
     const run = unwrap(part.words);
     const found = formOf(run.words);
     if (found) return found;
@@ -152,11 +156,17 @@ export function unstartedAct(parts: Simple[] | null, depth = 0): string | null {
     const prog = name(run.words[0]);
     const codes = prog === "eval" ? [evalGiven(run.words.slice(1))] : SHELLS.test(prog) ? scriptsOf(shellGiven(run.words.slice(1))).map((g) => g.script) : [];
     for (const code of codes) {
-      const inner = code ? unstartedAct(splitCommand(code), depth + 1) : null;
-      if (inner) return inner;
+      if (!code) continue;
+      // The risk reader can describe a long script without reading it. The unattended guard
+      // must still look for the acts that no Full auto risk label would stop.
+      if (depth >= DEPTH) { tooDeep = true; continue; }
+      const inner = unstartedAct(splitCommand(code), depth + 1);
+      if (inner === UNPARSED) unreadable = true;
+      else if (inner === TOO_DEEP) tooDeep = true;
+      else if (inner) return inner;
     }
   }
-  return null;
+  return unreadable ? UNPARSED : tooDeep ? TOO_DEEP : null;
 }
 
 // What the model reads when the line is refused.

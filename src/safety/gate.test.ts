@@ -10,6 +10,9 @@ import type { ToolCall } from "../engine/hooks.ts";
 import type { Tool } from "../tools/types.ts";
 import { Gate, landing, type Approval, type ReviewAsk } from "./gate.ts";
 import { gptTools } from "../tools/gpt.ts";
+import { claudeTools } from "../tools/claude.ts";
+import { syntaxBash } from "../tools/shell.ts";
+import { bashSyntaxError } from "./bash-syntax.ts";
 import { makeJudge } from "./judge.ts";
 import { classify, decide, type Mode } from "./policy.ts";
 import { vault } from "./secrets.ts";
@@ -39,11 +42,12 @@ test("an edit through a link is judged where it lands", () => {
 
 // A gate over a scratch store whose sessions count as sandboxed.
 const scratchGate = () => {
-  const g = new Gate(new Store(mkdtempSync(join(tmpdir(), "keel-gate-"))), new Bus(), () => true);
+  const bus = new Bus();
+  const g = new Gate(new Store(mkdtempSync(join(tmpdir(), "keel-gate-"))), bus, () => true);
   const session = { id: "s1", workspace: mkdtempSync(join(tmpdir(), "keel-ws-")) } as Session;
   const call = (tool: Tool, input: any, signal = new AbortController().signal): ToolCall =>
     ({ id: crypto.randomUUID(), tool, input, ctx: { sessionId: "s1", cwd: session.workspace, signal, spillDir: session.workspace, seen: new Map() } });
-  return { g, session, call };
+  return { g, session, call, bus };
 };
 const bash: Tool = { name: "Bash", readOnly: false, kind: "shell", description: "", input_schema: { type: "object", properties: { command: {} } }, run: async () => ({ content: "" }) };
 const runCode: Tool = { ...bash, name: "run_code", kind: undefined, target: async (input) => ({ name: "run_code", readOnly: false, input, cls: { kind: "shell", command: "bun program.js", escalate: input?.sandbox_permissions === "require_escalated" || undefined } }) };
@@ -330,6 +334,89 @@ test("full auto runs a flagged call unreviewed, asks no judge, keeps no refusal,
   expect([asked, g.blocked("s1"), g.approvals({ session: "s1" })]).toEqual([0, [], []]);
   expect(said.length).toBe(4);
   expect(said.every((x) => x.outcome === "unreviewed" && x.reason.length > 0)).toBe(true);
+});
+
+test("Full auto waits for the owner on a shell line it cannot parse", async () => {
+  const { g, session, call, bus } = scratchGate();
+  g.byOwner = () => false;
+  g.judge = async () => { throw new Error("An unreadable line must not go to a judge"); };
+  g.addRule(session, "shell", "cat *", "session");
+  const nativeBash = claudeTools.find((t) => t.name === "Bash")!;
+  const line = "cat <<$X\ntext\n$X\nprintf done";
+  for (const [command, mode] of [[line, "ask"], [line, "full-auto"], [`bash -c '${line}'`, "full-auto"]] as const) {
+    g.setPerm(session.id, { mode, sandbox: "off" });
+    const stop = new AbortController();
+    const tool = call(nativeBash, { command }, stop.signal);
+    const card = Promise.withResolvers<Approval>();
+    const off = bus.on((f) => {
+      if (f.t === "feature" && f.name === "approval" && f.data.call_id === tool.id && f.data.state === "pending") card.resolve(f.data);
+    });
+    try {
+      const checking = g.check(session, tool);
+      expect(await Promise.race([card.promise, checking.then(() => null)])).toMatchObject({
+        state: "pending", risk: "high", why: expect.stringContaining("could not be parsed"), suggest: [],
+      });
+      g.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
+      const a = await card.promise;
+      expect(g.approval(a.id)?.state).toBe("pending");
+      expect(g.resolve(a.id, session.id, { choice: "deny" })).toEqual({ ok: true });
+      expect(await checking).toHaveProperty("deny");
+    } finally { stop.abort(); off(); }
+  }
+});
+
+test.skipIf(!syntaxBash())("invalid Bash reports its own syntax error without an approval or running the command prefix", async () => {
+  const { g, session, call, bus } = scratchGate();
+  g.byOwner = () => false;
+  g.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
+  const stop = new AbortController();
+  const card = Promise.withResolvers<null>();
+  const off = bus.on((f) => { if (f.t === "feature" && f.name === "approval") card.resolve(null); });
+  const marker = join(session.workspace, "must-not-exist");
+  const tool = claudeTools.find((t) => t.name === "Bash")!;
+  try {
+    const pending = g.beforeTool(session, call(tool, { command: `touch '${marker}'\nprintf '%s\\n' "` }, stop.signal));
+    expect(await Promise.race([pending, card.promise])).toEqual({
+      answer: expect.stringMatching(/bash: .*unexpected EOF/s), isError: true,
+    });
+    expect(existsSync(marker)).toBe(false);
+    expect(g.approvals({ session: session.id })).toEqual([]);
+  } finally { stop.abort(); off(); }
+});
+
+test("the gate does not start a Bash shim from PATH", () => {
+  const bin = mkdtempSync(join(tmpdir(), "keel-shim-"));
+  writeFileSync(join(bin, "bash"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+  const before = process.env.PATH;
+  try {
+    process.env.PATH = bin;
+    expect(claudeTools.find((t) => t.name === "Bash")!.syntaxShell?.({})).toBeUndefined();
+  } finally {
+    if (before === undefined) delete process.env.PATH;
+    else process.env.PATH = before;
+  }
+});
+
+test.skipIf(!syntaxBash())("Bash no-exec does not settle a line that may change parsing, or a login shell", async () => {
+  const bash = syntaxBash()!;
+  const extglob = "shopt -s extglob\nprintf '%s\\n' !(a|b)";
+  expect(await bashSyntaxError(bash, extglob)).toBeUndefined();
+  expect(await bashSyntaxError(bash, "alias word=true\nprintf \"unfinished")).toBeUndefined();
+  const exec = gptTools.find((t) => t.name === "exec_command")!;
+  expect(exec.syntaxShell?.({ shell: "bash" })).toBeUndefined();
+  expect(exec.syntaxShell?.({ shell: "bash", login: true })).toBeUndefined();
+  expect(exec.syntaxShell?.({ shell: "bash", login: false })).toBe(bash);
+});
+
+test("a non-login shell with a startup file is not checked in a clean environment", () => {
+  const saved = process.env.BASH_ENV;
+  try {
+    process.env.BASH_ENV = "shell-options.sh";
+    expect(gptTools.find((t) => t.name === "exec_command")!.syntaxShell?.({ shell: "/bin/bash", login: false })).toBeUndefined();
+  } finally {
+    if (saved === undefined) delete process.env.BASH_ENV;
+    else process.env.BASH_ENV = saved;
+  }
 });
 
 test("open cards are read whole and in one order, however much history there is", () => {

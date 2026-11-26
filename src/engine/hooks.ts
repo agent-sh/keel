@@ -49,9 +49,9 @@ export type ToolAuthorization = {
   deny: string;
 };
 // `answer`: the call is answered without running (the check ledger's answer to
-// a check that already passed on the same files): its result is that text,
-// not an error, and the hooks after this one are not asked.
-export type ToolGate = void | { deny: string } | { answer: string } | { input?: any; ctx?: Partial<ToolContext>; authorization?: ToolAuthorization };
+// a check that already passed on the same files, or a Bash syntax error).
+// The hooks after this one are not asked.
+export type ToolGate = void | { deny: string } | { answer: string; isError?: true } | { input?: any; ctx?: Partial<ToolContext>; authorization?: ToolAuthorization };
 
 // A block of the system prompt that renders the owner's or the machine's own
 // data (their servers, skills, agent types, files): `data` is that data alone,

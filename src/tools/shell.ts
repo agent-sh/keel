@@ -16,6 +16,16 @@ import { shellSaw } from "./reading.ts";
 
 const cwds = new SessionMap<string>(1024);
 
+export const BASH_PROGRAM = "bash";
+export function syntaxBash(shell = BASH_PROGRAM): string | undefined {
+  // The probe uses an empty environment. Do not compare it to a shell whose startup can change parsing.
+  if (process.env.BASH_ENV || process.env.BASHOPTS || process.env.SHELLOPTS || process.env.BASH_COMPAT || process.env.POSIXLY_CORRECT) return;
+  const path = shell === BASH_PROGRAM ? Bun.which(BASH_PROGRAM, { PATH: process.env.PATH }) : shell;
+  if (path === "/bin/bash" || path === "/usr/bin/bash") return path;
+  // A repo's PATH shim, or a path from the tool's input, is not a program the gate starts outside confinement.
+  return path && path === process.env.SHELL && /^(?:\/[^/]+)+\/bash$/.test(path) ? path : undefined;
+}
+
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
 export const shellCwd = (ctx: ToolContext) => cwds.get(ctx.sessionId) ?? ctx.cwd;
@@ -95,7 +105,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   const said = waitedLine(slot);
   const job = startHeld({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
-    argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, vars: true, callId: ctx.callId,
+    argv: [BASH_PROGRAM, "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, vars: true, callId: ctx.callId,
     // In the foreground the call stops the command when its turn is stopped (below).
     handle: o.handle, stops: !o.background, traceFile,
   }, slot);

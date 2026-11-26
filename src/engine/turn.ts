@@ -3791,11 +3791,11 @@ export class Engine {
     // What a hook of the owner's did to the call rides with its result: the
     // model reads the input that was judged and ran (the history keeps what it
     // wrote), and the card shows both.
-    const told = (r: ToolResultBlock): ToolResultBlock => {
+    const told = (r: ToolResultBlock, executed = t0 !== undefined): ToolResultBlock => {
       const h = call.hook;
       if (!h || (h.from === undefined && !h.skipped && !h.failed?.length)) return r;
       if (h.from !== undefined) {
-        const note = hookChanged(call.input, t0 !== undefined);
+        const note = hookChanged(call.input, executed);
         r.content = typeof r.content === "string" ? `${r.content}\n\n${note}` : [...r.content, { type: "text", text: note }];
       }
       const shown = this.shown.get(u.id);
@@ -3857,6 +3857,7 @@ export class Engine {
       const authorizations: ToolAuthorization[] = [];
       for (const h of allHooks()) {
         if (!h.beforeTool) continue;
+        const gateStarted = Date.now();
         const gate = Promise.resolve(h.beforeTool(session, call));
         gate.catch(() => {});
         const g = await Promise.race([gate, stopped]);
@@ -3866,7 +3867,15 @@ export class Engine {
         if (!g) continue;
         if ("deny" in g) return denied(g.deny);
         // (Marked for the transcript: the call did not run, and says so on its line.)
-        if ("answer" in g) { this.shown.set(u.id, { ledger: true }); return told({ type: "tool_result", tool_use_id: u.id, content: g.answer }); }
+        if ("answer" in g) {
+          const r: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: g.answer, is_error: g.isError };
+          if (g.isError) {
+            t0 = gateStarted;
+            return told(ran(r, "error"), false);
+          }
+          this.shown.set(u.id, { ledger: true });
+          return told(r);
+        }
         if (g.input !== undefined) call.input = g.input;
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
         if (g.authorization) authorizations.push(g.authorization);
