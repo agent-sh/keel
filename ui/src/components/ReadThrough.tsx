@@ -24,7 +24,7 @@ export function ReadThrough() {
     <>
       <SettingRow
         label="Read long files through a small model"
-        hint="A long file your sessions read comes back as a small model's reading of it, with the file's own lines where they matter."
+        hint="A small model summarizes long files, with the original lines where they matter."
         help="The first small model reads the file and writes what it is, its parts with their lines and what matters for the work; the lines it marks are copied from the file. The file itself comes back for a short file, for prose and instruction files, for a file your prompt names, and whenever the model asks for it."
         testid="read-through-sessions-row"
       >

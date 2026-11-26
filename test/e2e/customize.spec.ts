@@ -119,7 +119,7 @@ test("Settings and Customize share one heading face and one width, and open on t
   // Models opens on its control with one short line a row; the long words are behind a help mark.
   await page.goto("/settings/models");
   const rows = page.locator(".k-setting");
-  await expect(rows.first()).toBeVisible();
+  await expect(page.getByTestId("read-through-sessions-row")).toBeVisible();
   for (const hint of await rows.locator(".text-muted").allInnerTexts()) expect(hint.length, hint).toBeLessThan(110);
   const marks = page.getByTestId("set-help");
   expect(await marks.count()).toBeGreaterThanOrEqual(3);
