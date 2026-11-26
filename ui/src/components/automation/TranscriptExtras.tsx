@@ -203,7 +203,8 @@ export function InputNotice({ e }: { e: StoredEvent }) {
           </Collapsible.Trigger>
           <Collapsible.Panel className="k-heard-body text-ui text-fg">
             <ReportTimes r={r} reached={e.ts} />
-            <Markdown text={r.text} />
+            {/* The paths it names are of its own folder (its worktree): they open here, from there. */}
+            <Markdown text={r.text} sessionId={agents[r.id] && !agents[r.id]!.machine ? agents[r.id]!.session_id : undefined} openIn={e.session_id} />
             <ReportActions a={agents[r.id]} />
           </Collapsible.Panel>
         </Collapsible.Root>
@@ -358,7 +359,7 @@ const ENDED_WORD: Partial<Record<CallState, string>> = { error: CALL_FAILED, den
 // The words the agent tools take for their default type (src/automation/tools.ts), and none.
 const DEFAULT_TYPES = new Set(["", "general-purpose", "default", "worker"]);
 
-export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean }) {
+export function AgentCall({ use, result, live, sessionId }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string }) {
   const input: any = use.input ?? {};
   const out = resultText(result);
   const agents = useAuto((s) => s.agents);
@@ -466,7 +467,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         {agent && <AgentLane a={agent} className="mx-3 mt-2.5" />}
         <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
-        <AgentReport agent={agent} out={out} />
+        <AgentReport agent={agent} out={out} openIn={sessionId} />
         {!!agent?.lost?.length && <LostContexts agent={agent} />}
         {agent?.api && <ApiGrant agent={agent} />}
         {agent && <FollowUps agent={agent} />}
@@ -564,7 +565,7 @@ function FollowUps({ agent }: { agent: AgentRecord }) {
 // the page's list of agents leaves the reports out. Kept per agent and end, so opening again reads nothing.
 const readReports = new Map<string, string | null>();
 const reportKey = (a: AgentRecord) => `${a.id}:${a.ended ?? 0}:${a.tasks}:${a.report_chars}`;
-function AgentReport({ agent, out }: { agent?: AgentRecord; out: string }) {
+function AgentReport({ agent, out, openIn }: { agent?: AgentRecord; out: string; openIn?: string }) {
   const ended = !!agent && !isLive(agent) && agent.report_chars > 0;
   const key = ended ? reportKey(agent) : "";
   const [, loaded] = useState(0);
@@ -583,7 +584,7 @@ function AgentReport({ agent, out }: { agent?: AgentRecord; out: string }) {
       <div className="px-3 pt-1 pb-3 text-ui" data-testid="agent-call-report">
         {agent?.structured && report && agent.status === "completed"
           ? <pre data-testid="agent-call-json" className="overflow-x-auto rounded-md bg-code px-3 py-2 font-mono text-caption">{report.split("\n\n")[0]}</pre>
-          : <Markdown text={report ?? out} />}
+          : <Markdown text={report ?? out} sessionId={agent && !agent.machine && openIn ? agent.session_id : undefined} openIn={openIn} />}
         {agent?.structured && report && agent.status === "completed" && report.includes("\n\n") && <p className="pt-2 text-caption text-muted">{report.slice(report.indexOf("\n\n") + 2)}</p>}
       </div>
     </>

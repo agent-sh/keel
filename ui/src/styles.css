@@ -732,6 +732,8 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel code.k-fileref[data-rel] { cursor: pointer; color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 40%, transparent); text-underline-offset: 0.1875rem; }
 .prose-keel code.k-fileref[data-rel]:hover { text-decoration-color: var(--accent); }
 .prose-keel code.k-fileref[data-rel]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A path of a folder that is gone (an agent's removed worktree): struck through, quiet. */
+.prose-keel code.k-fileref[data-gone] { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line-strong); cursor: help; }
 /* TeX as MathML, drawn by the browser; the source shows until it is converted. */
 .prose-keel .math:not([data-done]) { font-family: var(--font-mono); font-size: var(--text-base); color: var(--muted); }
 .prose-keel div.math { overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }

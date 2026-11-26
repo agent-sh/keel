@@ -97,15 +97,22 @@ const known = new Map<string, Map<string, string | null>>();
 const asking = new Map<string, Set<HTMLElement>>();
 const RETRY_MS = 2000;
 const RETRY_MAX_MS = 60_000;
-function markPath(el: HTMLElement, have: Map<string, string | null>) {
+// Sessions whose folder is gone (an agent's worktree removed after it landed): their paths say so.
+const goneFolders = new Set<string>();
+function markPath(el: HTMLElement, have: Map<string, string | null>, sessionId: string) {
   const rel = have.get(el.dataset.path!);
   if (rel === undefined) return false;
   el.dataset.checked = "1";
+  // A report of another session's work names files of that session's folder (an agent's worktree).
+  const theirs = el.closest("[data-files-of]") ? " from the agent's worktree" : "";
   if (rel !== null) {
     el.dataset.rel = rel;
     el.setAttribute("role", "link");
     el.tabIndex = 0;
-    el.title = `Open ${rel}${el.dataset.line ? ` at line ${el.dataset.line}` : ""} in Files`;
+    el.title = `Open ${rel}${el.dataset.line ? ` at line ${el.dataset.line}` : ""}${theirs} in Files`;
+  } else if (theirs && goneFolders.has(sessionId)) {
+    el.dataset.gone = "1";
+    el.title = "Not there any more: the agent's worktree is gone";
   }
   return true;
 }
@@ -114,14 +121,15 @@ function askPaths(sessionId: string, els: Set<HTMLElement>, wait: number, failur
   asking.set(sessionId, els);
   setTimeout(() => {
     // What joined the batch while it waited is asked with it; what left the page is dropped.
-    const batch = [...els].filter((el) => el.isConnected && !markPath(el, have));
+    const batch = [...els].filter((el) => el.isConnected && !markPath(el, have, sessionId));
     const paths = [...new Set(batch.map((el) => el.dataset.path!))];
     if (!paths.length) return void asking.delete(sessionId);
-    api<{ files: Record<string, string> }>(`/api/sessions/${sessionId}/files/exist`, { method: "POST", body: JSON.stringify({ paths }) }).then(
+    api<{ files: Record<string, string>; gone?: boolean }>(`/api/sessions/${sessionId}/files/exist`, { method: "POST", body: JSON.stringify({ paths }) }).then(
       (r) => {
+        if (r.gone) goneFolders.add(sessionId);
         for (const p of paths) have.set(p, r.files[p] ?? null);
         // A path that joined while the request was out is asked next.
-        const rest = new Set([...els].filter((el) => el.isConnected && !markPath(el, have)));
+        const rest = new Set([...els].filter((el) => el.isConnected && !markPath(el, have, sessionId)));
         if (rest.size) askPaths(sessionId, rest, 30);
         else asking.delete(sessionId);
       },
@@ -129,7 +137,7 @@ function askPaths(sessionId: string, els: Set<HTMLElement>, wait: number, failur
         // The session is gone: nothing of it links.
         if ((e as { status?: number }).status === 404) {
           for (const p of paths) have.set(p, null);
-          els.forEach((el) => markPath(el, have));
+          els.forEach((el) => markPath(el, have, sessionId));
           return void asking.delete(sessionId);
         }
         reportError(e, { kind: "file-links" });
@@ -143,7 +151,7 @@ function pathsIn(root: Element, sessionId?: string) {
   const els = [...root.querySelectorAll<HTMLElement>("code.k-fileref:not([data-checked])")];
   if (!els.length) return;
   const have = known.get(sessionId) ?? known.set(sessionId, new Map()).get(sessionId)!;
-  const fresh = els.filter((el) => !markPath(el, have));
+  const fresh = els.filter((el) => !markPath(el, have, sessionId));
   if (!fresh.length) return;
   const wait = asking.get(sessionId);
   if (wait) fresh.forEach((el) => wait.add(el));
@@ -153,11 +161,12 @@ function pathsIn(root: Element, sessionId?: string) {
 // Settled once what it changed is in the page (math changes a reply's height).
 const enhance = (root: Element, sessionId?: string) => { const done = [highlightIn(root), mathIn(root)]; pathsIn(root, sessionId); return Promise.all(done); };
 
-// Opens a linked file in the session's Files panel, at its lines.
-function openLinked(el: HTMLElement, sessionId: string) {
+// Opens a linked file in the session's Files panel, at its lines. `openIn`: the session whose panel
+// shows it, when the file is of another one (an agent's report shown in its coordinator's view).
+function openLinked(el: HTMLElement, sessionId: string, openIn = sessionId) {
   const r = getUI().route;
-  if (r.name !== "session" || r.id !== sessionId) navigate({ name: "session", id: sessionId });
-  setUI({ fileAt: { session: sessionId, path: el.dataset.rel!, line: el.dataset.line ? Number(el.dataset.line) : undefined, end: el.dataset.end ? Number(el.dataset.end) : undefined, n: Date.now() } });
+  if (r.name !== "session" || r.id !== openIn) navigate({ name: "session", id: openIn });
+  setUI({ fileAt: { session: openIn, ...(openIn !== sessionId ? { of: sessionId } : {}), path: el.dataset.rel!, line: el.dataset.line ? Number(el.dataset.line) : undefined, end: el.dataset.end ? Number(el.dataset.end) : undefined, n: Date.now() } });
   savePref("panel", "files");
 }
 
@@ -201,12 +210,12 @@ function localImages(root: Element, sessionId?: string) {
 // The size of each picture drawn so far, by its address.
 const imageSizes = new Map<string, { w: number; h: number }>();
 
-const onClick = (sessionId?: string) => (e: React.MouseEvent | React.KeyboardEvent) => {
+const onClick = (sessionId?: string, openIn?: string) => (e: React.MouseEvent | React.KeyboardEvent) => {
   const link = (e.target as HTMLElement).closest<HTMLElement>("code.k-fileref[data-rel]");
   if (link && sessionId) {
     if ("key" in e && e.key !== "Enter") return;
     e.preventDefault();
-    return openLinked(link, sessionId);
+    return openLinked(link, sessionId, openIn);
   }
   if ("key" in e) return;
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".code-copy");
@@ -262,14 +271,16 @@ function LiveMarkdown({ text, sessionId }: { text: string; sessionId?: string })
   return <div ref={ref} className="prose-keel" data-live aria-busy="true" onClick={click} onKeyDown={click} />;
 }
 
-export const Markdown = memo(function Markdown({ text, live, sessionId }: { text: string; live?: boolean; sessionId?: string }) {
+// `sessionId`: the session whose folder the text's paths are of. `openIn`: the session whose Files
+// panel opens them, when that is another one (an agent's report in its coordinator's view).
+export const Markdown = memo(function Markdown({ text, live, sessionId, openIn }: { text: string; live?: boolean; sessionId?: string; openIn?: string }) {
   if (live) return <LiveMarkdown text={text} sessionId={sessionId} />;
-  return <StoredMarkdown text={text} sessionId={sessionId} />;
+  return <StoredMarkdown text={text} sessionId={sessionId} openIn={openIn} />;
 });
 
 export const NearView = createContext<(() => void) | null>(null);
 
-function StoredMarkdown({ text, sessionId }: { text: string; sessionId?: string }) {
+function StoredMarkdown({ text, sessionId, openIn }: { text: string; sessionId?: string; openIn?: string }) {
   const html = useMemo(() => md.parse(text, { async: false }) as string, [text]);
   const ref = useRef<HTMLDivElement>(null);
   const near = useContext(NearView);
@@ -280,6 +291,7 @@ function StoredMarkdown({ text, sessionId }: { text: string; sessionId?: string 
     if (!near) return watch(el, sessionId);
     whenIdle(() => { if (el.isConnected) void enhance(el, sessionId).then(near); }, 400);
   }, [html, sessionId, near]);
-  const click = onClick(sessionId);
-  return <div ref={ref} className="prose-keel" dangerouslySetInnerHTML={{ __html: html }} onClick={click} onKeyDown={click} />;
+  const click = onClick(sessionId, openIn);
+  const of = openIn && openIn !== sessionId ? sessionId : undefined;
+  return <div ref={ref} className="prose-keel" data-files-of={of} dangerouslySetInnerHTML={{ __html: html }} onClick={click} onKeyDown={click} />;
 }

@@ -101,9 +101,15 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
     let real: string;
     try { real = realpathSync(resolve(root, raw)); } catch { return bad("no such file in the session's folder", 404); }
     if (!contains(root, real)) return bad("the file is outside the session's folder", 403);
-    if (contains(store.stateDir, real)) return bad("that is the daemon's own state", 403);
+    // (A worktree Keel made for an agent is under the state folder: its files are the session's own, not the daemon's.)
+    if (contains(store.stateDir, real) && !keelWorktree(root)) return bad("that is the daemon's own state", 403);
     if (!statSync(real).isFile()) return bad("not a file");
     return real;
+  };
+  const keelWorktree = (root: string) => {
+    let own: string;
+    try { own = realpathSync(join(store.stateDir, "worktrees")); } catch { return false; }
+    return root !== own && contains(own, root);
   };
 
   // The agents below a session that a move of its folder takes along: those
@@ -274,7 +280,8 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
         const b = ((await req.json().catch(() => null)) ?? {}) as any;
         if (!Array.isArray(b.paths)) return bad("paths is a list");
         let root: string;
-        try { root = realpathSync(s.workspace); } catch { return json({ files: {} }); }
+        // A folder that is gone (an agent's worktree removed after it landed) says so: the page marks its paths.
+        try { root = realpathSync(s.workspace); } catch { return json({ files: {}, gone: true }); }
         const files: Record<string, string> = {};
         for (const p of b.paths.slice(0, 500)) {
           if (typeof p !== "string") continue;

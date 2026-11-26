@@ -180,7 +180,7 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   // (The card stands at the same place in the tree before and after its result, with a hook's rows and
   // without: made again there, it would lose what it holds, and a card that stays open would stand empty.)
   const beside = (card: ReactNode) => <>{card}{hook && <HookRows hook={hook} asked={asked.input} name={use.name} cwd={cwd} />}</>;
-  if (AGENT_TOOLS.has(use.name)) return beside(<AgentCall use={use} result={result} live={live} />);
+  if (AGENT_TOOLS.has(use.name)) return beside(<AgentCall use={use} result={result} live={live} sessionId={sessionId} />);
   if (use.name === "run_code") return beside(<CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} event={event} />);
   if (use.name === "AskReaders" || use.name === "ask_readers") return beside(<ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />);
   const kind = toolKind(use.name);

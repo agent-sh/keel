@@ -3,7 +3,8 @@ import { FileBody, type Opened } from "./FileBody.tsx";
 import { OpenInEditor } from "./OpenInEditor.tsx";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, reportError } from "../lib/store.ts";
+import { autoState } from "../lib/automation.ts";
+import { api, getState, reportError } from "../lib/store.ts";
 import { seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -21,14 +22,30 @@ export function FilesPanel({ session }: { session: Session }) {
   const [total, setTotal] = useState(0);
   const [open, setOpen] = useState<Opened | null>(null);
   const [at, setAt] = useState<{ line?: number; end?: number }>({});
+  // The session whose folder the open file is in: this one, or the agent whose report linked it
+  // (its worktree, as it is now). `gone`: the linked file is not there any more.
+  const [from, setFrom] = useState<Session | null>(null);
+  const [gone, setGone] = useState<{ path: string; title: string } | null>(null);
   // A file a reply linked opens here at its lines.
   const linked = useUI((s) => (s.fileAt?.session === session.id ? s.fileAt : null));
   useEffect(() => {
     if (!linked) return;
     setUI({ fileAt: null });
-    api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(linked.path)}`)
-      .then((f) => { setOpen(f); setAt({ line: linked.line, end: linked.end }); })
-      .catch(reportError);
+    // (An agent's session the list does not hold is known by its record: its worktree and title.)
+    const rec = linked.of ? Object.values(autoState().agents).find((a) => a.session_id === linked.of) : undefined;
+    const of = !linked.of ? null : getState().sessions[linked.of] ?? (rec ? { ...session, id: rec.session_id, title: rec.title, workspace: rec.worktree ?? session.workspace } : null);
+    if (linked.of && !of) return;
+    const src = of ?? session;
+    setGone(null);
+    api<Opened>(`/api/fs/file?root=${encodeURIComponent(src.workspace)}&path=${encodeURIComponent(linked.path)}`)
+      .then((f) => { setFrom(of); setOpen(f); setAt({ line: linked.line, end: linked.end }); })
+      .catch((e) => {
+        // A file of an agent's worktree that went since its report named it: said here, not an error.
+        // (A worktree that is gone whole is no folder the daemon reads from: refused as outside the home.)
+        const st = (e as { status?: number }).status;
+        if (of && (st === 404 || (st === 403 && /outside the home/.test((e as Error).message)))) return setGone({ path: linked.path, title: of.title });
+        reportError(e);
+      });
   }, [linked?.n]);
 
   useEffect(() => {
@@ -53,7 +70,7 @@ export function FilesPanel({ session }: { session: Session }) {
     if (h.dir) { setQ(h.path); input.current?.focus(); return; }
     const on = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.result : undefined;
     left.current = { path: on ?? null, top: list.current?.scrollTop ?? 0 };
-    api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(h.path)}`).then((f) => { setOpen(f); setAt({}); }).catch(reportError);
+    api<Opened>(`/api/fs/file?root=${encodeURIComponent(session.workspace)}&path=${encodeURIComponent(h.path)}`).then((f) => { setFrom(null); setOpen(f); setAt({}); }).catch(reportError);
   };
   // The file opened takes the keys; back in the list they return where they were.
   const shown = open?.path;
@@ -86,21 +103,40 @@ export function FilesPanel({ session }: { session: Session }) {
     seedComposer(`${draft}${draft && !draft.endsWith(" ") ? " " : ""}@${path} `, session.id);
   };
 
-  if (open) {
+  if (gone) {
     return (
-      <div ref={view} tabIndex={-1} role="region" aria-label={`File ${open.path}`} className="flex h-full flex-col outline-none" data-testid="file-view"
-        onKeyDown={(e) => { if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); setOpen(null); } }}>
+      <div className="flex h-full flex-col" data-testid="file-gone">
         <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-raised px-2">
-          <button type="button" onClick={() => setOpen(null)} aria-label="Back to the file list" className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
+          <button type="button" onClick={() => setGone(null)} aria-label="Back to the file list" className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
             <ChevronLeft className="size-4" />
           </button>
-          <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted" title={open.path}>{open.path}</span>
-          <button type="button" onClick={() => mention(open.path)} className="flex h-7 shrink-0 items-center gap-1 rounded-sm px-2 text-caption text-muted hover:bg-hover hover:text-fg">
+          <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted" title={gone.path}>{gone.path}</span>
+        </div>
+        <p className="k-empty px-4 py-4">Not in {gone.title}'s worktree any more.</p>
+      </div>
+    );
+  }
+
+  if (open) {
+    const src = from ?? session;
+    // A file of an agent's worktree is mentioned by its whole path: the message box is this session's.
+    const named = from ? `${from.workspace}/${open.path}` : open.path;
+    const back = () => { setOpen(null); setFrom(null); };
+    return (
+      <div ref={view} tabIndex={-1} role="region" aria-label={`File ${open.path}`} className="flex h-full flex-col outline-none" data-testid="file-view" data-of={from?.id}
+        onKeyDown={(e) => { if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); back(); } }}>
+        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-raised px-2">
+          <button type="button" onClick={back} aria-label="Back to the file list" className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
+            <ChevronLeft className="size-4" />
+          </button>
+          <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted" title={named}>{open.path}</span>
+          <button type="button" onClick={() => mention(named)} className="flex h-7 shrink-0 items-center gap-1 rounded-sm px-2 text-caption text-muted hover:bg-hover hover:text-fg">
             <AtSign className="size-3.5" /> Mention
           </button>
-          {!session.machine && <OpenInEditor sessionId={session.id} path={open.path} />}
+          {!src.machine && <OpenInEditor sessionId={src.id} path={open.path} />}
         </div>
-        <FileBody session={session} first={open} line={at.line} end={at.end} />
+        {from && <div className="truncate border-b border-line px-3 py-1.5 text-caption text-faint" data-testid="file-of" title={from.workspace}>In {from.title}'s worktree</div>}
+        <FileBody session={src} first={open} line={at.line} end={at.end} />
       </div>
     );
   }

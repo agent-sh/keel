@@ -74,8 +74,10 @@ export const notManaged = (paths: readonly string[], stateDir: string): string[]
 };
 
 export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
-  // A folder the page may read: inside the home directory or the daemon's workspace.
-  const readable = (real: string) => contains(HOME, real) || contains(resolve(workspace), real);
+  // A folder the page may read: inside the home directory or the daemon's workspace, or a worktree Keel
+  // made for an agent (in its state folder, wherever that is).
+  const made = () => { try { return realpathSync(join(store.stateDir, "worktrees")); } catch { return null; } };
+  const readable = (real: string) => contains(HOME, real) || contains(resolve(workspace), real) || ((m) => !!m && real !== m && contains(m, real))(made());
   const allowed = (raw: string | null): string | null => {
     if (!raw) return null;
     const p = resolve(raw.replace(/^~(?=$|\/)/, HOME));

@@ -54,7 +54,8 @@ type UIState = {
   // A prompt whose edit box Up in an empty message box asked to open (lib/edit-last.ts).
   editPrompt: { session: string; event: string } | null;
   // A file a reply linked, to show in the session's Files panel at its lines.
-  fileAt: { session: string; path: string; line?: number; end?: number; n: number } | null;
+  // `of`: the session whose folder the file is in, when not the panel's own (an agent's worktree).
+  fileAt: { session: string; of?: string; path: string; line?: number; end?: number; n: number } | null;
 };
 
 // A Settings link that names a section of Customize is that section's place there (the section moved).
