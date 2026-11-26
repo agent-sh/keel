@@ -78,7 +78,8 @@ export function decide(st: LoadState, readings: Reading[], trees: Tree[], now: n
   // A held tree with no unattended work left (it ended, was stopped, its owner took it) is no longer held.
   let held = st.held.filter((k) => live.has(k));
   let at = pick(st.at, (k) => held.includes(k));
-  const rested = pick(st.rested, (k, until) => live.has(k) && until > now);
+  // A tree the cap let go keeps its rest until it expires, even between its turns (it is not held again at once).
+  const rested = pick(st.rested, (_k, until) => until > now);
   let changed = st.changed_at;
   const last = readings.at(-1);
   const out = (h: string[], o: Partial<LoadState> = {}): LoadState => {
