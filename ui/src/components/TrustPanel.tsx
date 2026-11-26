@@ -1,4 +1,4 @@
-import { FileCheck2, FileWarning, GitBranch, Package, RotateCcw, ShieldCheck, Trash2, Webhook } from "lucide-react";
+import { FileCheck2, FileWarning, GitBranch, GitMerge, Package, RotateCcw, ShieldCheck, Trash2, Webhook } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Source as HookSource } from "../../../src/integrations/hooks.ts";
@@ -118,6 +118,7 @@ export function TrustPanel({ session }: { session: Session }) {
       </section>
 
       <WorktreeSetupFile session={session} />
+      <LandAfterStep session={session} />
 
       <section className="flex flex-col gap-2">
         <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><FileWarning className="size-4 text-accent" /> Quarantine</h3>
@@ -156,6 +157,47 @@ function WorktreeSetupFile({ session }: { session: Session }) {
             <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{v.text}</pre>
             <button data-testid="trust-worktree-setup" className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90"
               onClick={() => api(on("/api/worktree-setup/trust"), { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: v.sha256 }) }).then(() => { setErr(""); load(); }).catch((e) => setErr(failed(e, { at: "TrustPanel" })))}>Trust this version</button>
+            {err && <p className="mt-1 text-danger">{err}</p>}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+type AfterView = { path: string; state: "none" | "new" | "changed" | "pinned" | "refused"; command?: string; sha256?: string; covers?: string[]; texts?: { path: string; text: string }[]; problems: string[] };
+const AFTER_STATE = { new: "held: not trusted", changed: "held: changed since you trusted it", pinned: "runs after each landing", refused: "cannot run", none: "" } as const;
+
+// The repository's after-land step (land.after in .keel/checks.json): it runs in this checkout after the landing
+// queue moved the base, where a repository deploys or restarts what it ships, so it is read and trusted like a hooks file.
+function LandAfterStep({ session }: { session: Session }) {
+  const [v, setV] = useState<AfterView | null>(null);
+  const [err, setErr] = useState("");
+  const on = (path: string) => machineApi(session.id, path);
+  const load = useCallback(() => { api<AfterView>(on(`/api/landing/after?cwd=${encodeURIComponent(session.workspace)}`)).then(setV).catch(reportError); }, [session.workspace]);
+  useEffect(load, [load]);
+  if (!v || v.state === "none") return null;
+  return (
+    <section className="flex flex-col gap-2" data-testid="land-after-step" data-state={v.state}>
+      <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><GitMerge className="size-4 text-accent" /> After a landing</h3>
+      <div className="rounded-xl border border-line bg-raised px-3 py-2 text-caption">
+        <div className="flex items-center gap-2">
+          <span className={cn("rounded px-1.5 text-micro font-medium", v.state === "pinned" ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")}>{v.state === "pinned" ? "runs" : "held"}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-faint">{v.command}</span>
+        </div>
+        <p className="mt-1 text-muted">{AFTER_STATE[v.state]}. It runs once after each batch the landing queue lands, in the checkout that has the base out, as the queueing session's commands run. The trust holds the command and the files of .keel/ it runs only: what they read from the rest of the tree is not held. While it is held, branches still land and are pushed; the step waits.</p>
+        {v.covers && v.covers.length > 0 && <p className="mt-0.5 text-muted">The trust also covers: {v.covers.join(", ")}</p>}
+        {v.problems.map((p, i) => <p key={i} className="mt-0.5 text-warn">{p}</p>)}
+        {v.state !== "pinned" && v.sha256 && v.state !== "refused" && (
+          <>
+            {(v.texts ?? []).map((t) => (
+              <div key={t.path} className="mt-2">
+                <div className="font-mono text-micro text-faint">{t.path}</div>
+                <pre className="mt-0.5 max-h-64 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{t.text}</pre>
+              </div>
+            ))}
+            <button data-testid="trust-land-after" className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90"
+              onClick={() => api(on("/api/landing/after/trust"), { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: v.sha256 }) }).then(() => { setErr(""); load(); }).catch((e) => setErr(failed(e, { at: "TrustPanel" })))}>Trust this version</button>
             {err && <p className="mt-1 text-danger">{err}</p>}
           </>
         )}

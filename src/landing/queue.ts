@@ -64,6 +64,8 @@ import { afterTask, baseLines, rebaseTask, TRIES, type ConflictAt, type Stop } f
 import { buildOrder, checksToRun, failureText, leftWhy, outcomeText, queueWarning, readLand, tailOf, type LandRules, type Left, type Outcome, type Push, type ToRun } from "./rules.ts";
 import { homeDir } from "../core/paths";
 import type { Landing } from "../safety/landed-trust.ts";
+import { lockedDaemon } from "../core/daemon-lock.ts";
+import { AfterPins } from "./land-pin.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS landing_queue (
@@ -104,7 +106,7 @@ export type Entry = {
   tries: number; agent: string | null; agent_task: number | null; sent_tip: string | null;
   owner_tip: string | null; owner_via: string | null;
 };
-export type QueueView = { repo: string | null; base: string | null; entries: Entry[]; running: boolean; rules?: { checks: string[]; push?: string; after?: string; method: string; problems: string[] } };
+export type QueueView = { repo: string | null; base: string | null; entries: Entry[]; running: boolean; rules?: { checks: string[]; push?: string; after?: string; after_held?: string; method: string; problems: string[] } };
 
 // How the queue reaches the rest of the daemon. `changed`: the sessions
 // whose repository's queue changed. `failed`: a branch left; `root` is told
@@ -183,8 +185,12 @@ export class LandingQueue {
   private sending = new Set<Promise<unknown>>();
   private track(p: Promise<unknown>) { const t = p.catch((x) => this.d.error(x, "landing rebase task")).finally(() => this.sending.delete(t)); this.sending.add(t); }
 
+  // The owner's pins of the repositories' after steps (src/landing/land-pin.ts).
+  readonly afterPins: AfterPins;
+
   constructor(private store: Store, private ov: Overlaps, private d: QueueDeps) {
     store.migrate(SCHEMA);
+    this.afterPins = new AfterPins(store);
     for (const [c, t] of RESOLVE_COLUMNS) if (!store.columnExists("landing_queue", c)) store.migrate(`ALTER TABLE landing_queue ADD COLUMN ${c} ${t}`);
   }
 
@@ -341,7 +347,8 @@ export class LandingQueue {
     if (base) {
       const r = await this.rulesOf(repo, base);
       const run = r ? checksToRun(r.rules, r.named, homeDir()) : undefined;
-      if (r) rules = { checks: run && "run" in run ? run.run.map((c) => c.command === c.check.run ? c.check.name : `${c.check.name} ${c.command.slice(c.check.run.length).trim()}`.trim()) : [], ...(r.rules.push ? { push: r.rules.push } : {}), ...(r.rules.after ? { after: r.rules.after } : {}), method: r.rules.method, problems: [...r.rules.problems, ...(run && "problem" in run ? [run.problem] : [])] };
+      const held = r?.rules.after ? this.afterPins.held(repo, r.rules.after, repo) : undefined;
+      if (r) rules = { checks: run && "run" in run ? run.run.map((c) => c.command === c.check.run ? c.check.name : `${c.check.name} ${c.command.slice(c.check.run.length).trim()}`.trim()) : [], ...(r.rules.push ? { push: r.rules.push } : {}), ...(r.rules.after ? { after: r.rules.after } : {}), ...(held ? { after_held: held } : {}), method: r.rules.method, problems: [...r.rules.problems, ...(run && "problem" in run ? [run.problem] : [])] };
     }
     return { repo, base: base ? short(base) : null, entries, running: this.running.has(repo), ...(rules ? { rules } : {}) };
   }
@@ -538,7 +545,11 @@ export class LandingQueue {
       }
       // Pushed after the base moved here: a remote never holds what this repository does not.
       if (rules.push) outcome.push = await this.push(repo, rules.push, base, tip, who);
-      if (rules.after) outcome.after = await this.after(repo, base, tip, from, passed.map((p) => p.e.branch), batch, who, rules.timeoutMs);
+      if (rules.after) {
+        const a = await this.after(repo, base, tip, from, passed.map((p) => p.e.branch), batch, who, rules.timeoutMs, outcome.push);
+        if ("held" in a) outcome.afterHeld = a.held;
+        else outcome.after = a;
+      }
       this.ov.schedule(repo, 0);
     } catch (e) {
       // A failure of the pass itself (git could not make the worktree): what was building waits for the next pass.
@@ -821,14 +832,25 @@ export class LandingQueue {
 
   // The after-land step: in the checkout that has the base out, now at the
   // landed commit; with none, in a worktree of the queue's own at that commit
-  // (removed after). Never in a checkout that has another branch out.
-  private async after(repo: string, base: string, tip: string, from: string, branches: string[], batch: string, who: string | null, timeoutMs: number): Promise<{ exit: number | null; log: string }> {
+  // (removed after). Never in a checkout that has another branch out. It runs
+  // only while the owner's pin holds it as it is there (src/landing/land-pin.ts);
+  // `held` says why it did not.
+  private async after(repo: string, base: string, tip: string, from: string, branches: string[], batch: string, who: string | null, timeoutMs: number, push?: Push): Promise<{ exit: number | null; log: string } | { held: string }> {
     const out = await this.checkoutOf(repo, base);
     const at = out && (await git(out, ["rev-parse", "-q", "--verify", "HEAD"], { read: true })).out.trim() === tip ? out : undefined;
     const own = at ? undefined : join(this.dir, createHash("sha256").update(repo).digest("hex").slice(0, 16), `${batch}-after`);
     try {
       if (own) await worktreeGit(repo, ["worktree", "add", "-q", "--detach", own, tip]);
-      const a = await this.sh(this.store.db.query<{ after: string }, [string]>("SELECT after FROM landing_batches WHERE id = ?").get(batch)!.after, at ?? own!, `${batch}-after`, who, repo, timeoutMs, { KEEL_LANDED: tip, KEEL_LANDED_FROM: from, KEEL_LANDED_BRANCHES: branches.join(" ") });
+      const command = this.store.db.query<{ after: string }, [string]>("SELECT after FROM landing_batches WHERE id = ?").get(batch)!.after;
+      const held = this.afterPins.held(repo, command, at ?? own!);
+      if (held) {
+        this.store.db.query("UPDATE landing_batches SET after_exit = -3, after_log = ? WHERE id = ?").run(held, batch);
+        return { held };
+      }
+      // What the step is told besides the commits: the base by name, the remote the landing reached (none: it was
+      // not pushed), and the address of the daemon whose queue landed it.
+      const pushed = push && "ok" in push && push.ok ? push.remote : "";
+      const a = await this.sh(command, at ?? own!, `${batch}-after`, who, repo, timeoutMs, { KEEL_LANDED: tip, KEEL_LANDED_FROM: from, KEEL_LANDED_BRANCHES: branches.join(" "), KEEL_LANDED_BASE: short(base), KEEL_LANDED_PUSHED: pushed, KEEL_LAND_DAEMON: lockedDaemon(this.store.stateDir)?.url ?? "" });
       this.store.db.query("UPDATE landing_batches SET after_exit = ?, after_log = ? WHERE id = ?").run(a.exit ?? -1, a.log, batch);
       return { exit: a.exit, log: a.log };
     } finally {
@@ -947,7 +969,7 @@ export class LandingQueue {
         landed: es.filter((e) => e.state === "landed").map((e) => ({ branch: e.branch, tip: e.tip, at: e.landed ?? "" })),
         left: es.filter((e) => e.state === "left").map((e) => ({ branch: e.branch, why: e.why ?? "", ...(e.log ? { log: e.log } : {}) })),
         ...(push ? { push } : {}),
-        ...(b && b.after_exit === -2 ? { afterCut: true as const } : b && b.after_exit !== null ? { after: { exit: b.after_exit === -1 ? null : b.after_exit, log: b.after_log ?? "" } } : {}),
+        ...(b && b.after_exit === -2 ? { afterCut: true as const } : b && b.after_exit === -3 ? { afterHeld: b.after_log ?? "" } : b && b.after_exit !== null ? { after: { exit: b.after_exit === -1 ? null : b.after_exit, log: b.after_log ?? "" } } : {}),
       };
       parts.push(outcomeText(o).replace(/^\[harness\] Landing queue:\n/, ""));
     }

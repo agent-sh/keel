@@ -48,6 +48,17 @@
         "--wait",
         "--out"
       ]
+    },
+    "touched": {
+      "run": "bun scripts/touched-tests.ts",
+      "inputs": [
+        "node_modules",
+        "node_modules/../bun.lock",
+        "node_modules/.bin"
+      ]
+    },
+    "remote-scripts": {
+      "run": "scripts/remote-verify.sh --only scripts"
     }
   },
   "wait": [
@@ -55,5 +66,22 @@
   ],
   "env": [
     "KEEL_VERIFY_MAX_RUNS"
-  ]
+  ],
+  "pairs": {
+    "checks": [
+      "typecheck",
+      "unit"
+    ]
+  },
+  "land": {
+    "setup": "ln -s \"$KEEL_LAND_REPO/node_modules\" node_modules",
+    "checks": [
+      "typecheck",
+      "unit --timeout 60000 ./src/conventions.test.ts ./src/ui-conventions.test.ts",
+      "touched",
+      "remote-scripts"
+    ],
+    "push": "origin",
+    "after": "bash .keel/land-install.sh"
+  }
 }

@@ -45,6 +45,16 @@ test("a queue lands what passed on the exact tree, and a branch that fails or co
 
   // The coordinator's two agents, each committing on its own branch.
   const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  // The after step runs in the owner's checkout after a landing: it is held until he trusts it in the Trust panel.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "trust");
+  const step = page.getByTestId("land-after-step");
+  await expect(step).toHaveAttribute("data-state", "new");
+  await expect(step).toContainText("KEEL_LANDED");
+  await shoot(page, "landing-00-after-step-held");
+  await step.getByTestId("trust-land-after").click();
+  await expect(step).toHaveAttribute("data-state", "pinned");
   const lane = (title: string, sed: string) => ({ name: "spawn_agent", input: { message: `${title}\n${scriptBash(commit(sed, title))}` } });
   await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start two agents.", `script:batch ${JSON.stringify([lane("Lane alpha", "s/^line 1$/line 1 ALPHA/"), lane("Lane beta", "s/^line 12$/line 12 BETA/")])}`) } });
   const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];

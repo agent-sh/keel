@@ -23,7 +23,14 @@
 //   after    the repository's own step after the base moved (a deploy, a
 //            restart): run once a batch, in the main checkout, where the
 //            queueing session's own commands run (its sandbox, when it has
-//            one), like the checks. Keel restarts nothing of its own;
+//            one), like the checks. Keel restarts nothing of its own. It
+//            runs only while the owner's pin holds its command and the files
+//            of .keel/ it runs (src/landing/land-pin.ts). It is told the
+//            landing in its environment: KEEL_LANDED (the landed commit),
+//            KEEL_LANDED_FROM, KEEL_LANDED_BRANCHES, KEEL_LANDED_BASE (the
+//            base's name), KEEL_LANDED_PUSHED (the remote the push reached;
+//            empty when it was not pushed) and KEEL_LAND_DAEMON (the address
+//            of the daemon whose queue landed it);
 //   push     the remote the base is pushed to as part of landing; none: the
 //            base moves here only;
 //   method   "rebase" (the default): each entry's commits go on top of the
@@ -134,9 +141,10 @@ const short = (sha: string) => sha.slice(0, 9);
 export type Left = { branch: string; why: string; log?: string };
 export type Landed = { branch: string; tip: string; at: string; moved?: true };
 // `push`: how the push went when the repository asks for one (pushed, refused with git's words, or
-// not made and why). `after`: the after-land step's run; `afterCut`: it was owed and a stop came first.
+// not made and why). `after`: the after-land step's run; `afterCut`: it was owed and a stop came first;
+// `afterHeld`: why it did not run (the owner's pin does not hold it as it is).
 export type Push = { remote: string; ok: true } | { remote: string; ok: false; err: string } | { remote: string; skipped: string };
-export type Outcome = { repo: string; base: string; from: string; to: string; landed: Landed[]; left: Left[]; checks: string[]; push?: Push; after?: { exit: number | null; log: string }; afterCut?: true };
+export type Outcome = { repo: string; base: string; from: string; to: string; landed: Landed[]; left: Left[]; checks: string[]; push?: Push; after?: { exit: number | null; log: string }; afterCut?: true; afterHeld?: string };
 
 // Why an entry left, in one line: what failed, on what, and what to do.
 // A conflict's `agent`: what came of the rebase task its agent was sent (src/landing/resolve.ts); `tries`: how many it had.
@@ -169,6 +177,7 @@ export function outcomeText(o: Outcome, own: (branch: string) => boolean = () =>
     const moved = o.landed.filter((l) => l.moved);
     if (moved.length) lines.push(`- ${moved.map((l) => l.branch).join(", ")} moved while ${moved.length === 1 ? "it was" : "they were"} checked: what came after the checked tip is not landed; queue ${moved.length === 1 ? "it" : "them"} again.`);
     if (o.afterCut) lines.push("- The after-land step did not run: the daemon stopped between the move and the step. Run it by hand if it is needed.");
+    if (o.afterHeld) lines.push(`- The after-land step did not run: ${o.afterHeld}. Once it is trusted, the next landing runs it; run it by hand for this one if it is needed.`);
     if (o.after) lines.push(o.after.exit === 0 ? `- The after-land step ran once (exit 0). Its output: ${o.after.log}` : `- The after-land step failed (${o.after.exit === null ? "it was stopped" : `exit ${o.after.exit}`}). Its output: ${o.after.log}`);
   }
   for (const l of o.left) if (!own(l.branch)) lines.push(`- ${l.branch} left the queue: ${l.why}.${l.log ? ` Its output: ${l.log}` : ""}`);

@@ -25,6 +25,10 @@ test("your asks: each of the owner's asks with its state from the agents, the re
   writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { notes: "sh check.sh" }, land: { checks: ["notes"], after: "printf '%s\\n' \"$KEEL_LANDED\" >> ../after.log" } }));
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "init");
+  // The after step runs in the checkout after a landing: it waits for the owner's trust.
+  const afterStep = await (await request.get(`/api/landing/after?cwd=${encodeURIComponent(repo)}`)).json();
+  expect(afterStep.state).toBe("new");
+  expect((await request.post("/api/landing/after/trust", { data: { cwd: repo, sha256: afterStep.sha256 } })).ok()).toBe(true);
   const gate = join(top, "gamma-may-end");
 
   const idle = (id: string) => expect.poll(async () => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);

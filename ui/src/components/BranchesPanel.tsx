@@ -151,7 +151,7 @@ function LandingQueue({ session, q }: { session: Session; q: LandingView }) {
     <section className="flex flex-col gap-1.5" data-testid="landing-queue">
       <div className="flex items-baseline gap-2 px-1">
         <h3 className="k-label">Landing queue</h3>
-        {q.rules && <span className="min-w-0 truncate text-micro text-faint" data-testid="landing-rules">{q.rules.checks.length ? `checks ${q.rules.checks.join(", ")}` : "no checks"}{q.rules.push ? ` · pushed to ${q.rules.push}` : ""}{q.rules.after ? " · then its after-land step" : ""}{q.rules.method === "merge" ? " · merge commits" : " · fast-forward"}</span>}
+        {q.rules && <span className="min-w-0 truncate text-micro text-faint" data-testid="landing-rules">{q.rules.checks.length ? `checks ${q.rules.checks.join(", ")}` : "no checks"}{q.rules.push ? ` · pushed to ${q.rules.push}` : ""}{q.rules.after ? (q.rules.after_held ? " · its after-land step is held until you trust it" : " · then its after-land step") : ""}{q.rules.method === "merge" ? " · merge commits" : " · fast-forward"}</span>}
       </div>
       {q.rules?.problems.map((p) => <p key={p} className="px-1 text-caption text-warn">{p}</p>)}
       {!q.rules && <p className="k-empty px-1">The repository names no checks (.keel/checks.json): nothing would be known to pass, so nothing lands.</p>}

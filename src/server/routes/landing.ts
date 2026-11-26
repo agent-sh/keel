@@ -207,6 +207,26 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
         return json({ ...r, view: await q.view(req.params.id) }, r.queued.length ? 200 : 409);
       },
     },
+    // The repository's after step (land.after) as the owner reads it before trusting it: it runs in the
+    // checkout after a landing, so it runs only while his pin holds it (src/landing/land-pin.ts).
+    "/api/landing/after": {
+      GET: (req: any) => {
+        const cwd = new URL(req.url).searchParams.get("cwd") || deps.workspace;
+        return json(q.afterPins.show(cwd));
+      },
+    },
+    "/api/landing/after/trust": {
+      POST: async (req: any, srv: Bun.Server<unknown>) => {
+        const by = sessionOfCaller(req, srv);
+        if (by) return json({ error: `this is the owner's: a session's command (session ${by}) does not trust a repository's after step` }, 403);
+        if (presence && !presence.allows(req, "land-after-trust")) return json({ error: "this needs your passkey from a remote device", presence: { action: "land-after-trust" } }, 428);
+        const b = await req.json().catch(() => ({}));
+        if (typeof b?.sha256 !== "string") return json({ error: "give the sha256 of the step you read" }, 400);
+        const cwd = typeof b.cwd === "string" ? b.cwd : deps.workspace;
+        const err = q.afterPins.pin(cwd, b.sha256);
+        return err ? json({ error: err }, 409) : json(q.afterPins.show(cwd));
+      },
+    },
     "/api/landing/:entry": {
       DELETE: (req: any, srv: Bun.Server<unknown>) => {
         const refused = ownerOnly(req, srv);

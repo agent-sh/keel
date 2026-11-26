@@ -9,7 +9,10 @@
 #   scripts/remote-verify.sh --dir PATH                  the folder on the host, from its home (.cache/keel-verify by default)
 #   scripts/remote-verify.sh --wait SECONDS              how long to wait for a free place on the host (1800 by default)
 #
-# --host names anything `ssh` reaches; KEEL_VERIFY_HOST gives it when the flag is not there.
+# --host names anything `ssh` reaches; KEEL_VERIFY_HOST gives it when the flag is not there, and
+# else the clone's own git config (`git config keel.verifyHost NAME`: a name this machine knows,
+# kept out of the repository, so a check the repository names can run there). The same way
+# `git config keel.verifyMaxRuns N` stands in for KEEL_VERIFY_MAX_RUNS.
 # Nothing else of this machine is used, and nothing of it is copied there but the commit:
 # no credentials, no config, no state.
 #
@@ -49,7 +52,9 @@ KEEP_DAYS=1     # how long a commit's folder and a run's logs stay on the host
 if [ "${1:-}" != "__remote" ]; then
   # ---- here: what to check, the push, the copy of this script, the logs back ----
   TOP=$(cd "$(dirname "$0")/.." && pwd)
-  host=${KEEL_VERIFY_HOST:-}; dir=.cache/keel-verify; out=""; only=""; wait_s=1800; e2e=0; specs=(); commit=""
+  host=${KEEL_VERIFY_HOST:-$(git -C "$TOP" config --get keel.verifyhost || true)}; dir=.cache/keel-verify;
+  if [ -z "${KEEL_VERIFY_MAX_RUNS:-}" ] && n=$(git -C "$TOP" config --get keel.verifymaxruns) && [[ "$n" =~ ^[1-9][0-9]*$ ]]; then MAX_RUNS=$n; fi
+  out=""; only=""; wait_s=1800; e2e=0; specs=(); commit=""
   # The outcome as the last line, whichever way the script ends; `started`: the host began the run.
   started=0
   summary() {
@@ -86,7 +91,7 @@ if [ "${1:-}" != "__remote" ]; then
     esac
     shift
   done
-  [ -n "$host" ] || { echo "remote-verify: no host. Name one with --host (anything ssh reaches) or KEEL_VERIFY_HOST." >&2; exit 2; }
+  [ -n "$host" ] || { echo "remote-verify: no host. Name one with --host (anything ssh reaches), KEEL_VERIFY_HOST or git config keel.verifyHost." >&2; exit 2; }
   case "$dir" in /*|*..*|"") echo "remote-verify: --dir is a path from the home on the host, without ..: $dir" >&2; exit 2 ;; esac
   [[ "$wait_s" =~ ^[0-9]+$ ]] || { echo "remote-verify: --wait takes whole seconds" >&2; exit 2; }
   [[ "$only" =~ ^[a-z0-9,]*$ ]] || { echo "remote-verify: --only takes stage names separated by commas" >&2; exit 2; }

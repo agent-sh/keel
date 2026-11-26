@@ -170,11 +170,44 @@ test("the after step runs on the landed tip, not on the branch the main checkout
   g(t.repo, "checkout", "-q", "-b", "feature", "main");
   writeFileSync(join(t.repo, "marker.txt"), "the owner's feature branch\n");
   g(t.repo, "commit", "-qam", "feature marker");
+  expect(t.q.afterPins.pin(t.repo, t.q.afterPins.show(t.repo).sha256!)).toBeNull();
   await t.land(["keel/a"]);
   expect(t.rows()[0]!.state).toBe("landed");
   expect(readFileSync(join(t.dir, "after.log"), "utf8")).toBe(`main\n${t.main()}\n`);
   expect(g(t.repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
   expect(g(t.repo, "worktree", "list").split("\n")).toHaveLength(1);
+});
+
+// The after step runs in the owner's checkout after the base moved: only while his pin holds its command and the
+// script of .keel/ it runs, as the landed commit has them. Held, the branches still land; the outcome says why.
+test("the after step runs only while the owner's pin holds it and the script it runs", async () => {
+  const t = setup({ land: { after: "bash .keel/after.sh" }, files: { ".keel/after.sh": 'echo "ran $KEEL_LANDED_BASE" >> "$KEEL_LAND_REPO/../after.log"\n' } });
+  const log = join(t.dir, "after.log");
+  const text = () => { const o = t.q.outcomeFor(t.coord)!; o.settle(); return o.text; };
+  const a = t.session("a", t.coord);
+  t.branch("keel/a", 1, "line 1 ALPHA", a);
+  await t.land(["keel/a"]);
+  expect(t.rows()[0]!.state).toBe("landed");
+  expect(existsSync(log)).toBe(false);
+  expect(text()).toContain("The after-land step did not run: the owner has not trusted the after step and .keel/after.sh yet");
+  expect(t.q.afterPins.show(t.repo)).toMatchObject({ state: "new", command: "bash .keel/after.sh", covers: [".keel/after.sh"] });
+  expect(t.q.afterPins.pin(t.repo, "0".repeat(64))).toContain("no longer the one that was shown");
+  expect(t.q.afterPins.pin(t.repo, t.q.afterPins.show(t.repo).sha256!)).toBeNull();
+  t.branch("keel/b", 2, "line 2 BETA", a);
+  await t.land(["keel/b"]);
+  expect(readFileSync(log, "utf8")).toBe("ran main\n");
+  expect(text()).toContain("The after-land step ran once (exit 0)");
+  // A branch that changes the script lands, and the changed script does not run.
+  g(t.repo, "checkout", "-q", "-b", "keel/c", "main");
+  writeFileSync(join(t.repo, ".keel/after.sh"), 'echo changed >> "$KEEL_LAND_REPO/../after.log"\n');
+  g(t.repo, "commit", "-qam", "keel/c");
+  g(t.repo, "checkout", "-q", "main");
+  t.ov.committed(t.repo, "keel/c", a);
+  await t.land(["keel/c"]);
+  expect(t.rows()[2]!.state).toBe("landed");
+  expect(readFileSync(log, "utf8")).toBe("ran main\n");
+  expect(text()).toContain("changed since the owner trusted them");
+  expect(t.q.afterPins.show(t.repo).state).toBe("changed");
 });
 
 test("a check past its time is stopped with every process it started", async () => {
