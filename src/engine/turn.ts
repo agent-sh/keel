@@ -87,6 +87,7 @@ import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 import { homeDir, withheldHome } from "../core/paths";
 import { outsideRefusal } from "../core/watch.ts";
 import { DECISION_AHEAD, firstPos, nextBlocked } from "./queue-first.ts";
+import { drainWaitsFor, type DrainTurn } from "./drain-wait.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -527,7 +528,8 @@ export function sessionParts(cwd: string, created: number, window?: number, mark
   ] };
 }
 
-type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean; providerWaitMs?: number };
+// `atBoundary`: stopped at its next step boundary by a drain (Engine.atBoundary), its next request not sent.
+type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean; providerWaitMs?: number; atBoundary?: boolean };
 // `native`: the request carries deferred tools (src/tools/defer.ts), refreshed per request.
 // A transcript request the provider refused as too long is built again at
 // these shares of the room (OpenCode's ladder), then the failure stands.
@@ -950,6 +952,10 @@ export class Engine {
   runningIds(): string[] {
     return [...this.running.keys()];
   }
+  // Of those, the ones at work: not stopped by a drain at their step boundary.
+  atWorkIds(): string[] {
+    return [...this.running.entries()].filter(([, r]) => !r.atBoundary).map(([id]) => id);
+  }
 
   // The turn_start event of the turn running in the session now.
   turnOf(id: string): string | undefined {
@@ -1074,6 +1080,33 @@ export class Engine {
       try { await held.wait(asked.signal); } finally { clearTimeout(tick); signal.removeEventListener("abort", off); if (running) running.providerWaiting = false; }
       if (signal.aborted) return noted;
       for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
+    }
+  }
+
+  // A drain's stop at a step boundary: the turn waits here until it is parked (its signal) or the drain
+  // is called off (undrain), and the drain does not wait for it meanwhile.
+  private boundaryWaits = new Set<() => void>();
+  private async atBoundary(id: string, signal: AbortSignal) {
+    const running = this.running.get(id);
+    if (running) running.atBoundary = true;
+    // Said as a status, so a drain's count of the turns at work goes down now (src/admin/daemon.ts).
+    this.status(id, { kind: "idle" });
+    // A promise for each wait: a drain called off and asked again in the same tick finds the turn still
+    // here, and a resolved promise would spin the loop.
+    let resolve = () => {};
+    const off = () => resolve();
+    signal.addEventListener("abort", off, { once: true });
+    this.boundaryWaits.add(off);
+    try {
+      while (this.draining && !signal.aborted) {
+        const w = Promise.withResolvers<void>();
+        resolve = w.resolve;
+        await w.promise;
+      }
+    } finally {
+      this.boundaryWaits.delete(off);
+      signal.removeEventListener("abort", off);
+      if (running) running.atBoundary = false;
     }
   }
 
@@ -3280,6 +3313,10 @@ export class Engine {
           reason = "max_steps";
           break;
         }
+        // A drain stops the turn here, between its steps: its results are stored and its next request is
+        // not sent yet, so the park that follows loses nothing (src/engine/drain-wait.ts).
+        if (this.draining && !signal.aborted) await this.atBoundary(id, signal);
+        if (signal.aborted) throw abortError();
         // The daemon's spend cap over a window: a step of a turn the owner did not start waits until the
         // window rolls under it; the owner's own turn goes on with a note, once.
         if (!signal.aborted) windowNoted = await this.holdForSpend(id, st.info.name, signal, windowNoted);
@@ -4668,14 +4705,50 @@ export class Engine {
     await this.park();
   }
 
-  // The first half of a drain: no new turn starts, and running turns get `ms`
-  // to end by themselves. Nothing is cut yet, so the drain can still be called off.
-  // A turn that only waits on the owner (a question, a plan, an approval card)
-  // is not waited for: it would take the whole time and still be waiting, with
-  // new work refused meanwhile. It is parked with its card open, and the next
-  // daemon puts the card back. Looked at again every SETTLE_CHECK_MS, since a
-  // turn at work may start to wait on the owner and the owner may answer one.
-  async settle(ms: number) {
+  // The running turns a drain waits for (src/engine/drain-wait.ts). A turn whose calls all block on agents
+  // (wait_agent, an agent called in the foreground) is waited for only while one of those agents is: its agents
+  // stop at their own boundaries, and a wait for them would spend the whole bound.
+  private drainWaited(front?: (session: string, callId: string) => boolean): string[] {
+    const blockedOn = (id: string): string[] | undefined => {
+      const calls = this.inflight.get(id);
+      if (!calls?.size) return undefined;
+      const on: string[] = [];
+      for (const c of calls.keys()) {
+        const agents = allHooks().map((h) => h.awaitsAgents?.(id, c)).find(Boolean);
+        if (!agents) return undefined;
+        on.push(...agents);
+      }
+      return on;
+    };
+    const turns = [...this.running.entries()].map(([id, r]) => {
+      const calls = this.inflight.get(id);
+      const t: DrainTurn = {
+        atBoundary: !!r.atBoundary, waitsOnOwner: this.waitsOnOwner(id), providerWaiting: !!r.providerWaiting, status: this.statusOf(id),
+        requestOut: this.wires.has(id), callsOut: calls?.size ?? 0,
+        inFront: !!calls?.size && !!front && [...calls.keys()].every((c) => front(id, c)),
+      };
+      return { id, t, on: blockedOn(id) };
+    });
+    const waited = new Set(turns.filter((x) => drainWaitsFor({ ...x.t, onAgents: !!x.on })).map((x) => x.id));
+    // A parent is waited for when an agent it blocks on is, and its own parent then too.
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const x of turns) if (x.on && !waited.has(x.id) && x.on.some((a) => waited.has(a)) && drainWaitsFor(x.t)) { waited.add(x.id); grew = true; }
+    }
+    return [...waited];
+  }
+
+  // The first half of a drain: no new turn starts, and each running turn stops
+  // at its next step boundary, its next request not sent. The drain waits up to
+  // `ms` only for the model requests on their way (src/engine/drain-wait.ts).
+  // Nothing is cut yet, so the drain can still be called off (undrain: the
+  // stopped turns go on). A turn that only waits on the owner (a question, a
+  // plan, an approval card) is not waited for: it is parked with its card open,
+  // and the next daemon puts the card back. Looked at again every
+  // SETTLE_CHECK_MS, since a turn's state changes while it works.
+  // `inFront`: whether a call of a session is a command running in front of its turn (the daemon's drain waits
+  // for those itself, src/admin/drain-commands.ts).
+  async settle(ms: number, o: { inFront?: (session: string, callId: string) => boolean } = {}) {
     this.draining = true;
     // A summary being prepared is not waited for: the next daemon prepares it again.
     for (const p of this.preparing.values()) p.abort.abort();
@@ -4689,9 +4762,11 @@ export class Engine {
     const deadline = Date.now() + ms;
     for (;;) {
       // (Nor is a turn that only waits for a provider it cannot reach: it is parked and waits on in the next daemon.)
-      const busy = [...this.running.entries()].filter(([id, r]) => !this.waitsOnOwner(id) && !r.providerWaiting).map(([, r]) => r.done);
+      // A turn is waited for only while it has a model request on its way (src/engine/drain-wait.ts):
+      // the others stop at their next step boundary, or are cut where a resumed turn makes the call again.
+      const busy = this.drainWaited(o.inFront).map((id) => this.running.get(id)!.done);
       const left = deadline - Date.now();
-      if ((!busy.length && !moving) || left <= 0) return;
+      if (!this.draining || (!busy.length && !moving) || left <= 0) return;
       await Promise.race([Promise.all([...busy, ...(moving ? moves : [])]), Bun.sleep(Math.min(left, SETTLE_CHECK_MS))]);
     }
   }
@@ -4712,6 +4787,8 @@ export class Engine {
   // the prompts that waited in a queue meanwhile.
   undrain() {
     this.draining = false;
+    // The turns stopped at a step boundary go on.
+    for (const go of [...this.boundaryWaits]) go();
     for (const h of allHooks()) try { h.drainOff?.(); } catch (e) { this.errors.capture("server", e, { hook: "drainOff" }); }
     for (const { session_id } of this.store.db.query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM queue").all()) this.next(session_id);
     // The drain stopped the summaries being prepared and let the idle timers
@@ -5213,7 +5290,7 @@ export const STREAM_QUIET_MS = 20_000;
 
 // How many turns at the end of a branch, in a row, were continuations after a
 // restart that a restart cut again before they finished a step (a tool call
-// that ran to its result). A continuation that got a step done ends the count:
+// that ran to its result, or a whole reply with no call). A continuation that got a step done ends the count:
 // the work moves between restarts.
 export function stalledContinuations(line: readonly StoredEvent[]): number {
   let n = 0;
@@ -5224,6 +5301,9 @@ export function stalledContinuations(line: readonly StoredEvent[]): number {
     const prompt = line.findLastIndex((x, i) => i < start && x.kind === "user");
     if (prompt < 0 || line[prompt]!.data.origin !== "restart") break;
     if (line.slice(start, end).some((x) => x.kind === "tool_result" && x.data.results.some((r: any) => stopKind(r.content) !== "cut"))) break;
+    // So did one that stored a whole reply with no call in it: a drain parks a turn at its step boundary, and a turn
+    // that writes at length moves by replies alone.
+    if (line.slice(start, end).some((x) => x.kind === "assistant" && x.data.stop !== "interrupted" && !x.data.blocks?.some((b: any) => b.type === "tool_use"))) break;
     // A turn that waited for a provider it could not reach did not stall: it had nothing to do meanwhile.
     if (line[end]?.data.provider_waiting || line.slice(start, end).some((x) => x.kind === "note" && x.data.kind === "provider_wait")) break;
     n++;

@@ -220,6 +220,10 @@ export type TurnHooks = {
   callOutcome?: (sessionId: string, callId: string) => { denied: string } | { done: string } | "not_run" | "waiting" | undefined;
   // Whether the call waits on a card only the owner can answer, right now (an open approval).
   awaitsOwner?: (sessionId: string, callId: string) => boolean;
+  // The sessions of the agents a call blocks on while it waits for them (wait_agent, an agent called in the
+  // foreground); undefined for a call that does not block on agents. A drain waits for such a call only while
+  // it waits for one of those agents (src/engine/drain-wait.ts).
+  awaitsAgents?: (sessionId: string, callId: string) => string[] | undefined;
   // A call that is no question tool put a question to the owner on its card
   // (an MCP server asked while the call ran), and that question closed.
   // `askId`: one per question (a call's server can ask more than one).

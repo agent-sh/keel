@@ -537,16 +537,16 @@ test("connection truth: a daemon that drains says so within two seconds, with th
     await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon", { timeout: 30_000 });
     const t0 = Date.now();
     d.proc.kill("SIGTERM");
-    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 2 turns finishing.", { timeout: 2000 });
+    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 2 turns at work.", { timeout: 2000 });
     const band = Date.now() - t0;
-    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 2 turns finishing.");
+    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 2 turns at work.");
     await shoot(page, "connection-truth-drain");
     // And the whole drain long: never "Connected" while it lasts, and the count goes down as each turn ends.
     await page.waitForTimeout(2000);
-    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 2 turns finishing.");
+    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 2 turns at work.");
     writeFileSync(gates[0]!, "go\n");
-    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 1 turn finishing.", { timeout: 10_000 });
-    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 1 turn finishing.");
+    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 1 turn at work.", { timeout: 10_000 });
+    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 1 turn at work.");
     console.log(`CONNECTION-TRUTH drain said ${band} ms after the stop signal`);
     writeFileSync(gates[1]!, "go\n");
     await exited(d.proc);

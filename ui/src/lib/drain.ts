@@ -21,8 +21,8 @@ export function setDrain(draining: { restart?: boolean } | null | undefined, run
 export const getDrain = () => drain;
 export const useDrain = (): Drain | null => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => drain);
 
-// "Keel is restarting: 2 turns finishing." The count is the daemon's own, as it last told it.
+// "Keel is restarting: 2 turns at work." (They stop at their next step.) The count is the daemon's own, as it last told it.
 export function drainWords(d: Drain): string {
   const what = d.restart ? "Keel is restarting" : "Keel is stopping";
-  return d.running > 0 ? `${what}: ${d.running} turn${d.running === 1 ? "" : "s"} finishing.` : `${what}.`;
+  return d.running > 0 ? `${what}: ${d.running} turn${d.running === 1 ? "" : "s"} at work.` : `${what}.`;
 }

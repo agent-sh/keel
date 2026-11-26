@@ -389,6 +389,7 @@ export const waitAckHooks: TurnHooks = {
   // A call that blocks on agents waits on the owner when every agent still at
   // work does (a question, a card): a drain does not wait for such a call.
   awaitsOwner: (sessionId, callId) => blocking.has(waitKey(sessionId, callId)) && agents.allWaitOnOwner(sessionId),
+  awaitsAgents: (sessionId, callId) => blocking.has(waitKey(sessionId, callId)) ? agents.live(sessionId).map((a) => a.session_id) : undefined,
 };
 
 // The calls that block until agents end (wait_agent, an Agent call that is not in the background), while they wait.

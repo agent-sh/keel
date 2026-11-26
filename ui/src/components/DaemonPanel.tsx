@@ -1,5 +1,5 @@
 // Settings > Daemon: the process serving this page, keeping the machine awake
-// while turns run, a restart that lets running turns finish, and the problem
+// while turns run, a restart that stops running turns at their next step, and the problem
 // report.
 import { CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -178,9 +178,9 @@ export function DaemonPanel() {
         </SettingRow>
         <SettingRow
           label="Restart"
-          hint={draining ? `${draining.backup_since_ms ? `Making the backup since ${when(draining.backup_since_ms)}` : `Waiting for running turns since ${when(draining.since_ms)}`}; new work is held until the daemon is back.` : (
+          hint={draining ? `${draining.backup_since_ms ? `Making the backup since ${when(draining.backup_since_ms)}` : `Stopping running turns at their next step since ${when(draining.since_ms)}`}; new work is held until the daemon is back.` : (
             <>
-              New work waits, running turns finish, and the daemon starts again{st.systemd ? " under systemd" : " from its own binary"}. A backup is made first{settings?.backup.before_restart === false ? " when that is on in Storage" : ""}.
+              New work waits, running turns stop at their next step and go on after it, and the daemon starts again{st.systemd ? " under systemd" : " from its own binary"}. A backup is made first{settings?.backup.before_restart === false ? " when that is on in Storage" : ""}.
               {st.restart_failed && (
                 <span role="alert" data-testid="daemon-restart-failed" className="mt-2 flex items-start gap-2 text-danger">
                   <CircleAlert className="mt-0.5 size-3.5 shrink-0" />

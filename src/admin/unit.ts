@@ -70,8 +70,8 @@ StartLimitIntervalSec=0
 Type=simple
 ExecStart=@EXEC@
 # \`keel restart\` drains and exits 75; on-failure starts it again. A plain stop
-# drains too: running turns get up to KEEL_DRAIN_MS to finish, and the
-# ones that do not are parked and continue after the next start.
+# drains too: running turns stop at their next step (a reply on its way is
+# given up to KEEL_DRAIN_MS) and are parked, and continue after the next start.
 Environment=KEEL_SUPERVISED=systemd
 Environment=KEEL_DRAIN_MS=600000
 # The runtime's collector timer is off (the daemon asks the collector itself:

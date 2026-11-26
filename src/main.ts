@@ -98,8 +98,8 @@ const d = await startDaemon({ stateDir: values["state-dir"], bind: values.bind!,
     : `keel serve: the daemon could not start: ${(e as Error)?.message ?? e}`);
   process.exit(1);
 });
-// Running turns get this long to end by themselves when the daemon stops; the
-// rest are parked and the next daemon continues them.
+// When the daemon stops, running turns stop at their next step: a reply on its way
+// gets this long to arrive. Then they are parked and the next daemon continues them.
 const DRAIN_MS = Number(process.env.KEEL_DRAIN_MS ?? 10_000);
 g.__keelStop = d.stop;
 if (!g.__keelSignals) {

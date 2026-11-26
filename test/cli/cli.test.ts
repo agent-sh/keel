@@ -528,7 +528,7 @@ describe("admin commands", () => {
     const ran = await k(["upgrade", "--no-wait", "--timeout", "5"]);
     expect({ up: [up.code, up.out.split("\n").slice(0, 3)], re: [re.code, re.out], ran: [ran.code, ran.out, asked.at(-1)] }).toEqual({
       up: [0, ["keel upgrade [--timeout SECONDS] [--no-wait] [--url URL]", "  Restarts the daemon from the binary already at its path, the same as keel restart.", "  It installs nothing: put a new binary there first."]],
-      re: [0, "keel restart [--timeout SECONDS] [--no-wait] [--url URL]\n  Stops new work, lets running turns finish (default 120 s), waits up to 60 s more for the commands a turn is still waiting on, parks the rest so they continue after the start, then starts the daemon again from its binary.\n"],
+      re: [0, "keel restart [--timeout SECONDS] [--no-wait] [--url URL]\n  Stops new work, stops each running turn at its next step (a model request on its way gets up to 120 s by default), waits up to 60 s more for the commands a turn is still waiting on, parks the turns so they continue after the start, then starts the daemon again from its binary.\n"],
       ran: [0, "draining: 0 turns running, up to 5 s\n", 'POST /api/drain {"timeout_seconds":5,"restart":true,"reason":"keel upgrade from a terminal"}'],
     });
   }, 30_000);
@@ -973,8 +973,9 @@ describe("a session a script holds open", () => {
   }, 120_000);
 
   // A restart that parks a turn stops the command the turn waits on. The drain waits for such a command
-  // (src/admin/drain-commands.ts), so a command of 30 s runs to its end and its turn finishes by itself.
-  test("a restart waits for the command a turn runs in front: it finishes, and the turn is not cut", async () => {
+  // (src/admin/drain-commands.ts), so a command of 30 s runs to its end, its result is kept, and the turn
+  // stops at its next step boundary: the next daemon goes on from there.
+  test("a restart waits for the command a turn runs in front: it finishes, and the turn goes on from its result", async () => {
     const state = join(SCRATCH, "state-drain-commands");
     const d = await restartable(state);
     try {
@@ -983,13 +984,16 @@ describe("a session a script holds open", () => {
       const events = async () => (await d.api(`/api/sessions/${sid}?page=40`)).events as { kind: string; data: any }[];
       for (let i = 0; i < 600 && !(await events()).some((e) => e.kind === "assistant"); i++) await Bun.sleep(50);
       await d.graceful();
-      for (let i = 0; i < 1800 && !(await events()).some((e) => e.kind === "turn_end"); i++) await Bun.sleep(50);
+      const replied = (ev: { kind: string; data: any }[]) => ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data).includes("Continued after the restart."));
+      for (let i = 0; i < 1800 && !replied(await events()); i++) await Bun.sleep(50);
       const ev = await events();
       const end = ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason);
       const results = ev.filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data));
       expect(results.some((r) => r.includes("slept"))).toBe(true);
       expect(results.some((r) => r.includes("The daemon restarted while this command ran"))).toBe(false);
-      expect(end).not.toContain("restart");
+      // Parked at the step after the command, and continued by the next daemon.
+      expect(end[0]).toBe("restart");
+      expect(replied(ev)).toBe(true);
       // The old daemon said what it waited for, and that nothing was cut.
       const said = readFileSync(join(`${state}-logs`, "start-1.log"), "utf8");
       expect(said).toMatch(/1 command runs in front of a turn: the restart waits up to 60 s more for it before it parks the turns\./);

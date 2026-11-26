@@ -1,5 +1,5 @@
 // The daemon's own life: one daemon per state folder, a drain that turns new
-// work away while the engine lets running turns finish and parks the rest,
+// work away while the engine stops running turns at their next step and parks them,
 // and a restart that starts the same binary again. Continuing parked and
 // crash-cut turns is the engine's (Engine.recover, from main.ts).
 import { heapSize } from "bun:jsc";
@@ -160,6 +160,9 @@ export class Daemon {
   }
 
   // The commands that run in front of a running turn (its call waits on them, and parking the turn stops them).
+  private frontCalls(): Set<string> {
+    return new Set(liveJobs().filter((j) => j.stops && !j.background && j.ended === undefined && j.callId).map((j) => `${j.sessionId}\0${j.callId}`));
+  }
   fronts(): Front[] {
     return liveJobs().filter((j) => j.stops && !j.background && j.ended === undefined && this.deps.engine.isRunning(j.sessionId)).map((j) => ({ id: j.id, session: j.sessionId }));
   }
@@ -267,7 +270,8 @@ export class Daemon {
       build: buildInfo(),
       argv: relaunchArgv(),
       systemd: process.env.KEEL_SUPERVISED === "systemd",
-      running: this.runningSessions(),
+      // While a drain lasts, a turn stopped at its step boundary is no longer at work: the count goes down as each stops.
+      running: this.draining ? this.deps.engine.atWorkIds() : this.runningSessions(),
       // Of those, the turns that do nothing but wait on the owner (an approval, a question, a plan): a
       // restart does not wait for them, and they ask again after it.
       waiting: this.runningSessions().filter((id) => this.deps.engine.waitsOnOwner(id)),
@@ -318,8 +322,9 @@ export class Daemon {
     this.emit();
   }
 
-  // Stops taking work, lets running turns finish until the deadline, waits a minute more for the commands in
-  // front of them (drain-commands.ts), and the
+  // Stops taking work, lets each running turn reach its next step boundary (the model requests on their way
+  // are waited for until the deadline: src/engine/drain-wait.ts), waits a minute more for the commands in
+  // front of them (drain-commands.ts), makes the backup beside that, and the
   // engine parks the rest (their end reason is "restart": the next daemon
   // continues them once). Then it exits, and starts again for a restart.
   // `reason`: why, in a few words, for the log's line (who asked, or what for).
@@ -347,18 +352,28 @@ export class Daemon {
     this.emit();
     say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason, commands: this.fronts().length, commandsMs: COMMAND_WAIT_MS }));
     this.finished = (async () => {
-      await this.deps.engine.settle(opts.timeoutMs);
-      // The turns had their time. A command in front of one is waited for a minute more (drain-commands.ts):
-      // parking the turn stops it. The notes say how many it waits for and how many it cut.
-      const waiting = this.fronts().length;
-      if (waiting) {
-        this.say(commandsBegin(waiting, COMMAND_WAIT_MS), false);
-        this.draining!.deadline_ms = Date.now() + COMMAND_WAIT_MS;
-        this.emit();
-        const ended = await waitForCommands({ list: () => this.fronts(), boundMs: COMMAND_WAIT_MS });
-        if (ended.cut) this.say(commandsEnd(ended.cut, COMMAND_WAIT_MS), false);
-      }
+      // The turns' wait and the backup go side by side: the backup is a copy of the changes since the last
+      // full one, and what a turn writes after it began is not in it either way (its turn is found open
+      // in a restored copy and continued, as after a crash). Nothing is cut before both are done, so a
+      // backup that fails still calls the restart off with no turn cut.
+      // (This drain's own record: one called off meanwhile and asked for again is another drain, which says its own words.)
+      const mine = this.draining!;
+      const turns = (async () => {
+        await this.deps.engine.settle(opts.timeoutMs, { inFront: (session, call) => this.frontCalls().has(`${session}\0${call}`) });
+        if (this.draining !== mine) return; // called off meanwhile (the backup failed)
+        // The turns are at their step boundaries or in their tools. A command in front of one is waited for a minute
+        // more (drain-commands.ts): parking the turn stops it. The notes say how many it waits for and how many it cut.
+        const waiting = this.fronts().length;
+        if (waiting) {
+          this.say(commandsBegin(waiting, COMMAND_WAIT_MS), false);
+          mine.deadline_ms = Date.now() + COMMAND_WAIT_MS;
+          this.emit();
+          const ended = await waitForCommands({ list: () => this.fronts(), boundMs: COMMAND_WAIT_MS });
+          if (ended.cut && this.draining === mine) this.say(commandsEnd(ended.cut, COMMAND_WAIT_MS), false);
+        }
+      })();
       const silent = noBackup();
+      let failed: unknown;
       if (this.draining!.restart && !silent) {
         const t0 = Date.now();
         try {
@@ -371,18 +386,22 @@ export class Daemon {
           if (owed.length) say(backupLine({ ok: true, ms: Date.now() - t0, owed: owed.join(", ") }));
         } catch (e) {
           say(backupLine({ ok: false, ms: Date.now() - t0, error: (e as Error)?.message }), "warn");
-          // Called off before a turn was cut: this daemon goes on as it was.
-          const rec = this.deps.errors.capture("server", e, { at: "before a restart" });
-          this.restartFailed = { ts_ms: Date.now(), error: rec.message };
-          // A stop by signal meanwhile goes on (main.ts parks the turns and exits): no turn starts.
-          if (this.stopping) return this.emit();
-          this.draining = null;
-          lifeDraining(false);
-          this.deps.engine.undrain();
-          flushAll();
-          this.emit();
-          return;
+          failed = e;
         }
+      }
+      if (failed === undefined) await turns;
+      else {
+        // Called off before a turn was cut: this daemon goes on as it was.
+        const rec = this.deps.errors.capture("server", failed, { at: "before a restart" });
+        this.restartFailed = { ts_ms: Date.now(), error: rec.message };
+        // A stop by signal meanwhile goes on (main.ts parks the turns and exits): no turn starts.
+        if (this.stopping) return this.emit();
+        this.draining = null;
+        lifeDraining(false);
+        this.deps.engine.undrain();
+        flushAll();
+        this.emit();
+        return;
       }
       let parked = 0;
       const cut = this.fronts().length;

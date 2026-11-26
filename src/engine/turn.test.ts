@@ -1082,6 +1082,10 @@ test("continuations cut in a row count only while none finished a step", () => {
   const worked = [e("user", { origin: "restart" }), e("turn_start"), e("tool_result", { results: [{ content: "ok" }] }), ...cutTurn().slice(2)];
   expect(stalledContinuations([...cutTurn(), ...cutTurn("restart"), ...worked, ...cutTurn("restart")])).toBe(1);
   expect(stalledContinuations([...cutTurn("restart"), e("user", { text: "more" }), e("turn_start"), e("turn_end", { reason: "end_turn" })])).toBe(0);
+  // A continuation parked at its step boundary after a whole reply with no call moved too; a reply the cut stopped did not.
+  const wrote = (stop: string) => [e("user", { origin: "restart" }), e("turn_start"), e("assistant", { blocks: [{ type: "text", text: "part" }], stop }), e("turn_end", { reason: "restart", steps: 1 })];
+  expect(stalledContinuations([...cutTurn(), ...wrote("max_tokens"), ...wrote("max_tokens")])).toBe(0);
+  expect(stalledContinuations([...cutTurn(), ...wrote("interrupted"), ...wrote("interrupted")])).toBe(2);
 });
 
 test("a turn cut again while its card was open is recorded as waiting on the owner, at the step that asked", () => {

@@ -25,7 +25,7 @@ test("the restart question counts the turns that wait on you apart from those th
   await expect(panel.getByTestId("daemon-running")).toHaveText("1, 2 need you");
   await panel.getByTestId("daemon-restart").click();
   const confirm = page.getByTestId("confirm");
-  await expect(confirm).toContainText("1 turn is working. New work waits; working turns get two minutes to finish, and any still working then go on after the restart. 2 turns wait on you for an answer, and still wait after the restart.");
+  await expect(confirm).toContainText("1 turn is working. New work waits; working turns stop at their next step and go on after the restart. 2 turns wait on you for an answer, and still wait after the restart.");
   await shoot(page, "restart-ask-01-counted");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toHaveCount(0);

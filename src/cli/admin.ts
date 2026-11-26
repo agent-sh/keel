@@ -137,7 +137,7 @@ async function follow(url: string, oldPid: number, back: boolean, limitMs: numbe
 }
 
 const drainCmd = (restart: boolean, upgrade = false) =>
-  wrap(`keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} [--timeout SECONDS] [--no-wait] [--url URL]\n  ${upgrade ? "Restarts the daemon from the binary already at its path, the same as keel restart.\n  It installs nothing: put a new binary there first.\n  " : ""}Stops new work, lets running turns finish (default 120 s), waits up to 60 s more for the commands a turn is still waiting on, parks the rest so they continue after the start, then ${restart ? "starts the daemon again from its binary" : "stops the daemon"}.`,
+  wrap(`keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} [--timeout SECONDS] [--no-wait] [--url URL]\n  ${upgrade ? "Restarts the daemon from the binary already at its path, the same as keel restart.\n  It installs nothing: put a new binary there first.\n  " : ""}Stops new work, stops each running turn at its next step (a model request on its way gets up to 120 s by default), waits up to 60 s more for the commands a turn is still waiting on, parks the turns so they continue after the start, then ${restart ? "starts the daemon again from its binary" : "stops the daemon"}.`,
     { timeout: { type: "string" }, "no-wait": { type: "boolean" } },
     async (v) => {
       const url = urlOf(v.url);

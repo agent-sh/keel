@@ -1,5 +1,6 @@
 // A restart of Keel asked from the page: what it does to the turns there are
-// now, said before it is confirmed. A turn that works gets time to finish; a
+// now, said before it is confirmed. A turn that works stops at its next step
+// (a reply on its way is finished first) and goes on after the restart; a
 // turn that only waits on the owner (an approval, a question, a plan) is not
 // waited for, and still waits for them after the restart. A command that runs
 // in a terminal the daemon holds (a tty) ends with it.
@@ -26,7 +27,7 @@ export function restartBody(st: Turns): string {
   const tty = t ? `${t === 1 ? "1 command runs" : `${t} commands run`} in a terminal and ${t === 1 ? "ends" : "end"} with the restart.` : "";
   const rest = [wait, tty].filter(Boolean).join(" ");
   if (!working.length) return `No turn is working.${rest ? ` ${rest}` : ""} The page reconnects by itself.`;
-  return `${turns(working.length)} ${working.length === 1 ? "is" : "are"} working. New work waits; working turns get two minutes to finish, and any still working then go on after the restart.${rest ? ` ${rest}` : ""}`;
+  return `${turns(working.length)} ${working.length === 1 ? "is" : "are"} working. New work waits; working turns stop at their next step and go on after the restart.${rest ? ` ${rest}` : ""}`;
 }
 
 // What a restart would cut: turns that work, and commands in a terminal.

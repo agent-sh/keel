@@ -41,6 +41,6 @@ test("the notices say how many commands the restart waits for and how many it cu
   expect(commandsBegin(3, COMMAND_WAIT_MS)).toBe("3 commands run in front of a turn: the restart waits up to 60 s more for them before it parks the turns.");
   expect(commandsBegin(1, COMMAND_WAIT_MS)).toBe("1 command runs in front of a turn: the restart waits up to 60 s more for it before it parks the turns.");
   expect(commandsEnd(2, COMMAND_WAIT_MS)).toContain("2 commands still ran after 60 s and were stopped by the restart");
-  expect(drainLine({ restart: true, running: 2, timeoutMs: 120_000, commands: 1, commandsMs: COMMAND_WAIT_MS })).toBe("[daemon] draining for a restart: 2 turns running get up to 2 min; 1 command runs in front of them, waited for up to 1 min more");
+  expect(drainLine({ restart: true, running: 2, timeoutMs: 120_000, commands: 1, commandsMs: COMMAND_WAIT_MS })).toBe("[daemon] draining for a restart: 2 turns running stop at the next step, a request on its way waited for up to 2 min; 1 command runs in front of them, waited for up to 1 min more");
   expect(exitLine({ restart: true, parked: 2, upMs: 60_000, cut: 1 })).toBe("[daemon] restarting after 1 min up: 2 turns parked for the next start, 1 command in front of them cut");
 });

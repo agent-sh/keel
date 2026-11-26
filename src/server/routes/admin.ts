@@ -88,10 +88,11 @@ export const adminRoutes: RouteModule = (deps) => {
   daemon.onExit(() => checkpointerOf(store)?.close());
   // A check of the backups that runs does not outlive the daemon.
   daemon.onExit(() => storage.stopChecks());
-  // The backup before a restart is made once the running turns had their
-  // time and before the rest are parked (a backup that fails calls the
+  // The backup before a restart is made while the running turns reach their
+  // step boundaries, and before they are parked (a backup that fails calls the
   // restart off with no turn cut). So it does not hold what a turn the
-  // restart parks wrote after it: the results of its cut calls and its end.
+  // restart parks wrote after it began: its last replies, the results of its
+  // cut calls and its end.
   // Restored, that turn is found open, as after a crash: the start closes
   // it as cut and continues it.
   // It is made in a worker and the restart waits for it: the daemon answers

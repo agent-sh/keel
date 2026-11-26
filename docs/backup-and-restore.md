@@ -90,7 +90,8 @@ A restore needs the daemon stopped, and refuses while one holds the folder.
 
 1. Note the backup's name while the daemon still answers (`keel backups`), or
    read it from `<state>/backups` afterwards.
-2. Stop the daemon. Running turns get time to finish; the rest are parked.
+2. Stop the daemon. Running turns stop at their next step (a reply on its way
+   is finished first) and are parked; the next start continues them.
 
    ```bash
    keel drain --url http://127.0.0.1:47960

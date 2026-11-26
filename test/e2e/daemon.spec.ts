@@ -68,18 +68,20 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   }
   await shoot(page, "daemon-01-turn-running");
 
-  // Restart from the page: the turn finishes, then the daemon comes back.
+  // Restart from the page: the turn's command ends, the turn stops at its next step, and the next daemon continues it.
   const reloaded = selfReload(page, hmr);
   await panel.getByTestId("daemon-restart").click();
   await page.getByTestId("confirm").getByRole("button", { name: "Restart" }).click();
   await expect(panel.getByTestId("daemon-status")).toContainText(/Restarting|Reconnecting/);
-  await expect(page.getByTestId("admin-band")).toContainText("Keel is restarting: 1 turn finishing.");
+  await expect(page.getByTestId("admin-band")).toContainText("Keel is restarting: 1 turn at work.");
   expect((await request.post("/api/sessions", { data: { model: HAIKU, title: "refused" } })).status()).toBe(503);
   await shoot(page, "daemon-02-draining");
   await expect.poll(async () => { const d = await daemon(request); return d && d.pid !== pid0 ? d.pid : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
+  // The command ran to its end (its result is no cut), and the continued turn replied.
+  await expect.poll(async () => (await events(request, a.id)).some((e) => e.kind === "assistant" && JSON.stringify(e.data.blocks).toLowerCase().includes(ask("finished", "done with 1 call"))), { timeout: 60_000 }).toBe(true);
   const ev = await events(request, a.id);
-  expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).not.toContain("restart");
-  expect(ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data.blocks).toLowerCase().includes(ask("finished", "done with 1 call")))).toBe(true);
+  expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
+  expect(JSON.stringify(ev.filter((e) => e.kind === "tool_result").map((e) => e.data.results))).not.toContain("cut by a daemon restart");
   await expect(panel.getByTestId("daemon-status")).toContainText("pid", { timeout: 30_000 });
   // The page reconnected by itself; a dev daemon's then reloads itself too.
   await reloaded();
@@ -104,14 +106,14 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   await shoot(page, "daemon-04-continued");
 
   // The page keeps the starts before this one with what each began with and the stalls of its life:
-  // this start parked a turn; the one before it came from the restart that waited (it cut nothing), and the
-  // one before that is the first start, with its stall.
+  // this start parked a turn; the one before it came from the restart that waited for the command (it parked the
+  // turn at its step boundary, and the turn resumed), and the one before that is the first start, with its stall.
   await page.goto("/settings/daemon");
   await expect(page.getByTestId("daemon-last-start")).toContainText("1 turn was cut: 1 resumed");
   const earlier = page.getByTestId("daemon-earlier-start");
   await expect.poll(() => earlier.count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
   await expect(earlier.nth(0)).toHaveAttribute("data-how", "restart");
-  await expect(earlier.nth(0).getByTestId("daemon-earlier-summary")).toContainText("no turn was cut");
+  await expect(earlier.nth(0).getByTestId("daemon-earlier-summary")).toContainText("1 turn was cut: 1 resumed");
   if (stalls) await expect(earlier.nth(1).getByTestId("daemon-stall").first()).toContainText("blocked by its own code");
   await page.getByTestId("daemon-earlier-starts").scrollIntoViewIfNeeded();
   await shoot(page, "daemon-05-earlier-starts");
@@ -130,7 +132,7 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
 // drain): the open page still asks which paths of a reply are files (a read,
 // sent as a POST) and links them, a prompt the daemon turns away waits above
 // the box without becoming a record in Errors, the approval given from the
-// page lets its turn finish, and the drain ends with the turn at work.
+// page lets its turn finish, and the drain ends with the reply on its way.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 function ownDaemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
@@ -168,7 +170,8 @@ test("a draining daemon still answers reads and the answers its running turns wa
     // A card that only waits on the owner does not hold a drain. A turn at work does: another session's reply, until its gate opens.
     const gate = join(state, "gate");
     const busy = ((await (await call("/api/sessions", { model: "scripted:stand-in", title: "At work while draining", workspace: join(state, "work"), text: `script:hold ${gate}` })).json()) as any).session;
-    await expect.poll(async () => (await get(`/api/sessions/${busy.id}`)).running, { timeout: 30_000 }).toBe(true);
+    // (Its reply has begun to stream: a drain stops a turn before a request it has not sent, and waits for one on its way.)
+    await expect.poll(async () => JSON.stringify((await get(`/api/sessions/${busy.id}`)).draft ?? null).includes("The first half"), { timeout: 30_000 }).toBe(true);
     expect((await call("/api/drain", { timeout_seconds: 120 })).status).toBe(200);
     expect((await get("/api/daemon")).draining).toBeTruthy();
 
@@ -184,7 +187,7 @@ test("a draining daemon still answers reads and the answers its running turns wa
     const refused: string[] = [];
     page.on("response", (r) => { if (r.status() === 503) refused.push(`${r.request().method()} ${new URL(r.url()).pathname.replace(session.id, ":id")}`); });
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("admin-band")).toContainText(/Keel is stopping: \d turns? finishing\./);
+    await expect(page.getByTestId("admin-band")).toContainText(/Keel is stopping: \d turns? at work\./);
     await expect(page.locator('code.k-fileref[data-rel="notes/plan.md"]')).toHaveAttribute("role", "link");
     await expect(page.locator('code.k-fileref[data-path="src/parse.ts"]').first()).toHaveAttribute("data-checked", "1");
 
@@ -214,10 +217,12 @@ test("a draining daemon still answers reads and the answers its running turns wa
     expect(tracked.filter((t) => t.includes("no new work"))).toEqual([]);
     expect((await get("/api/errors")).errors.filter((e: any) => /no new work/.test(e.message))).toEqual([]);
 
-    // The approval is taken: the turn runs its command and ends, while the daemon still waits for the turn at work.
+    // The approval is taken: the turn runs its command and stops at its next step, its result stored, while the
+    // daemon still waits for the reply on its way.
     await page.getByTestId("approval").getByTestId("allow-once").click();
     await expect.poll(() => existsSync(join(state, "work/made.txt")), { timeout: 30_000 }).toBe(true);
-    await expect.poll(async () => (await get(`/api/sessions/${session.id}`)).running, { timeout: 30_000 }).toBe(false);
+    await expect.poll(async () => (await get(`/api/sessions/${session.id}`)).events.some((e: any) => e.kind === "tool_result"), { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await get("/api/daemon")).running, { timeout: 30_000 }).toEqual([busy.id]);
     expect(d.proc.exitCode).toBeNull();
     // The message is still kept, and was posted once: the page asks whether Keel takes work before it sends again.
     await expect(kept).toHaveAttribute("data-state", "waiting");

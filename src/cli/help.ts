@@ -37,7 +37,7 @@ const GROUPS: [string, [string, string][]][] = [
   ["Daemon", [
     ["serve", "run the daemon (the agent loop, the API and the workbench)"],
     ["status", "the running daemon; --sessions: every session in one short text; --away: what happened while you were away"],
-    ["drain", "let running turns finish, then stop"],
+    ["drain", "stop running turns at their next step, then stop (they go on after the next start)"],
     ["restart", "drain, then start again (also: upgrade)"],
     ["ui", "serve a new UI bundle without a restart; rollback"],
     ["storage", "what the state folder holds"],
