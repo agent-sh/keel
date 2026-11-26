@@ -4,8 +4,10 @@
 // the work inside his own turn), told by what came of it. Pure: the route reads
 // the branch's events without their bodies and a few facts of some of them
 // (src/server/routes/lens.ts), the page draws the items (ui/src/components/Lens.tsx).
-// A folded run is never read for its words: its line is made from event kinds
-// and facts, and its full stream is read only when the owner opens it.
+// A folded run is never read for its words but one line: its line is made from
+// event kinds and facts, with the first line of the last reply a turn in it
+// ended with (`said`, read for the line by the route: `words`), and its full
+// stream is read only when the owner opens it.
 import { OWNER_ORIGINS } from "./owner.ts";
 
 // An event of the branch as the index has it: no body.
@@ -39,7 +41,7 @@ export const addFacts = (a: RunFacts, b: RunFacts): RunFacts => {
 export type LensItem =
   | { t: "you"; id: string; seq: number; ts: number; open?: true }
   | { t: "reply"; id: string; seq: number; ts: number; turn?: EndFacts; open?: true }
-  | { t: "run"; from: number; to: number; first: string; last: string; ts0: number; ts1: number; facts: RunFacts; open?: true };
+  | { t: "run"; from: number; to: number; first: string; last: string; ts0: number; ts1: number; facts: RunFacts; open?: true; said?: string; words?: string };
 
 // The owner's own words: typed, steered, queued, spoken or sent from the command line, and not a peer's message.
 export const ownerInput = (f: InputFacts | undefined) => !!f && !f.kind && OWNER_ORIGINS.has(f.origin ?? undefined) && !f.peer;
@@ -127,7 +129,11 @@ export function lensItems(
       if (!mine) f.turns++;
     } else if (e.kind === "assistant") {
       if (i === reply) { flush(); items.push((lastReply = { t: "reply", id: e.id, seq: e.seq, ts: e.ts })); }
-      else touch(e).steps++;
+      else {
+        touch(e).steps++;
+        // The reply a turn of the run ended with: the newest is what the run said last.
+        if (!mine && finalOf.get(start) === i) (run as Extract<LensItem, { t: "run" }> | null)!.said = e.id;
+      }
     } else if (e.kind === "turn_end") {
       const f = end(e.id);
       inTurn = false;
@@ -165,7 +171,8 @@ export function joinRuns(items: readonly LensItem[]): LensItem[] {
   for (const it of items) {
     const prev = out.at(-1);
     if (it.t === "run" && prev?.t === "run") {
-      out[out.length - 1] = { ...prev, to: it.to, last: it.last, ts1: it.ts1, facts: addFacts(prev.facts, it.facts), ...(it.open ? { open: true as const } : {}) };
+      const said = it.said ? { said: it.said, ...(it.words ? { words: it.words } : {}) } : {};
+      out[out.length - 1] = { ...prev, to: it.to, last: it.last, ts1: it.ts1, facts: addFacts(prev.facts, it.facts), ...(it.open ? { open: true as const } : {}), ...said };
     } else out.push(it);
   }
   return out;
@@ -185,15 +192,19 @@ export function span(ms: number): string {
 }
 export const dollars = (n: number) => (n >= 10 ? `$${n.toFixed(0)}` : n >= 0.995 ? `$${n.toFixed(2)}` : n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? "under $0.01" : "");
 
-// What a folded run says: what came of it first (landed, failed, needs you), then what it took.
-// `live`: it is the run the session works in now; `needs`: the session waits on the owner now.
-export function runWords(r: { facts: RunFacts; ts0: number; ts1: number }, o: { live?: boolean; needs?: boolean } = {}): { came: string; took: string; state: "needs" | "failed" | "live" | "done" } {
+// What a folded run says: what came of it first (asks you, landed, failed, needs you), then what it took.
+// `live`: it is the run the session works in now; `needs`: the session waits on the owner now; `asks`: the
+// run ended asking the owner in prose, and he has not written since (src/core/closing-ask.ts); `agents`: the
+// session's agents at work now, said on the last run when the session's own turn is over.
+export function runWords(r: { facts: RunFacts; ts0: number; ts1: number }, o: { live?: boolean; needs?: boolean; asks?: boolean; agents?: number } = {}): { came: string; took: string; state: "needs" | "failed" | "live" | "done" } {
   const f = r.facts;
   const came: string[] = [];
+  if (o.asks) came.push("asks you");
   if (f.landed) came.push(`${f.landed} landed`);
   if (f.failed) came.push(`${f.failed} failed`);
   if (f.left) came.push(`${f.left} not landed`);
-  if (f.waiting || o.needs) came.push("needs you");
+  if ((f.waiting || o.needs) && !o.asks) came.push("needs you");
+  const agents = !o.live && o.agents ? `${plural(o.agents, "agent")} at work` : "";
   const did: string[] = [];
   if (f.turns) did.push(plural(f.turns, "turn"));
   else if (f.steps) did.push(plural(f.steps, "step"));
@@ -202,6 +213,6 @@ export function runWords(r: { facts: RunFacts; ts0: number; ts1: number }, o: { 
   if (f.loops) did.push(plural(f.loops, "loop run"));
   if (f.messages) did.push(plural(f.messages, "message"));
   const took = [did.join(", "), span(r.ts1 - r.ts0), dollars(f.cost)].filter(Boolean).join(", ");
-  const lead = came.length ? came.join(", ") : o.live ? "Working" : f.turns ? "Worked on its own" : "Worked";
-  return { came: lead[0]!.toUpperCase() + lead.slice(1), took, state: f.waiting || o.needs ? "needs" : f.failed ? "failed" : o.live ? "live" : "done" };
+  const lead = [came.length ? came.join(", ") : o.live ? "Working" : agents ? "" : f.turns ? "Worked on its own" : "Worked", agents].filter(Boolean).join(", ");
+  return { came: lead[0]!.toUpperCase() + lead.slice(1), took, state: f.waiting || o.needs || o.asks ? "needs" : f.failed ? "failed" : o.live || agents ? "live" : "done" };
 }

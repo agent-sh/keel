@@ -47,3 +47,22 @@ test("a steer into the harness's turn is the owner's, and so is its reply; a res
   expect(items.map((x) => x.t)).toEqual(["run", "you", "reply", "reply"]);
   expect(items.map((x) => (x.t === "run" ? x.first : x.id))).toEqual(["e1", "e4", "e5", "e9"]);
 });
+
+test("a run of the harness's turns names the reply it said last, and says it asks the owner or that agents still work", () => {
+  // The owner's message and its reply, then three turns of agents' reports and a wake; the last ends asking him.
+  const b = branch("u:you s a e u:subagent s a r a e u:subagent s a e u:wait s a e");
+  const { items } = lensItems(b.line, b.input, b.end);
+  expect(items.map((x) => x.t)).toEqual(["you", "reply", "run"]);
+  const run = items[2]!;
+  // (The wake's turn: its start is e16, its reply e17.)
+  expect(run.t === "run" && run.said).toBe("e17");
+  expect(runWords(run as any, { asks: true })).toMatchObject({ came: "Asks you", state: "needs" });
+  // A card that waits and the prose ask are said once.
+  expect(runWords(run as any, { asks: true, needs: true }).came).toBe("Asks you");
+  expect(runWords(run as any, { agents: 6 })).toMatchObject({ came: "6 agents at work", state: "live" });
+  expect(runWords(run as any, { agents: 1, live: true }).came).toBe("Working");
+  expect(runWords(run as any).came).toBe("Worked on its own");
+  // A part read later goes on the run before it with the newer reply's words.
+  const one = joinRuns([{ ...run, said: "e9", words: "older" } as any, { ...run, said: "e17", words: "newer" } as any]);
+  expect(one[0]).toMatchObject({ said: "e17", words: "newer" });
+});

@@ -3,7 +3,8 @@
 // owner speaks here again. Daemon state in the session's settings, so every
 // client (the page, the phone, the command line) agrees; setting a mark does
 // not move the session in the list.
-import { ownerPrompt } from "../../core/owner.ts";
+import { isPeerMessage, ownerPrompt } from "../../core/owner.ts";
+import { closingAsk, replyText } from "../../core/closing-ask.ts";
 import * as alerts from "../../automation/alerts.ts";
 import type { Session } from "../../core/types.ts";
 import { PEER_TURNS } from "../../fleet/messages.ts";
@@ -178,6 +179,32 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
     // A turn the model declined is a failure under its own word: news until some device shows it.
     else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason), stopped_by: data.reason === "interrupted" && typeof data.stopped_by === "string" ? data.stopped_by : null, ...(data.reason === "refusal" ? { fail_seen_ms: 0 } : {}) });
     else return;
+    emit(id);
+  });
+
+  // A question an unattended turn of a top session ended asking the owner in prose (src/core/closing-ask.ts) is
+  // owed until the owner writes there: kept with the session, so its state says "needs you" across restarts. A
+  // turn the owner's words started or steered asks nothing this way: he is there (on the live store, those replies
+  // that ended in a question were greetings). One point read a turn's end: its last reply.
+  const ownerIn = new Set<string>();
+  bus.on((f) => {
+    if (f.t !== "event") return;
+    const { kind, session_id: id, data } = f.event;
+    if (kind === "user") {
+      if (!ownerPrompt(data) || isPeerMessage(f.event)) return;
+      ownerIn.add(id);
+      if (store.session(id)?.settings.asks_owner) { store.mergeSettings(id, { asks_owner: null }); emit(id); }
+      return;
+    }
+    if (kind !== "turn_end") return;
+    const owner = ownerIn.delete(id);
+    const s = store.session(id);
+    if (owner || !s || s.parent_id || data.reason !== "end_turn" || !f.event.parent) return;
+    const reply = store.event(f.event.parent);
+    if (reply?.kind !== "assistant") return;
+    const text = closingAsk(replyText(reply.data));
+    if (!text) return;
+    store.mergeSettings(id, { asks_owner: { id: reply.id, seq: reply.seq, ts: reply.ts, text } });
     emit(id);
   });
 

@@ -4,7 +4,8 @@
 // GET /api/sessions/:id/has-agents -> { agents }: it ever started one.
 // GET /api/sessions/:id/lens?after=<seq>&at=<id>&turns=<n>
 //   -> { items, events, stable, stable_id, last, earlier?, whole? }
-//   items: the lens, oldest first (an item past the last turn's end is `open`).
+//   items: the lens, oldest first (an item past the last turn's end is `open`); a folded
+//   run's `words` are the first line of the reply it said last.
 //   events: the bodies of the items shown, by id: nothing of a folded run.
 //   stable, stable_id: the last turn's end read; a next read asks `after` its
 //   seq (`at` its id) for what came since, and its first run goes on the run
@@ -82,6 +83,10 @@ export const lensRoutes: RouteModule = ({ store }) => ({
       const { items, stable } = lensItems(marks, (id) => facts.users[id], (id) => facts.ends[id], facts.asks);
       const shown = items.flatMap((it) => (it.t === "run" ? [] : [it.id]));
       const bodies = shown.length ? await reads.run("lens.bodies", { ids: shown }) : {};
+      // Each folded run's last words: the first line of the reply it said last.
+      const said = items.flatMap((it) => (it.t === "run" && it.said ? [it.said] : []));
+      const words = said.length ? await reads.run("lens.words", { ids: said }) : {};
+      for (const it of items) if (it.t === "run" && it.said && words[it.said]) it.words = words[it.said];
       const at = new Map(marks.map((m, i) => [m.id, line[a + i]!]));
       const events: Record<string, StoredEvent> = {};
       for (const id of shown) {

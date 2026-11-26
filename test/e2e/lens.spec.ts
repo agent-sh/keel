@@ -60,6 +60,51 @@ test("a session with agents opens on the conversation, its stretches folded and 
     await expect(lens.locator('[data-lens-item="you"]')).toHaveCount(5, { timeout: 20_000 });
     await expect(lens.locator('[data-lens-item="reply"]').last()).toContainText("The lanes are all landed.", { timeout: 30_000 });
 
+    // The owner comes back to a run that says what matters without opening it: its last words, the agents that
+    // still work under it, and the question it ended asking him in prose. An agent at work first (its command runs on).
+    const api = page.request;
+    await api.put(`${d.url}/api/sessions/${id}/permissions`, { data: { mode: "full-auto" } });
+    const sleeper = [{ name: "Bash", input: { command: "sleep 240", run_in_background: true, description: "Long lane run" } }];
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: `Long lane\nscript:calls ${JSON.stringify(sleeper)}`, isolation: "none" } }])}`);
+    await page.getByTestId("composer").press("Enter");
+    const stateOf = async () => ((await (await api.get(`${d.url}/api/state`)).json()).states as Record<string, { watch: string; why?: string; text?: string; agents: number; parked?: number }>)[id!]!;
+    await expect.poll(async () => { const s = await stateOf(); return s.agents - (s.parked ?? 0); }, { timeout: 30_000 }).toBe(1);
+    // A question his own turn's reply ends with is his to read now: nothing is owed for it.
+    const ask = "Shall I land the parser lanes now?";
+    await page.getByTestId("composer").fill(`script:say The lanes are ready.\\n\\n${ask}`);
+    await page.getByTestId("composer").press("Enter");
+    await expect(lens.locator('[data-lens-item="reply"]').last()).toContainText(ask, { timeout: 30_000 });
+    await expect.poll(async () => (await stateOf()).watch, { timeout: 15_000 }).toBe("work");
+    // A wake starts a turn nobody asked for, and its reply ends asking him: one more run, once its turn ended.
+    const runsBefore = await runs.count();
+    expect((await api.post(`${d.url}/api/waits`, { data: { session_id: id, spec: { kind: "timer", seconds: 1 }, note: "check the lanes" } })).ok()).toBe(true);
+    await expect(runs).toHaveCount(runsBefore + 1, { timeout: 30_000 });
+    // (Its turn ended: the last run is settled.)
+    await expect.poll(async () => { const it = ((await (await api.get(`${d.url}/api/sessions/${id}/lens`)).json()) as { items: { t: string; open?: boolean }[] }).items.at(-1); return it?.t === "run" && !it.open; }, { timeout: 30_000 }).toBe(true);
+    const last = runs.last();
+    await shoot(page, "lens-05-asks-you");
+    // The owner's window: the workbench at the small text size, where the dock is.
+    await page.setViewportSize({ width: 1320, height: 860 });
+    await page.evaluate(() => dispatchEvent(new CustomEvent("keel-look", { detail: { view: "workbench", scale: 0.9 } })));
+    await expect(last.getByTestId("lens-run-came")).toBeVisible();
+    await shoot(page, "lens-06-asks-you-1320x860-small");
+    await expect(last.getByTestId("lens-run-came")).toHaveText("Asks you, 1 agent at work");
+    await expect(last.getByTestId("lens-run-said")).toHaveText(ask);
+    await expect(last).toHaveAttribute("data-state", "needs");
+    // The session's state counts it as needing him, and so does the dock.
+    await expect.poll(async () => { const s = await stateOf(); return `${s.watch} ${s.why} ${s.text}`; }, { timeout: 15_000 }).toBe(`need prose Asks you: ${ask}`);
+    await expect(page.getByTestId("dock-now")).toHaveAttribute("data-watch", "need");
+    await page.evaluate(() => dispatchEvent(new CustomEvent("keel-look", { detail: null })));
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    // Every other run says its last words.
+    await expect(runs.nth(1).getByTestId("lens-run-said")).toHaveText(/^Noted report \d+:/);
+    // His answer is what pays it: the run before it is history, and the session works on.
+    await page.getByTestId("composer").fill("script:say Not yet.");
+    await page.getByTestId("composer").press("Enter");
+    await expect.poll(async () => (await stateOf()).watch, { timeout: 15_000 }).toBe("work");
+    await expect(lens.locator('[data-lens-item="reply"]').last()).toContainText("Not yet.", { timeout: 30_000 });
+    await expect(lens.getByTestId("lens-run-came").filter({ hasText: "Asks you" })).toHaveCount(0);
+
     // The full stream is a choice away, and kept for this session across a reload. (It is what the
     // session showed before the lens: every report, every call.)
     await page.getByTestId("lens-to-stream").click();

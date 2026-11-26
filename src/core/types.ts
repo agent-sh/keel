@@ -209,6 +209,9 @@ export type SessionSettings = {
   fail_seen_ms?: number; // the failure (its failed_ms) the owner has looked at, on any device; 0: not looked at
   agents_failed_ms?: number; // when an agent under it last failed (its tree's root keeps it); news until agents_fail_seen_ms is that time
   agents_fail_seen_ms?: number; // the agents' failure (its agents_failed_ms) the owner has looked at, on any device
+  // The question the last unattended turn ended asking the owner, in prose (src/core/closing-ask.ts): owed
+  // until the owner writes in the session (src/server/routes/marks.ts). `id`, `seq`: the reply that asks.
+  asks_owner?: { id: string; seq: number; ts: number; text: string } | null;
   last_end?: string;   // why the last turn ended (turn_end's reason: end_turn, interrupted, restart, error...)
   stopped_by?: string | null; // who stopped it, when it ended as interrupted (a word of src/core/stoppers.ts)
   accept_messages?: boolean; // false: messages from other sessions are refused

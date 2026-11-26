@@ -498,7 +498,10 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-lens-run[data-state="failed"] .k-lens-dot { background: var(--st-fail); }
 .k-lens-run[data-state="live"] .k-lens-dot { background: var(--st-work); animation: var(--animate-pulse-dot); }
 .k-lens-came { flex: none; }
-.k-lens-took { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-variant-numeric: tabular-nums; opacity: 0; transition: opacity var(--dur-quick) var(--ease-out); }
+/* What the run said last, in its one line: the first line of its last reply, or the question it asks him. */
+.k-lens-said { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+.k-lens-said[data-asks] { color: var(--fg); }
+.k-lens-took { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-variant-numeric: tabular-nums; opacity: 0; transition: opacity var(--dur-quick) var(--ease-out); }
 .k-lens-line:hover .k-lens-took, .k-lens-line:focus-visible .k-lens-took, .k-lens-run[data-open] .k-lens-took { opacity: 1; }
 .k-lens-chev { flex: none; align-self: center; color: var(--faint); opacity: 0.6; transition: transform var(--dur-quick) var(--ease-out); }
 .k-lens-run[data-open] .k-lens-chev { transform: rotate(90deg); }

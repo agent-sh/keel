@@ -9,7 +9,8 @@
 // The order the facts are read in, first match wins:
 //   1. something waits on the owner (an approval, a question, a plan, a secret
 //      to give, a turn a restart cut and Keel did not continue, a message that
-//      did not go, a running turn whose every call waits on them): needs you;
+//      did not go, a running turn whose every call waits on them, a question its
+//      last unattended turn ended asking them in prose): needs you;
 //   2. its own turn runs: working, with the step; a turn whose provider cannot
 //      be reached waits for it (and tries again by itself): waiting;
 //   3. an agent it started runs: working;
@@ -60,7 +61,9 @@ const END_TEXT: Record<string, string> = {
 // the agent's session it waits in, when it is not the session's own.
 // `resume`: a turn a daemon restart cut that Keel did not continue by itself.
 // `secret`: a secret the model asked the owner to type into a card.
-export type AskKind = "approval" | "question" | "plan" | "secret" | "resume" | "unsent";
+// `prose`: the session's last unattended turn ended asking the owner a question in its words, with no card
+// (src/core/closing-ask.ts); it is owed until the owner writes there.
+export type AskKind = "approval" | "question" | "plan" | "secret" | "resume" | "unsent" | "prose";
 export type Ask = { kind: AskKind; text?: string; since?: number; child?: string; agent?: string };
 
 // A running step that has made no progress for too long (src/core/stuck.ts).
@@ -142,6 +145,8 @@ export type WatchFacts = {
   failure?: { cls?: string; text?: string; at?: number };
   // A turn a restart cut that was not continued: it waits for the owner to continue it.
   held?: { text?: string; since?: number };
+  // Its last unattended turn ended asking the owner, in prose (src/core/closing-ask.ts): the question, and when.
+  said?: { text: string; since?: number };
   // The queue of a stopped session: prompts that wait until the owner resumes.
   queue?: { held: boolean; queued: number };
   // Its running turn waits for a provider that cannot be reached (src/providers/outage.ts): since when, and what the transport said.
@@ -199,7 +204,7 @@ export const oneLine = (t: unknown, max = 160) => {
 // of them, then the thing itself.
 // What stands before the thing itself, by kind. A reader that says the kind in
 // its own place (a row with a kind word) shows the text without it (`askThing`).
-export const ASK_LEAD: Partial<Record<AskKind, string>> = { approval: "Approve ", question: "Question: ", plan: "Plan to approve: ", secret: "Secret to give: " };
+export const ASK_LEAD: Partial<Record<AskKind, string>> = { approval: "Approve ", question: "Question: ", plan: "Plan to approve: ", secret: "Secret to give: ", prose: "Asks you: " };
 export function askText(a: Ask): string {
   const t = oneLine(a.text);
   const said =
@@ -208,6 +213,7 @@ export function askText(a: Ask): string {
     : a.kind === "plan" ? (t ? `${ASK_LEAD.plan}${t}` : "Plan to approve")
     : a.kind === "secret" ? (t ? `${ASK_LEAD.secret}${t}` : "A secret is asked for")
     : a.kind === "resume" ? "Resume the turn a restart cut"
+    : a.kind === "prose" ? (t ? `${ASK_LEAD.prose}${t}` : "Asks you")
     : t || "A message was not sent";
   return a.child ? `Agent ${oneLine(a.agent, 40) || "of this session"}: ${said}` : said;
 }
@@ -227,7 +233,7 @@ export function askThing(st: Pick<SessionState, "watch" | "why" | "text" | "chil
 // What a session asks of the owner, short, for a bar that has room left after the folder:
 // "approve: git push", "asks: Which store", "plan: Ship it". The tool's own name is dropped from
 // an approval (the card names it); an agent's ask keeps its agent. Empty when nothing asks.
-const ASK_WORD: Partial<Record<AskKind, string>> = { approval: "approve", question: "asks", plan: "plan", secret: "secret" };
+const ASK_WORD: Partial<Record<AskKind, string>> = { approval: "approve", question: "asks", plan: "plan", secret: "secret", prose: "asks" };
 const NO_WORDS = new Set(["An approval waits", "A question waits", "Plan to approve", "A secret is asked for"]);
 export function askSuffix(st: Pick<SessionState, "watch" | "why" | "text" | "child">): string {
   const word = st.watch === "need" ? ASK_WORD[st.why as AskKind] : undefined;
@@ -415,7 +421,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   // What waits on the owner comes first, oldest first: nothing else moves until they answer. A session another
   // harness runs that Keel answers in place has its cards here too (a command Codex asks about).
   // A turn a restart cut that Keel did not continue is one of those things.
-  const asks = [...(f.asks ?? []), ...(f.held ? [{ kind: "resume" as const, ...f.held }] : [])].sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity));
+  const asks = [...(f.asks ?? []), ...(f.held ? [{ kind: "resume" as const, ...f.held }] : []), ...(f.said ? [{ kind: "prose" as const, ...f.said }] : [])].sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity));
   if (asks.length) {
     const first = asks[0]!;
     const more = asks.length - 1;

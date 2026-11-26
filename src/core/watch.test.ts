@@ -209,3 +209,11 @@ test("a step held for the machine (the load hold, the heavy-command line) waits 
   // An account's limit is still the account's wait inside a working turn.
   expect(stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m", limit: { why: "429" } }, turn: 1 }).watch).toBe("work");
 });
+
+test("a question the last unattended turn asked in prose needs the owner, with its agents still at work", () => {
+  const st = stateOf(s(), undefined, { agents: 6, said: { text: "Do you want Keel to use your connectors directly?", since: 5 } });
+  expect(st).toMatchObject({ watch: "need", why: "prose", agents: 6, since: 5, text: "Asks you: Do you want Keel to use your connectors directly?" });
+  expect(askSuffix(st)).toBe("asks: Do you want Keel to use your connectors directly?");
+  // A card that waits longer leads, and the prose ask counts as one more.
+  expect(stateOf(s(), undefined, { asks: [{ kind: "approval", text: "Bash: ls", since: 1 }], said: { text: "Land it?", since: 5 } })).toMatchObject({ why: "approval", asks: 2 });
+});

@@ -25,7 +25,7 @@ import { placeOf, putPlace } from "../lib/place.ts";
 import { api, failed, useStore } from "../lib/store.ts";
 import { getUI, setUI } from "../lib/ui.ts";
 import { clock, cn } from "../lib/utils.ts";
-import { useWatch } from "../lib/watch.ts";
+import { useToldState, useWatch } from "../lib/watch.ts";
 import { CopyButton } from "./CopyButton.tsx";
 import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { Live, StreamRows } from "./Transcript.tsx";
@@ -58,12 +58,15 @@ const TAIL = 24, STEP = 150;
 // One folded stretch: its line, and its full stream in place once opened (read a part at a time).
 // `reveal`: a seq Find reaches in it: the stretch opens (when it was folded) and is read as far as
 // that; once Find lets go (undefined again), a stretch Find opened folds back.
-const RunLine = memo(function RunLine({ sid, run, live, needs, fresh, lensKey, reveal }: { sid: string; run: Run; live: boolean; needs: boolean; fresh?: string; lensKey: string; reveal?: number }) {
+// `asks`: the question the run ended asking the owner in prose, still owed; `agents`: the session's agents at work, on its last run.
+const RunLine = memo(function RunLine({ sid, run, live, needs, asks, agents, fresh, lensKey, reveal }: { sid: string; run: Run; live: boolean; needs: boolean; asks?: string; agents?: number; fresh?: string; lensKey: string; reveal?: number }) {
   const [open, setOpen] = useState(false);
   const [part, setPart] = useState<{ events: StoredEvent[]; done: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const w = runWords(run, { live, needs });
+  const w = runWords(run, { live, needs, asks: !!asks, agents });
+  // What it said last, in a line: the question it asks him, else the first line of its last reply.
+  const said = asks || run.words;
   // How far a read goes on by itself (a place Find reaches), and whether one is under way.
   const until = useRef(0), reading = useRef(false), had = useRef(part);
   had.current = part;
@@ -109,6 +112,7 @@ const RunLine = memo(function RunLine({ sid, run, live, needs, fresh, lensKey, r
       <button type="button" className="k-lens-line" data-testid="lens-run-toggle" aria-expanded={open} title={w.took} onClick={toggle}>
         <span className="k-lens-dot" aria-hidden="true" />
         <span className="k-lens-came" data-testid="lens-run-came">{w.came}</span>
+        {said && <span className="k-lens-said" data-testid="lens-run-said" data-asks={asks ? "" : undefined} title={said}>{said}</span>}
         <span className="k-lens-took" data-testid="lens-run-took">{w.took}</span>
         <ChevronRight className="k-lens-chev size-3.5" aria-hidden="true" />
       </button>
@@ -153,6 +157,7 @@ const Shown = memo(function Shown({ sid, e, turn, fresh, lensKey }: { sid: strin
 export function Lens({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const watch = useWatch(session);
+  const told = useToldState(sessionId);
   // A lens this page read before is drawn at once, and only what came since is read (lib/lens-data.ts).
   const [data, setData] = useState<LensPage | null>(() => keptLens(sessionId));
   const fromKept = useRef(data);
@@ -337,6 +342,9 @@ export function Lens({ sessionId }: { sessionId: string }) {
   // (The lens is drawn before the session's stream is read: until its own read is in, it says it is loading.)
   if (!data && !error) return <TranscriptLoading />;
   const needs = watch === "need";
+  // A question its last unattended turn asked him in prose, still owed (src/server/routes/marks.ts), and its agents at work.
+  const owed = session.settings?.asks_owner;
+  const agents = told?.agents ?? 0;
   const lastRun = items.findLastIndex((x) => x.t === "run");
   const said = (it: LensItem) => (fresh && keyOf(it) === fresh.key ? newSinceAt(clock(fresh.at)) : undefined);
   return (
@@ -364,7 +372,10 @@ export function Lens({ sessionId }: { sessionId: string }) {
           {items.map((it, i) => {
             if (i < hidden) return null;
             const k = keyOf(it);
-            if (it.t === "run") return <RunLine key={k} lensKey={k} sid={sessionId} run={it} live={working && i === items.length - 1} needs={needs && i === lastRun && i === items.length - 1} fresh={said(it)} reveal={reveal?.key === k ? reveal.seq : undefined} />;
+            if (it.t === "run") {
+              const end = i === items.length - 1;
+              return <RunLine key={k} lensKey={k} sid={sessionId} run={it} live={working && end} needs={needs && i === lastRun && end} asks={end && owed && owed.seq >= it.from ? owed.text : undefined} agents={end ? agents : 0} fresh={said(it)} reveal={reveal?.key === k ? reveal.seq : undefined} />;
+            }
             const e = data!.events[it.id];
             if (!e) return null;
             return <Shown key={k} lensKey={k} sid={sessionId} e={e} turn={it.t === "reply" ? it.turn : undefined} fresh={said(it)} />;

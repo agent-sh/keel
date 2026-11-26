@@ -5,6 +5,7 @@
 import type { Database } from "bun:sqlite";
 import { PEER_PREFIX } from "../../core/owner.ts";
 import type { EndFacts, InputFacts } from "../../core/lens.ts";
+import { firstLine, replyText } from "../../core/closing-ask.ts";
 
 export type LensAsk = { users: string[]; ends: string[]; sessions: string[]; from: number; to: number };
 export type LensFacts = { users: Record<string, InputFacts>; ends: Record<string, EndFacts>; asks: { at: number; waiting: boolean }[] };
@@ -61,5 +62,17 @@ export function lensBodies(db: Database, a: { ids: string[] }): Record<string, s
   const q = db.query<{ data: string }, [string]>("SELECT data FROM events WHERE id = ?");
   const out: Record<string, string> = {};
   for (const id of a.ids) { const r = q.get(id); if (r) out[id] = r.data; }
+  return out;
+}
+
+// The first line of each reply a folded run said last (src/core/closing-ask.ts): a line, never the body.
+export function lensWords(db: Database, a: { ids: string[] }): Record<string, string> {
+  const q = db.query<{ data: string }, [string]>("SELECT data FROM events WHERE id = ?");
+  const out: Record<string, string> = {};
+  for (const id of a.ids) {
+    const r = q.get(id);
+    if (!r) continue;
+    try { const w = firstLine(replyText(JSON.parse(r.data))); if (w) out[id] = w; } catch {}
+  }
   return out;
 }
