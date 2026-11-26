@@ -3089,7 +3089,7 @@ export class Engine {
       // A file read comes back as a reader's compiled reading (src/tools/reading.ts), for the task and the last words of this branch.
       readThrough: readThrough(session, (sid) => this.store.session(sid)),
       aim: () => readAim(this.lineage(id)),
-      // A file the session's own prompts name is read as it is.
+      // A file the session's prompts, its task or a message sent to it name is read as it is.
       named: (p) => readNamed(this.lineage(id), [p, relative(session.workspace, p)]) };
 
     const t0 = Date.now();

@@ -88,8 +88,8 @@ export type ToolContext = {
   // Set by the engine: what the session is doing, for a reader that reads a file for it with no aim stated:
   // its task and what it last said, shortened (src/engine/read-aim.ts).
   aim?: () => string;
-  // Set by the engine: whether the session's own prompts name this file, by its path or its name
-  // (src/engine/read-aim.ts): a file the owner or a task pointed at is read as it is.
+  // Set by the engine: whether what the session was given (the owner's prompts, an agent's task, a message
+  // sent to it) names this file, by its path or its name (src/engine/read-aim.ts): such a file is read as it is.
   named?: (path: string) => boolean;
   // Set by the engine: the most characters one reading job of the session
   // reads, from the model listing; the readers tool gathers no more.

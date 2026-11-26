@@ -1,7 +1,8 @@
 // What a session is doing, for a reader that reads a file for it when the
 // read states no aim (src/tools/reading.ts): its task and what it last said,
-// shortened. And whether its own prompts name a file: one the owner or a task
-// pointed at is read as it is. Read off the branch's stored events, no model.
+// shortened. And whether what it was given names a file: one the owner, an
+// agent's task or its parent's message pointed at is read as it is. Read off
+// the branch's stored events, no model.
 import type { StoredEvent } from "../core/types.ts";
 import { ownerPrompts } from "./title.ts";
 
@@ -15,18 +16,30 @@ const head = (s: string, n: number) => { const t = flat(s); if (t.length <= n) r
 // The end of a text (what a model says last before a call is why it makes it), cut at a word.
 const tail = (s: string, n: number) => { const t = flat(s); if (t.length <= n) return t; const cut = t.indexOf(" ", t.length - n); return `...${t.slice(cut >= 0 && cut < t.length - n / 2 ? cut + 1 : t.length - n)}`; };
 
+// What a session was given to work on, as one event's words: the owner's own prompt (as `ownerPrompts` reads
+// one), and for an agent its task (after the harness's own words about being an agent) and a message sent to it
+// while it works (its parent's, a peer's). Not a report, a wake, a note of the harness.
+function given(e: StoredEvent): string | undefined {
+  if (e.kind !== "user" || typeof e.data.text !== "string") return undefined;
+  if (e.data.kind === "task") { const at = e.data.text.indexOf("\nTask:\n"); return (at >= 0 ? e.data.text.slice(at + 7) : e.data.text).trim() || undefined; }
+  if (e.data.kind === "steer") return e.data.text.trim() || undefined;
+  return ownerPrompts([e])[0];
+}
+// All of them on a branch, oldest first.
+export const givenPrompts = (line: readonly StoredEvent[]): string[] => line.map(given).filter((t): t is string => !!t);
+
 export function readAim(line: readonly StoredEvent[]): string {
-  // The newest prompt: the owner's, or for an agent its task (after the harness's own words about being one).
-  const prompt = ownerPrompts(line).at(-1) ?? "";
+  // The newest of what it was given, and what it last said: the newest reply with words in it, since then.
+  let prompt = "", said = "";
+  for (let i = line.length - 1; i >= 0; i--) {
+    const e = line[i]!;
+    const text = given(e);
+    if (text) { prompt = text; break; }
+    if (e.kind === "assistant" && !said) said = (e.data.blocks ?? []).filter((b: any) => b.type === "text").map((b: any) => String(b.text ?? "")).join("\n").trim();
+  }
+  // (A task carried in a prompt with no kind of its own, as an imported agent's is.)
   const at = prompt.indexOf("\nTask:\n");
   const task = head(at >= 0 ? prompt.slice(at + 7) : prompt, AIM_PART);
-  // What it last said: the newest reply with words in it, since that prompt at the earliest.
-  let said = "";
-  for (let i = line.length - 1; i >= 0 && !said; i--) {
-    const e = line[i]!;
-    if (e.kind === "user" && !e.data.kind && typeof e.data.text === "string" && !e.data.text.startsWith("[harness]")) break;
-    if (e.kind === "assistant") said = (e.data.blocks ?? []).filter((b: any) => b.type === "text").map((b: any) => String(b.text ?? "")).join("\n").trim();
-  }
   return [task ? `Its task (shortened): ${task}` : "", said ? `What it said before this read (shortened): ${tail(said, AIM_PART)}` : ""].filter(Boolean).join("\n");
 }
 
@@ -46,4 +59,4 @@ export function namedIn(prompts: readonly string[], paths: readonly string[]): b
   }
   return false;
 }
-export const readNamed = (line: readonly StoredEvent[], paths: readonly string[]) => namedIn(ownerPrompts(line), paths);
+export const readNamed = (line: readonly StoredEvent[], paths: readonly string[]) => namedIn(givenPrompts(line), paths);

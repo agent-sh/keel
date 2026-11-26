@@ -12,7 +12,7 @@ import { allHooks } from "./hooks.ts";
 import { Outcomes } from "../admin/outcomes.ts";
 import { Telemetry } from "../admin/telemetry.ts";
 import { patchSettings, settings } from "../admin/settings.ts";
-import { AIM_PART, namedIn, readAim } from "./read-aim.ts";
+import { AIM_PART, givenPrompts, namedIn, readAim, readNamed } from "./read-aim.ts";
 import { Engine } from "./turn.ts";
 
 const hooksAtStart = allHooks().length;
@@ -111,7 +111,7 @@ test("the aim a reader is given: the newest prompt, an agent's task without the 
   const ev = (kind: string, data: any): StoredEvent => ({ id: `e${++n}`, session_id: "s", seq: n, parent: n > 1 ? `e${n - 1}` : null, kind: kind as any, data, ts: n });
   const long = "word ".repeat(400);
   const line = [
-    ev("user", { text: `You are a subagent of a Keel session. Work on the task below.\n\nTask:\nFind the retry backoff. ${long}` }),
+    ev("user", { kind: "task", agent_id: "a1", text: `You are a subagent of a Keel session. Work on the task below.\n\nTask:\nFind the retry backoff. ${long}` }),
     ev("assistant", { blocks: [{ type: "text", text: `${long}Now the retry module.` }, { type: "tool_use", id: "t", name: "Read", input: {} }] }),
     ev("tool_result", { results: [] }),
     ev("assistant", { blocks: [{ type: "tool_use", id: "t2", name: "Read", input: {} }] }),
@@ -123,7 +123,30 @@ test("the aim a reader is given: the newest prompt, an agent's task without the 
   expect(aim.length).toBeLessThan(2 * AIM_PART + 120);
   // A reply before the newest prompt is not what it said about this read.
   expect(readAim([...line, ev("user", { text: "Now the tests." })])).toBe("Its task (shortened): Now the tests.");
+  // A message its parent sent while it worked is the newest thing it was given; a report or a wake is not.
+  const steered = [...line, ev("user", { kind: "steer", agent_id: "a1", text: "Message from the session that started you:\nAlso cover the jitter." }), ev("user", { kind: "report", text: "An agent reported." })];
+  expect(readAim(steered)).toBe("Its task (shortened): Message from the session that started you: Also cover the jitter.");
   expect(readAim([])).toBe("");
+});
+
+test("an agent's task and its parent's messages name files as the owner's prompts do", () => {
+  let n = 0;
+  const ev = (kind: string, data: any): StoredEvent => ({ id: `e${++n}`, session_id: "s", seq: n, parent: n > 1 ? `e${n - 1}` : null, kind: kind as any, data, ts: n });
+  const agent = [
+    ev("user", { kind: "task", agent_id: "a1", text: "You are a subagent of a Keel session. Your notes go in notes.json.\n\nTask:\nRead /w/spec/plan.yaml and follow it; change src/engine/turn.ts as it says." }),
+    ev("assistant", { blocks: [{ type: "text", text: "I will read the plan." }] }),
+    ev("user", { kind: "steer", agent_id: "a1", text: "Also read /w/spec/more.json." }),
+    ev("user", { kind: "report", text: "The agent read /w/spec/report.json." }),
+    ev("user", { text: "[harness] A note that names /w/spec/note.json." }),
+  ];
+  const named = (p: string) => readNamed(agent, [p, p.slice(3)]);
+  expect(givenPrompts(agent)).toEqual(["Read /w/spec/plan.yaml and follow it; change src/engine/turn.ts as it says.", "Also read /w/spec/more.json."]);
+  expect(named("/w/spec/plan.yaml")).toBe(true);
+  expect(named("/w/src/engine/turn.ts")).toBe(true);
+  expect(named("/w/spec/more.json")).toBe(true);
+  // The harness's own words above the task, a report and a note are not what it was given.
+  for (const no of ["/w/notes.json", "/w/spec/report.json", "/w/spec/note.json", "/w/src/other.ts"]) expect(named(no)).toBe(false);
+  expect(readNamed([ev("user", { text: "Fix other.ts." })], ["/w/src/other.ts", "src/other.ts"])).toBe(true);
 });
 
 test("a file the session's own prompt names is read as it is, with no reader asked", async () => {

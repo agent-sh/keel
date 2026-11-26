@@ -9,9 +9,10 @@
 // otherwise write to its cache and read again at every later step.
 //
 // The file itself is read when the caller asks for it (`raw` on the read
-// tool), when it is prose or an instruction file or one the session's own
-// prompts name (a text to follow is read to the letter; `raw: false` asks for
-// a reading of one), when the page is
+// tool), when it is prose or an instruction file or one the session was
+// pointed at (its prompts, an agent's task, a message sent to it: a text to
+// follow is read to the letter; `raw: false` asks for a reading of one), when
+// the page is
 // under the carry size (src/tools/carry.ts: a reader costs more than the text
 // there), for a program's own read (run_code), and when no other model than
 // the session's own can read. A reader that fails, refuses or is slower than
@@ -379,7 +380,7 @@ export type Through =
 // reading whatever the file is (false).
 export async function throughReader(p: string, ctx: ToolContext, page: Page, o: { raw?: boolean; aim?: unknown; mtime: number; form?: RawForm }): Promise<Through> {
   if (o.raw || !ctx.readMaterial || ctx.readThrough === false || ctx.nestedIn || page.chars <= smallCap(ctx) || !page.rows.size) return {};
-  // The caller said nothing: prose, an instruction file and a file its own prompts name are read as they are.
+  // The caller said nothing: prose, an instruction file and a file it was pointed at are read as they are.
   if (o.raw === undefined) {
     let named = false;
     try { named = proseFile(p) || !!ctx.named?.(p); } catch {}
