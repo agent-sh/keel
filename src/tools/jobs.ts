@@ -611,7 +611,8 @@ export const jobStarted: { tell?: (job: Job) => void } = {};
 export const jobDone: { tell?: (job: Job) => void } = {};
 
 export const jobEnded: {
-  tell?: (job: Job, text: string, then: { sent: () => void; note: () => void; riding?: string }) => void;
+  // `key`: the end of a command a cut call waited on, also lined up as a note under this key.
+  tell?: (job: Job, text: string, then: { sent: () => void; note: () => void; riding?: string; key?: string }) => void;
   read?: (job: Job) => void;
 } = {};
 // The key of a background command's end: of its note, and of the input that tells it (stored once under it).
@@ -666,10 +667,21 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     // What it printed is not part of the input: it is tool output, read from the log with a tool.
     const named = what.replace(/[<>\[\]]/g, "'").replace(/(?<=.)`(?=.)/g, "'");
     // A command a cut call was waiting on: its end is what that turn waited for, so it starts one.
+    // The turn a restart continued, or one begun since, may still be at work when it ends: the end is
+    // also a note lined up for the session's next request, so that turn reads it at its next step and
+    // no turn is started for it afterwards (`read` takes back the input lined up).
     if (job.wake && jobEnded.tell) {
       const text = `[harness] The command you were running when the daemon restarted has ended, after ${span(job.ended - job.started)}: ${named} (ID ${job.id}) ${how}.${when} Its output is in ${job.log}.`;
+      const key = endKey(job);
       job.owes = true;
-      jobEnded.tell(job, text, { sent: () => { job.owes = false; patchMeta(job.log, { reported: true }); }, note: () => { job.owes = false; note(); } });
+      const list = notices.get(job.sessionId) ?? [];
+      list.push({ text: text.replace(/^\[harness\] /, ""), job: job.id, log: job.log, key, stored: () => { if (!job.owes) return; job.owes = false; try { jobEnded.read?.(job); } catch {} } });
+      notices.set(job.sessionId, list);
+      jobEnded.tell(job, text, {
+        key,
+        sent: () => { job.owes = false; takeNotice(job.sessionId, key); patchMeta(job.log, { reported: true }); },
+        note: () => { job.owes = false; },
+      });
       return;
     }
     // Any other the model started: its end starts a turn of its idle session, as Claude Code's

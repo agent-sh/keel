@@ -44,7 +44,7 @@ export const toolRoutes: RouteModule = (deps) => {
   // It starts no turn where nobody waits for one: a command someone stopped (the owner, an archive,
   // a delete: that is no result the turn waited for) and a session the owner stopped are told with
   // the session's next request, whatever starts it, as a background command's end is.
-  jobEnded.tell = (job, text, { sent, note, riding }) => {
+  jobEnded.tell = (job, text, { sent, note, riding, key }) => {
     setTimeout(async () => {
       try {
         // A stop or a live job from a reload can finish between recovery slices.
@@ -72,7 +72,12 @@ export const toolRoutes: RouteModule = (deps) => {
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
         const end = deps.store.db.query<{ kind: string; reason: string | null }, [string]>("SELECT kind, data ->> '$.reason' AS reason FROM events WHERE id = (SELECT head FROM sessions WHERE id = ?)").get(job.sessionId);
         const cut = end?.kind === "turn_end" && end.reason === "restart";
-        if (!deliver(job.sessionId, text, { kind: "harness", job: job.id }, { ...(cut ? { hold: true } : {}), onSent: () => sent() })) sent();
+        // A turn at work read its note already (between the end and this moment): nothing is left to tell.
+        if (key && !hasNotice(job.sessionId, key)) return;
+        // (A turn at work reads the note at its next step; the input lined up here then never starts a turn.)
+        const meta = { kind: "harness", job: job.id };
+        const refresh = key ? () => hasNotice(job.sessionId, key) ? { text, meta, onSent: () => sent() } : undefined : undefined;
+        if (!deliver(job.sessionId, text, meta, { ...(cut ? { hold: true } : {}), onSent: () => sent(), ...(refresh ? { refresh } : {}) })) sent();
       } catch (e) { deps.errors.capture("tool", e, { at: "a command's end", session: job.sessionId }); }
     }, 0);
   };
