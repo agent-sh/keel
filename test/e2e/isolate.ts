@@ -30,6 +30,11 @@ if (FIXED) Math.random = seeded(FIXED >>> 5);
 
 export * from "@playwright/test";
 
+// The page fixture and its contract test use the same check.
+export function assertNoObserverLoops(page: import("@playwright/test").Page, errors: string[]) {
+  expect(errors.filter((m) => /ResizeObserver loop/.test(m)).map((m) => `${new URL(page.url()).pathname}: ${m}`), "a page changed the size of what an observer watches from inside its call").toEqual([]);
+}
+
 type Setting = { path: string; write: "PUT" | "PATCH"; pick: (b: any) => Record<string, unknown> };
 const SETTINGS: Setting[] = [
   {
@@ -160,7 +165,7 @@ export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftB
     // completed with undelivered notifications"); the page records it as an Errors row. No spec's page does.
     const errors = await watchWindowErrors(page);
     await use(page);
-    expect(errors.filter((m) => /ResizeObserver loop/.test(m)).map((m) => `${new URL(page.url()).pathname}: ${m}`), "a page changed the size of what an observer watches from inside its call").toEqual([]);
+    assertNoObserverLoops(page, errors);
   },
   // Set up first and looked at last, after the sessions went and the settings were put back.
   leftBehind: [
