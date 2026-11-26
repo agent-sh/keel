@@ -393,9 +393,11 @@ test.describe("after a kill", () => {
     await shoot(page, "past-truth-01-errors");
     await row.getByTestId("error-site").filter({ hasText: "Billing A" }).getByTestId("error-site-open").click();
     await expect(page).toHaveURL(new RegExp(`/s/${ids["Billing A"]}`));
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 }); // Panels is in the workbench header.
     // The palette gives the keyboard back to where it was when it opened, unless the person moved it while it closed.
     const menu = page.getByTestId("panel-menu"), box = page.getByTestId("composer");
     await menu.focus();
+    await expect(menu).toBeFocused();
     await page.keyboard.press("Control+k");
     await expect(page.getByTestId("palette-input")).toBeFocused();
     await page.keyboard.press("Escape");
@@ -405,7 +407,6 @@ test.describe("after a kill", () => {
     await page.keyboard.press("Escape");
     await box.focus();
     await expect(page.getByTestId("palette")).toHaveCount(0);
-    await page.waitForTimeout(300);
     await expect(box).toBeFocused();
     // The palette: activity, and a search limited in its own words, each hit with its time.
     await page.keyboard.press("Control+k");
