@@ -39,6 +39,11 @@ test("the tiers come from the owner's words once he says so, and a spawn with no
     await expect(box.getByTestId("tiers-table")).toHaveCount(0);
     const card = box.getByTestId("tiers-import");
     await expect(card).toContainText("Use the tiers from your words");
+    // The offer is a line in the group's own box, not a box in a box under a heavy title; and the page's boxes
+    // (the settings, the tiers, the routes, a provider's listing) end at one right edge.
+    expect(await card.evaluate((el) => { const c = getComputedStyle(el); return [parseFloat(c.borderLeftWidth), parseFloat(c.borderTopWidth), c.backgroundColor]; })).toEqual([0, 0, "rgba(0, 0, 0, 0)"]);
+    expect(await card.getByTestId("tiers-import-title").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
+    expect(await page.locator(".k-settings-body").evaluate((body) => [...new Set([...body.querySelectorAll<HTMLElement>(".k-card, .k-set-box")].filter((el) => !el.parentElement!.closest(".k-card, .k-set-box")).map((el) => Math.round(el.getBoundingClientRect().right)))].length), "one right edge").toBe(1);
     await card.getByTestId("tiers-import-read").click();
     await expect(card.getByTestId("tiers-import-row")).toHaveCount(3);
     await expect(card.getByTestId("tiers-import-row").nth(0)).toContainText("complex and delicate work");

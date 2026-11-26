@@ -126,7 +126,7 @@ function Models() {
     return [...m.entries()];
   }, [models]);
   return (
-    <div className="flex flex-col gap-4">
+    <div className="k-set-column flex flex-col gap-4">
       <NewModelCards />
       <Card>
         <SettingRow label="Default model" hint="New sessions start on it. It comes from the daemon's configuration.">

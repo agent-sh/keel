@@ -1638,6 +1638,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* A box of settings is a column of rows with the control at the row's end: on a wide page it stops where the eye can still
    take a label and its control together, instead of putting them a screen apart. */
 .k-card:has(> .k-setting), .k-set-group:has(.k-setting) { max-width: 52rem; }
+/* A page that is one column of such boxes, short tables and forms stops them all there: one right edge. */
+.k-set-column > * { max-width: 52rem; }
+/* An offer at the top of a group's box (read my words, not wanted): a line and its answers, ruled off from the form. */
+.k-tiers-offer { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); line-height: 1.55; color: var(--muted); }
 
 /* ---------- The Settings kit (components/settings/) ----------
    Every section is made of the same few parts: a page of groups, a group's head (its name, a

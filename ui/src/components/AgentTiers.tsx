@@ -8,7 +8,7 @@ import type { DraftRow } from "../../../src/engine/tiers-import.ts";
 import { api, reportError, useModels } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { ModelMenu } from "./ModelMenu.tsx";
-import { Cell, Group, Notice, Row, Table, type Col } from "./settings/kit.tsx";
+import { Cell, Group, Row, Table, type Col } from "./settings/kit.tsx";
 import { Seg } from "./Seg.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
@@ -39,13 +39,14 @@ function ImportCard({ onUsed }: { onUsed: () => void }) {
   };
   const away = () => api("/api/agent-tiers/import/dismiss", { method: "POST" }).then(() => setSt({ ...st, state: "dismissed" })).catch(reportError);
   return (
-    <div className="mb-4" data-testid="tiers-import">
-      <Notice title="Use the tiers from your words">
-        {!draft ? (
+    // (An offer in the group's own box, over its form: a line of what it does and its two answers, no box of its own.)
+    <div className="k-tiers-offer" data-testid="tiers-import">
+      <p className="text-fg" data-testid="tiers-import-title">Use the tiers from your words</p>
+      {!draft ? (
           <>
             <p>A small model reads what you typed in the last two weeks about models, tiers and effort, and writes it as a table. Nothing is kept until you say so.</p>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button type="button" className="k-btn k-btn-lg" disabled={busy} onClick={read} data-testid="tiers-import-read">{busy ? "Reading" : "Read my words"}</button>
+            <div className="mt-2.5 flex flex-wrap items-center gap-3">
+              <button type="button" className="k-btn" disabled={busy} onClick={read} data-testid="tiers-import-read">{busy ? "Reading" : "Read my words"}</button>
               <button type="button" className="k-btn" data-quiet="" onClick={away} data-testid="tiers-import-away">Not wanted</button>
               {problem && <span className="text-caption text-faint" data-testid="tiers-import-problem">{problem}</span>}
             </div>
@@ -72,7 +73,6 @@ function ImportCard({ onUsed }: { onUsed: () => void }) {
             </div>
           </>
         )}
-      </Notice>
     </div>
   );
 }
@@ -124,7 +124,7 @@ export function AgentTiers() {
         </div>
       )}
       <form className={cn("flex flex-col gap-3", tiers.length > 0 && "border-t border-line pt-4")} onSubmit={(e) => { e.preventDefault(); add(); }} data-testid="tier-form">
-        <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
           <label className="flex flex-col gap-1 text-caption text-muted">
             Tier
             <input className="k-field w-36" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} data-testid="tier-name" />
@@ -133,10 +133,13 @@ export function AgentTiers() {
             Model
             <ModelMenu value={model} placeholder="Choose a model" onChange={(id) => { if (id) { setModel(id); setEffort(""); } }} />
           </div>
-          <div className="flex flex-col gap-1 text-caption text-muted">
-            Effort
-            <Seg wrap label="Effort" value={effort} onChange={setEffort} testid="tier-effort" options={[{ value: "", label: "Its own" }, ...efforts.map((x) => ({ value: x, label: x }))]} />
-          </div>
+          {/* (A model that lists no effort has none to choose: the choice shows with the model that has one.) */}
+          {efforts.length > 0 && (
+            <div className="flex flex-col gap-1 text-caption text-muted">
+              Effort
+              <Seg wrap label="Effort" value={effort} onChange={setEffort} testid="tier-effort" options={[{ value: "", label: "Its own" }, ...efforts.map((x) => ({ value: x, label: x }))]} />
+            </div>
+          )}
           <label className="flex min-w-0 flex-1 flex-col gap-1 text-caption text-muted">
             Used by
             <input className="k-field min-w-48" placeholder="Agent types or task kinds, comma separated; default for every other agent" value={uses} onChange={(e) => setUses(e.target.value)} data-testid="tier-uses" />
