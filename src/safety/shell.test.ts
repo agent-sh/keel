@@ -15,6 +15,41 @@ test("splits on operators and finds commands inside substitutions", () => {
   expect(splitCommand("echo 'open")).toBeNull();
 });
 
+// A loop's head and its body's first command can stand in one part (`for i do CMD`, `for i { CMD; }`), and so can a
+// function's or a coprocess's name and its body: the command is read as the command it is, never dropped with the head.
+test("the body of a loop, a function or a coprocess is read as commands in every form bash takes", () => {
+  const progs = (c: string) => splitCommand(c)!.map((p) => p.words.join(" "));
+  const loops = [
+    "for i do S; done", "for i { S; }", "select i do S; done", "for i in a; do S; done", "for i\ndo S\ndone", "for i do\nS\ndone", "for i in a b; { S; }",
+    "if :; then for i do S; done; fi", "{ for i do S; done; }", "! for i do S; done", "time for i do S; done", ": && for i do S; done", "for i do for j do S; done; done",
+    "for i do { S; }; done", "for i do ! S; done", "for i do S; done 2>/dev/null", "case x in x) for i do S; done;; esac", "for do do S; done", "f() for i do S; done",
+    "x=$(for i do S; done)", "for ((i=0;i<1;i++)) do S; done", "for ((i=0;i<1;i++)) { S; }",
+  ];
+  for (const t of loops) for (const set of ["set -- 1; ", ""]) for (const end of ["", "; :"]) {
+    const line = set + t.replace("S", "rm -rf x") + end;
+    expect([line, progs(line).includes("rm -rf x")]).toEqual([line, true]);
+  }
+  // A function keeps its words in front (the rules read who it is), a coprocess loses its name: what runs is the body.
+  const bodies: [string, string][] = [
+    ["function f for i do S; done", "function f S"], ["function f if S; then :; fi", "function f S"], ["function f while S; do :; done", "function f S"],
+    ["function f until S; do :; done", "function f S"], ["function f { for i do S; done; }", "function f S"], ["function f { S; }", "function f S"],
+    ["coproc { S; }", "coproc S"], ["coproc N { S; }", "coproc S"], ["coproc if S; then :; fi", "coproc S"], ["coproc N for i do S; done", "coproc S"], ["coproc S", "coproc S"],
+    ["function f { coproc N { S; }; }", "function f coproc S"], ["coproc { function g if S; then :; fi; }", "coproc function g S"],
+    ["time -p { S; }", "S"], ["time -- if S; then :; fi", "S"], ["time -p -- for i do S; done", "S"], ["! time -p coproc N { S; }", "coproc S"],
+  ];
+  for (const [t, want] of bodies) expect([t, progs(`set -- 1; ${t.replace("S", "rm -rf x")}; :`)[1]]).toEqual([t, want.replace("S", "rm -rf x")]);
+  // The head's own words are no command: a loop's values, a case's word and patterns.
+  expect(progs("for i in rm -rf x; do :; done")).toEqual([":"]);
+  expect(progs("for i in a do rm -rf x; do :; done")).toEqual([":"]);
+  expect(progs("function f for i in a; do ls; done")).toEqual(["function f", "ls"]);
+  // What bash takes as no loop is a part nothing is known of; a loop over a name a program reads is one too, its body still read.
+  expect(splitCommand("set -- 1; for i 'do' rm -rf x; done")!.map((p) => [p.words.join(" "), p.unknown ?? false])).toEqual([["set -- 1", false], ["", true]]);
+  expect(splitCommand("for PATH do ls; done")!.map((p) => [p.words.join(" "), p.unknown ?? false])).toEqual([["ls", true]]);
+  // An expansion or a quote in the body keeps its place among the words that are left.
+  expect(splitCommand("for i do rm \"$i\" 'a b'; done")!.map((p) => [p.words, p.dyn, p.quotes])).toEqual([[["rm", "$i", "a b"], [1], [1, 2]]]);
+  expect(splitCommand("coproc N { rm \"$i\"; }")!.map((p) => [p.words, p.dyn, p.quotes])).toEqual([[["coproc", "rm", "$i"], [2], [2]]]);
+});
+
 // The parentheses of a definition end the word and are dropped: the name is marked, whatever compound command its body is.
 test("a function's name before its () is marked as one", () => {
   const defs = (line: string) => splitCommand(line)!.filter((p) => p.def).map((p) => p.words.join(" "));

@@ -138,7 +138,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     if (want) { target(want, word); want = null; }
     else {
       // A `case` pattern ends in a `)` that closes nothing: inside a substitution, where that one ends is then not known.
-      if (inner && !quoted && word === "case" && (!words.length || CONTROL.test(words[0]!) || /^(coproc|function)$/.test(words[0]!))) unknown = true;
+      if (inner && !quoted && word === "case" && (!words.length || CONTROL.test(words[0]!) || /^(coproc|function|for|select)$/.test(words[0]!))) unknown = true;
       if (made) { dyn.push(words.length); how.push({ one: !cur.open, lead: word.slice(0, cur.lead), subs: cur.subs, vars: cur.vars, rest: cur.rest }); }
       if (quoted) quotes.push(words.length);
       words.push(word);
@@ -157,20 +157,47 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     if (sep !== undefined) { if (!(sep === "\n" && !closed && !words.length && !redirects && !unknown && !inputs.length)) before = sep; closed = false; }
     // The elements of an array assignment are values: nothing of them is a program word.
     if (bare && !unknown && !redirects && !inputs.length) { words = []; dyn = []; how = []; splits = false; text = ""; return; }
-    // `for x in ...`, `select x in ...` and `case ... in` headers run nothing themselves.
-    if (/^(for|select|case)$/.test(words[0] ?? "")) {
-      // A loop gives its variable each value in turn, as an assignment would: PATH, HOME or a name a program
-      // reads there changes what the body runs (for PATH in .; do ls; done runs ./ls). Only a plain name in small letters.
-      if (words[0] !== "case" && words[1] !== undefined && (!PLAIN.test(words[1]) || KEPT.test(words[1]) || dyn.includes(1))) unknown = true;
-      words = [];
-      flow = true;
+    // The words in front of a command that are the shell's syntax and run nothing: a keyword (if, then, do, {, !, time),
+    // the head of a loop and `case WORD in`. With `do` or `{` right after a loop's name (`for i do rm x; done`,
+    // `for i { rm x; }`) the body's first command stands in the same part and is read as the command it is; with `in`
+    // the rest of the part are the loop's values. `past(at)`: the first word from `at` on that is none of these.
+    const past = (at: number): number => {
+      for (;;) {
+        while (at < words.length && CONTROL.test(words[at]!)) {
+          // (`time -p`, `time --`: the options of the keyword, before a compound command as before a program.)
+          if (words[at++] === "time") { if (words[at] === "-p") at++; if (words[at] === "--") at++; }
+        }
+        const w = words[at];
+        if (w !== "for" && w !== "select" && w !== "case") return at;
+        flow = true;
+        if (w === "case") return words.length;
+        // A loop gives its variable each value in turn, as an assignment would: PATH, HOME or a name a program
+        // reads there changes what the body runs (for PATH in .; do ls; done runs ./ls). Only a plain name in small letters.
+        const name = words[at + 1], next = words[at + 2];
+        if (name !== undefined && (!PLAIN.test(name) || KEPT.test(name) || dyn.includes(at + 1))) unknown = true;
+        if (next === undefined || next === "in") return words.length;
+        // (Anything else there is no loop to bash: a part nothing is known of.)
+        if ((next !== "do" && next !== "{") || dyn.includes(at + 2) || quotes.includes(at + 2)) { unknown = true; return words.length; }
+        at += 2;
+      }
+    };
+    // `function NAME` and `coproc`, or `coproc NAME`, before a compound command: its keywords are syntax too, and its
+    // first command is the function's or the coprocess's (`function f if rm x; then ...`, `coproc { rm x; }`), each
+    // inside the other too. The function's words stay in front (`head`), a coprocess's name goes.
+    const syntax = (w: string | undefined) => w !== undefined && (CONTROL.test(w) || w === "for" || w === "select" || w === "case");
+    const head: number[] = [];
+    let at = past(0);
+    for (;;) {
+      if (words[at] === "function" && words.length > at + 2) { head.push(at, at + 1); at = past(at + 2); }
+      else if (words[at] === "coproc" && syntax(words[at + 1])) { head.push(at); at = past(at + 1); }
+      else if (words[at] === "coproc" && syntax(words[at + 2])) { head.push(at); at = past(at + 2); }
+      else break;
     }
-    let lead = 0;
-    while (lead < words.length && CONTROL.test(words[lead]!)) lead++;
-    if (lead) flow = true;
-    words = words.slice(lead);
-    const quoteds = quotes.map((n) => n - lead).filter((n) => n >= 0 && n < words.length);
-    const kept = dyn.map((n, k) => ({ n: n - lead, m: how[k]! })).filter((d) => d.n >= 0 && d.n < words.length);
+    if (at > head.length) flow = true;
+    const moved = (n: number) => (n >= at ? n - at + head.length : head.indexOf(n));
+    words = [...head.map((n) => words[n]!), ...words.slice(at)];
+    const quoteds = quotes.map(moved).filter((n) => n >= 0);
+    const kept = dyn.map((n, k) => ({ n: moved(n), m: how[k]! })).filter((d) => d.n >= 0);
     dyn = kept.map((d) => d.n);
     how = kept.map((d) => d.m);
     if (words.length || redirects || unknown || inputs.length)
