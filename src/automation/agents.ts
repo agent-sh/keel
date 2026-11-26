@@ -2940,10 +2940,18 @@ export function ackWaited(parentId: string, reports: { id: string; report: strin
   failures.ackReports(parentId, reports.map((r) => r.report));
 }
 
+// An agent by a name a model gives it: its id, its session's id, its branch (the name it sees in git and on
+// the work board), else its title, the newest of a title. `all` is oldest first.
+export function named(all: AgentRecord[], target: string): AgentRecord | undefined {
+  const raw = target.trim();
+  const t = raw.toLowerCase();
+  return all.find((x) => x.id === raw) ?? all.find((x) => x.session_id === raw) ?? all.find((x) => !!x.branch && x.branch === raw)
+    ?? [...all].reverse().find((x) => x.title.toLowerCase() === t);
+}
+
 export function resolveTarget(parentId: string, target: string): AgentRecord {
   const all = list(parentId);
-  const t = target.trim().toLowerCase();
-  const a = all.find((x) => x.id === target) ?? all.find((x) => x.session_id === target) ?? [...all].reverse().find((x) => x.title.toLowerCase() === t);
+  const a = named(all, target);
   if (!a) throw new Error(`no agent "${target}" in this session; agents: ${agentChoices(all, [parentId])}`);
   return a;
 }
@@ -2959,7 +2967,7 @@ export function resolveInTree(sessionId: string, target: string): AgentRecord {
     if (!me) throw e;
     const all = tree(rootSession(sessionId)).map((r) => r.agent).filter((x) => x.id !== me);
     const t = target.trim().toLowerCase();
-    const a = all.find((x) => x.id === target) ?? all.find((x) => x.session_id === target) ?? [...all].sort((x, y) => x.created - y.created).reverse().find((x) => x.title.toLowerCase() === t);
+    const a = named([...all].sort((x, y) => x.created - y.created), target);
     if (a) return a;
     // A session above the agent (the one that started it, or the tree's root) is not an agent: what it is owed is the report.
     // Named by a word for it ("parent") or by its title as well as by its id.

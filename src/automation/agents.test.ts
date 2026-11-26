@@ -130,6 +130,19 @@ test("an agent that messages the session that started it is told that its report
   await settled();
 });
 
+// Agents name each other by the branch they see in git and on the work board (keel/<title>-<6 hex>).
+test("an agent of the tree is found by its branch, from its parent and from a peer", async () => {
+  const a = await spawn({ title: "branch named" });
+  const b = await spawn({ title: "peer" });
+  store.db.query("UPDATE agents SET branch = ? WHERE id = ?").run("keel/branch-named-0a1b2c", a.id);
+  expect(agents.resolveTarget(parent.id, "keel/branch-named-0a1b2c").id).toBe(a.id);
+  expect(agents.resolveInTree(b.session_id, " keel/branch-named-0a1b2c ").id).toBe(a.id);
+  expect(() => agents.resolveTarget(parent.id, "keel/no-such-0a1b2c")).toThrow("no agent");
+  end(a, "end_turn");
+  end(b, "end_turn");
+  await settled();
+});
+
 // A program (run_code) that messages several agents at once: each message is a call no reply holds. Looking
 // for the reply of such a call walked the sender's branch to its start, which on a long session read and
 // parsed every reply of its history on the loop, once a message: the daemon answered nothing meanwhile.
