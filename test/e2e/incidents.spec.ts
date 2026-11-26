@@ -56,6 +56,9 @@ test("a provider that cannot be reached is one row for every session it holds, a
   await page.goto("/");
   // 25 s: confirmed also when an earlier outage left the wait's tries five seconds apart (src/providers/outage.ts, flapMs).
   await say(request, ids[0]!, "script:outage refused 25000");
+  // The send receipt only means the prompt was stored. Wait for the provider
+  // to refuse the first request before starting the two that should join it.
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).states[ids[0]!]?.why).toBe("unreachable");
   await say(request, ids[1]!, "Second, while it is down.");
   await say(request, ids[2]!, "Third, while it is down.");
 
