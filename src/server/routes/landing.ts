@@ -8,6 +8,7 @@ import { deliver, isPending } from "../../automation/core.ts";
 import * as failures from "../../automation/failures.ts";
 import { LandingQueue, LIVE_STATES, type Entry } from "../../landing/queue.ts";
 import { Together } from "../../landing/together.ts";
+import { askVisibility, held as publicHeld, heldWhy, learner, type Deps as PublicDeps } from "../../safety/public-send.ts";
 import { readOptsFor } from "../../safety/sandbox-config.ts";
 import { sandboxScope } from "../../safety/sandbox-scope.ts";
 import { confine } from "../../safety/sandbox.ts";
@@ -57,6 +58,7 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
     const read = readOptsFor(sandboxScope(folder));
     return confine(argv, p, folder, undefined, shown.length ? { ...read, own: [...(read.own ?? []), ...shown] } : read);
   };
+  let publicDeps: PublicDeps | undefined;
   const q = new LandingQueue(store, ov, {
     changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "landing", session_id: id, data: { changed: true } }); },
     error: (e, at) => void errors.capture("server", e, { at }),
@@ -70,6 +72,11 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
     mayPush: (sessionId) => {
       const p = sessionId ? gate?.perm(sessionId) : undefined;
       return p && p.sandbox !== "off" && !p.network ? "the session that queued it has no network in its sandbox" : undefined;
+    },
+    // The push goes to the owner's remote under his name: read for private words as his own `git push` is.
+    publicSend: async (repo, command, who) => {
+      const h = await publicHeld(command, repo, gate?.publicSend ?? (publicDeps ??= { visibility: askVisibility, words: learner(store) }), who ?? "landing-queue");
+      return h ? heldWhy(h) : undefined;
     },
     // An instruction file a landing changed is trusted with it where the landing is vouched for (src/safety/landed-trust.ts).
     landed: async (l) => { await landedTrust.move?.(l); },

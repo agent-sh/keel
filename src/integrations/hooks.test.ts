@@ -132,12 +132,13 @@ test("the owner's hooks file is read once and again when it changes", async () =
 const referenceDigest = (root: string) => {
   const text = readFileSync(join(root, ".keel/hooks.json"), "utf8");
   const files = coveredFiles(root, parseHooks(text).groups);
-  const sha = (t: string) => new Bun.CryptoHasher("sha256").update(t).digest("hex");
+  // (A file's bytes as they are: a script that is not text is no lossy decode of itself.)
+  const sha = (t: string | Uint8Array) => new Bun.CryptoHasher("sha256").update(t).digest("hex");
   if (!files.length) return sha(text);
   const h = new Bun.CryptoHasher("sha256").update(text);
   for (const f of files) {
     let body = "\u0000missing";
-    try { body = sha(readFileSync(f, "utf8")); } catch {}
+    try { body = sha(readFileSync(f)); } catch {}
     let link = "";
     try { if (lstatSync(f).isSymbolicLink()) link = `\u0000link\u0000${readlinkSync(f)}`; } catch {}
     h.update(`\u0000${relative(root, f)}${link}\u0000${body}`);
@@ -193,6 +194,7 @@ test("a pinned repository file is decided from what is on disk at each event, wh
     ["a script no longer readable", () => chmodSync(lib, 0o000)],
     ["readable again", () => chmodSync(lib, 0o644)],
     ["a script that is not text", () => writeFileSync(lib, Buffer.from([0xef, 0xbb, 0xbf, 0x65, 0xff, 0xfe, 0x80, 0x0a]))],
+    ["other bytes that decode to the same text", () => writeFileSync(lib, Buffer.from([0xef, 0xbb, 0xbf, 0x65, 0xfe, 0xff, 0x81, 0x0a]))],
     ["the covered folder replaced by a link to one outside with the same names", () => {
       cpSync(join(repo, ".keel/hooks"), join(outside, "hooks"), { recursive: true, verbatimSymlinks: true });
       rmSync(join(repo, ".keel/hooks"), { recursive: true });

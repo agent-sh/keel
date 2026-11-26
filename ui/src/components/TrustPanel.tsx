@@ -165,7 +165,7 @@ function WorktreeSetupFile({ session }: { session: Session }) {
   );
 }
 
-type AfterView = { path: string; state: "none" | "new" | "changed" | "pinned" | "refused"; command?: string; sha256?: string; covers?: string[]; texts?: { path: string; text: string }[]; problems: string[] };
+type AfterView = { path: string; state: "none" | "new" | "changed" | "pinned" | "refused"; command?: string; sha256?: string; covers?: string[]; texts?: { path: string; text: string }[]; land?: { push?: string; setup?: string; checks: string[] }; problems: string[] };
 const AFTER_STATE = { new: "held: not trusted", changed: "held: changed since you trusted it", pinned: "runs after each landing", refused: "cannot run", none: "" } as const;
 
 // The repository's after-land step (land.after in .keel/checks.json): it runs in this checkout after the landing
@@ -181,12 +181,18 @@ function LandAfterStep({ session }: { session: Session }) {
     <section className="flex flex-col gap-2" data-testid="land-after-step" data-state={v.state}>
       <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><GitMerge className="size-4 text-accent" /> After a landing</h3>
       <div className="rounded-xl border border-line bg-raised px-3 py-2 text-caption">
-        <div className="flex items-center gap-2">
-          <span className={cn("rounded px-1.5 text-micro font-medium", v.state === "pinned" ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")}>{v.state === "pinned" ? "runs" : "held"}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-faint">{v.command}</span>
+        <div className="flex items-start gap-2">
+          <span className={cn("mt-0.5 rounded px-1.5 text-micro font-medium", v.state === "pinned" ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")}>{v.state === "pinned" ? "runs" : "held"}</span>
+          <pre data-testid="land-after-command" className="min-w-0 flex-1 font-mono text-faint whitespace-pre-wrap break-all">{v.command}</pre>
         </div>
-        <p className="mt-1 text-muted">{AFTER_STATE[v.state]}. It runs once after each batch the landing queue lands, in the checkout that has the base out, as the queueing session's commands run. The trust holds the command and the files of .keel/ it runs only: what they read from the rest of the tree is not held. While it is held, branches still land and are pushed; the step waits.</p>
+        <p className="mt-1 text-muted">{AFTER_STATE[v.state]}. It runs once after each batch the landing queue lands, in the checkout that has the base out, as the queueing session's commands run. The trust holds the command, the files of .keel/ it runs and the landing it comes after only: what they read from the rest of the tree is not held. While it is held, branches still land and are pushed; the step waits.</p>
         {v.covers && v.covers.length > 0 && <p className="mt-0.5 text-muted">The trust also covers: {v.covers.join(", ")}</p>}
+        {v.land && (
+          <div className="mt-1 text-muted" data-testid="land-after-block">
+            <p>And the landing it comes after{v.land.push ? `, pushed to ${v.land.push}` : ", with no push"}:</p>
+            <pre className="mt-0.5 font-mono text-micro text-faint whitespace-pre-wrap break-all">{[...(v.land.setup ? [`setup: ${v.land.setup}`] : []), ...v.land.checks.map((c) => `check ${c}`)].join("\n") || "no checks"}</pre>
+          </div>
+        )}
         {v.problems.map((p, i) => <p key={i} className="mt-0.5 text-warn">{p}</p>)}
         {v.state !== "pinned" && v.sha256 && v.state !== "refused" && (
           <>

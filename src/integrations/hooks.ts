@@ -167,7 +167,8 @@ const HEAD_HELD = "it is in the head of a pull request from a fork, which nobody
 
 export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(configDir(), "hooks.json");
 
-const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+// (Bytes are hashed as they are: two files whose bytes differ never share a digest, valid text or not.)
+const sha = (data: string | Uint8Array) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
 
 // The repository root of a folder (where .keel/ lives), else the folder. The walk stops at the home
 // folder: it holds the owner's own dot folders, so it is never a project's root (a `.keel/hooks.json` there
@@ -233,7 +234,7 @@ export function pinDigest(text: string, root: string, files: string[], bodies?: 
     try {
       const bytes = readFileSync(f);
       const was = bodies?.get(f);
-      body = was && was.bytes.equals(bytes) ? was.sha : sha(bytes.toString("utf8"));
+      body = was && was.bytes.equals(bytes) ? was.sha : sha(bytes);
       if (bytes.length <= BODY_MAX) read.set(f, { bytes, sha: body });
     } catch {}
     // A link is pinned with where it points too, so retargeting it unpins.

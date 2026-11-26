@@ -65,7 +65,7 @@ import { buildOrder, checksToRun, failureText, leftWhy, outcomeText, queueWarnin
 import { homeDir } from "../core/paths";
 import type { Landing } from "../safety/landed-trust.ts";
 import { lockedDaemon } from "../core/daemon-lock.ts";
-import { AfterPins } from "./land-pin.ts";
+import { AfterPins, landText } from "./land-pin.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS landing_queue (
@@ -126,6 +126,9 @@ export type QueueDeps = {
   mayPush: (sessionId: string | null) => string | undefined;
   agents?: AgentDeps;
   landed?: (l: Landing) => Promise<void>;
+  // What a push would send to a public place under the owner's name that holds private words or could not be read
+  // (src/safety/public-send.ts, the same reading a session's own `git push` gets), or nothing. A push it names is not made.
+  publicSend?: (repo: string, command: string, who: string | null) => Promise<string | undefined>;
 };
 
 // Who settles a branch's conflict: the agent that holds it, or a fresh agent
@@ -210,8 +213,10 @@ export class LandingQueue {
         landedIn.set(e.batch ?? "", [...(landedIn.get(e.batch ?? "") ?? []), e]);
       } else this.set(e.id, { state: "queued", step: null, built: null });
     }
-    // A batch cut between its move and its after step: the step is owed no more, and the outcome says so.
+    // A batch cut between its move and its after step, or while the step ran (its entries are landed then): the step
+    // is owed no more, and the outcome says so. No pass runs before this, so every such batch was cut.
     for (const batch of landedIn.keys()) this.store.db.query("UPDATE landing_batches SET after_exit = -2 WHERE id = ? AND after IS NOT NULL AND after_exit IS NULL").run(batch);
+    this.store.db.query("UPDATE landing_batches SET after_exit = -2 WHERE after IS NOT NULL AND after_exit IS NULL AND to_sha IS NOT NULL AND EXISTS (SELECT 1 FROM landing_queue q WHERE q.batch = landing_batches.id AND q.state = 'landed')").run();
     for (const r of this.store.db.query<{ repo: string }, []>("SELECT DISTINCT repo FROM landing_queue").all()) await this.dropScratch(r.repo).catch((e) => this.d.error(e, "landing recover"));
     this.prune();
     // An agent's task the stop cut before it was sent is built again; one that was sent is read when the agent ends (or now, if it has).
@@ -347,7 +352,7 @@ export class LandingQueue {
     if (base) {
       const r = await this.rulesOf(repo, base);
       const run = r ? checksToRun(r.rules, r.named, homeDir()) : undefined;
-      const held = r?.rules.after ? this.afterPins.held(repo, r.rules.after, repo) : undefined;
+      const held = r?.rules.after ? this.afterPins.held(repo, r.rules.after, repo, landText(r.rules, r.named)) : undefined;
       if (r) rules = { checks: run && "run" in run ? run.run.map((c) => c.command === c.check.run ? c.check.name : `${c.check.name} ${c.command.slice(c.check.run.length).trim()}`.trim()) : [], ...(r.rules.push ? { push: r.rules.push } : {}), ...(r.rules.after ? { after: r.rules.after } : {}), ...(held ? { after_held: held } : {}), method: r.rules.method, problems: [...r.rules.problems, ...(run && "problem" in run ? [run.problem] : [])] };
     }
     return { repo, base: base ? short(base) : null, entries, running: this.running.has(repo), ...(rules ? { rules } : {}) };
@@ -546,7 +551,7 @@ export class LandingQueue {
       // Pushed after the base moved here: a remote never holds what this repository does not.
       if (rules.push) outcome.push = await this.push(repo, rules.push, base, tip, who);
       if (rules.after) {
-        const a = await this.after(repo, base, tip, from, passed.map((p) => p.e.branch), batch, who, rules.timeoutMs, outcome.push);
+        const a = await this.after(repo, base, tip, from, passed.map((p) => p.e.branch), batch, who, rules.timeoutMs, landText(rules, r!.named), outcome.push);
         if ("held" in a) outcome.afterHeld = a.held;
         else outcome.after = a;
       }
@@ -826,7 +831,12 @@ export class LandingQueue {
   private async push(repo: string, remote: string, base: string, tip: string, who: string | null): Promise<Push> {
     const no = this.d.mayPush(who);
     if (no) return { remote, skipped: no };
-    const r = await git(repo, ["push", "--porcelain", remote, `${tip}:${base}`], { timeout: 300_000, fetch: "any" });
+    const argv = ["push", "--porcelain", remote, `${tip}:${base}`];
+    if (this.d.publicSend) {
+      const words = await this.d.publicSend(repo, `git ${argv.join(" ")}`, who).catch((e) => `the push could not be read for private words (${(e as Error).message})`);
+      if (words) return { remote, skipped: words };
+    }
+    const r = await git(repo, argv, { timeout: 300_000, fetch: "any" });
     return r.code === 0 ? { remote, ok: true } : { remote, ok: false, err: tailOf(r.err || r.out, 2, 240) };
   }
 
@@ -835,14 +845,14 @@ export class LandingQueue {
   // (removed after). Never in a checkout that has another branch out. It runs
   // only while the owner's pin holds it as it is there (src/landing/land-pin.ts);
   // `held` says why it did not.
-  private async after(repo: string, base: string, tip: string, from: string, branches: string[], batch: string, who: string | null, timeoutMs: number, push?: Push): Promise<{ exit: number | null; log: string } | { held: string }> {
+  private async after(repo: string, base: string, tip: string, from: string, branches: string[], batch: string, who: string | null, timeoutMs: number, land: string, push?: Push): Promise<{ exit: number | null; log: string } | { held: string }> {
     const out = await this.checkoutOf(repo, base);
     const at = out && (await git(out, ["rev-parse", "-q", "--verify", "HEAD"], { read: true })).out.trim() === tip ? out : undefined;
     const own = at ? undefined : join(this.dir, createHash("sha256").update(repo).digest("hex").slice(0, 16), `${batch}-after`);
     try {
       if (own) await worktreeGit(repo, ["worktree", "add", "-q", "--detach", own, tip]);
       const command = this.store.db.query<{ after: string }, [string]>("SELECT after FROM landing_batches WHERE id = ?").get(batch)!.after;
-      const held = this.afterPins.held(repo, command, at ?? own!);
+      const held = this.afterPins.held(repo, command, at ?? own!, land);
       if (held) {
         this.store.db.query("UPDATE landing_batches SET after_exit = -3, after_log = ? WHERE id = ?").run(held, batch);
         return { held };

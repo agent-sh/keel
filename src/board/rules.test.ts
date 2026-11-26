@@ -102,6 +102,12 @@ describe("landed and live", () => {
     expect(R.queueLanded({ state: "no", missing: 2 }, { state: "landed", current: true })).toEqual({ state: "yes", how: "queue" });
     expect(R.queueLanded({ state: "no", missing: 2 }, { state: "landed", current: false })).toEqual({ state: "no", missing: 2 });
   });
+  test("what runs of a repository that builds this daemon is the daemon's revision, never the step that installs it", () => {
+    const after = { to_sha: "a".repeat(40), ended: 5 };
+    expect(R.deploysOf("d".repeat(40), after)).toEqual([{ sha: "d".repeat(40), how: "this daemon", at: null }]);
+    expect(R.deploysOf(null, after)).toEqual([{ sha: "a".repeat(40), how: "after step passed", at: 5 }]);
+    expect(R.deploysOf(null, undefined)).toEqual([]);
+  });
   test("live: whichever deploy holds the head", () => {
     const after = { sha: "a".repeat(40), how: "after step passed" as const, at: 1 }, daemon = { sha: "d".repeat(40), how: "this daemon" as const, at: null };
     expect(R.liveFrom([{ deploy: after, holds: { state: "no", missing: 1 } }, { deploy: daemon, holds: { state: "yes", how: "ancestor" } }])).toEqual({ state: "yes", at: daemon.sha, how: "this daemon" });

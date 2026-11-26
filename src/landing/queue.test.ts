@@ -210,6 +210,83 @@ test("the after step runs only while the owner's pin holds it and the script it 
   expect(t.q.afterPins.show(t.repo).state).toBe("changed");
 });
 
+// The rest of the land block is part of what the owner trusts: a landing that sends the push elsewhere holds the step.
+test("a landing that moves land.push to another remote holds the after step until it is trusted again", async () => {
+  const t = setup({ origin: true, land: { push: "origin", after: "bash .keel/after.sh" }, files: { ".keel/after.sh": 'echo "to $KEEL_LANDED_PUSHED" >> "$KEEL_LAND_REPO/../after.log"\n' } });
+  g(t.dir, "init", "-q", "--bare", "mirror.git");
+  g(t.repo, "remote", "add", "mirror", join(t.dir, "mirror.git"));
+  const log = join(t.dir, "after.log");
+  const a = t.session("a", t.coord);
+  expect(t.q.afterPins.pin(t.repo, t.q.afterPins.show(t.repo).sha256!)).toBeNull();
+  expect(t.q.afterPins.show(t.repo).land).toEqual({ push: "origin", checks: ["test: sh check.sh"] });
+  // A branch that changes where the landing pushes: it lands (under the rules the base had), and the next batch,
+  // which pushes to the new remote, does not run the step.
+  g(t.repo, "checkout", "-q", "-b", "keel/m", "main");
+  const file = JSON.parse(readFileSync(join(t.repo, ".keel/checks.json"), "utf8"));
+  writeFileSync(join(t.repo, ".keel/checks.json"), JSON.stringify({ ...file, land: { ...file.land, push: "mirror" } }));
+  g(t.repo, "commit", "-qam", "keel/m");
+  g(t.repo, "checkout", "-q", "main");
+  t.ov.committed(t.repo, "keel/m", a);
+  await t.land(["keel/m"]);
+  expect(readFileSync(log, "utf8")).toBe("to origin\n");
+  t.branch("keel/n", 2, "line 2 BETA", a);
+  await t.land(["keel/n"]);
+  expect(t.rows().map((r) => r.state)).toEqual(["landed", "landed"]);
+  expect(readFileSync(log, "utf8")).toBe("to origin\n");
+  expect(t.q.afterPins.show(t.repo)).toMatchObject({ state: "changed", land: { push: "mirror" } });
+});
+
+// The queue's push goes to a public place under the owner's name: read as his own `git push` is.
+test("a push the private-words reading holds (or could not read) is not made, and the after step is told so", async () => {
+  const t = setup({ origin: true, land: { push: "origin", after: "bash .keel/after.sh" }, files: { ".keel/after.sh": 'echo "pushed=[$KEEL_LANDED_PUSHED]" >> "$KEEL_LAND_REPO/../after.log"\n' } });
+  const log = join(t.dir, "after.log");
+  const asked: string[] = [];
+  let answer: () => Promise<string | undefined> = async () => "This goes to a public place under your name and holds private words:\n- notes.md: SECRETNAME";
+  t.deps.publicSend = async (repo, command, who) => { asked.push(`${repo === t.repo} ${command.replace(/[0-9a-f]{40}/, "TIP")} ${who === t.coord}`); return answer(); };
+  expect(t.q.afterPins.pin(t.repo, t.q.afterPins.show(t.repo).sha256!)).toBeNull();
+  const origin = () => g(t.repo, "ls-remote", "origin", "refs/heads/main").split("\t")[0];
+  const before = origin();
+  const a = t.session("a", t.coord);
+  t.branch("keel/a", 1, "line 1 SECRETNAME", a);
+  await t.land(["keel/a"]);
+  expect(asked).toEqual(["true git push --porcelain origin TIP:refs/heads/main true"]);
+  expect(t.rows()[0]!.state).toBe("landed");
+  expect(origin()).toBe(before);
+  const o = t.q.outcomeFor(t.coord)!; o.settle();
+  expect(o.text).toContain("It was not pushed to origin: This goes to a public place under your name and holds private words");
+  expect(readFileSync(log, "utf8")).toBe("pushed=[]\n");
+  // A reading that fails is a part it could not read: no push either.
+  answer = async () => { throw new Error("no answer"); };
+  t.branch("keel/b", 2, "line 2 BETA", a);
+  await t.land(["keel/b"]);
+  expect(origin()).toBe(before);
+  expect(readFileSync(log, "utf8")).toBe("pushed=[]\npushed=[]\n");
+  // Nothing found: the push goes.
+  answer = async () => undefined;
+  t.branch("keel/c", 3, "line 3 GAMMA", a);
+  await t.land(["keel/c"]);
+  expect(origin()).toBe(t.main());
+  expect(readFileSync(log, "utf8")).toBe("pushed=[]\npushed=[]\npushed=[origin]\n");
+});
+
+// A restart while the after step ran: the batch's entries are landed, the step never ended; the outcome says so.
+test("a restart that cut a running after step is told", async () => {
+  const t = setup({ land: { after: "true" } });
+  expect(t.q.afterPins.pin(t.repo, t.q.afterPins.show(t.repo).sha256!)).toBeNull();
+  t.branch("keel/a", 1, "line 1 ALPHA", t.session("a", t.coord));
+  await t.land(["keel/a"]);
+  expect(t.rows()[0]!.state).toBe("landed");
+  // As the store is when the daemon stopped while the step ran.
+  t.store.db.query("UPDATE landing_batches SET after_exit = NULL, after_log = NULL").run();
+  t.store.db.query("UPDATE landing_queue SET owed = 1").run();
+  t.owed.length = 0;
+  const q2 = new LandingQueue(t.store, t.ov, t.deps);
+  await q2.recover();
+  await q2.idle(t.repo);
+  expect(t.owed).toContain(t.coord);
+  expect(q2.outcomeFor(t.coord)?.text).toContain("The after-land step did not finish: the daemon stopped after the move");
+});
+
 test("a check past its time is stopped with every process it started", async () => {
   const flag = join(root, `orphan-${n + 1}`);
   const t = setup({ land: { timeout_minutes: 0.02 }, files: { "check.sh": `sh -c 'sleep 3; touch ${flag}' & sleep 30\n` } });

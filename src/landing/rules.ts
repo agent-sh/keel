@@ -172,11 +172,11 @@ export function outcomeText(o: Outcome, own: (branch: string) => boolean = () =>
   if (o.landed.length) {
     const p = o.push;
     lines.push(`- Landed on ${o.base}: ${o.landed.map((l) => `${l.branch} (as ${short(l.at)})`).join(", ")}. ${o.base} moved ${short(o.from)} to ${short(o.to)}, a fast-forward to the commit ${o.checks.join(", ")} passed on${p && "ok" in p && p.ok ? `, and was pushed to ${p.remote}` : ""}.`);
-    if (p && "skipped" in p) lines.push(`- It was not pushed to ${p.remote}: ${p.skipped}. ${o.base} moved here only; push it from a session that may reach the network, or by hand.`);
+    if (p && "skipped" in p) lines.push(`- It was not pushed to ${p.remote}: ${p.skipped}. ${o.base} moved here only; push it by hand once that is settled.`);
     else if (p && !p.ok) lines.push(`- The push to ${p.remote} was refused (${p.err}): ${o.base} moved here, and ${p.remote} is behind it. Push it again once that is fixed.`);
     const moved = o.landed.filter((l) => l.moved);
     if (moved.length) lines.push(`- ${moved.map((l) => l.branch).join(", ")} moved while ${moved.length === 1 ? "it was" : "they were"} checked: what came after the checked tip is not landed; queue ${moved.length === 1 ? "it" : "them"} again.`);
-    if (o.afterCut) lines.push("- The after-land step did not run: the daemon stopped between the move and the step. Run it by hand if it is needed.");
+    if (o.afterCut) lines.push("- The after-land step did not finish: the daemon stopped after the move, before the step ended (it may not have started, or was cut while it ran). Check what it did and run it by hand if it is needed.");
     if (o.afterHeld) lines.push(`- The after-land step did not run: ${o.afterHeld}. Once it is trusted, the next landing runs it; run it by hand for this one if it is needed.`);
     if (o.after) lines.push(o.after.exit === 0 ? `- The after-land step ran once (exit 0). Its output: ${o.after.log}` : `- The after-land step failed (${o.after.exit === null ? "it was stopped" : `exit ${o.after.exit}`}). Its output: ${o.after.log}`);
   }

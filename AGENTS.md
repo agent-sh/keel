@@ -415,12 +415,17 @@ under `~/.cache/keel-work/bun/research/`.
   releases no hold.
 - The landing queue's after step (`land.after` in `.keel/checks.json`) runs in the owner's checkout after the
   base moved, so it is held like a hooks file (`src/landing/land-pin.ts`): it runs only while the owner's pin
-  holds its command and the files of `.keel/` it runs, as the landed commit has them. Held, the batch still lands
-  and is pushed, and the outcome says why the step waited; the Trust panel shows it whole. This repository lands
+  holds its command and the files of `.keel/` it runs, as the landed commit has them, with the land block it comes
+  after (push, setup, checks and their commands, as the batch runs them). Held, the batch still lands and is
+  pushed, and the outcome says why the step waited; the Trust panel shows it whole. The queue's push is read for
+  private words as a session's own `git push` is (`publicSend`, `src/safety/public-send.ts`): a hit or a part it
+  could not read skips the push with the words, and the step is told nothing was pushed. This repository lands
   through its own queue: the land block runs typecheck, both conventions tests, the touched tests
   (`scripts/touched-tests.ts`) and the scripts stage on the clone's verify host (`git config keel.verifyHost`),
-  pushes to origin, and `.keel/land-install.sh` builds the landed commit and installs it over the daemon
-  that landed it, through the daemon's own restart (which may wait for the owner to step away).
+  pushes to origin, and `.keel/land-install.sh` builds the landed commit from a checkout of its own and installs
+  it over the compiled daemon that landed it, through the daemon's own restart (which may wait for the owner to
+  step away); a failed install puts the previous binary back unless a new daemon runs, and is an Errors row. The
+  work board takes what runs from the daemon's own revision when this repository holds it, never from the step.
 - A plan of lanes is checked before any of its agents starts
   (`src/automation/lane-plans.ts`, the pure part in `src/landing/lanes.ts`):
   each lane's files (declared, named by its brief, their importers), the pairs

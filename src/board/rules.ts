@@ -70,6 +70,13 @@ export type Live =
 
 // What runs: the commit the repository's after-land step last ran on and passed, and this daemon's own build.
 export type Deploy = { sha: string; how: "after step passed" | "this daemon"; at: number | null };
+// What runs of a repository: this daemon's build when the repository holds its revision (an after step that installs
+// this daemon only started the install, which may still fail, so the daemon's own revision says what runs); else
+// the commit the after-land step last passed on.
+export function deploysOf(own: string | null, after: { to_sha: string; ended: number } | undefined): Deploy[] {
+  if (own) return [{ sha: own, how: "this daemon", at: null }];
+  return after ? [{ sha: after.to_sha, how: "after step passed", at: after.ended }] : [];
+}
 
 export type QueueFact = { id: string; state: string; why: string | null; landed: string | null; tip: string; current: boolean; updated: number };
 

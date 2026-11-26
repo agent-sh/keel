@@ -19,7 +19,7 @@ import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, PairCheckRow, PictureRow, TreeRun } from "./facts.ts";
 import { baseHolds } from "./held.ts";
 import { FILE as PICTURES_FILE, readPictures } from "../pictures/config.ts";
-import { forecastFrom, forecastGaps, forecastPlan, live, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type Meeting, type PairFact, type PictureFact, type Work } from "./rules.ts";
+import { deploysOf as deployRows, forecastFrom, forecastGaps, forecastPlan, live, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type Meeting, type PairFact, type PictureFact, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -244,14 +244,9 @@ export class WorkBoard {
         tips.set(ref!, { sha: sha!, ...(counted ? { ahead, behind } : {}) });
       }
       const baseTip = base ? tips.get(base)?.sha ?? ((await this.git(repo, ["rev-parse", "-q", "--verify", base], undefined, by)).out.trim() || null) : null;
-      // What runs: the commit the after-land step last passed on, and this daemon's build when this repository holds it.
-      const deploys: Deploy[] = [];
-      const after = facts.deploys.find((d) => d.repo === repo);
-      if (after) deploys.push({ sha: after.to_sha, how: "after step passed", at: after.ended });
-      if (revision) {
-        const r = await this.git(repo, ["rev-parse", "-q", "--verify", `${revision}^{commit}`], undefined, by);
-        if (r.code === 0 && SHA.test(r.out.trim()) && r.out.trim() !== after?.to_sha) deploys.push({ sha: r.out.trim(), how: "this daemon", at: null });
-      }
+      // What runs (deploysOf in rules.ts): this daemon's build when this repository holds it, else the after step's commit.
+      const own = revision ? await this.git(repo, ["rev-parse", "-q", "--verify", `${revision}^{commit}`], undefined, by) : undefined;
+      const deploys = deployRows(own && own.code === 0 && SHA.test(own.out.trim()) ? own.out.trim() : null, facts.deploys.find((d) => d.repo === repo));
       repos.push({ repo, base: base?.replace(/^refs\/(heads|remotes)\//, "") ?? null, base_tip: baseTip, deploys });
       const agents = byRepo.get(repo)!;
       const heads: string[] = [];
