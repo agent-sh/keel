@@ -90,7 +90,7 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     await expect(page.getByTestId("leftovers-said")).toHaveText("Removed.");
     await expect(row).toHaveCount(0);
     const b = page.locator(`[data-testid="leftover-branch"][data-name="${branch}"]`);
-    await expect(b).toContainText("1 commit not on main");
+    await expect(b).toContainText("2 commits not on main");
     await expect(b.getByTestId("leftover-delete")).toBeDisabled();
     expect(git(repo, "worktree", "list")).not.toContain(wt);
     expect(git(repo, "branch", "--list", branch)).toContain(branch);
@@ -114,7 +114,7 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     await page.getByRole("alertdialog").getByRole("button", { name: "Remove all" }).click();
     await expect(page.getByTestId("leftovers-said")).toContainText("deleted");
     await expect(m).toHaveCount(0);
-    await expect(b).toContainText("1 commit not on main");
+    await expect(b).toContainText("2 commits not on main");
     expect(git(repo, "branch", "--list", merged)).toBe("");
     expect(git(repo, "branch", "--list", branch)).toContain(branch);
   } finally {
@@ -294,7 +294,7 @@ test("the landed pass removes worktrees whose branch's work is on the base, and 
     await expect(e).toHaveCount(0);
     expect(git(repo, "branch", "--list", `landed-whole-${stamp}`)).toBe("");
     expect(git(repo, "branch", "--list", `landed-edited-${stamp}`)).toContain(`landed-edited-${stamp}`);
-    await expect(page.locator(`[data-testid="leftover-branch"][data-name="landed-edited-${stamp}"]`)).toContainText("1 commit not on main");
+    await expect(page.locator(`[data-testid="leftover-branch"][data-name="landed-edited-${stamp}"]`)).toContainText("2 commits not on main");
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
     for (const d of [whole, edited]) try { git(repo, "worktree", "remove", "--force", d); } catch {}
