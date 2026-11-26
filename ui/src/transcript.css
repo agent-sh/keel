@@ -15,7 +15,7 @@
 .k-owner-words {
   display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem 0.75rem;
   /* A surface fitted to its words, on the reply's own edge: a short question is a short block. */
-  align-self: flex-start; max-width: 100%;
+  align-self: flex-start; max-width: min(100%, 35rem);
   border-radius: var(--radius-md);
   background: color-mix(in oklab, var(--accent-soft) 75%, transparent);
   /* The body's size, as the reply: what was asked is never the larger of the two. */
