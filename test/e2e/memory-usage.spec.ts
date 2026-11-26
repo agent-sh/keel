@@ -91,6 +91,8 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   // and what a person opens it for stays (how often memory was added, what it cost, whether it was used).
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(panel).toBeVisible();
+  // Its five tabs are words there, as the Usage views are, not a track that wraps into a box.
+  await expect(page.getByTestId("memory-tabs")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   const fits = await panel.locator("table").evaluate((t) => {
     const box = t.parentElement!;
     const cut = [...t.querySelectorAll<HTMLElement>("tbody td:first-child")].filter((td) => td.scrollWidth > td.clientWidth + 1).length;

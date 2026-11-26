@@ -177,9 +177,10 @@ export function MemoryUsage({ since, session: from = "", tab: first = "usage", o
     : <UnusedView since={since} session={session} sessions={sessions} onSession={pick} onOpen={openFact} onGone={lost} under={under} />;
   const beside = !!open && !phone && tab !== "usage" && tab !== "sweep";
 
+  // (On a phone the five tabs are words, as the Usage views above them are: a track that wraps is a box of chrome.)
   return (
     <Panel plain title="Memory" hint={HINT[tab]} testid="usage-memory"
-      aside={<Seg<MemoryTab> wrap label="Memory view" kind="tabs" panel={PANEL} testid="memory-tabs" value={tab} onChange={(t) => { setTab(t); setOpen(null); opener.current = null; }} options={[
+      aside={<Seg<MemoryTab> wrap bare={phone} label="Memory view" kind="tabs" panel={PANEL} testid="memory-tabs" value={tab} onChange={(t) => { setTab(t); setOpen(null); opener.current = null; }} options={[
         { value: "usage", label: "Usage", testid: "memory-tab-usage" }, { value: "given", label: "Given", testid: "memory-tab-given" },
         { value: "search", label: "Search", testid: "memory-tab-search" }, { value: "unused", label: "Never named", testid: "memory-tab-unused" },
         { value: "sweep", label: "Daily sweep", testid: "memory-tab-sweep" },
