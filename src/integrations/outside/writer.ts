@@ -90,6 +90,28 @@ export function procOf(pid: number): Proc | undefined {
   try { const s = statFields(readFileSync(`/proc/${pid}/stat`, "utf8")); return s && s.state !== "Z" ? { pid, start: s.start } : undefined; } catch { return undefined; }
 }
 
+// A process's parent (field 4 of /proc/<pid>/stat).
+export function parentOf(pid: number): number | undefined {
+  try { const t = readFileSync(`/proc/${pid}/stat`, "utf8"); const n = Number(t.slice(t.lastIndexOf(")") + 2).split(" ")[1]); return Number.isInteger(n) ? n : undefined; } catch { return undefined; }
+}
+
+// The process that holds a lock and its ancestors up to `top` (not `top` itself), each with its start time: what
+// stands between a child Keel started and the writer lock it took (a launcher's native codex). Nothing when the
+// holder is `top`, is not under it within `depth` steps, or nothing holds the lock.
+export function holderChain(top: number, holder: number | undefined, depth = 6): Proc[] {
+  if (!holder || holder === top) return [];
+  const out: Proc[] = [];
+  let p = holder;
+  for (let i = 0; i < depth && p !== top; i++) {
+    const c = procOf(p);
+    const up = c && parentOf(p);
+    if (!c || !up || up <= 1) return [];
+    out.push(c);
+    p = up;
+  }
+  return p === top ? out : [];
+}
+
 // The processes under one, each with its start time (/proc/<pid>/task/<tid>/children, every thread's). A
 // program a launcher starts (the npm package's codex.js starts the native codex) holds what the launcher
 // does not: the native holds the thread's writer lock.

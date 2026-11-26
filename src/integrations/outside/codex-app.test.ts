@@ -15,7 +15,7 @@ import { answer, allPendingQuestions } from "../../tools/interact.ts";
 import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
-import { descendants, statFields } from "./writer.ts";
+import { descendants, lockHolder, readLocks, statFields } from "./writer.ts";
 import { CodexApp, commandWords, holdsMessage, lastRecord, permissionLines, recordsFrom, threadFacts, turnEnded, type CardGate } from "./codex-app.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-codex-app-"));
@@ -350,17 +350,24 @@ describe("a Codex session answered in place", () => {
   test.skipIf(!PROC)("a child an earlier daemon left running is ended at the start, with what it started, and nothing Keel did not start", async () => {
     const r = rig();
     const forever = ["-e", "setInterval(() => {}, 1 << 30)"];
-    // Keel's own child, a launcher whose native it started after the row was kept (the daemon ended first).
-    const orphan = Bun.spawn([process.execPath, "-e", `require("node:child_process").spawn(process.execPath, ${JSON.stringify(forever)}.concat(["app-server"]), { stdio: "ignore" }); setInterval(() => {}, 1 << 30)`, "app-server"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    // Keel's own child, a launcher whose native it started after the row was kept (the daemon ended first): the
+    // native holds the thread's writer lock. Beside it a job of a turn whose arguments say app-server too.
+    const lock = join(r.codex, "thread-writer-locks", `${r.thread}.lock`);
+    const holds = `const { dlopen, FFIType } = require("bun:ffi"); const l = dlopen("libc.so.6", { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } }); l.symbols.flock(require("node:fs").openSync(${JSON.stringify(lock)}, "a"), 2); setInterval(() => {}, 1 << 30)`;
+    const kids = `const cp = require("node:child_process"); cp.spawn(process.execPath, ["-e", ${JSON.stringify(holds)}, "app-server"], { stdio: "ignore" }); cp.spawn(process.execPath, ${JSON.stringify(forever)}.concat(["app-server"]), { stdio: "ignore" }); setInterval(() => {}, 1 << 30)`;
+    const orphan = Bun.spawn([process.execPath, "-e", kids, "app-server"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     // Not Keel's: another program with Keel's start time, a server whose start time is not the row's (its pid
     // taken again), and a pid that is this process with a start time of another.
     const other = Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const decoy = Bun.spawn([process.execPath, ...forever, "app-server"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const startOf = (pid: number) => statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))!.start;
     let native = 0;
+    let job = 0;
     try {
       const s = await r.session();
-      native = (await until(() => descendants(orphan.pid)[0])).pid;
+      const under = await until(() => descendants(orphan.pid).length === 2 && descendants(orphan.pid));
+      native = await until(() => lockHolder(lock, readLocks()));
+      job = under.find((p) => p.pid !== native)!.pid;
       const put = r.store.db.query("INSERT INTO outside_procs (session_id, pid, start) VALUES (?, ?, ?)");
       put.run(s.id, orphan.pid, startOf(orphan.pid));
       put.run("not-a-session", other.pid, startOf(other.pid));
@@ -372,6 +379,8 @@ describe("a Codex session answered in place", () => {
       expect(orphan.signalCode).toBe("SIGTERM");
       await until(() => { try { return statFields(readFileSync(`/proc/${native}/stat`, "utf8"))?.state === "Z"; } catch { return true; } }, 8000);
       await Bun.sleep(100);
+      // A job of the turn is not Keel's, whatever its arguments say.
+      expect(readFileSync(`/proc/${job}/stat`, "utf8")).not.toMatch(/\) Z /);
       expect(other.exitCode).toBeNull();
       expect(other.signalCode).toBeNull();
       expect(decoy.exitCode).toBeNull();
@@ -379,7 +388,7 @@ describe("a Codex session answered in place", () => {
       // The rows of what is gone go; the row of a process that still lives (not Keel's to end) stays.
       await until(() => r.store.db.query("SELECT * FROM outside_procs").all().length === 1);
       expect(r.store.db.query("SELECT session_id FROM outside_procs").all()).toEqual([{ session_id: "not-a-session" }]);
-    } finally { other.kill(); orphan.kill(); decoy.kill(); if (native) try { process.kill(native, "SIGKILL"); } catch {} r.done(); }
+    } finally { other.kill(); orphan.kill(); decoy.kill(); for (const p of [native, job]) if (p) try { process.kill(p, "SIGKILL"); } catch {} r.done(); }
   }, 30_000);
 
   test.skipIf(!PROC)("a codex that is a launcher (the npm package's): Stop ends the native under it too, which holds the thread", async () => {

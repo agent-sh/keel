@@ -17,13 +17,14 @@
 //     then a reply naming the decision.
 //   - anything else: a command it asks to run (make test), then a reply naming
 //     the decision.
-// Every request it got is appended to <rollout>.standin.log, one JSON line each.
+// Every request it got is appended to <rollout>.standin.log, one JSON line each. A resume takes the thread's
+// writer lock where $CODEX_HOME keeps them, as Codex does, and refuses a thread another process writes.
 // With a file $CODEX_HOME/standin-helpers, it starts what a real Codex starts under it that is not Keel's to end:
 // at its start a detached helper (as an MCP server leaves), and in each turn a background job (as a command of
 // the turn puts in the background), each in a session of its own; their pids are appended to that file.
 //   bun codex-app-server.ts app-server
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, readdirSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const home = process.env.CODEX_HOME ?? "";
@@ -37,7 +38,8 @@ process.on("SIGTERM", () => { if (!deaf) process.exit(0); });
 const helpers = join(home, "standin-helpers");
 const leave = (what: string) => {
   if (!existsSync(helpers)) return;
-  const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+  // (Its arguments hold app-server, as a job of the turn's can: Keel tells its own by the lock, never by them.)
+  const p = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)", "app-server"], { detached: true, stdio: "ignore" });
   p.unref();
   appendFileSync(helpers, `${what} ${p.pid}\n`);
 };
@@ -48,6 +50,23 @@ const note = (method: string, params: object) => out({ method, params });
 const ask = (method: string, params: object) => new Promise<any>((ok) => { const id = nextId++; waits.set(id, ok); out({ id, method, params }); });
 const record = (type: string, payload: object) => appendFileSync(rollout, JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + "\n");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// flock(2) on $CODEX_HOME/thread-writer-locks/<thread>.lock, where that folder is (a Codex that keeps locks).
+// The descriptor stays open: the lock goes when this process does.
+let lockFd: number | undefined;
+function holdLock(id: string): boolean {
+  const dir = join(home, "thread-writer-locks");
+  if (lockFd !== undefined || !existsSync(dir)) return true;
+  try {
+    const { dlopen, FFIType } = require("bun:ffi");
+    const libc = dlopen("libc.so.6", { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
+    const fd = openSync(join(dir, `${id}.lock`), "a");
+    // LOCK_EX | LOCK_NB
+    if (libc.symbols.flock(fd, 2 | 4) !== 0) { closeSync(fd); return false; }
+    lockFd = fd;
+  } catch {}
+  return true;
+}
 
 function find(dir: string, id: string): string | undefined {
   let names: string[] = [];
@@ -140,6 +159,8 @@ async function handle(m: any) {
     case "thread/resume": {
       const f = find(join(home, "sessions"), String(p.threadId));
       if (!f) return fail(-32600, `no rollout found for thread id ${p.threadId}`);
+      // The thread's writer lock, as Codex 0.172 takes it: held while this process lives; a second writer is refused.
+      if (!holdLock(String(p.threadId))) return fail(-32600, `thread ${p.threadId} already has an active writer`);
       rollout = f;
       thread = String(p.threadId);
       appendFileSync(`${rollout}.standin.log`, JSON.stringify({ method: m.method, params: p }) + "\n");
