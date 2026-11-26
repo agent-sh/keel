@@ -190,4 +190,3 @@ class Repo {
     return (await this.git("grep", "-q", "-I", "-F", "-e", t.shown, "HEAD", "--")) !== null;
   }
 }
-
