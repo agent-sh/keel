@@ -21,6 +21,10 @@ const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\
 // Nothing but the printable characters of ASCII: what one line can show exactly as it will run.
 export const plainAscii = (text: string): boolean => /^[\x20-\x7E]*$/.test(text);
 
+// One line a home row or a list can show whole. Anything longer is opened.
+export const SHORT_MAX = 160;
+export const oneLine = (text: string): boolean => text.length <= SHORT_MAX && plainAscii(text);
+
 const RTL = "\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}\\p{Script=Nko}\\p{Script=Samaritan}\\p{Script=Mandaic}\\p{Script=Adlam}";
 export const hasRtl = (text: string): boolean => new RegExp(`[${RTL}]`, "u").test(text);
 

@@ -20,6 +20,8 @@ const NOT_AT_START = [
   "ui/src/lib/speech.ts",
   "ui/src/lib/dictation-run.ts",
   "ui/src/lib/talk-run.ts",
+  // The home row needs a text check, not the daemon's command analysis.
+  "src/safety/risk-words.ts",
 ];
 const NOT_IN_ENTRY = ["ui/src/components/Sidebar.tsx", "ui/src/components/SidePanel.tsx"];
 
@@ -28,7 +30,7 @@ test("the page's start stays within its size budget and leaves out what is drawn
   const start = new Set<string>([g.entry, ...g.chunks[g.entry]!.static, ...closureOf(g, "ui/src/components/Bridge.tsx"), ...closureOf(g, "ui/src/components/Sidebar.tsx")]);
   expect(g.chunks[g.entry]!.bytes).toBeLessThan(ENTRY);
   expect(sizeOf(g, start)).toBeLessThan(START);
-  for (const f of NOT_AT_START) expect(holds(g, start, f)).toBe(false);
+  for (const f of NOT_AT_START) expect(holds(g, start, f), f).toBe(false);
   for (const f of NOT_IN_ENTRY) expect(holds(g, [g.entry], f)).toBe(false);
   // The page names every chunk of the start but the entry, once each, for a window that is not a phone's.
   const page = withPreloads(g.html, g);

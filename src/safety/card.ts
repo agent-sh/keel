@@ -3,10 +3,9 @@
 // page on another machine, an editor over ACP and the command line read the
 // same text, the same marks and the same hold. The gate refuses an allow that
 // does not say the text was shown (`refusal`), so the read-first rule is the
-// daemon's and not one client's. No imports but the two files the page loads
-// too: the page reads this one as well.
+// daemon's and not one client's.
 import type { Approval } from "./gate.ts";
-import { marked, marksOf, marksSaid, plainAscii, spelled, type Marks } from "./chars.ts";
+import { marked, marksOf, marksSaid, plainAscii, SHORT_MAX, spelled, type Marks } from "./chars.ts";
 import { RULE_WORDS } from "./risk-words.ts";
 import { partSpan, shownInPart } from "./summary.ts";
 
@@ -14,9 +13,6 @@ import { partSpan, shownInPart } from "./summary.ts";
 // (its `clip`), and the page shows this much: a longer one says that only its
 // start is here.
 export const TEXT_MAX = 20_000;
-// One line a home row or a list can show whole: this many printable ASCII
-// characters and no line break. Anything longer is opened.
-export const SHORT_MAX = 160;
 // What a collapsed notification shows of its content text before it is cut:
 // Android's guide gives 40 characters as the limit for content text, and one
 // line at the system's default size holds about that. A notification carries
@@ -24,10 +20,6 @@ export const SHORT_MAX = 160;
 // within it. Wide gaps are refused too: a run of spaces pushes a tail out of
 // sight on a line that wraps or scrolls.
 export const NOTE_MAX = 40;
-
-// Whether a text is that one line: nothing in it can hide, wrap out of view,
-// draw as something else or change the order of what is shown.
-export const oneLine = (text: string): boolean => text.length <= SHORT_MAX && plainAscii(text);
 
 // Why an allow of a card needs the text to have been shown whole first:
 // - "long": a second line, over 160 characters, or a tab (a gap of any width);

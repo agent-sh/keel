@@ -4,7 +4,7 @@
 // happened.
 import { askThing, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
 import { agentsFailedText, countWord, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
-import { oneLine, SHORT_MAX } from "../../../src/safety/card.ts";
+import { oneLine, SHORT_MAX } from "../../../src/safety/chars.ts";
 
 export type Row = { id: string; w: Watch };
 // The headline's parts. `wait` is every session that goes on by itself: one
