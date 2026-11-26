@@ -861,7 +861,7 @@ test("the remotes are listed as the owner's own git lists them: the repository's
     for (const dir of [instead, push, both, plain]) expect(await listed(dir)).toBe(own(dir));
     expect(await listed(plain)).toContain("mirror.example/me/app.git");
     expect(await listed(instead)).toContain("forge.example/them/app.git");
-    // (What a clone the line makes would get its remote through: asked outside any repository.)
+    // (What a repository the line makes would get its remotes through: asked outside any repository.)
     expect(await rewritesOwn()).toBe(true);
   } finally {
     writeFileSync(GLOBAL, global);
@@ -880,17 +880,6 @@ test("the remotes are listed as the owner's own git lists them: the repository's
   expect((await remotesAsRun(def, 10_000)).pushDefault).toBe("elsewhere");
   expect(((await remotesIn(def)) as { pushDefault?: string }).pushDefault).toBe("elsewhere");
   expect((await remotesAsRun(instead, 10_000)).pushDefault).toBeUndefined();
-  // What any branch's remote or pushRemote says that is no remote's name (an address, as `git push -u URL` leaves it)
-  // comes with the remotes: a checkout of that branch pushes there with no remote named.
-  for (const [k, v] of [["branch.rel.remote", "https://forge.example/them/lib.git"], ["branch.t9.pushRemote", "git@forge.example:them/two.git"], ["branch.side.remote", "."], ["branch.main.remote", "origin"]] as const) must(def, "config", k, v);
-  expect(((await remotesIn(def)) as { picks?: string[] }).picks).toEqual(["https://forge.example/them/lib.git", "git@forge.example:them/two.git"]);
-  expect(((await remotesIn(instead)) as { picks?: string[] }).picks).toBeUndefined();
-  expect(((await remotesIn(def)) as { picksCut?: true }).picksCut).toBeUndefined();
-  // More of them than are kept: said, so a push with no remote named in a new checkout is not placed by a partial list.
-  const many = mk("rw-many");
-  writeFileSync(join(many, ".git", "config"), readFileSync(join(many, ".git", "config"), "utf8") + Array.from({ length: 70 }, (_, n) => `[branch "b${n}"]\n\tremote = https://forge.example/x/r${n}.git\n`).join(""));
-  expect(((await remotesIn(many)) as { picks?: string[]; picksCut?: true })).toMatchObject({ picksCut: true });
-  expect(((await remotesIn(many)) as { picks: string[] }).picks.length).toBe(64);
   expect((await git(def, ["config", "--get", "remote.pushDefault"], { read: true })).out.trim()).toBe("");
   // A config that includes another file: the listing says so, since that file is not read.
   writeFileSync(join(root, "rw-included"), `[remote "origin"]\n\tpushurl = https://forge.example/them/app.git\n`);

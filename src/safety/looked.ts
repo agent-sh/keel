@@ -42,8 +42,6 @@ export type Looked = {
   enters?(path: string): "yes" | "no" | "late";
   // Where a path leads on the disk, links followed. null: nothing there. "late": no answer in time.
   real?(path: string): string | null | "late";
-  // Whether the owner's own git config rewrites addresses (url.<base>.insteadOf). "late": no answer in time.
-  rewrites?(): boolean | "late";
   // The files under a folder that hold credentials, looked for off the loop (credential-look.ts). "late": not made yet.
   // Absent where no look is made for the call (a replay), where the search looks for itself.
   named?(folder: string): Found[] | "late";
@@ -159,7 +157,6 @@ async function textOf(file: string): Promise<string | null> {
 // url.<base>.insteadOf and .pushInsteadOf are given to this one listing (remotesAsRun), which also carries the
 // repository's remote.pushDefault; the owner's own apply by themselves. A repository whose config includes other files
 // says so (`includes`): what those files add, the view does not hold, so the listing may not be where his git pushes.
-const PICKS_MAX = 64;
 export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
   const run = (args: string[]) => git(dir, args, { read: true, timeout: 1_500 });
   const [verbose, config, branch] = await Promise.all([remotesAsRun(dir, 1_500), run(["config", "--get-regexp", "^(remote\\..+\\.gh-resolved|remote\\.pushdefault|branch\\..+\\.(remote|pushremote)|url\\..+\\.(insteadof|pushinsteadof)|includeif\\..+\\.path)$"]), run(["symbolic-ref", "-q", "--short", "HEAD"])]);
@@ -174,7 +171,6 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
     if (m[3] === "fetch") r.fetch[m[1]!] = m[2]!; else (r.push[m[1]!] ??= []).push(m[2]!);
   }
   r.branch = branch.code === 0 ? branch.out.trim() : undefined;
-  const picks: string[] = [];
   for (const line of config.out.split("\n")) {
     const m = /^(\S+) (.*)$/.exec(line);
     if (!m) continue;
@@ -182,14 +178,9 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
     const res = /^remote\.(.+)\.gh-resolved$/.exec(key);
     if (res) r.resolved[res[1]!] = value;
     else if (key === "remote.pushdefault") r.pushDefault = value;
-    else {
-      if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.remote`) r.branchRemote = value;
-      else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.pushremote`) r.branchPushRemote = value;
-      // (Any branch's, when it is no remote's name: where a checkout of that branch pushes with none named.)
-      if (value && value !== "." && !(value in r.push) && !(value in r.fetch) && !picks.includes(value)) { if (picks.length < PICKS_MAX) picks.push(value); else r.picksCut = true; }
-    }
+    else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.remote`) r.branchRemote = value;
+    else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.pushremote`) r.branchPushRemote = value;
   }
-  if (picks.length) r.picks = picks;
   // (The repository's own remote.pushDefault is not in the view the listing above reads: it comes with the remotes, and
   // stands over the owner's own, as a repository's config does.)
   if (verbose.pushDefault !== undefined) r.pushDefault = verbose.pushDefault;
@@ -200,8 +191,8 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
 // another remote than the line says: it rewrites addresses (url.<base>.insteadOf or .pushInsteadOf), includes a file
 // by condition (asked outside any repository, no condition holds, so what that file says is not shown), names a
 // template for new repositories (whose config a new one starts with), or holds a remote's or a branch's settings
-// itself. The address a line clones is then not surely where the clone's push goes. Asked in the root folder, which is
-// in no repository.
+// itself. An address a line gives a remote of a repository it makes is then not surely where a push there goes. Asked
+// in the root folder, which is in no repository.
 export async function rewritesOwn(): Promise<boolean | "late"> {
   // (Plain git, outside any repository: there is none here to make a view of.)
   const r = await git("/", ["config", "--get-regexp", "^(url\\..+\\.(insteadof|pushinsteadof)|includeif\\..+\\.path|init\\.templatedir|remote\\.pushdefault|remote\\..+\\.(url|pushurl)|branch\\..+\\.(remote|pushremote))$"], { mode: "plain", read: true, timeout: 1_500 });
@@ -289,7 +280,6 @@ export function looking(workspace: string, seed?: Iterable<[string, unknown]>, m
       manifest: (dir) => get<Answer<Manifest>>(`manifest\0${dir}`, "late", () => manifestIn(dir)),
       hostname: (host) => get<Answer<string>>(`ssh\0${host}`, "late", () => hostnameOf(host)),
       real: (path) => get<string | null | "late">(`real\0${path}`, "late", () => realAt(path)),
-      rewrites: () => get<boolean | "late">("rewrites\0", "late", () => rewritesOwn()),
       ...(named ? { named: (folder: string) => get<Found[] | "late">(`named\0${folder}`, "late", () => named(folder)) } : {}),
       over: () => over,
     };
@@ -311,8 +301,8 @@ function kept(known: Map<string, unknown>): [string, unknown][] {
   return out;
 }
 // A question of the disk that a later look answers the same (a repository's remotes, a manifest's package, an
-// ssh name's host, whether his git config rewrites addresses), unlike what a folder held at the time (kept, exists, targets, read).
-export const lasting = (key: string) => /^(remotes|manifest|ssh|rewrites)\0/.test(key);
+// ssh name's host), unlike what a folder held at the time (kept, exists, targets, read).
+export const lasting = (key: string) => /^(remotes|manifest|ssh)\0/.test(key);
 
 // Decides with what the disk says: `run` is called with the answers so far, what it asked is answered, and it is
 // called again, at most four times. A question still open then stays not answered.

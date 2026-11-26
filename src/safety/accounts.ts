@@ -10,8 +10,6 @@
 // `pypi:name`, `crates:name`. Host and names compare in lower case. An entry holds what is under it: `gitlab.com/g`
 // holds `gitlab.com/g/sub/repo`.
 
-import type { Maker } from "./line-makes.ts";
-
 export type Namespace = { kind: "forge"; host: string; path: string[] } | { kind: "package"; registry: Registry; name: string };
 export type Registry = "npm" | "pypi" | "crates";
 // What a command writes to: a repository (`path` is owner, group... and repository), or a package.
@@ -114,10 +112,6 @@ export type Remotes = {
   branch?: string;
   branchRemote?: string;
   branchPushRemote?: string;
-  // What any branch's remote or pushRemote says that is no remote's name: an address or a folder, as `git push -u URL` leaves it.
-  // `picksCut`: there were more of them than are kept.
-  picks?: string[];
-  picksCut?: true;
 };
 export type Manifest = { npm?: string; pypi?: string; crates?: string; private?: true };
 export type Answer<T> = T | null | "late";
@@ -130,11 +124,9 @@ export type Answer<T> = T | null | "late";
 // fills first (a clone, a build), or not the one the shell ends up in, so a write there is not placed rather than none.
 // `makes(dir)`: a command of the line before this one makes a repository `dir` would be in (git clone, init, worktree add):
 // a folder with none in it now may hold that one by the time this runs, where the line started too.
-// `made(dir)`: what the same line made `dir`, while it stands as made (line-makes.ts): a write there is placed by what made it.
 // `remade(dir)`: a clone or a new checkout of the line may stand where `dir` is, in a way the rules do not follow: what
 // the disk holds there now is not what the command finds.
-// `rewrites()`: whether the owner's own git config rewrites addresses (url.<base>.insteadOf): asked for a folder the line clones.
-export type Env = { dir: string | null; moved?: true; makes?: (dir: string) => boolean; made?: (dir: string) => Maker | undefined; remade?: (dir: string) => boolean; rewrites?: () => Answer<boolean>; remotes?: (dir: string) => Answer<Remotes>; manifest?: (dir: string) => Answer<Manifest>; hostname?: (host: string) => Answer<string>; set?: string[]; rebinds?: string; added?: ReadonlyMap<string, string> };
+export type Env = { dir: string | null; moved?: true; makes?: (dir: string) => boolean; remade?: (dir: string) => boolean; remotes?: (dir: string) => Answer<Remotes>; manifest?: (dir: string) => Answer<Manifest>; hostname?: (host: string) => Answer<string>; set?: string[]; rebinds?: string; added?: ReadonlyMap<string, string> };
 
 // What a line sets for a name: the last assignment of it.
 export const setOf = (set: readonly string[] | undefined, name: string): string | undefined => {
@@ -211,40 +203,11 @@ const empty = (does: string, env: Env, what: string): Write[] =>
   env.moved ? [{ does, account: null, why: `the rules find no ${what} in the folder the line moves to (${(env.dir ?? "").slice(0, 120)}): it may be made by the same line, or not be where the command runs` }]
   : env.dir !== null && env.makes?.(env.dir) ? [{ does, account: null, why: `the rules find no ${what} in the folder it runs in now (${(env.dir ?? "").slice(0, 120)}), and the same line makes a repository before it (git clone, init or worktree add), which may be the one it runs in` }]
   : [];
-// An address as the account it is: none for a folder on this machine, not placed when it is spelled with an expansion.
-const addressed = (does: string, url: string, what: string): Write[] => {
-  if (dynamic(url) && !localExpansion(url)) return [{ does, account: null, why: `the address ${what} is spelled with an expansion` }];
-  const a = repoOf(url);
-  return a ? [{ does, account: shown(a) }] : [];
-};
-
 const FILLED = "the line gives a remote an address before it, in a folder where the rules find no repository now or where the same line makes one: the repository the push finds there (one the line makes, copies, links or unpacks into the folder) has remotes and settings of its own, which the rules do not read";
-const MANY = "it runs in a checkout the same line adds, and the repository's branches name more places of their own than the rules keep: the one its branch pushes to may not be among them";
 const INCLUDES = "the repository's config includes another file (include.path), which the rules do not read and which can say where a remote points";
-const CLONED = "it runs in a folder the same line clones, from an address or with options the rules do not read";
-const NO_SOURCE = "the rules find no repository where the same line adds the checkout it runs in";
-const REMADE = "the same line clones or adds a checkout where it runs, in a way the rules do not follow (not joined to it by &&, or with other commands between): the repository it finds there is not known";
-// A folder the line may have put another repository in, with nothing that says it stands as made.
-const remade = (does: string, env: Env, made: Maker | undefined): Write[] | null => (!made && env.dir !== null && env.remade?.(env.dir) ? [{ does, account: null, why: REMADE }] : null);
-// The folder whose repository a command by a remote's name, or by default, reads: the one it runs in, or the repository
-// the same line added that folder to as a checkout.
-// (git gives a new checkout the per-checkout settings of the one it was added from, so the remotes read there are its own.)
-const sourceOf = (env: Env & { dir: string }, made: Maker | undefined) => (made?.by === "worktree" && made.from !== null ? made.from : env.dir);
-// The remote of a folder the same line cloned: the address it cloned, as the repository gh and glab act on there.
-function clonedBase(does: string, made: Extract<Maker, { by: "clone" }>, env: Env): Write[] {
-  return cloneElsewhere(does, made, env) ?? addressed(does, made.url!, "it clones");
-}
-// Why the remote of a folder the line clones may not be the address cloned, or null when it is: the address is one the
-// rules do not read, or the owner's own git config can give a new clone another remote than the address cloned: it
-// rewrites addresses (url.<base>.insteadOf, .pushInsteadOf), includes a file by condition (which may), names a
-// template for new repositories, or holds a remote's or a branch's settings itself.
-const REWRITES = "it runs in a folder the same line clones, and the owner's git config rewrites addresses, includes a file by condition, names a template for new repositories or holds a remote's settings: the clone's remote may lead elsewhere than the address cloned";
-function cloneElsewhere(does: string, made: Extract<Maker, { by: "clone" }>, env: Env): Write[] | null {
-  if (made.url === null) return [{ does, account: null, why: CLONED }];
-  const rewrites = env.rewrites?.();
-  if (rewrites === "late") return [{ does, account: null, why: lateWhy("whether the owner's git config rewrites addresses") }];
-  return rewrites ? [{ does, account: null, why: REWRITES }] : null;
-}
+const REMADE = "the same line clones or adds a checkout where it runs: the repository it finds there is not the one on the disk now, and the rules do not read it";
+// A folder the line may have put another repository in.
+const remade = (does: string, env: Env): Write[] | null => (env.dir !== null && env.remade?.(env.dir) ? [{ does, account: null, why: REMADE }] : null);
 
 function viaRemote(does: string, name: string | null, env: Env): Write[] {
   if (env.rebinds) return rebound(does, env);
@@ -254,34 +217,10 @@ function viaRemote(does: string, name: string | null, env: Env): Write[] {
   if (given !== undefined) { const a = repoOf(given); return a ? [{ does, account: shown(a) }] : []; }
   if (!env.remotes) return blind(does);
   if (env.dir === null) return nowhere(does);
-  const made = env.made?.(env.dir);
-  // A folder the same line clones holds one remote, the address cloned, whatever the disk holds there now: a push by
-  // that name goes there, and one with none named there or to a remote the line added after.
-  if (made?.by === "clone") {
-    const elsewhere = cloneElsewhere(does, made, env);
-    if (elsewhere) return elsewhere;
-    if (name !== null && name !== made.remote) return [{ does, account: null, why: `it runs in a folder the same line clones, where the rules know no remote ${name.slice(0, 80)}` }];
-    const urls = name === null ? [...new Set([env.added?.get(made.remote) ?? made.url!, ...(env.added?.values() ?? [])])] : [made.url!];
-    return urls.flatMap((u) => addressed(does, u, "it clones"));
-  }
-  const again = remade(does, env, made);
+  const again = remade(does, env);
   if (again) return again;
-  const r = env.remotes(sourceOf(env as Env & { dir: string }, made));
+  const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("where the remote points") }];
-  if (made?.by === "worktree") {
-    if (r === null) return [{ does, account: null, why: NO_SOURCE }];
-    if (r.includes) return [{ does, account: null, why: INCLUDES }];
-    // With no remote named, the one a push picks is the new checkout's branch's, which is not the one the repository is
-    // on now and may not be on the disk yet: every remote of the repository counts, and every address its settings or
-    // any of its branches' pick.
-    if (name === null) {
-      if (r.picksCut) return [{ does, account: null, why: MANY }];
-      const names = new Set([...Object.keys(r.push), ...Object.keys(r.fetch), ...(env.added?.keys() ?? [])]);
-      const urls = [...names].flatMap((n) => { const added = env.added?.get(n); return added !== undefined ? [added] : r.push[n] ?? (r.fetch[n] ? [r.fetch[n]!] : []); });
-      for (const v of [r.pushDefault, r.branchPushRemote, r.branchRemote, ...(r.picks ?? [])]) if (v && !names.has(v) && repoOf(v)) urls.push(v);
-      return [...new Set(urls)].flatMap((u) => addressed(does, u, "of a remote").map((w) => (w.account ? { ...w, own: true as const } : w)));
-    }
-  }
   // The line gives a remote an address before a push with none named, where there is no repository now or where the
   // line makes one (git init, a clone): the repository the push finds has remotes and settings of its own (a new one's
   // template, a copy's, an archive's), which pick where it goes. Not placed.
@@ -363,13 +302,11 @@ function gh(words: string[], env: Env, set: string[]): Write[] {
   if (env.added?.size) return [{ does, account: null, why: "the same line changes a remote" }];
   if (!env.remotes) return blind(does);
   if (env.dir === null) return nowhere(does);
-  const made = env.made?.(env.dir);
-  if (made?.by === "clone") return clonedBase(does, made, env);
-  const again = remade(does, env, made);
+  const again = remade(does, env);
   if (again) return again;
-  const r = env.remotes(sourceOf(env as Env & { dir: string }, made));
+  const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the repository gh acts on") }];
-  if (r === null) return made?.by === "worktree" ? [{ does, account: null, why: NO_SOURCE }] : empty(does, env, "repository");
+  if (r === null) return empty(does, env, "repository");
   if (r.includes) return [{ does, account: null, why: INCLUDES }];
   const base = ghBase(r, lower(setOf(set, "GH_HOST") ?? "github.com"));
   return base ? [{ does, account: shown(base), own: true }] : [];
@@ -419,13 +356,11 @@ function glab(words: string[], env: Env): Write[] {
   if (env.added?.size) return [{ does, account: null, why: "the same line changes a remote" }];
   if (!env.remotes) return blind(does);
   if (env.dir === null) return nowhere(does);
-  const made = env.made?.(env.dir);
-  if (made?.by === "clone") return clonedBase(does, made, env);
-  const again = remade(does, env, made);
+  const again = remade(does, env);
   if (again) return again;
-  const r = env.remotes(sourceOf(env as Env & { dir: string }, made));
+  const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the project glab acts on") }];
-  if (r === null) return made?.by === "worktree" ? [{ does, account: null, why: NO_SOURCE }] : empty(does, env, "repository");
+  if (r === null) return empty(does, env, "repository");
   if (r.includes) return [{ does, account: null, why: INCLUDES }];
   const base = r ? ghBase(r, "gitlab.com") : null;
   return base ? [{ does, account: shown(base), own: true }] : [];

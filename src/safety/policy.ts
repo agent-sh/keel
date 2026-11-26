@@ -820,8 +820,8 @@ export function reboundBy(parts: Simple[]): string | undefined {
 // `moved`: the script starts in a folder the line went to. `unsure`: or in another one, which the rules cannot name.
 // `homeKept`: whether HOME still names the owner's home for the script (asked only when a `cd` of it reads HOME). `real`,
 // `cdpath`: what started the script's shell asked it for real folders, or the line names CDPATH (risk-words.ts Else).
-// `makes`: a command before the script makes a repository (line-makes.ts). `loud`: or can fill a folder some other way.
-type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean; homeKept?: () => boolean; real?: boolean; cdpath?: boolean; makes?: (dir: string) => boolean; loud?: boolean; evaled?: boolean };
+// `makes`: a command before the script makes a repository (line-makes.ts).
+type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean; homeKept?: () => boolean; real?: boolean; cdpath?: boolean; makes?: (dir: string) => boolean; evaled?: boolean };
 const ELSE_WHY = "a cd before it may not land where it says (it can fail, the line names CDPATH, or it is not one the rules follow), so the folder it runs in is not known to the rules";
 
 // `git -C ~/folder`: a `~/` that begins the word, unquoted, is the home folder by the time git reads it (the shell writes
@@ -908,7 +908,7 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
   // The folders the line's own git makes as it goes (line-makes.ts).
   // (A folder git is given with a `..` in it is read through the disk, which walks it: not read while it has not answered.)
   const onDisk = f.looked?.real ? (p: string) => { const r = f.looked!.real!(p); return r === "late" ? null : r; } : undefined;
-  const made = follow(undefined, from?.makes, from?.loud, onDisk, parts);
+  const made = follow(from?.makes, onDisk);
   parts.forEach((part, i) => {
     if (part.heredoc) return;
     // (env takes any name: a function handed to a shell, BASH_FUNC_name%%=..., is set for the command, not its first word.)
@@ -924,7 +924,7 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
     const others = from?.unsure && !or[i]!.includes(null) ? [...or[i]!, null] : or[i]!;
     const base = { set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}), makes: made.mayHold, remade: made.mayReplace,
       ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}),
-      ...(f.looked?.hostname ? { hostname: (h: string) => f.looked!.hostname!(h) } : {}), ...(f.looked?.rewrites ? { rewrites: () => f.looked!.rewrites!() } : {}) };
+      ...(f.looked?.hostname ? { hostname: (h: string) => f.looked!.hostname!(h) } : {}) };
     const at = (d: string | null) => ({ ...base, dir: d, ...(from?.moved || d !== start ? { moved: true as const } : {}) });
     const env = at(dir);
     const found = writesToAccounts(run.words, env);
@@ -959,7 +959,7 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
         const preset = STARTS_WITH.test(part.text) || [...scope.exported].some((k) => STARTS_WITH.test(k));
         const dirs = preset && runs.some((r) => /^(cd|pushd|popd)$/.test(r.words[0] ?? "")) ? new Array<string | null>(inner.length).fill(null) : dirsOf(inner, runs, dir, runs.some(readsHome) && !innerKept() ? null : home);
         out.push(...accountWrites(inner, { runs, dirs }, f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added, moved: !!env.moved, unsure: others.length > 0,
-          homeKept: innerKept, cdpath, real: real || (shell > 0 && startsReal(run.words, shell)), makes: made.mayHold, loud: made.loud(), evaled: first === "eval" || !!from?.evaled }));
+          homeKept: innerKept, cdpath, real: real || (shell > 0 && startsReal(run.words, shell)), makes: made.mayHold, evaled: first === "eval" || !!from?.evaled }));
       } else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: split ? `the script it runs holds ${split.length} commands, more than the rules read through (${PARTS_MAX})` : "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
     // What this part gives the parts after it.

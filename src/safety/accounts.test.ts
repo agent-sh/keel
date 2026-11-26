@@ -96,10 +96,7 @@ const ws = "/w/own";
 const disk: Record<string, Remotes> = {
   "/w/own": remotes({ origin: mine }),
   "/w/fork": remotes({ origin: mine, upstream: theirs }),
-  // (A branch that is not checked out has an address for its remote, as `git push -u URL` leaves it.)
-  "/w/brother": remotes({ origin: mine }, { branch: "main", picks: [theirs] }),
-  // (More branches with a place of their own than are kept.)
-  "/w/many": { ...remotes({ origin: mine }, { branch: "main" }), picksCut: true },
+  "/w/brother": remotes({ origin: mine }, { branch: "main" }),
   "/w/clone": remotes({ origin: theirs }, { branch: "main" }),
   "/w/ssh": remotes({ origin: "git@github.com:them/lib.git" }),
   "/w/local": remotes({ origin: "/srv/git/repo.git" }),
@@ -118,7 +115,7 @@ const looked = (): Looked => ({
   kept: () => ({ n: 0 }), exists: () => "dir", targets: () => null, read: () => null,
   // (As the disk reads a folder: a `..` in it resolved. This one has no links.)
   remotes: (d) => disk[resolve(d)] ?? null, manifest: (d) => packages[resolve(d)] ?? null, hostname: (h) => HOSTS[h] ?? null,
-  real: (p) => resolve(p), rewrites: () => false,
+  real: (p) => resolve(p),
 });
 const names = ["me", "ghcr.io/me", "npm:@me", "pypi:metool", "crates:me-crate", "npm:solo"];
 const facts = (mode: Mode, agent = false, list = names) => ({ mode, workspace: ws, sandboxed: false, rules: [], tool: "t", home: "/home/u", looked: looked(), accounts: { names: parseNamespaces(list), ...(agent ? { agent: true as const } : {}) } });
@@ -490,9 +487,6 @@ test("a write in a folder the same line makes is not placed", () => {
     ["git worktree add ../wt-rel rel && cd ../wt-rel && git push", "unplaced", "/w/brother"],
     ["git worktree add ../wt9 -b t9 && git -C ../wt9 push", "unplaced", "/w/brother"],
     ["git worktree add ../wt-rel rel && cd ../wt-rel && git push origin rel", "unplaced", "/w/brother"],
-    // Of a repository whose branches name more places of their own than are kept.
-    ["git worktree add ../wt-rel rel70 && cd ../wt-rel && git push", "unplaced", "/w/many"],
-    ["git worktree add ../wt7 -b t7 && cd ../wt7 && git push -u origin t7", "unplaced", "/w/many"],
     // A checkout added to a repository the same line makes, or may have put another in the place of: the disk does not show it.
     ["git clone https://github.com/them/lib.git inner && cd inner && git worktree add -q ../wtx -b t && cd ../wtx && git push origin t", "unplaced"],
     ["git clone https://github.com/them/lib.git inner && cd inner && git worktree add -q ../wtx -b t && cd ../wtx && git push", "unplaced"],

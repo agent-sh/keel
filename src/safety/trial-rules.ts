@@ -24,7 +24,7 @@ export const RULE_MODULES: { file: string; fn: string; what: string }[] = [
   { file: "credential-reads.ts", fn: "shellCredentialReads", what: "a command's reads of credentials" },
   { file: "shared-branches.ts", fn: "sharedRefusal", what: "an agent's worktree guard of the branches it shares" },
   { file: "resolved-line.ts", fn: "resolvedLine", what: "a line whose program words are variables it set, written out for the rules to judge" },
-  { file: "line-makes.ts", fn: "makerOf", what: "the folders a line's own git makes (worktree add, clone, init), and the commands that leave them as made" },
+  { file: "line-makes.ts", fn: "makerOf", what: "the folders a line's own git makes a repository in (worktree add, clone, init)" },
   { file: "outputs.ts", fn: "outputsOf", what: "the files a program is told to write by an option of its own (git --output, sort -o, curl -o, wget -O)" },
   { file: "autonomy.ts", fn: "neverAllowed", what: "the commands that never run without the owner" },
   { file: "marks.ts", fn: "classOf", what: "a stored call as the gate classes it" },
