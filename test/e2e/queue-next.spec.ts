@@ -1,6 +1,8 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
+import { daemon, exited, ROOT, sessionsFolder, specEnv } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: Next, in a queued prompt's move menu, puts it first among the queued
@@ -76,5 +78,41 @@ test("next puts a queued prompt first without stopping the turn", async ({ page,
     await request.post(`/api/sessions/${sid}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${sid}`);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a queued write decision cannot be moved or passed", async ({ page }) => {
+  mkdirSync(ROOT, { recursive: true });
+  const state = mkdtempSync(join(ROOT, "queued-decision-"));
+  const workspace = sessionsFolder(state);
+  const { id, alpha, ask, bravo, charlie } = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/queued-decision.ts"), state, workspace], { encoding: "utf8", env: specEnv(state) }));
+  const d = await daemon(state);
+  const url = `${d.url}/api/sessions/${id}/queue`;
+  try {
+    const request = page.request;
+    await page.goto(`${d.url}/s/${id}`);
+    await page.getByTestId("queue-more").click();
+    const last = page.getByTestId("queue-item").filter({ hasText: "charlie" });
+    await last.getByTestId("queue-order").click();
+    await expect(page.getByTestId("queue-move-up")).toBeVisible();
+    await expect.soft(page.getByTestId("queue-next")).toHaveCount(0, { timeout: 1_500 });
+    await shoot(page, "queue-next-04-decision-ahead");
+
+    // Both reordering paths protect the decision, including a direct promotion to a steer.
+    const next = await request.post(`${url}/${charlie}/next`);
+    expect.soft(next.status()).toBe(409);
+    const changes = [[charlie, { position: 0 }], [alpha, { position: 3 }], [ask, { position: 0 }], [bravo, { steer: true }]] as const;
+    for (const [row, data] of changes) {
+      const patch = await request.patch(`${url}/${row}`, { data });
+      expect.soft(patch.status()).toBe(409);
+    }
+    const order = async () => (await (await request.get(url)).json()).queue.map((row: { id: string }) => row.id);
+    expect(await order()).toEqual([alpha, ask, bravo, charlie]);
+    await page.getByTestId("queue-move-up").click();
+    await expect.poll(order).toEqual([alpha, ask, charlie, bravo]);
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
   }
 });

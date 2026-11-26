@@ -7,6 +7,7 @@ import { bytesPerToken, checkpointAt, contextTokens, summaryMessage, utf8Bytes }
 import { resolveAttachments } from "../../engine/attachments.ts";
 import { ORIGINS, originClass, saving, sizeParts, type Origin } from "../../engine/context-parts.ts";
 import { RetryTooLong } from "../../engine/retry.ts";
+import { DECISION_AHEAD, decisionBlocks } from "../../engine/queue-first.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { ProviderError } from "../../providers/http.ts";
 import type { RouteModule } from "../app.ts";
@@ -68,14 +69,17 @@ export const turnRoutes: RouteModule = (deps) => {
         let text = b.text === undefined ? undefined : String(b.text).trim();
         // A screenshot or file alone is a prompt, without made-up words.
         if (text === "" && !q.images?.length) return bad("text cannot be empty");
+        const steer = Boolean(b.steer ?? q.steer);
+        const rows = b.position !== undefined || steer !== q.steer ? engine.queued(q.session_id) : [];
         let pos: number | undefined;
         if (b.position !== undefined) {
-          const others = engine.queued(q.session_id).filter((x) => x.id !== q.id && x.steer === (b.steer ?? q.steer));
+          const others = rows.filter((x) => x.id !== q.id && x.steer === steer);
           const i = Math.max(0, Math.min(Number(b.position) || 0, others.length));
           const before = others[i - 1]?.pos ?? (others[0] ? others[0].pos - 2 : 0);
           const after = others[i]?.pos ?? before + 2;
           pos = (before + after) / 2;
         }
+        if (decisionBlocks(rows, q, { pos: pos ?? q.pos, steer })) return bad(DECISION_AHEAD, 409);
         if (!store.updateQueueItem(q.id, { text, steer: b.steer, pos })) return bad("no such queued prompt (it may have been sent)", 404);
         engine.emitQueue(q.session_id);
         return json(queueBody(q.session_id));

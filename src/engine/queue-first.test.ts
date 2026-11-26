@@ -24,7 +24,7 @@ test("the first one stays, and an unknown or steered row is not moved", () => {
 
 test("a decision another session waits on keeps its place ahead", () => {
   const rows = [row("a", 1), row("ask", 2, { kind: "write_asks" }), row("b", 3), row("c", 4)];
-  expect(order(rows, "c")).toEqual(["a", "ask", "c", "b"]);
+  expect(firstPos(rows, "c")).toBeNull();
   expect(firstPos(rows, "b")).toBeNull();
   expect(firstPos(rows, "ask")).toBeNull();
   // Only decisions ahead of it hold it back: one behind it is passed by nothing.

@@ -6,6 +6,7 @@ import { ArrowUp, ArrowUpCircle, ArrowUpToLine, Check, ChevronDown, CornerDownRi
 import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { branchLine } from "../lib/rows.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
+import { decision, decisionBlocks, nextBlocked } from "../../../src/engine/queue-first.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { bodyOf } from "../../../src/mcp/channel-text.ts";
 import { isLive, useAuto } from "../lib/automation.ts";
@@ -26,7 +27,7 @@ const chipBtn = "grid size-6 place-items-center rounded-md text-faint hover:text
 // A queued event from outside reads as its source and its words, not its frame (src/mcp/channel.ts).
 const shownText = (q: QueueItem) => q.meta?.kind === "channel" ? `${String(q.meta.source ?? "")}: ${bodyOf(q.text)}` : q.text;
 
-function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId: string; place: number; off: boolean; held: boolean }) {
+function QueueRow({ q, sessionId, place, off, held, next, up, steer }: { q: QueueItem; sessionId: string; place: number; off: boolean; held: boolean; next: boolean; up: boolean; steer: boolean }) {
   // The one word of a message that waits, and when it is taken (src/core/state-words.ts).
   const waits = heldWords({ steer: q.steer, held });
   const [editing, setEditing] = useState(false);
@@ -86,7 +87,7 @@ function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId:
       <span className="ml-auto flex flex-wrap items-center justify-end opacity-60 group-hover/q:opacity-100 group-focus-within/q:opacity-100 touch:opacity-100 @md/queue:shrink-0 @md/queue:flex-nowrap">
         {/* Where it goes in the queue: up one place, or Next (first of the queued prompts,
             the running turn left alone; the daemon keeps steers and decisions others wait on ahead). */}
-        {!q.steer && place > 0 && (
+        {(next || up) && (
           <Menu.Root>
             <Menu.Trigger className={cn(chipBtn, "data-popup-open:bg-hover data-popup-open:text-fg")} data-testid="queue-order" title="Move in the queue" aria-label="Move in the queue">
               <ArrowUp className="size-3.5" />
@@ -94,17 +95,17 @@ function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId:
             <Menu.Portal>
               <Menu.Positioner side="top" align="end" sideOffset={6} className="z-50 outline-none">
                 <Menu.Popup className={cn(popupClass, "min-w-48")} data-testid="queue-order-menu">
-                  {!off && (
+                  {next && (
                     <Menu.Item className={itemClass} data-testid="queue-next" onClick={() => act(actions.queueNext(sessionId, q.id), "queue next")}>
                       <ArrowUpToLine />
                       <span className="flex-1">Next</span>
                       <span className="text-caption text-faint">{held ? "when resumed" : "after this turn"}</span>
                     </Menu.Item>
                   )}
-                  <Menu.Item className={itemClass} data-testid="queue-move-up" onClick={() => act(actions.queueEdit(sessionId, q.id, { position: place - 1 }), "queue move")}>
+                  {up && <Menu.Item className={itemClass} data-testid="queue-move-up" onClick={() => act(actions.queueEdit(sessionId, q.id, { position: place - 1 }), "queue move")}>
                     <ArrowUp />
                     <span className="flex-1">Up one place</span>
-                  </Menu.Item>
+                  </Menu.Item>}
                 </Menu.Popup>
               </Menu.Positioner>
             </Menu.Portal>
@@ -113,7 +114,7 @@ function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId:
         <button type="button" className={chipBtn} title="Edit" aria-label="Edit" onClick={() => { setText(q.text); setEditing(true); }}>
           <Pencil className="size-3.5" />
         </button>
-        {!q.steer && (
+        {steer && (
           <button type="button" className={chipBtn} title="Steer into the running turn instead" aria-label="Make it a steer" onClick={() => act(actions.queueEdit(sessionId, q.id, { steer: true }), "queue steer")}>
             <CornerDownRight className="size-3.5" />
           </button>
@@ -181,6 +182,7 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
     return told?.key === key && told.off.has(x.id);
   };
   const nextOff = !!q.queue.length && off(q.queue[0]!);
+  const steers = q.queue.filter((x) => x.steer).length; // The daemon lists steers first.
   return (
     <div className="@container/queue mb-2 rounded-lg border border-line bg-raised/80 px-1.5 py-1.5 shadow-2 animate-in" data-testid="queue">
       {q.held && (
@@ -200,7 +202,12 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
       {q.queue.length > 0 && (
         <>
           <ul className={cn("flex flex-col", more && "max-h-[40dvh] overflow-y-auto overscroll-contain")} data-testid="queue-list">
-            {(more ? q.queue : q.queue.slice(0, SHOWN)).map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} held={q.held} />)}
+            {(more ? q.queue : q.queue.slice(0, SHOWN)).map((item, i) => {
+              const place = i - steers, offBranch = off(item), moves = place > 0 && !decision(item);
+              return <QueueRow key={item.id} q={item} sessionId={sessionId} place={place} off={offBranch} held={q.held}
+                next={moves && !offBranch && !nextBlocked(q.queue, item)} up={moves && !decision(q.queue[i - 1]!)}
+                steer={!item.steer && !decisionBlocks(q.queue, item, { pos: item.pos, steer: true })} />;
+            })}
           </ul>
           {q.queue.length > SHOWN && (
             <button type="button" data-testid="queue-more" aria-expanded={more} onClick={() => setMore(!more)}

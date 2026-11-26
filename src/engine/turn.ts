@@ -86,7 +86,7 @@ import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 import { homeDir, withheldHome } from "../core/paths";
 import { outsideRefusal } from "../core/watch.ts";
-import { firstPos } from "./queue-first.ts";
+import { DECISION_AHEAD, firstPos, nextBlocked } from "./queue-first.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -1651,7 +1651,9 @@ export class Engine {
     const q = this.store.queueItem(qid);
     if (!q || q.session_id !== id) throw gone();
     if (this.offBranch(q)) throw this.offBranchError();
-    const pos = firstPos(this.store.queue(id), qid);
+    const rows = this.queued(id);
+    if (!q.steer && nextBlocked(rows, q)) throw Object.assign(new Error(DECISION_AHEAD), { status: 409 });
+    const pos = firstPos(rows, qid);
     if (pos === null) return;
     if (!this.store.updateQueueItem(qid, { pos })) throw gone();
     this.emitQueue(id);
