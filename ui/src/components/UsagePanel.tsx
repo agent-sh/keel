@@ -243,8 +243,10 @@ export function UsagePanel() {
   return (
     <div className="flex flex-col gap-4" data-testid="usage-panel">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-3">
-        {/* Eleven views in four groups: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll. */}
-        <Seg<View> wrap label="View" value={view} onChange={setView} options={[
+        {/* Eleven views in four groups: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll.
+            They are words on the page, the chosen one on a faint well: eleven tabs on a track over a second track (the range) was two boxes of chrome
+            before the first figure. */}
+        <Seg<View> wrap bare className="k-usage-views" label="View" value={view} onChange={setView} options={[
           { value: "overview", label: "Overview" }, { value: "causes", label: "Causes" }, { value: "sessions", label: "Sessions" },
           { value: "calls", label: "Speed and tools", before: GROUP_GAP }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
           { value: "compactions", label: "Compactions", before: GROUP_GAP }, { value: "yield", label: "Review yield" }, { value: "memory", label: "Memory" },
@@ -458,7 +460,7 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
 }
 
 // A rule between the groups of views (money, requests, context, experiments); a phone's wrapped rows go without.
-const GROUP_GAP = <span className="block h-4 w-px self-center bg-line-strong max-md:hidden" data-testid="usage-view-gap" aria-hidden />;
+const GROUP_GAP = <span className="mx-1 block h-3.5 w-px self-center bg-line max-md:hidden" data-testid="usage-view-gap" aria-hidden />;
 const LINK = "k-link rounded-sm text-accent-ink outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring";
 
 // How fast the calls and the tools were, and whether the cache held, over the range.

@@ -484,6 +484,11 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-seg[data-bare] { gap: 0.125rem; padding: 0; background: transparent; box-shadow: none; }
 .k-seg[data-bare] > button { padding: 0 0.5rem; color: var(--faint); }
 .k-seg[data-bare] > button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--hover); box-shadow: none; color: var(--fg); }
+/* A page's views (Usage has eleven): words to read across, so the ones not chosen are in the quiet ink, not the faint one. */
+/* (As tall as the range's track beside it, so the two sit on one line.) */
+.k-seg[data-bare].k-usage-views { padding-block: 2px; }
+.k-seg[data-bare].k-usage-views > button:not([aria-selected="true"], [aria-checked="true"]) { color: var(--muted); }
+.k-seg[data-bare].k-usage-views > button:not([aria-selected="true"], [aria-checked="true"]):hover { color: var(--fg); }
 @media (hover: none) { .k-seg > button { height: var(--spacing-ctl-lg); min-width: var(--spacing-ctl-lg); } }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }

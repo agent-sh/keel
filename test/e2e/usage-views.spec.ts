@@ -215,6 +215,9 @@ test("usage: fills the page, groups its views, plain links", async ({ page }) =>
   const views = panel.getByRole("radiogroup", { name: "View" });
   await expect(views.getByRole("radio")).toHaveCount(11);
   await expect(views.getByTestId("usage-view-gap")).toHaveCount(3);
+  // The views are words on the page, not a second track over the range's: no ground and no frame, the chosen one on a faint well.
+  expect(await views.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).boxShadow])).toEqual(["rgba(0, 0, 0, 0)", "none"]);
+  expect(await views.getByRole("radio", { name: "Overview" }).evaluate((el) => getComputedStyle(el).boxShadow)).toBe("none");
   // The views, the range and its help mark are one row at this width: the mark does not drop under them alone.
   const tops = await panel.locator('[role="radiogroup"], [data-testid="set-help"]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
   expect(new Set(tops).size, `tops ${tops}`).toBeLessThanOrEqual(2);
