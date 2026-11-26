@@ -39,6 +39,9 @@ export const CONFIG_PATHS = [
 ];
 // The bounds: a run's time, the files a key reads, and the bytes of one file it reads whole.
 export const RUN_MS = 30_000;
+// A failed run answers its files for this long, then they are linted again: a failure is the moment's
+// (a busy machine, a timeout), not the files'.
+export const RETRY_MS = 3_600_000;
 export const KEY_FILES = 2_000;
 export const KEY_FILE_BYTES = 1_048_576;
 export const KEY_BYTES = 16 * 1_048_576;
@@ -130,7 +133,7 @@ export class Agnix {
   // Runs started (for the tests: a cached key runs nothing).
   runs = 0;
   // `failed`: a run of the program that failed, once a run (a failure kept for the same files is not told again).
-  constructor(private o: { file?: string; bin?: () => string | null; fallback?: () => readonly string[]; nice?: boolean; ms?: number; changed?: (l: Lint) => void; failed?: (l: Lint) => void } = {}) {}
+  constructor(private o: { file?: string; bin?: () => string | null; fallback?: () => readonly string[]; nice?: boolean; ms?: number; now?: () => number; changed?: (l: Lint) => void; failed?: (l: Lint) => void } = {}) {}
 
   private bin(): string | null { return (this.o.bin ?? agnixPath)(); }
   // Whether the program is there (Health's one line when it is not).
@@ -173,7 +176,8 @@ export class Agnix {
     if (!names.length) return null;
     const key = await keyOf(folder, names, bin);
     const was = this.folders.get(folder);
-    if (was && was.key === key) return was;
+    const now = this.o.now?.() ?? Date.now();
+    if (was && was.key === key && !(was.failed && now - was.at >= RETRY_MS)) return was;
     // The same files in another folder (a worktree of the same repository): its run stands for this one.
     const twin = [...this.folders.values()].find((l) => l.key === key && !l.failed);
     if (twin) return this.keep({ ...twin, folder });
@@ -198,7 +202,7 @@ export class Agnix {
     this.runs++;
     const t0 = Date.now();
     const argv = [...(this.o.nice === false ? [] : ["nice", "-n", "10"]), bin, "--format", "json", ...names];
-    const base = { folder, key, at: t0, version: "", files: 0, errors: 0, warnings: 0, info: 0, findings: [] as Finding[] };
+    const base = { folder, key, at: this.o.now?.() ?? t0, version: "", files: 0, errors: 0, warnings: 0, info: 0, findings: [] as Finding[] };
     let proc: ReturnType<typeof Bun.spawn>;
     try {
       proc = Bun.spawn(argv, { cwd: folder, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, NO_COLOR: "1", AGNIX_TELEMETRY: "0" } });

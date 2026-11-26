@@ -277,10 +277,10 @@ test("instruction files: the chain's bound names the files past it", async () =>
   }
 });
 
-test("instruction files: a rule past a file's cut is not carried", async () => {
+test("instruction files: a rule past a file's cut is not carried, and the block is told by its files' texts", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const { instructionFiles } = await import("./turn.ts");
+  const { instructionFiles, instructionsMade } = await import("./turn.ts");
   const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-"));
   try {
     mkdirSync(join(root, "a/b"), { recursive: true });
@@ -294,6 +294,13 @@ test("instruction files: a rule past a file's cut is not carried", async () => {
     const cut = instructionFiles(join(root, "a/b"), 32_000);
     expect(cut).toContain("(Cut here:");
     expect(cut.match(/Never print a token/g)?.length).toBe(1);
+    // What the block is made from is the files' texts, not their render: a window that renders it
+    // otherwise says the same; an edit does not.
+    const wide = instructionsMade(join(root, "a/b"), 1_000_000);
+    expect(wide.text).not.toBe(cut);
+    expect(wide.data).toBe(instructionsMade(join(root, "a/b"), 32_000).data);
+    writeFileSync(join(root, "a/b/AGENTS.md"), "# Inner\n\n- inner rule, edited.\n");
+    expect(instructionsMade(join(root, "a/b"), 1_000_000).data).not.toBe(wide.data);
   } finally {
     rmSync(join(root, ""), { recursive: true, force: true });
   }

@@ -439,9 +439,16 @@ export function chainLimit(window?: number): number {
 // file says again is left out of it, with one line naming the file that says it (src/engine/sections.ts).
 // A file the chain holds already is named with one line (`same`).
 export function instructionFiles(cwd: string, window?: number, marks?: Marks): string {
+  return instructionsMade(cwd, window, marks).text;
+}
+// The chain and what it is made from (`data`: each file's path and the text read from it), which is
+// what says the block changed (src/engine/prompt-store.ts): a change of how it is rendered alone (a
+// new way of leaving out what repeats) waits for the session's cold point.
+export function instructionsMade(cwd: string, window?: number, marks?: Marks): { text: string; data: string } {
   const whole = instructionLimit(window);
   let room = chainLimit(window);
   const parts: string[] = [];
+  const made: string[] = [];
   const once = new OnceSet();
   const files = instructionPaths(cwd, marks, { covered: true, once });
   const seen = new Set(files.filter((f) => f.same === undefined).map((f) => real(f.path)));
@@ -450,6 +457,7 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
   const ported = { claude: files.some((f) => f.of === "claude" && f.same === undefined), codex: files.some((f) => f.of === "codex" && f.same === undefined) };
   for (const { path: p, limit: cap, same } of files) {
     if (same !== undefined) {
+      made.push(`${p}\0same ${same.imports ? "imports" : "as"} ${same.of}`);
       parts.push(`# ${p}\n\n(${same.imports ? "It only imports" : "The same as"} ${same.of}, above.)`);
       continue;
     }
@@ -461,18 +469,24 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
       if (p === own) read = withoutPorted(read, ported);
     } catch (e) {
       // Not left out silently: the model knows a source is missing, not removed.
+      made.push(`${p}\0unread ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
       parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
       continue;
     }
+    made.push(`${p}\0${read}`);
     if (room <= 0) {
       parts.push(`# ${p}\n\n(Not loaded: the instruction files above fill the room this model's window gives them. Read ${p} with the Read tool before you work on what it may cover.)`);
       continue;
     }
     const mapped = rootOf(dirname(p)) ? undefined : expandMapped(read, p, 0, seen, marks);
     const raw = mapped?.text ?? read;
+    // An imported file's text is the file's too.
+    if (raw !== read) made.push(`${p}\0with its imports\0${raw}`);
     const filtered = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
-    if (filtered === null) continue;
+    // What the trust pins let through is part of what the block is made from.
+    if (filtered === null) { made.push(`${p}\0held`); continue; }
     const trusted = filtered === raw;
+    if (!trusted) made.push(`${p}\0as trusted\0${filtered}`);
     // Carried as far as the cut keeps it: a rule past the cut is in no file the model holds, so a later
     // file that says it again keeps it.
     const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined, { record: false });
@@ -483,7 +497,7 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
     room -= Math.min(fresh.text.length, limit);
     parts.push(`# ${p}\n\n${body}`);
   }
-  return parts.join("\n\n");
+  return { text: parts.join("\n\n"), data: made.join("\0\0") };
 }
 
 // Frozen per session: nothing in it changes between turns (no clock), so the
@@ -501,11 +515,11 @@ const CORE = [
 // context popup), and the kept one is sent while a warm cache holds it. The memory counts as loaded
 // when a prompt that carries it is stored (`loadSystem`), so the sweep counts what models were sent.
 export function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): { parts: PromptPart[]; native: Native | null } {
-  const inst = instructionFiles(cwd, window, marks);
+  const { text: inst, data: made } = instructionsMade(cwd, window, marks);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
   const mem = (native && nativeMemory(native.family, cwd, { top: native.top, store: nativeContext.store?.(native.session) })) || null;
   return { native: mem, parts: [
-    { name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst },
+    { name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: made },
     // The model's own harness's memory of the project: a block of the owner's data, kept in its place while it is empty.
     { name: "native memory", text: mem ? `\n${mem.text}\n` : "", data: mem?.data ?? "" },
   ] };

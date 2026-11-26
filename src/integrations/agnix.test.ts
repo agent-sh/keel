@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempTree } from "../../test/env.ts";
-import { Agnix, configsOf, errorsKey, findingLine, keyOf, parseLint } from "./agnix.ts";
+import { Agnix, configsOf, errorsKey, findingLine, keyOf, parseLint, RETRY_MS } from "./agnix.ts";
 
 const OUT = {
   version: "0.61.0", files_checked: 2,
@@ -77,7 +77,8 @@ test("a run that hangs is cut at its bound and says so; a folder with no configs
   const folder = join(dir, "repo");
   mkdirSync(folder);
   const failed: string[] = [];
-  const a = new Agnix({ bin: () => bin, nice: false, ms: 300, failed: (l) => failed.push(l.failed!) });
+  let now = 1_000_000;
+  const a = new Agnix({ bin: () => bin, nice: false, ms: 300, now: () => now, failed: (l) => failed.push(l.failed!) });
   expect(await a.check(folder)).toBeNull();
   writeFileSync(join(folder, "AGENTS.md"), "# Repo\n");
   writeFileSync(join(folder, "HANG"), "");
@@ -87,6 +88,10 @@ test("a run that hangs is cut at its bound and says so; a folder with no configs
   // Told once a run: the kept failure answers the next check without telling it again.
   expect(await a.check(folder)).toEqual(r);
   expect(failed).toHaveLength(1);
+  // An hour on, the same files are linted again: the failure was the run's, not the files'.
+  now += RETRY_MS;
+  expect((await a.check(folder))!.failed).toContain("longer than");
+  expect(failed).toHaveLength(2);
 });
 
 test("without agnix: not installed, and a check runs nothing", async () => {
