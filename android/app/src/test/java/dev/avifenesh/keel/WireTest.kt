@@ -23,6 +23,23 @@ import org.junit.Test
 
 // Pure logic of the app. What it shares with the daemon (signed bytes, shapes) is in ContractTest.
 class WireTest {
+    @Test fun aPlanGoesOnInAFreshSessionOnlyWhereTheDaemonOffersItInTheModeThePhoneMayStart() {
+        fun plan(state: String = "pending", fresh: Boolean = true, kind: String = "plan") = Card.of(JSONObject()
+            .put("id", "plan-s-1.c1").put("chat_id", "s-1").put("kind", kind).put("command", "Split the store").put("description", "")
+            .put("actions", org.json.JSONArray()).put("state", state).put("ts", 1.0).apply { if (fresh) put("fresh", true) })
+        // Edits run, as the card's first approval; each change asks on a phone with no screen lock.
+        assertEquals("session", plan().freshChoice(noLock = false))
+        assertEquals("once", plan().freshChoice(noLock = true))
+        // Not offered: an agent's plan (no word from the daemon), a closed plan, or a card that is no plan.
+        assertNull(plan(fresh = false).freshChoice(noLock = false))
+        assertNull(plan(state = "approved").freshChoice(noLock = false))
+        assertNull(plan(kind = "permission").freshChoice(noLock = false))
+        // The answer says where the work goes, and only for an approval; the session it went to is read back.
+        assertEquals(true, Wire.answerBody("session", null, seen = true, fresh = true).optBoolean("fresh"))
+        assertTrue(!Wire.answerBody("deny", null, fresh = true).has("fresh"))
+        assertEquals("s-2", Card.of(JSONObject().put("id", "x").put("state", "approved").put("fresh_chat", "s-2")).freshChat)
+    }
+
     @Test fun theLastReplysStartIsFoundAndSaidAboveTheViewOnlyWhileItIs() {
         fun msg(id: String, role: String = "agent", kind: String = "text", content: String = "words") = Msg(id, "s-1", role, kind, content, 0.0)
         // Newest first, as the transcript lists them: a status line under the reply, then the reply.

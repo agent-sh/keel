@@ -53,7 +53,7 @@ import { zoneLabel } from "../../core/clock.ts";
 import type { Helper } from "../../helper/helper.ts";
 import { paramKey } from "../../helper/memory.ts";
 import type { MemoryRecord } from "../../helper/records.ts";
-import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
+import { decidePlan, freshFits, freshSightings, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const err = (error: string, status: number) => json({ error }, status);
@@ -428,9 +428,12 @@ export function approvalOf(a: Approval, form?: CardForm) {
 // phone with no screen lock may start). "deny" sends it back to planning, with `feedback` (what
 // to change) when the owner wrote one. A plan is approved only once all of it was on the
 // screen (`hold`; the app says `seen: "whole"`), and with the approval key, as any allow.
+// `fresh`: the owner's own plan may go on in a fresh session instead (an approval with `fresh: true`,
+// its signed answer the word "fresh"); a plan approved so names that session as `fresh_chat`.
 const PLAN_STATE = { approved: "approved", denied: "denied", expired: "expired" } as const;
 // A plan's card id names its session too: a plan is known by its tool call's id, and two sessions'
 // calls may share one (a card that closed in one must never hide the other's that waits).
+export const FRESH = "fresh";
 export const planCardId = (sessionId: string, planId: string) => `plan-${sessionId}.${planId}`;
 export function planCardOf(c: PlanCard, end?: PlanEnd) {
   return {
@@ -440,6 +443,7 @@ export function planCardOf(c: PlanCard, end?: PlanEnd) {
     actions: end ? [] : [["Approve: edits run", "session", "primary"], ["Approve: each change asks", "once", ""], ["Keep planning", "deny", "danger"]],
     state: end ? PLAN_STATE[end.how] : "pending", choice: end?.how === "approved" ? (end.mode === "ask" ? "once" : "session") : end ? "deny" : null,
     ts: secs(c.created),
+    ...(!end && freshFits(c.session_id) ? { fresh: true } : {}), ...(end?.fresh ? { fresh_chat: end.fresh } : {}),
   };
 }
 
@@ -749,7 +753,9 @@ export function mobileApi(ctx: MobileCtx) {
     // Answers by question id ({ id: "label" | ["labels"] }), or one `answer`
     // for a card of one question. The signature covers what is answered.
     const byId: Record<string, unknown> | null = b.answers && typeof b.answers === "object" && !Array.isArray(b.answers) ? b.answers : null;
-    const text = byId ? answersText(byId) : typeof b.answer === "string" ? b.answer.trim() : "";
+    // A plan approved into a fresh session signs the word "fresh" as its answer: where the work goes is approved too.
+    const fresh = b.fresh === true && aid.startsWith("plan-") && choice !== "deny";
+    const text = fresh ? FRESH : byId ? answersText(byId) : typeof b.answer === "string" ? b.answer.trim() : "";
     if (choice !== "deny") {
       const v2 = req.headers.get("x-hm-asig-v")?.trim() === "2";
       if (!(await approvalSigned(req, dev, approvalMessage(aid, choice, req.headers.get("x-hm-ts") ?? "", v2, text), "approval")))
@@ -761,17 +767,17 @@ export function mobileApi(ctx: MobileCtx) {
       const p = plansWaiting().find((x) => x.id === id && x.session_id === sid);
       const ended = plansEnded(0).findLast((e) => e.card.id === id && e.card.session_id === sid);
       if (!p) return ended ? json({ error: `this plan is already ${ended.how === "approved" ? "approved" : ended.how === "denied" ? "sent back to planning" : "closed"}`, approval: planCardOf(ended.card, ended) }, 409) : err("this plan is no longer waiting", 409);
-      if (text) return err("answer only applies to questions", 400);
+      if (text && !fresh) return err("answer only applies to questions", 400);
       if (choice === "always") return err("a plan is approved for the work it describes, not always", 400);
       // A notification shows a line of it: a plan is approved only from where it is read whole.
       if (choice !== "deny" && b.via === "notification") return json({ error: "Open the plan to read it before approving it.", hold: ["plan"], approval: planCardOf(p) }, 409);
       // Approved only once the whole plan was on the phone's screen.
       if (choice !== "deny" && b.seen !== "whole") return json({ error: "Read the plan to its end to approve it.", hold: ["plan"], approval: planCardOf(p) }, 409);
       const feedback = typeof b.feedback === "string" ? b.feedback : undefined;
-      const r = decidePlan(sid, id, choice === "deny" ? { approve: false, feedback } : { approve: true, mode: choice === "session" ? "auto-edits" : "ask" });
+      const r = decidePlan(sid, id, choice === "deny" ? { approve: false, feedback } : { approve: true, mode: choice === "session" ? "auto-edits" : "ask", ...(fresh ? { fresh: true } : {}) }, undefined, fresh ? await freshSightings(sid) : undefined);
       if (r.status !== 200) return json({ error: r.body.error ?? "the plan was not decided", approval: planCardOf(p) }, r.status);
       const end = plansEnded(0).findLast((e) => e.card.id === id && e.card.session_id === sid);
-      return json({ approval: planCardOf(p, end ?? { card: p, how: choice === "deny" ? "denied" : "approved", at: Date.now() }), resolved: 1 });
+      return json({ approval: planCardOf(p, end ?? { card: p, how: choice === "deny" ? "denied" : "approved", ...(r.body.session?.id ? { fresh: r.body.session.id } : {}), at: Date.now() }), resolved: 1 });
     }
     if (aid.startsWith("q-")) {
       // (By the whole id: a card of a server's earlier question on the same call finds nothing.)

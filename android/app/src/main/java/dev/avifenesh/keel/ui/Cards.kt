@@ -109,15 +109,17 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
     // A plan sent back: what to change, written under it.
     var back by remember(c.id) { mutableStateOf(false) }
     var feedback by remember(c.id) { mutableStateOf("") }
-    fun act(choice: String, answers: Map<String, Any>?) {
+    fun act(choice: String, answers: Map<String, Any>?, fresh: Boolean = false) {
         busy = true; error = ""
-        val prompt = if (c.plan && choice != "deny") (if (choice == "once") "Approve the plan: each change asks" else "Approve the plan: edits run") else null
-        Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", "), feedback = feedback.takeIf { c.plan && choice == "deny" }, heading = prompt) { err ->
+        val mode = if (choice == "once") "each change asks" else "edits run"
+        val prompt = if (c.plan && choice != "deny") (if (fresh) "Approve the plan in a fresh session: $mode" else "Approve the plan: $mode") else null
+        Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", "), feedback = feedback.takeIf { c.plan && choice == "deny" }, heading = prompt, fresh = fresh) { err ->
             busy = false
             if (!err.isNullOrEmpty()) error = err
             // Answered in its session's screen: on to the next session that waits (the Needs you tab lists the rest already),
             // unless the owner has begun a message in its box.
-            if (err == null && (Ui.route.value as? Route.Session)?.id == c.chatId) {
+            // (A plan sent to a fresh session opens that session instead.)
+            if (err == null && !fresh && (Ui.route.value as? Route.Session)?.id == c.chatId) {
                 val holds = Unsent.of(c.chatId).isNotEmpty() || Attach.pending.value[c.chatId].orEmpty().isNotEmpty()
                 nextAfterAnswer(c, Hub.cards.value.values, Hub.chats.value, holds)?.let { Ui.open(it) }
             }
@@ -192,7 +194,12 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
                     }
                 } else FlowRow(horizontalArrangement = Arrangement.spacedBy(S.sm), verticalArrangement = Arrangement.spacedBy(S.sm)) {
                     // The daemon offers the session choice where it is safe; a phone with no screen lock approves once only.
+                    // The same approval, carried out in a fresh session that starts from the plan alone; this one keeps the
+                    // planning. It stands before Keep planning, as on the page.
+                    val freshMode = c.freshChoice(Prefs.noLock)
                     for (a in c.actions.filter { !(Prefs.noLock && (it.choice == "session" || it.choice == "always")) }) {
+                        if (freshMode != null && a.choice == "deny")
+                            Btn("Approve and start fresh", { act(freshMode, null, fresh = true) }, Tone.QUIET, enabled = !busy && c.mayAllow(read), compact = true, tag = "fresh-${c.id}")
                         // (A phone with no screen lock approves a plan only into the mode where each change asks.)
                         // (A standing answer's button names the rule it stores.)
                         val label = c.label(a.choice, a.label)

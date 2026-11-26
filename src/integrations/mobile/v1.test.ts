@@ -18,7 +18,7 @@ import { ask, answer, askFor } from "../../tools/interact.ts";
 import wire from "./contract/wire.json";
 import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig.ts";
 import { MobileStore } from "./store.ts";
-import { bucketOf, heldOf, mobileApi } from "./v1.ts";
+import { bucketOf, FRESH, heldOf, mobileApi, planCardOf } from "./v1.ts";
 import { pushData, pushFor, testMessage } from "./push.ts";
 import { openPush } from "./open.ts";
 import { liveData, liveStatus } from "./live.ts";
@@ -784,7 +784,8 @@ describe("changes", () => {
 describe("plans", () => {
   // The page's plan routes over the same store, and the tool a model in plan mode calls.
   let draining = false;
-  const planApi: any = planRoutes({ store, bus, engine: { isDraining: () => draining } } as any);
+  const freshSent: { id: string; prompt: string }[] = [];
+  const planApi: any = planRoutes({ store, bus, errors: { capture() {} }, engine: { isDraining: () => draining, send: (id: string, prompt: string) => void freshSent.push({ id, prompt }), interrupt: async () => {} } } as any);
   const present = toolsFor("other").find((t) => t.name === "present_plan")!;
   const stops: AbortController[] = [];
   const presents = (sid: string, callId: string, plan: string) => {
@@ -795,9 +796,9 @@ describe("plans", () => {
     present.run({ plan, title: "Split the store" }, { callId, sessionId: sid, signal: stop.signal } as any).then((r: any) => (got = r));
     return Object.assign(() => got, { stop: () => stop.abort() });
   };
-  const signedApprove = (aid: string, body: any) => {
+  const signedApprove = (aid: string, body: any, answer = "") => {
     const ts = String(Math.floor(Date.now() / 1000));
-    const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, "")), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, answer)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
     return call("POST", `/v1/approvals/${aid}`, body, body.choice === "deny" ? {} : { "x-hm-asig": asig, "x-hm-asig-v": "2" });
   };
 
@@ -881,6 +882,33 @@ describe("plans", () => {
   test("a plan's push opens the app and allows nothing from the notification", () => {
     const d = alertPush({ id: "al-1", kind: "question", session_id: "s-1", title: "Plan to approve: Refactor", body: "Split the store", data: { plan_id: "call-9", open_session: "s-1" } } as any).data;
     expect([d.aid, d.hold, d.opts]).toEqual(["plan-s-1.call-9", "plan", JSON.stringify(["deny"])]);
+  });
+
+  test("the owner's plan is approved from the phone into a fresh session, the approval signing where it goes", async () => {
+    const s = session("Plan it");
+    const result = presents(s.id, "call-fresh-1", "1. Split store.ts.\n2. Run the tests.");
+    const agent = session("An agent's");
+    store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, agent.id);
+    presents(agent.id, "call-fresh-2", "1. A.");
+    await Bun.sleep(0);
+    const cards = (await call("GET", "/v1/sync")).body.approvals;
+    // Only the owner's own plan offers it: an agent's goes on in its own session.
+    expect(cards.find((a: any) => a.id === `plan-${s.id}.call-fresh-1`).fresh).toBe(true);
+    expect(cards.find((a: any) => a.id === `plan-${agent.id}.call-fresh-2`).fresh).toBeUndefined();
+    const aid = `plan-${s.id}.call-fresh-1`;
+    // An approval key's signature over a plain approval does not send the work elsewhere.
+    expect((await signedApprove(aid, { choice: "session", seen: "whole", fresh: true })).status).toBe(403);
+    const ok = await signedApprove(aid, { choice: "session", seen: "whole", fresh: true }, FRESH);
+    expect(ok.status).toBe(200);
+    const to = ok.body.approval.fresh_chat as string;
+    expect(ok.body.approval).toMatchObject({ state: "approved", choice: "session" });
+    expect(store.session(to)).toMatchObject({ workspace: s.workspace, title: "Split the store" });
+    expect(freshSent.map((x) => x.id)).toEqual([to]);
+    await Bun.sleep(0);
+    expect(result().content).toContain("fresh session");
+    // How it ended, as a phone that was away reads it.
+    expect((await call("GET", "/v1/sync")).body.approvals.find((a: any) => a.id === aid)).toMatchObject({ state: "approved", fresh_chat: to });
+    expect((await signedApprove(`plan-${agent.id}.call-fresh-2`, { choice: "session", seen: "whole", fresh: true }, FRESH)).status).toBe(400);
   });
 
   test("a phone with no screen lock approves a plan only into a mode where every change asks", async () => {
@@ -1300,7 +1328,7 @@ describe("the wire contract", () => {
       expect(new TextDecoder().decode(canonicalMessage(r.method, r.path + (r.query === null ? "" : `?${r.query}`), r.ts, r.body))).toBe(r.canonical);
     }
     for (const a of wire.signing.approval) {
-      expect(a.answers ? answersText(a.answers) : "").toBe(a.answers_text);
+      expect(a.answers ? answersText(a.answers) : (a as { fresh?: boolean }).fresh ? FRESH : "").toBe(a.answers_text);
       expect(approvalMessage(a.id, a.choice, a.ts, true, a.answers_text)).toBe(a.message);
     }
     for (const l of wire.signing.land) expect(landMessage(l.key, l.fp, l.ts)).toBe(l.message);
@@ -1541,6 +1569,10 @@ describe("the wire contract", () => {
     store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-chain', 'apr-done')").run();
     store.db.query("DELETE FROM alerts WHERE id = 'al-wait'").run();
 
+    // A plan of the owner's own session may go on in a fresh one; one approved so names it.
+    const planned = { id: "call-fresh", session_id: parent.id, plan: "1. One step.", created: Date.now() };
+    take("card", planCardOf(planned));
+    take("card", planCardOf(planned, { card: planned, how: "approved", mode: "auto-edits", fresh: s.id, at: Date.now() }));
     expect(bad).toEqual([]);
     // Every field the app reads was sent at least once here, so a renamed optional field fails too.
     const sent = Object.entries(fields).filter(([shape]) => !["send", "answer", "upload_ref", "new_chat", "helper_ask"].includes(shape)).flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));

@@ -12,7 +12,7 @@
   "sync.more is false from this daemon; an app reads it for a daemon that pages its catch-up.",
   "upload and upload_ref are the daemon's side of attaching a file: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png), and how a prompt names it in `attachments`. The app uploads each file when it is picked and sends a prompt that names the uploads (send.attachments, each an upload_ref). It checks a file against me.uploads.max_bytes before it sends the bytes, and scales a photo to me.uploads.image_edge on its long edge (the edge the daemon stores a photo at). The stored message lists what it carried in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves.",
   "A permission card that waits carries what the read-first rule needs (src/safety/card.ts, the one form every client gets): `text` is the whole text to judge with each hidden character written as its code point, `notes` say why it is asked, where it runs, what in the text can mislead and whether only its start is here, `rtl` says it holds letters written right to left, and `hold` says why Allow needs the text shown whole first (long, cut, marked, risk, where). An empty `hold` means one line shows all of it. The app sends `seen: \"whole\"` with an allow once all of `text` was on its screen. An allow of a held card without `seen` is answered 409 with the sentence to show in `error`, and the card stays open: an app from before these fields shows that sentence. `grants` are the rules a standing answer would store: the session action's label names them, and the app's button does (\"Allow echo * for this session\"). The action is offered only where there is a rule. `line` is what a notification says of the request (the tool, where it runs when not here, the text), and `glance` says that a collapsed notification shows all of that line: only then may a notification carry Allow once. A push says the same: its `body` is that line, its `opts` hold `once` only for such a request, and `hold` gives the reasons a request is held (comma separated; empty when none). An answer given from a notification says `via: \"notification\"`: it never counts as having shown the text, it allows once only what `glance` covers, and it gives no standing answer (409 with the sentence). A closed card says where it was answered in `from`. An answer to a card that was already answered is a 409 whose `error` says how it ended, who answered and how long ago (\"this approval is already allowed (once) from the page, 3 s ago\"), with the closed card in `approval`.",
-  "A plan the model presents in plan mode is a card of kind `plan`: `command` is its title, `text` the whole plan, `hold` [\"plan\"] (approved only once all of it was on the screen, with `seen: \"whole\"` and the approval key). Its actions: `session` approves it with the work going on in auto edits, `once` in ask (each change asks; what a phone with no screen lock may start), `deny` sends it back to planning, with `feedback` in the answer when the owner wrote what to change. A closed plan card says `approved` with the choice it was approved with, or `denied`, or `expired` when the turn ended under it.",
+  "A plan the model presents in plan mode is a card of kind `plan`: `command` is its title, `text` the whole plan, `hold` [\"plan\"] (approved only once all of it was on the screen, with `seen: \"whole\"` and the approval key). Its actions: `session` approves it with the work going on in auto edits, `once` in ask (each change asks; what a phone with no screen lock may start), `deny` sends it back to planning, with `feedback` in the answer when the owner wrote what to change. `fresh` says the plan may go on in a fresh session instead (the owner's own plan, not an agent's or another harness's): the answer then carries `fresh: true` and its approval signs the word `fresh` as its answer. A plan approved so names the new session as `fresh_chat`. A closed plan card says `approved` with the choice it was approved with, or `denied`, or `expired` when the turn ended under it.",
   "changes (GET /v1/chats/:id/changes) is what a session changed in its folder, read-only: `turns` newest first, each with its files (file_change: git's status letter, lines added and removed, `outside` for a write made outside the session's turns), and `session`, the files changed since its first turn. `n` is the turn's place among the session's turns, as the page numbers it; `turn` is what /changes/diff takes. file_diff (GET /v1/chats/:id/changes/diff?path=<path>[&turn=<turn>]) is one file's unified diff, of one turn or since the first; `truncated` says it was cut where the page cuts a diff. `unavailable` says why there is nothing to show (the session's files are on another machine, no checkpoints are kept).",
   "A session an agent works in has its starter's id in `parent_id`; an agent's agents have that agent's session there, so the rows make the tree. `agents` counts the agents at work below a session, at any depth; `state_word` is the state in the workbench's own words; `dot` is the state the row's dot draws (need, work, wait, fail, declined, resume, stop, done, idle: declined is a failure the model gave nothing for, wait is a session that nothing runs in and something will wake), `dot_ring` is `agents` or `command` when the session only waits on what it left going (the dot sits in a ring), and `dot_word` is the dot's word for a reader; `created` orders an agent among its siblings. A live agent's row says what it is doing now, as its line on the workbench does (src/automation/now.ts): `now` is the newest sentence of its thinking or the call it runs, `now_steps` its model steps, `now_since` when its task began (seconds), `now_usd` what it spent, `now_need` 1 when it waits on the owner. The daemon sends a row again with a new line at most every 15 s an agent.",
   "start (GET /v1/start) is what a new session can start with: the default `model` and the `models` to pick from, the `folders` this machine's sessions worked in (newest first, the daemon's own folder marked `home`), and the `machines` of the fleet that take a session (`ready` while it answers; `root`, the folder granted there). new_chat is the body of POST /v1/chats: each field may be left out (the default model, the daemon's folder, this machine); `workspace` is an absolute folder here, or one inside `root` on another machine; `text` is the first message, sent at once.",
@@ -81,6 +81,15 @@
     "answers": null,
     "answers_text": "",
     "message": "approve2\napr_9\nsession\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1795195000"
+   },
+   {
+    "id": "plan-s-1.call_7",
+    "choice": "session",
+    "ts": "1795195000",
+    "answers": null,
+    "fresh": true,
+    "answers_text": "fresh",
+    "message": "approve2\nplan-s-1.call_7\nsession\nd098ab5e44b9aabb755f76d806598f43573c662b35e4a2eab1e312ec9ad195e2\n1795195000"
    }
   ],
   "land": [
@@ -169,7 +178,9 @@
    "grants": "array?",
    "wait.key": "number?",
    "wait_line": "string?",
-   "asked": "number?"
+   "asked": "number?",
+   "fresh": "boolean?",
+   "fresh_chat": "string?"
   },
   "question": {
    "id": "string",
@@ -275,7 +286,8 @@
    "answers": "object?",
    "seen": "string?",
    "via": "string?",
-   "feedback": "string?"
+   "feedback": "string?",
+   "fresh": "boolean?"
   },
   "attachment": {
    "kind": "string",
@@ -1093,7 +1105,25 @@
     ],
     "state": "pending",
     "choice": null,
-    "ts": 1795195010.5
+    "ts": 1795195010.5,
+    "fresh": true
+   },
+   {
+    "id": "plan-s-1.call_8",
+    "chat_id": "s-1",
+    "session_key": "s-1",
+    "kind": "plan",
+    "command": "Split the store",
+    "description": "Approve it to start the work, or keep planning.",
+    "text": "1. Split store.ts into reads and writes.\n2. Run the store tests.",
+    "lines": 2,
+    "notes": [],
+    "hold": [],
+    "actions": [],
+    "state": "approved",
+    "choice": "session",
+    "ts": 1795195020.0,
+    "fresh_chat": "s-2"
    }
   ],
   "question": [
@@ -2245,6 +2275,11 @@
    {
     "choice": "deny",
     "feedback": "Keep the checkpoint thread where it is."
+   },
+   {
+    "choice": "session",
+    "seen": "whole",
+    "fresh": true
    }
   ],
   "attachment": [

@@ -31,7 +31,8 @@ class ContractTest {
         val approvals = signing.getJSONArray("approval")
         for (i in 0 until approvals.length()) {
             val a = approvals.getJSONObject(i)
-            val text = a.optJSONObject("answers")?.let { Wire.answersText(answersOf(it)) }.orEmpty()
+            // (A plan approved into a fresh session signs the word FRESH as its answer.)
+            val text = if (a.optBoolean("fresh")) Wire.FRESH else a.optJSONObject("answers")?.let { Wire.answersText(answersOf(it)) }.orEmpty()
             assertEquals(a.getString("answers_text"), text)
             assertEquals(a.getString("message"), Wire.approvalMessage(a.getString("id"), a.getString("choice"), a.getString("ts"), text))
         }
@@ -80,7 +81,8 @@ class ContractTest {
             val via = if (answer.has("via")) answer.getString("via") else null
             // (`feedback`: what to change, with a plan sent back.)
             val feedback = if (answer.has("feedback")) answer.getString("feedback") else null
-            assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf), answer.optString("seen") == "whole", via, feedback)))
+            // (`fresh`: a plan approved to go on in a fresh session.)
+            assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf), answer.optString("seen") == "whole", via, feedback, answer.optBoolean("fresh"))))
         }
     }
 

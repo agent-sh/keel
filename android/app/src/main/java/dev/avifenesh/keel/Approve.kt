@@ -25,8 +25,8 @@ object Approvals {
      * The prompt carries no text of the request: a prompt's subtitle is cut, and a cut request is not
      * what is allowed. The request stands whole on the screen under it.
      */
-    fun run(act: FragmentActivity, aid: String, choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, rule: String = "", feedback: String? = null, heading: String? = null, done: (String?) -> Unit) {
-        val body = Wire.answerBody(choice, answers, seen, via, feedback)
+    fun run(act: FragmentActivity, aid: String, choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, rule: String = "", feedback: String? = null, heading: String? = null, fresh: Boolean = false, done: (String?) -> Unit) {
+        val body = Wire.answerBody(choice, answers, seen, via, feedback, fresh)
         fun submit(headers: Map<String, String>) {
             Hub.scope.launch {
                 val r = runCatching { Hub.resolve(aid, body, headers) }
@@ -35,14 +35,18 @@ object Approvals {
                     when {
                         r.isFailure -> done(r.exceptionOrNull()?.message ?: "Not sent")
                         card?.state == "expired" -> done("That card had already closed")
-                        else -> { Notify.cancelCard(act, aid); done(null) }
+                        else -> {
+                            Notify.cancelCard(act, aid); done(null)
+                            // A plan that went to a fresh session: the work goes on there, so that is where the owner follows it.
+                            card?.freshChat?.takeIf { fresh && it.isNotBlank() }?.let { Ui.open(it) }
+                        }
                     }
                 }
             }
         }
         if (choice == "deny") return submit(emptyMap())
         val ts = (System.currentTimeMillis() / 1000).toString()
-        val payload = Wire.approvalMessage(aid, choice, ts, if (answers != null) Wire.answersText(answers) else "").toByteArray()
+        val payload = Wire.approvalMessage(aid, choice, ts, if (fresh) Wire.FRESH else if (answers != null) Wire.answersText(answers) else "").toByteArray()
         fun headers(sig: String) = mapOf("X-HM-Ts" to ts, "X-HM-ASig" to sig, "X-HM-ASig-V" to "2")
         val sig = try { Keys.approvalSignature() } catch (e: Exception) { return done("The approval key is not available: ${e.message}") }
         if (Prefs.noLock) {

@@ -18,6 +18,9 @@ object Wire {
         "${method.uppercase()}\n$path${if (query != null) "?$query" else ""}\n$ts\n$bodySha"
 
     /** The approval key's message, version 2: it binds the answer of a question (empty for a permission). */
+    /** What a plan approved into a fresh session signs as its answer: where the work goes is approved too. */
+    const val FRESH = "fresh"
+
     fun approvalMessage(aid: String, choice: String, ts: String, answer: String): String =
         "approve2\n$aid\n$choice\n${sha256Hex(answer.trim().toByteArray())}\n$ts"
 
@@ -146,9 +149,10 @@ object Wire {
      * A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them.
      * seen: all of the request's text was on this screen before the answer. The daemon takes an allow of a
      * request that one line does not show whole only with it; a refusal needs none. via: "notification"
-     * for an answer given from a notification, which shows one line and so never says seen.
+     * for an answer given from a notification, which shows one line and so never says seen. fresh: a plan
+     * approved to go on in a fresh session (its approval signs FRESH as its answer).
      */
-    fun answerBody(choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, feedback: String? = null): JSONObject {
+    fun answerBody(choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, feedback: String? = null, fresh: Boolean = false): JSONObject {
         val body = JSONObject().put("choice", choice)
         // A plan sent back carries what to change, when the owner wrote it.
         if (choice == "deny" && !feedback.isNullOrBlank()) body.put("feedback", feedback.trim())
@@ -157,6 +161,7 @@ object Wire {
         })
         if (seen && choice != "deny" && via != "notification") body.put("seen", "whole")
         if (via != null) body.put("via", via)
+        if (fresh && choice != "deny") body.put("fresh", true)
         return body
     }
 
@@ -415,6 +420,8 @@ data class Card(
     val asked: Double = 0.0,
     /** A chained command asked by one of its parts: where that part stands in `text`, [from, to). Empty: the whole line asked. */
     val at: List<Int> = emptyList(),
+    /** A plan that may go on in a fresh session instead (the owner's own), and the session one approved so went to. */
+    val fresh: Boolean = false, val freshChat: String = "",
 ) {
     val pending get() = state == "pending"
     val question get() = kind == "question"
@@ -426,6 +433,12 @@ data class Card(
         val (from, to) = at[0] to at[1]
         return if (from in 0 until to && to <= text.length) from until to else null
     }
+    /**
+     * The mode a plan goes on in when approved into a fresh session, or null where that is not offered (not a plan
+     * that waits, or an agent's or another harness's plan). It is the card's first approval: edits run, or each change
+     * asks on a phone with no screen lock (the only mode such a phone may start).
+     */
+    fun freshChoice(noLock: Boolean): String? = if (!plan || !pending || !fresh) null else if (noLock) "once" else "session"
     /** Allow is given only once the whole text was on screen. */
     val held get() = hold.isNotEmpty()
     /** What the card draws of the request: the whole text when the daemon sent it, else the summary. */
@@ -483,6 +496,7 @@ data class Card(
                 line = o.str("line"), glance = o.optBoolean("glance"), grants = strings(o.optJSONArray("grants")),
                 waitKey = o.optJSONObject("wait")?.optDouble("key", 0.0) ?: 0.0, waitLine = o.str("wait_line"), asked = o.optDouble("asked", 0.0),
                 at = o.optJSONArray("at")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty(),
+                fresh = o.optBoolean("fresh"), freshChat = o.str("fresh_chat"),
             )
         }
     }
@@ -865,6 +879,7 @@ fun Card.json(): JSONObject = JSONObject().put("id", id).put("chat_id", chatId).
     .apply { if (waitKey != 0.0) put("wait", JSONObject().put("key", waitKey)) }.opt("wait_line", waitLine)
     .apply { if (asked != 0.0) put("asked", asked) }
     .apply { if (at.isNotEmpty()) put("at", JSONArray(at)) }
+    .apply { if (fresh) put("fresh", true) }.opt("fresh_chat", freshChat)
 
 /** "14:32" today, "Mon 14:32" this week, else "23 Nov 14:32": when the phone was last level with the computer, in its own time. */
 fun syncedAt(ms: Long, now: Long = System.currentTimeMillis(), zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {

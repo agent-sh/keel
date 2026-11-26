@@ -67,7 +67,10 @@ A plan the model presents in plan mode is a card in the session and under
 Needs you. It shows the whole plan and allows an approval only once it was
 scrolled to its end. Approve: edits run starts the work in auto edits;
 Approve: each change asks starts it in ask (the one a phone with no screen
-lock offers). Keep planning opens a box for what to change and sends the plan
+lock offers). Approve and start fresh, offered for your own session's plan
+(not an agent's), carries it out in a new session in the same folder, as the
+page's button does: the answer says `fresh: true`, the approval key signs the
+word `fresh` as its answer, and the app opens the new session. Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
 ## Moving a command to the background
@@ -229,13 +232,13 @@ A release build without signing fails; there is no debug-key fallback.
 
 ## Install
 
-The release build is `dist/android/Keel-0.1.1.apk` (version 0.1.1, made by the
-release build above; its checksum is beside it in `Keel-0.1.1.apk.sha256`). It is signed with the same key as
-0.1.0, so it installs over 0.1.0 and keeps its pairing and settings:
+The release build is `dist/android/Keel-0.1.2.apk` (version 0.1.2, made by the
+release build above; its checksum is beside it in `Keel-0.1.2.apk.sha256`). It is signed with the same key as
+0.1.0 and 0.1.1, so it installs over them and keeps its pairing and settings:
 
 ```bash
-(cd dist/android && sha256sum -c Keel-0.1.1.apk.sha256)
-adb install -r dist/android/Keel-0.1.1.apk
+(cd dist/android && sha256sum -c Keel-0.1.2.apk.sha256)
+adb install -r dist/android/Keel-0.1.2.apk
 ```
 
 Or copy the file to the phone and open it there; Android asks once to allow

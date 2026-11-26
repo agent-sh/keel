@@ -26,7 +26,8 @@ export type Answer = { approved: true; mode: string; plan: string; note?: string
 const waiting = new Map<string, PlanCard & { resolve: (a: Answer) => void }>();
 const keyOf = (sessionId: string, id: string) => `${sessionId}\u0000${id}`;
 // How a plan stopped waiting: approved (in a mode), sent back to planning, or the turn ended under it.
-export type PlanEnd = { card: PlanCard; how: "approved" | "denied" | "expired"; mode?: string; at: number };
+// `fresh`: the session an approval into a fresh session started.
+export type PlanEnd = { card: PlanCard; how: "approved" | "denied" | "expired"; mode?: string; fresh?: string; at: number };
 // The plans that ended in the last day, newest last: a client that was away (a phone) is told how
 // the plans it was shown ended. Kept in memory, as the waiting plans are.
 const ended: PlanEnd[] = [];
@@ -77,7 +78,7 @@ export function waitPlan(card: PlanCard, signal: AbortSignal): Promise<Answer> {
       signal.removeEventListener("abort", onAbort);
       // Parked with its turn by a daemon that stops: it did not end, and no client is told it did.
       if (stopped && parking()) { emit(card, "closed"); resolve(x); return; }
-      const end: PlanEnd = { card, how: stopped ? "expired" : x.approved ? "approved" : "denied", ...(x.approved ? { mode: x.mode } : {}), at: Date.now() };
+      const end: PlanEnd = { card, how: stopped ? "expired" : x.approved ? "approved" : "denied", ...(x.approved ? { mode: x.mode, ...(x.fresh ? { fresh: x.fresh.id } : {}) } : {}), at: Date.now() };
       while (ended.length && (ended[0]!.at < end.at - ENDED_FOR)) ended.shift();
       ended.push(end);
       emit(card, "closed", end);
@@ -123,11 +124,23 @@ const PresentPlan: Tool = {
 export type PlanDecision = { approve?: unknown; mode?: unknown; plan?: unknown; note?: unknown; feedback?: unknown; fresh?: unknown };
 // `proven`: asked once an approval is valid, before it is applied; an answer it gives refuses it.
 type Said = { status: number; body: any };
+// Whether a session's plan may go on in a fresh session: the owner's own, not an agent's or another harness's.
+export let freshFits: (sessionId: string) => boolean = () => false;
+// What the planning session read of outside content, which a fresh session carries (read off the loop); undefined
+// when it could not be gathered. Set when the routes load.
+export let freshSightings: (sessionId: string) => Promise<Sightings | undefined> = async () => undefined;
 export let decidePlan: (sessionId: string, id: string, b: PlanDecision, proven?: () => Said | null, sightings?: Sightings) => Said = () => ({ status: 503, body: { error: "plans are not loaded" } });
 
 export const planRoutes: RouteModule = (deps: Deps) => {
   const { store, bus } = deps;
   parking = () => !!deps.engine?.isDraining?.();
+  freshFits = (sid) => { const s = store.session(sid); return !!s && !s.parent_id && !s.outside; };
+  freshSightings = async (sid) => {
+    const src = store.session(sid);
+    if (!src) return undefined;
+    if (!gate) return { keys: [], listed: {} };
+    return gate.outsideOf(src).catch((e) => { deps.errors.capture("server", e, { session: src.id, at: "plan in a fresh session: the sightings" }); return undefined; });
+  };
   decidePlan = (sessionId, id, b, proven, sightings) => {
     const w = waiting.get(keyOf(sessionId, id));
     if (!w) return { status: 404, body: { error: "no plan is waiting with that id" } };
@@ -248,9 +261,7 @@ export const planRoutes: RouteModule = (deps: Deps) => {
         if (!w || w.session_id !== req.params.id) return bad("no plan is waiting with that id", 404);
         const b = await body(req);
         // A plan that goes to a fresh session carries what the planning session read of outside content (read off the loop).
-        let sightings: Sightings | undefined;
-        if (b.fresh === true && gate) { const src = store.session(w.session_id); if (src) sightings = await gate.outsideOf(src).catch((e) => { deps.errors.capture("server", e, { session: src.id, at: "plan in a fresh session: the sightings" }); return undefined; }); }
-        else if (b.fresh === true) sightings = { keys: [], listed: {} };
+        const sightings = b.fresh === true ? await freshSightings(w.session_id) : undefined;
         // Leaving plan mode lets the session do more: from a remote device, the owner's passkey.
         const r = decidePlan(w.session_id, w.id, b, () => presence && !presence.allows(req, `plan:${w.id}`)
           ? { status: 428, body: { error: "this needs your passkey from a remote device", presence: { action: `plan:${w.id}` } } } : null, sightings);
