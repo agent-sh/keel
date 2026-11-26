@@ -1,14 +1,18 @@
 // A Claude Code or Codex session a terminal holds, answered from Keel's composer: the text goes through the drive
 // (src/drive/drive.ts), so the owner's agent view types it into the open terminal. The session keeps its id and its
 // transcript, the terminal stays its holder, and the reply comes into Keel's row as the harness writes it (the
-// outside follower, service.ts). Held while the terminal's box shows a draft the owner has not sent
-// (src/drive/box.ts) or a prompt is open there; the words are kept as sent (src/drive/sent.ts) before they go, so
-// the harness's record of them, which reads as typed at its prompt, never counts as typed in a later copy.
+// outside follower, service.ts). Typed only when the terminal's box is read empty (src/drive/box.ts) and no prompt is
+// open there: a draft the owner has not sent, or a box that cannot be read, holds it. The words are kept as sent
+// (src/drive/sent.ts) before they go, so the harness's record of them, which reads as typed at its prompt, never
+// counts as typed in a later copy.
 import type { Store } from "../../core/store.ts";
 import type { Raw } from "../../drive/agentview.ts";
 import * as av from "../../drive/agentview.ts";
 import { DriveError, toRow, type Drive, type Found } from "../../drive/drive.ts";
 import { noteSent } from "../../drive/sent.ts";
+
+// Half the drive's sharing time (MAX_AGE_MS, 4 s): a list that takes longer is a slow agent view, not a bar's wait.
+const FRESH_MS = 2000;
 
 type Source = { harness: string; source_id: string; path: string };
 
@@ -31,9 +35,15 @@ export class Through {
     const src = this.d.source(sessionId);
     return !!src && this.on() && !!rowOf(this.d.drive.cachedRaws(), src);
   }
-  // The list read again when it is older than the drive's sharing time (a bar opened, a holder changed).
+  // The list read again when it is older than the drive's sharing time (a bar opened, a holder changed), waited for
+  // at most FRESH_MS: an agent view that hangs leaves the bar on the last list while its read goes on.
   async fresh(): Promise<void> {
-    if (this.on()) await this.d.drive.raws().catch(() => undefined);
+    if (!this.on()) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.d.drive.raws().catch(() => undefined),
+      new Promise<void>((r) => { timer = setTimeout(r, FRESH_MS); }),
+    ]).finally(() => clearTimeout(timer));
   }
 
   private async found(sessionId: string): Promise<Found> {
@@ -62,8 +72,11 @@ export class Through {
       const f = await this.found(sessionId);
       const box = await this.d.drive.box(f, true);
       if (box === "draft") throw new DriveError("NOT_SENT", "Your unsent draft is in its terminal's box: a text typed now would go out inside it. Send it or clear it there, then send again. Nothing was sent.");
-      // Kept before the words go; loosely when the box could not be read empty (sent-read.ts keysInto).
-      noteSent(this.d.store, text, box !== "empty");
+      // A box Keel cannot read may hold his half-typed draft too (a window the agent view cannot read, a screen of
+      // another shape): only a box read empty is typed into.
+      if (box !== "empty") throw new DriveError("NOT_SENT", "Keel cannot read its terminal's box, so it cannot tell whether your unsent draft is there, and a text typed now would go out inside it. Answer it in its terminal. Nothing was sent.");
+      // Kept before the words go (sent.ts), so the harness's record of them never reads as typed by the owner.
+      noteSent(this.d.store, text, false);
       const r = await this.d.drive.deliver(f, text);
       const sent: Sent = r.state === "submitted" ? { state: "typed", said: "Typed into its terminal." } : { state: "queued", said: "Waits until its terminal is ready, then is typed there." };
       this.d.store.db.query("INSERT OR IGNORE INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES (?, ?, ?, ?, 'delivered', NULL, ?, ?)").run(Bun.randomUUIDv7(), sessionId, key, text, sent.said, Date.now());

@@ -5,7 +5,7 @@
 // (src/integrations/outside/codex-app.ts, claude-code.ts), the reply comes into
 // this view as the harness writes it, and what it asks comes as Keel's cards
 // above. A terminal that has it open is answered through it: the agent view types the text there
-// (src/integrations/outside/terminal.ts), held while the owner's unsent draft is in its box, and the reply
+// (src/integrations/outside/terminal.ts), held while the owner's unsent draft is in its box or the box cannot be read, and the reply
 // comes here from the transcript. While any other process holds it, the bar says who and offers nothing
 // that writes. One press copies it into Keel
 // (a copy that goes on here; the original keeps running where it runs).
@@ -124,7 +124,7 @@ export function OutsideBar({ session }: { session: Session }) {
   const quiet = route === "held" ? `${holderSaid(holder, where)}: answer it there. Keel sends nothing while another process holds it.`
     : route === "missing" ? `No ${program} program here: Keel answers a ${where} session with the ${program} on your PATH.`
     : route === "unlocked" ? `This ${where} keeps no writer locks, so Keel cannot tell whether a terminal has it open: answer it there, or update ${where}.`
-    : route === "terminal" ? `Typed into that terminal, the same session there: its reply comes here. Held while your unsent draft is in its box. Copy into Keel makes a copy instead.`
+    : route === "terminal" ? `Typed into that terminal, the same session there: its reply comes here. Held while your unsent draft is in its box, or Keel cannot read the box. Copy into Keel makes a copy instead.`
     : route === "none" ? `Read-only here: Keel sends nothing to ${where}. Copy into Keel makes a copy you work on here; the session there keeps running.`
     : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards. Copy into Keel makes a copy instead.`;
   return (

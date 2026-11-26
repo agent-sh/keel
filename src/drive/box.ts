@@ -2,11 +2,13 @@
 // a text sent while the owner's unsent draft sits in the box would go out inside it, recorded by the harness as one
 // typed prompt. Pure, so it is tested on screens.
 //
-// "draft": the box holds text in the terminal's own colour (what is typed there); the send is refused.
-// "empty": the box was found and holds nothing.
+// "draft": the box holds text: in the terminal's own colour, as typed text is, or drawn in a colour (Claude Code
+//   colours a command or a shell line). A send is refused.
+// "empty": the box was found and holds nothing, or only its placeholder (every character faint or grey).
 // "unread": no box was found on the screen (a window the agent view cannot read, a dialog in its place, a harness
-//   whose box is not known here), or what it holds is styled (a placeholder, or a draft drawn in colour). The send
-//   goes, and its words are kept loosely (src/drive/sent-read.ts keysInto).
+//   whose box is not known here, a Codex box whose first line is empty with a line under it). A model's send goes,
+//   its words kept loosely (src/drive/sent-read.ts keysInto); the owner's composer refuses it
+//   (src/integrations/outside/terminal.ts).
 //
 // Claude Code draws its box between two rules, its first line opening with `>` (or `❯`), each line perhaps inside
 // `│` borders; a prompt in its history has no rules around it. Codex opens its composer with `›` at the bottom of
@@ -20,37 +22,90 @@ const RULE = /^\s*[╭╰]?─{8,}[╮╯]?\s*$/u;
 const BORDER = /^\s*│|│\s*$/gu;
 const BOTTOM = 12; // the box is within this many lines of the screen's end
 
-// Codes of an SGR sequence that put the default style back (all, or the colour, weight, italics, underline, inverse).
-const RESET = new Set(["0", "22", "23", "24", "27", "39", "49"]);
 const ESC = /^\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])/;
 
-// The text after the marker in a raw line, and whether its first character was drawn with a style (a colour,
-// faint, bold): the SGR sequences before it, the last one deciding.
-function after(raw: string, marker: RegExp): { text: string; styled: boolean } | undefined {
+// The style a character is drawn with, as far as telling a placeholder from typed text needs: faint, a grey
+// foreground, inverse (the cursor's cell), and anything else (a colour, bold, a background).
+type Style = { faint: boolean; grey: boolean; inverse: boolean; other: boolean };
+const PLAIN: Style = { faint: false, grey: false, inverse: false, other: false };
+
+// A grey foreground: bright black, the 256-colour greys (8, 232 to 255, the grey of the cube's diagonal), or a
+// true colour whose channels are close to each other.
+function greyOf(codes: string[], i: number): { grey: boolean; used: number } {
+  const c = codes[i]!;
+  if (c === "90") return { grey: true, used: 1 };
+  if (c === "38" && codes[i + 1] === "5") {
+    const n = Number(codes[i + 2]);
+    return { grey: n === 8 || n >= 232 || [59, 102, 145, 188].includes(n), used: 3 };
+  }
+  if (c === "38" && codes[i + 1] === "2") {
+    const rgb = [3, 4, 5].map((k) => Number(codes[i + k - 1]));
+    return { grey: Math.max(...rgb) - Math.min(...rgb) < 24, used: 5 };
+  }
+  return { grey: false, used: 1 };
+}
+
+function apply(st: Style, params: string): Style {
+  const codes = params.split(";");
+  if (!params) return { ...PLAIN };
+  let s = { ...st };
+  for (let i = 0; i < codes.length; ) {
+    const c = codes[i] || "0";
+    if (c === "0") { s = { ...PLAIN }; i++; continue; }
+    if (c === "2") s.faint = true;
+    else if (c === "22") { s.faint = false; s.other = false; }
+    else if (c === "7") s.inverse = true;
+    else if (c === "27") s.inverse = false;
+    else if (c === "39") { s.grey = false; s.other = false; }
+    else if (c === "23" || c === "24" || c === "49") s.other = false;
+    else if (c === "38" || c === "90" || /^3[0-7]$/.test(c) || /^9[1-7]$/.test(c)) {
+      const g = c === "38" || c === "90" ? greyOf(codes, i) : { grey: false, used: 1 };
+      s.grey = g.grey;
+      s.other = !g.grey;
+      i += g.used;
+      continue;
+    } else if (c === "48") { s.other = true; i += codes[i + 1] === "5" ? 3 : codes[i + 1] === "2" ? 5 : 1; continue; }
+    else s.other = true;
+    i++;
+  }
+  return s;
+}
+
+// The text after the marker in a raw line, and how it is drawn: "plain" (the terminal's own colour, as typed text
+// is), "placeholder" (every character faint or grey, the cursor's inverse cell aside), or "coloured" (any other
+// style: a draft drawn in colour, as Claude Code draws a command or a shell line).
+type Look = "plain" | "placeholder" | "coloured";
+function after(raw: string, marker: RegExp): { text: string; look: Look } | undefined {
   const plain = stripAnsi(raw);
   const m = plain.match(marker);
   if (!m) return undefined;
   const tail = plain.slice(m[0].length);
   const text = tail.replace(/\s*│?\s*$/u, "").trim();
-  if (!text) return { text, styled: false };
-  const pos = m[0].length + (tail.length - tail.trimStart().length);
-  let styled = false;
+  if (!text) return { text, look: "plain" };
+  const from = m[0].length + (tail.length - tail.trimStart().length);
+  const to = from + text.length;
+  let st = { ...PLAIN };
   let seen = 0;
-  for (let i = 0; i < raw.length; ) {
+  let typed = false;
+  let coloured = false;
+  let dim = false;
+  for (let i = 0; i < raw.length && seen < to; ) {
     const rest = raw.slice(i);
-    const sgr = /^\x1b\[([0-9;]*)m/.exec(rest);
-    if (sgr) {
-      styled = !sgr[1]!.split(";").filter(Boolean).every((c) => RESET.has(c));
-      i += sgr[0].length;
-      continue;
-    }
+    const sgr = /^\x1b\[([0-9;:]*)m/.exec(rest);
+    if (sgr) { st = apply(st, sgr[1]!.replace(/:/g, ";")); i += sgr[0].length; continue; }
     const esc = ESC.exec(rest);
     if (esc) { i += esc[0].length; continue; }
-    if (seen === pos) break;
-    seen++;
-    i++;
+    const ch = String.fromCodePoint(raw.codePointAt(i)!);
+    if (seen >= from && ch.trim()) {
+      if (st.other) coloured = true;
+      else if (st.faint || st.grey) dim = true;
+      else if (!st.inverse) typed = true;
+    }
+    seen += ch.length;
+    i += ch.length;
   }
-  return { text, styled };
+  const look: Look = coloured || (typed && dim) ? "coloured" : typed ? "plain" : dim ? "placeholder" : "plain";
+  return { text, look };
 }
 
 function claude(lines: string[]): Box {
@@ -64,8 +119,7 @@ function claude(lines: string[]): Box {
     const head = after(lines[i]!, marker);
     if (!head) return "unread";
     const rest = plain.slice(i + 1, end).map((l) => l.replace(BORDER, "").trim()).filter(Boolean);
-    if (!head.text && !rest.length) return "empty";
-    if (head.text && head.styled) return "unread";
+    if (!rest.length && (!head.text || head.look === "placeholder")) return "empty";
     return "draft";
   }
   return "unread";
@@ -79,8 +133,10 @@ function codex(lines: string[]): Box {
     // Below the box: its continuation and the footer, each indented, or blank; a cell of the history is not.
     if (plain.slice(i + 1).some((l) => l.trim() && !/^\s{2}/.test(l))) return "unread";
     const head = after(lines[i]!, marker);
-    if (!head || !head.text || head.styled) return "unread";
-    return "draft";
+    if (!head) return "unread";
+    if (head.text && head.look !== "placeholder") return "draft";
+    // Nothing on its first line: empty only when no line follows it directly, since a draft may go on below.
+    return !plain[i + 1]?.trim() ? "empty" : "unread";
   }
   return "unread";
 }

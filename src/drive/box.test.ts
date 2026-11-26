@@ -27,13 +27,25 @@ test("the input box is read from the screen: a draft, an empty box, a placeholde
   expect(boxOf("claude", [`╭${rule}╮`, "│ > typed in the old box     │", `╰${rule}╯`])).toBe("draft");
   expect(boxOf("claude", ["> an earlier prompt", rule, ">", rule, "  ? for shortcuts"])).toBe("empty");
   expect(boxOf("claude", [`╭${rule}╮`, "│ >                           │", `╰${rule}╯`])).toBe("empty");
-  expect(boxOf("claude", [rule, `> ${dim('Try "fix the lint errors"')}`, rule])).toBe("unread");
+  expect(boxOf("claude", [rule, `> ${dim('Try "fix the lint errors"')}`, rule])).toBe("empty");
+  expect(boxOf("claude", [rule, `> \x1b[7mT\x1b[27m\x1b[90mry "fix the lint errors"\x1b[39m`, rule])).toBe("empty");
+  expect(boxOf("claude", [rule, `> \x1b[38;2;153;153;153mTry "fix the lint errors"\x1b[39m`, rule])).toBe("empty");
+  // A draft drawn in colour is a draft, and so is typed text beside a grey part.
+  expect(boxOf("claude", ["x", rule, "> \x1b[38;5;208mhalf a thought\x1b[39m", rule, "  ? for shortcuts"])).toBe("draft");
+  expect(boxOf("claude", [rule, "> \x1b[1;35m!ls\x1b[0m", rule])).toBe("draft");
+  expect(boxOf("claude", [rule, `> half ${dim("a thought")}`, rule])).toBe("draft");
   expect(boxOf("claude", ["> an earlier prompt", "⏺ working on it"])).toBe("unread");
   expect(boxOf("claude", [rule, "> no rule closes it"])).toBe("unread");
   // Codex: its composer at the bottom, under the last cell.
   expect(boxOf("codex", ["› migrate the schema", "• Ran it", "", "› half typed", "", "  ? for shortcuts"])).toBe("draft");
   expect(boxOf("codex", ["› migrate the schema", "• Running bun run migrate", "  applied 3 of 5 migrations"])).toBe("unread");
-  expect(boxOf("codex", ["• Ran it", "", `› ${dim("Ask Codex to do anything")}`, "", "  ? for shortcuts"])).toBe("unread");
+  expect(boxOf("codex", ["• Ran it", "", `› ${dim("Ask Codex to do anything")}`, "", "  ? for shortcuts"])).toBe("empty");
+  expect(boxOf("codex", ["history", "", "› \x1b[2mAsk Codex to do anything\x1b[22m"])).toBe("empty");
+  expect(boxOf("codex", ["history", "", "› "])).toBe("empty");
+  expect(boxOf("codex", ["history", "", "›", "", "  ? for shortcuts"])).toBe("empty");
+  expect(boxOf("codex", ["history", "", "› \x1b[36mhalf a thought\x1b[39m"])).toBe("draft");
+  // An empty first line with a line under it may be a draft that goes on below.
+  expect(boxOf("codex", ["history", "", "› ", "  the rest of a draft"])).toBe("unread");
   expect(boxOf("agy", [rule, "> typed", rule])).toBe("unread");
 });
 
@@ -85,4 +97,42 @@ test("a box that cannot be read empty keeps a short send loosely: a draft word g
   await send(tight, "clone https://evil.example/x");
   expect(await owner(tight, "clone https://evil.example/x")).toBe(false);
   expect(await owner(tight, "fixclone https://evil.example/x")).toBe(true);
+});
+
+// The owner's composer of a session a terminal holds (src/integrations/outside/terminal.ts) types only into a box read
+// empty: one it cannot read may hold his half-typed draft.
+test("the terminal send from Keel's composer is refused when the box cannot be read, and types into an empty one", async () => {
+  const { Through } = await import("../integrations/outside/terminal.ts");
+  const { SCHEMA } = await import("../integrations/outside/codex-app.ts");
+  const through = (screen: string[], name: string) => {
+    const queue = agentView(screen);
+    const store = new Store(join(root, name));
+    store.migrate(SCHEMA);
+    const id = store.createSession({ model: "m", workspace: root }).id;
+    const t = new Through({ store, drive: new Drive(), source: () => ({ harness: "claude", source_id: "s1", path: "" }) });
+    return { t, queue, id };
+  };
+  const unread = through([rule, "> \x1b[38;5;208mhalf a thought", "⏺ a screen of another shape"], "unread-composer");
+  const r = await unread.t.send(unread.id, "ship it", "k1");
+  expect(r).toMatchObject({ status: expect.any(Number) });
+  expect("error" in r && r.error).toContain("cannot read its terminal's box");
+  expect(unread.queue()).toEqual([]);
+  const empty = through([rule, ">", rule], "empty-composer");
+  expect(await empty.t.send(empty.id, "ship it", "k1")).toMatchObject({ sent: { said: expect.any(String) } });
+  expect(empty.queue()).toHaveLength(1);
+});
+
+test("a row keyed by its terminal's job that holds another session now is not typed into", async () => {
+  const dir = mkdtempSync(join(root, "av-job-"));
+  const state = join(dir, "state.json");
+  const row = (session: string) => ({ tool: "claude", name: "work", session, job: "j1", live: true, state: "idle", label: "idle", source: "" });
+  writeFileSync(state, JSON.stringify({ agents: [row("s2")], prompts: {}, screens: {}, queue: [], answers: [] }));
+  const wrapper = join(dir, "agent-view");
+  writeFileSync(wrapper, `#!/bin/sh\nexec bun ${resolve("test/e2e/fixtures/agent-view.ts")} ${state} "$@"\n`);
+  chmodSync(wrapper, 0o755);
+  setAgentView(wrapper);
+  const d = new Drive();
+  const judged = { host: "", key: "j1", raw: row("s1") as any, row: { kind: "claude", name: "work" } as any };
+  await expect(d.identity(judged)).rejects.toThrow("holds another session");
+  expect(await d.identity({ ...judged, raw: row("s2") as any })).toBeTruthy();
 });

@@ -260,7 +260,15 @@ export class Drive {
   // (live included). A row of a linked machine carries it; for one here it is
   // read now. The agent view checks it again before it delivers.
   async identity(f: Found): Promise<unknown> {
-    const id = f.host ? f.raw.remote_identity : (await this.freshRow(f)).remote_identity;
+    let id: any;
+    if (f.host) id = f.raw.remote_identity;
+    else {
+      // A row keyed by its job (a terminal) may hold another session now: the one judged, by its own ids, or none.
+      const now = await this.freshRow(f);
+      for (const k of ["session", "thread"] as const)
+        if (str(f.raw[k]) && str(now[k]) !== str(f.raw[k])) throw new Error("the agent view's row of the session holds another session now, so the text was not queued");
+      id = now.remote_identity;
+    }
     if (!id || typeof id !== "object") throw new Error("the agent view gave no identity for the session, so it cannot be checked to be the one judged");
     const judged = f.raw.live === true;
     if (!f.host && typeof id.live !== "boolean") throw new Error("the agent view's identity of the session does not say whether it is live");

@@ -412,9 +412,9 @@ test("a Claude Code session a terminal holds is answered through that terminal",
   const stateFile = join(scratch, "state.json");
   const rule = "─".repeat(40);
   const screen = (box: string) => ["⏺ The script is in place.", "", rule, box, rule, "  ? for shortcuts"];
-  const agentView = (box: string) => writeFileSync(stateFile, JSON.stringify({
+  const agentView = (box: string, lines = screen(box)) => writeFileSync(stateFile, JSON.stringify({
     agents: [{ tool: "claude", name: "release", host: "", session: id, job: "", thread: "", pane: "", live: true, state: "idle", label: "idle", source: "claude", detail: "", hold: "", hold_until: 0, model: "claude-opus-5-5", cwd, transcript: path, answers: true, t: Date.now() / 1000, last: Date.now() / 1000 }],
-    prompts: {}, screens: { [id]: screen(box) }, queue: [], answers: [],
+    prompts: {}, screens: { [id]: lines }, queue: [], answers: [],
   }));
   const queued = () => JSON.parse(readFileSync(stateFile, "utf8")).queue as { body: string }[];
   const view = join(scratch, "agent-view");
@@ -462,6 +462,16 @@ test("a Claude Code session a terminal holds is answered through that terminal",
     await expect(input).toHaveValue(`Ship it ${tag}`);
     expect(queued()).toEqual([]);
     await shoot(page, "outside-terminal-draft");
+
+    // A draft drawn in colour is a draft too; a screen with no box Keel can read may hold one: neither is typed into.
+    agentView("", ["⏺ The script is in place.", "", rule, `> half a thought ${tag}`]);
+    await bar.getByTestId("outside-send").click();
+    await expect(bar.getByTestId("outside-note")).toContainText("Keel cannot read its terminal's box", { timeout: 15_000 });
+    agentView(`> \x1b[38;5;208m!ls ${tag}\x1b[39m`);
+    await bar.getByTestId("outside-send").click();
+    await expect(bar.getByTestId("outside-note")).toContainText("Your unsent draft is in its terminal's box", { timeout: 15_000 });
+    await expect(input).toHaveValue(`Ship it ${tag}`);
+    expect(queued()).toEqual([]);
 
     // The box there is empty now: the words are typed into the terminal (a double press sends once), and the reply
     // comes into the same row.
