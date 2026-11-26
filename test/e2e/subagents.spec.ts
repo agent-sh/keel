@@ -1,8 +1,15 @@
-import { expect, test } from "./isolate.ts";
+import { expect, test, type Page } from "./isolate.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HAIKU, shoot, SCRIPTED, inHead, leaveHead } from "./shots.ts";
+
+// A parent opens on the Conversation lens once it has agents. The call rows,
+// wake notices and individual reports below are in the full stream.
+async function showFullStream(page: Page) {
+  await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
+  await expect(page.getByTestId("transcript")).toBeVisible();
+}
 
 // Feature: the model starts two background subagents in one step; they run as
 // child sessions shown under the parent, live; their reports come back to the
@@ -22,6 +29,7 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await page.keyboard.press("Enter");
 
   // Started together, the two agents are one line, which opens to each agent's own.
+  await showFullStream(page);
   const started = page.locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
   await expect(started).toContainText("Started 2 agents", { timeout: 60_000 });
   await started.click();
@@ -114,6 +122,7 @@ test("the last agent report ends a timer set while the agents ran", async ({ pag
   ];
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
   await page.goto(`/s/${session.id}`);
+  await showFullStream(page);
   await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 90_000 });
   const timer = async () => (await (await request.get(`/api/sessions/${session.id}/background`)).json()).waits.find((w: any) => w.kind === "timer");
   await expect.poll(async () => (await timer())?.status, { timeout: 30_000 }).toBe("cancelled");
@@ -159,6 +168,7 @@ test("a parked subagent notifies its busy parent before the final report", async
     const waitId = await waitIdOf(a);
     expect((await view()).running).toBe(true);
     expect((await request.delete(`/api/waits/${await waitIdOf(cancelled)}`)).ok()).toBe(true);
+    await showFullStream(page);
 
     // The parent's turn ends when its wait_agent gives up, 5 s after it began: the wake follows that,
     // and the default 5 s was passed when the daemon was slow (after a test of this file that ran a minute).
@@ -219,6 +229,7 @@ test("an agent waits on its own background command, and reports after its end", 
     // The parent's turn ends and the park starts no other: its prompt is its one input.
     await expect.poll(async () => (await events(session.id)).at(-1)?.kind, { timeout: 30_000 }).toBe("turn_end");
     expect((await events(session.id)).filter((e) => e.kind === "user")).toHaveLength(1);
+    await showFullStream(page);
     const card = page.getByTestId("agent-call").last();
     await expect(card.getByTestId("agent-call-state")).toHaveText("Working: command in background");
     await shoot(page, "agents-own-command-01-waiting");
@@ -316,6 +327,7 @@ test("two reports of one agent in one input show as two cards", async ({ page, r
   ];
   await page.goto(`/s/${session.id}`);
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  await showFullStream(page);
   const cards = page.getByTestId("agent-reports").last().getByTestId("agent-report");
   // A session whose turns ran on their own opens folded in the lens: the cards are in the stream.
   await expect(page.getByTestId("lens-run").or(cards.first()).first()).toBeVisible({ timeout: 60_000 });
@@ -363,6 +375,7 @@ test("a late automation snapshot never brings back an older agent state", async 
   await readDone;
   await request.post(`/api/sessions/${session.id}/agents/${a.id}/stop`);
   changed = true;
+  await showFullStream(page);
   const status = page.getByTestId("agent-call").first().getByTestId("agent-call-status");
   await expect(status).toContainText("Stopped", { timeout: 15_000 });
   // Every text the card shows from here on: a later frame would hide a brief regression.
@@ -424,7 +437,8 @@ test("agents started together are one line, and the parent's row moves once for 
     // The row and its line changed a few times for six agents (they came, one reported), not at each.
     const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
     expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(3);
-    // In the conversation: one line, with the first tasks named; under it only the agent that failed.
+    // In the full stream: one line, with the first tasks named; under it only the agent that failed.
+    await showFullStream(page);
     const step = page.locator('[data-testid="work-step"][data-family="agents"]');
     await expect(step).toHaveCount(1);
     await expect(step.locator("button.k-line").first()).toContainText("Started 6 agents");
@@ -479,6 +493,7 @@ test("an agent's leftover waits do not wake it after its report", async ({ page,
     ];
     await page.goto(`/s/${session.id}`);
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: `Watch the run\nscript:calls ${JSON.stringify(child)}`, isolation: "none" } }])}` } });
+    await showFullStream(page);
     await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 60_000 });
     const [a] = (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents;
     expect(a.status).toBe("completed");
