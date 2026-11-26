@@ -826,3 +826,17 @@ test("a HEAD reflog too long to read to its end is unknown, and keeps the folder
   expect(await leftovers.reflogOnly(k!.wt.path, k!.wt.branch)).toBe(0);
   expect(await leftovers.reflogOnly(k!.wt.path, k!.wt.branch, 2)).toBeUndefined();
 });
+
+// An agent whose context was lost goes on in a new session; a command its lost context left running (one a
+// restart let run on) is its too, and stops at its end. Only the current session's commands were stopped.
+test("at an agent's end, a command its lost context left running is stopped too", async () => {
+  const store = storeAt("state-lost");
+  const r = repo("lost");
+  const old = store.createSession({ workspace: r, title: "lost-old", model: "scripted:stand-in" });
+  const now = store.createSession({ workspace: r, title: "lost-now", model: "scripted:stand-in" });
+  const j = startJob({ sessionId: old.id, command: "sleep 30", cwd: r, logDir: join(root, "jobs", "lost"), callId: "c1" });
+  const a = { id: "ag-lost", session_id: now.id, parent_id: "p", created: Date.now() - 1000, report: "ag-lost:0", lost: [{ session: old.id }] };
+  await leftovers.before(store, a.id, [r]);
+  await leftovers.settle({ store, isRunning: () => false }, a);
+  expect(j.ended).toBeDefined();
+});

@@ -82,7 +82,7 @@ test("after a restart a job goes on from what the model read, its end is said on
 test("a read past the cap keeps the start and the end, and says what it left out", async () => {
   const root = mkdtempSync(join(RUN, "jobs-"));
   const j = startJob({ sessionId: "s3", command: "printf FIRST-LINE; head -c 2000000 /dev/zero | tr '\\0' x; printf LAST-LINE", cwd: root, logDir: join(root, "jobs") });
-  expect(await waitJob(j, 10_000)).toBe(true);
+  expect(await waitJob(j, 4000)).toBe(true);
   const out = takeUnread(j);
   expect(out.startsWith("FIRST-LINE")).toBe(true);
   expect(out.endsWith("LAST-LINE")).toBe(true);
@@ -361,6 +361,29 @@ test("a restart lets the command in front of a call run on, and the next daemon 
   } finally {
     jobEnded.tell = undefined;
     for (const x of jobsOf("s40")) await stopJob(x);
+  }
+});
+
+// A call whose limit kills its command (the fleet's run_on) keeps that limit when a restart lets the command run on:
+// the next daemon kills it at that time. It ran on with no limit at all.
+test("a command a restart let run on is killed at its call's limit by the next daemon", async () => {
+  const root = mkdtempSync(join(RUN, "jobs-"));
+  const dir = join(root, "spill/s41/jobs");
+  const code = `
+    import { releaseFronts, startJob } from ${JSON.stringify(join(import.meta.dir, "jobs.ts"))};
+    const j = startJob({ sessionId: "s41", command: "sleep 30", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(dir)}, callId: "run_on", stops: true });
+    j.killAt = Date.now() + 1500;
+    releaseFronts();
+    process.exit(0);`;
+  expect(await Bun.spawn(["bun", "-e", code], { stdout: "ignore", stderr: "inherit" }).exited).toBe(0);
+  adoptJobs(join(root, "spill"));
+  const j = jobsOf("s41").find((x) => x.callId === "run_on")!;
+  try {
+    expect(running(j)).toBe(true);
+    expect(await waitJob(j, 4000)).toBe(true);
+    expect(j.stopReason).toContain("timeout");
+  } finally {
+    for (const x of jobsOf("s41")) await stopJob(x);
   }
 });
 

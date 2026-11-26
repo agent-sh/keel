@@ -37,7 +37,7 @@ import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFo
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop, stopSays } from "../core/stoppers.ts";
-import { dropCallEnv } from "../tools/jobs.ts";
+import { dropCallEnv, stopReleased } from "../tools/jobs.ts";
 import { runningData } from "./running.ts";
 import { StepOrder } from "./step-order.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
@@ -1152,11 +1152,15 @@ export class Engine {
   // and a move of the session keep it waiting for their own time (holds).
   // The first stop names the turn's end; the owner's Stop after another's does.
   async interrupt(id: string, by: string) {
+    // The owner's Stop ends the commands a restart let run on from in front of the session's calls, as those
+    // calls would have ended them: after the restart the session waits on them with no turn running.
+    const freed = ownerStop(by) ? stopReleased(id).catch((e) => { this.errors.capture("server", e, { session: id, at: "interrupt" }); }) : undefined;
     const r = this.running.get(id);
     if (!r) {
       // No turn: the owner's compaction, if one is being written, is what the stop is for.
       const c = this.compacting.get(id);
       if (c && !c.abort.signal.aborted) { c.by = by; c.abort.abort(); }
+      await freed;
       return;
     }
     if (!this.stoppedEarly.has(id) && (!this.stoppedBy.has(id) || ownerStop(by))) this.stoppedBy.set(id, by);
@@ -1187,7 +1191,7 @@ export class Engine {
       }
     }
     r.abort.abort();
-    await r.done;
+    await Promise.all([r.done, freed]);
     owed(() => void this.store.sqlOrLater("unsteer", [id], "the queue after a stop"));
     this.emitQueue(id);
   }

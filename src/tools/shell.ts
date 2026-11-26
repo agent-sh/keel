@@ -100,6 +100,8 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
     handle: o.handle, stops: !o.background, traceFile,
   }, slot);
   if (o.background) return { state: "running", job, output: said };
+  // Its limit outlives a restart that lets it run on (releaseFronts): the next daemon kills it then.
+  if (o.onTimeout === "kill") job.killAt = Date.now() + o.timeoutMs;
 
   // The owner can end this wait early and move the command behind the call (moveToBackground).
   const mover = new AbortController();

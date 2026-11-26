@@ -66,6 +66,9 @@ export type Job = {
   // A restart let it run on from in front of its call (releaseFronts): the call does not stop it when the
   // restart parks its turn, and the next daemon takes it back as the command that turn waits on.
   released?: boolean;
+  // When its call's limit kills it (a call whose timeout kills, as the fleet's run_on): a command a restart let run
+  // on keeps it, and the daemon that holds it then kills it at that time (killDue).
+  killAt?: number;
   owes?: boolean;        // it ended and the input that says so is not stored yet
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
@@ -508,6 +511,8 @@ export type Meta = {
   trace_file?: string; // where its shell reports the commands it runs (a check's run): read when it ends, whichever daemon sees that
   stopping?: true;   // a stop was under way when this was written: a daemon that went down then left it for the next one
   wake?: true;       // its end starts a turn of its session (a call a restart cut was waiting on it)
+  released?: true;   // a restart let it run on from in front of its call (Job.released)
+  kill_at?: number;  // when its call's limit kills it (Job.killAt)
   cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
   state_id?: string; // the state folder whose daemon started it (stateIdOf)
   kind?: "code";     // a program of run_code (codeJob): it cannot outlive its daemon, its end says it was interrupted
@@ -1027,7 +1032,7 @@ function* scanJobs(spillRoot: string, refused?: AdoptionRefusal): Generator<void
 function baseOf(m: Meta, dir: string) {
   return { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
     pty: !!m.pty, log: join(dir, `${m.id}.log`), started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-    callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken, kind: m.kind };
+    callId: m.call_id, by: m.by, handle: m.handle, released: m.released, killAt: typeof m.kill_at === "number" ? m.kill_at : undefined, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken, kind: m.kind };
 }
 const historyOf = (m: Meta, dir: string): Job => {
   const base = baseOf(m, dir);
@@ -1153,6 +1158,7 @@ const LOOK_MS = 1000;
 const adopted = new Map<string, { job: Job; meta: Meta; resolve: () => void }>();
 let watcher: Timer | undefined;
 function watchAdopted() {
+  killDue();
   for (const [id, a] of adopted) {
     const done = exitOf(a.job.log);
     if (!done && alive(a.meta)) continue;
@@ -1191,7 +1197,8 @@ export const liveJobs = () => [...jobs.values()].filter(jobLive);
 
 // A command in front of a call that a restart would stop when it parks the turn: one the call stops, not in a
 // terminal the daemon holds (that ends with the daemon whatever is done here), still running.
-export const restartStops = (j: Job) => !!j.stops && !j.background && !j.pty && !!j.proc && j.ended === undefined;
+// (One whose stop is under way is left to that stop.)
+export const restartStops = (j: Job) => !!j.stops && !j.background && !j.pty && !!j.proc && j.ended === undefined && !j.stopping;
 
 // A restart parks its turns: the commands in front of their calls run on instead of being stopped. Its
 // processes are not the daemon's (a scope of their own, else a group the service's stop leaves alone),
@@ -1206,10 +1213,28 @@ export function releaseFronts(): number {
     j.released = true;
     backgrounded(j);
     j.wake = true;
-    try { patchMeta(j.log, { wake: true }); } catch {}
+    try { patchMeta(j.log, { wake: true, released: true, ...(j.killAt ? { kill_at: j.killAt } : {}) }); } catch {}
+    if (j.killAt) { (killer ??= setInterval(killDue, 1000)).unref?.(); }
     n++;
   }
   return n;
+}
+
+// The commands a restart let run on whose call's limit has passed are killed, as the call would have killed them.
+let killer: ReturnType<typeof setInterval> | undefined;
+export function killDue(now = Date.now()) {
+  for (const j of jobs.values()) {
+    if (!j.released || !j.killAt || j.killAt > now || j.stopping || j.ended !== undefined) continue;
+    void stopJob(j, `was killed at its ${Math.round((j.killAt - j.started) / 1000)}s timeout`).catch(() => {});
+  }
+}
+
+// The owner stopped the session: what a restart let run on from in front of its call stops too, as the call would
+// have stopped it. A command the model sent behind its call itself runs on, as it would without a restart.
+export async function stopReleased(sessionId: string, reason = "was stopped by the owner"): Promise<number> {
+  const list = [...jobs.values()].filter((j) => j.sessionId === sessionId && j.released && running(j));
+  await Promise.all(list.map((j) => stopJob(j, reason).catch(() => [])));
+  return list.length;
 }
 
 // Resolves true when the job ended within ms, false when it is still running.

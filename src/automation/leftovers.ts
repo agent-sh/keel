@@ -282,7 +282,8 @@ const workingIn = (all: Cwd[], dir: string): string | undefined => {
 };
 
 // `report`: the report this end makes (an agent given another task ends again with another).
-export type AgentEnd = { id: string; session_id: string; parent_id: string; created: number; worktree?: string | null; branch?: string | null; report?: string };
+// `lost`: the contexts its task lost before this one (src/automation/successor.ts), whose commands are its too.
+export type AgentEnd = { id: string; session_id: string; parent_id: string; created: number; worktree?: string | null; branch?: string | null; report?: string; lost?: { session: string }[] };
 // `workspace`: the daemon's own folder, whose repository counts as one Keel knows of.
 type Ctx = { store: Store; isRunning: (sessionId: string) => boolean; workspace?: string };
 
@@ -318,7 +319,8 @@ function busyIn(open: Row[], procs: Cwd[], dir: string, self: string, live: (ses
 // Nothing is removed here (the worktree Keel made for it is settled by ownWorktree).
 export async function settle(c: Ctx, a: AgentEnd): Promise<string> {
   const { store } = c;
-  const jobs = jobsOf(a.session_id);
+  // Every context of its task: a command a lost context left running (one a restart let run on) is its too.
+  const jobs = [...new Set([a.session_id, ...(a.lost ?? []).map((l) => l.session)])].flatMap((sid) => jobsOf(sid));
   const report = a.report ?? a.id;
   const s = earlier(store, a.id, report);
   const record = (kind: string, fate: string, o: { repo?: string; path?: string; name?: string }) =>
