@@ -1569,7 +1569,7 @@ test("a plan that does not fit as its keys are ready gets Approve the keyboard o
   await expect(plan.getByTestId("plan-text")).toBeFocused();
   // A short window: the plan no longer stands whole. The owner's key to what waits is a new arrival.
   const size = page.viewportSize()!;
-  await page.setViewportSize({ width: size.width, height: 360 });
+  await page.setViewportSize({ width: size.width, height: 320 });
   await page.waitForTimeout(300);
   await page.keyboard.press("Alt+a");
   await expect(plan).toHaveAttribute("data-keys", "ready");
