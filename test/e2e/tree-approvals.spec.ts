@@ -57,6 +57,14 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
       await expect(card(g.session_id).getByTestId("approval")).toHaveCount(1);
       // An agent's request is a row under its line, not a card of its own height, and only the one Enter answers carries the state's edge.
       for (const id of [a!.session_id, g.session_id]) await expect(card(id).getByTestId("approval")).toHaveAttribute("data-dense", "true");
+      // The keyboard on one agent's list: its request alone carries the state's edge, the others and the question step back.
+      if (size.width > 767) {
+        await card(a!.session_id).getByTestId("approvals").focus();
+        const edge = (id: string, sel: string) => card(id).locator(sel).first().evaluate((el) => getComputedStyle(el).boxShadow);
+        expect(await edge(a!.session_id, '[data-testid="approval"]')).not.toBe("none");
+        expect(await edge(g.session_id, '[data-testid="approval"]')).toBe("none");
+        expect(await edge(b!.session_id, ".k-question")).toBe("none");
+      }
       // The second answer is not heavier than the first.
       if (size.width > 767) expect(await card(a!.session_id).getByTestId("allow-always").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
       // The last of them does not stand on the message box.

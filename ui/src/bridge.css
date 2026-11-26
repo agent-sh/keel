@@ -1223,6 +1223,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-approval[data-risk="high"] { box-shadow: inset 0.1875rem 0 0 var(--st-fail); }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within, [data-hot]) { box-shadow: none; }
 .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-question[data-state="open"]:not(:focus-within) { box-shadow: none; }
+/* The keyboard on a list itself (brought there, on no answer yet) counts as on its request: the other lists'
+   requests and a question step back the same way. */
+.k-asks:has(.k-ask-list:focus) .k-ask-list:not(:focus) > .k-approval:not([data-hot]) { box-shadow: none; }
+.k-asks:has(.k-ask-list:focus) .k-ask-list:not(:focus) > .k-approval .k-allow { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.k-asks:has(.k-ask-list:focus) .k-question[data-state="open"]:not(:focus-within) { box-shadow: none; }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within) .k-allow { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
 /* The second answer is not heavier than the first: Always allow in the weight of Allow once. */
 .k-approval .k-grant { font-weight: 400; }
