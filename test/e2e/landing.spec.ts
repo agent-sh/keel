@@ -299,7 +299,9 @@ test("the Branches panel lands every ready branch in order and stops at the firs
   const lane = (title: string, sed: string) => ({ name: "spawn_agent", input: { message: `${title}\n${scriptBash(commit(sed, title))}` } });
   const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Ready coordinator" } })).json()).session.id as string;
   try {
-    await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([lane("Lane alpha", "s/^line 1$/line 1 ALPHA/"), lane("Lane beta", "s/^line 6$/line 6 BETA/"), lane("Lane gamma", "s/^line 12$/line 12 GAMMA/")])}`) } });
+    // The panel uses creation order. Start one lane per reply so this fixture
+    // does not assume the completion order of parallel spawn calls.
+    await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents in separate replies: Lane alpha, Lane beta, then Lane gamma.", `script:calls ${JSON.stringify([lane("Lane alpha", "s/^line 1$/line 1 ALPHA/"), lane("Lane beta", "s/^line 6$/line 6 BETA/"), lane("Lane gamma", "s/^line 12$/line 12 GAMMA/")])}`) } });
     const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
     await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(3);
     await idle(coord);
@@ -312,6 +314,7 @@ test("the Branches panel lands every ready branch in order and stops at the firs
     const panel = page.getByTestId("branches-panel");
     const section = panel.getByTestId("ready-section");
     await expect(section.getByTestId("ready-row")).toHaveCount(3, { timeout: 30_000 });
+    expect(await section.getByTestId("ready-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-branch")))).toEqual([alpha, beta, gamma]);
     for (const b of [alpha, beta, gamma]) await expect(section.locator(`[data-testid="ready-row"][data-branch="${b}"]`).getByTestId("ready-land")).toBeEnabled();
     await expect(section.getByTestId("ready-land-all")).toHaveText(/Land all ready · 3/);
     // Listed once: the same branches are not repeated as ended ones further down.
