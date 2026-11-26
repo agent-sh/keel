@@ -888,7 +888,8 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-docket-act:hover { background: var(--hover); }
 .k-docket-glyph { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
 .k-docket-line[data-running] .k-docket-glyph { color: var(--st-work); }
-.k-docket-n { flex-shrink: 0; font-weight: 600; color: var(--fg); }
+/* A dock line's figure (the plan's share done, the count of commands) is in ink at the line's weight: the dock tells, it does not ask. */
+.k-docket-n { flex-shrink: 0; font-weight: 400; color: var(--fg); }
 /* The line above: the plan takes what the agents and the commands leave. */
 .k-docket-row { display: flex; align-items: center; min-width: 0; }
 .k-docket-row > .k-docket-line { width: auto; flex: 0 1 auto; }
@@ -907,7 +908,7 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-agents-part:hover { background: var(--hover); color: var(--fg); }
 .k-agents-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .k-docket-jobs { flex-shrink: 0; }
-.k-docket-jobs-n { font-weight: 600; color: var(--fg); }
+.k-docket-jobs-n { font-weight: 400; color: var(--fg); }
 /* The plan's share done: a hairline track, in ink. */
 .k-docket-more { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
 .k-docket-top[data-open] { margin-bottom: 0.25rem; border: 1px solid var(--line); border-radius: var(--radius-xl); background: var(--raised); }

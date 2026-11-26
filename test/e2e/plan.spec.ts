@@ -100,6 +100,8 @@ test("a rejected plan update and answered questions read right", async ({ page, 
   await expect(refused).toHaveCount(1);
   await expect(refused.getByTestId("plan-rejected")).toContainText("The plan before it stays.");
   await expect(page.getByTestId("dock-plan")).toContainText("Writing the parser");
+  // The dock tells: the plan's share done is in ink at the line's own weight, not a bold figure.
+  expect(await page.getByTestId("dock-plan").locator(".k-docket-n").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
 
   await card.getByTestId("question-option").nth(0).click(); // Keep backup: Yes
   await card.getByTestId("question-other").nth(0).fill('use "weekly" copies');
