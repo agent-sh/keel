@@ -24,7 +24,6 @@ type Daily = CardDay & {
 export type DailyCards = { time_zone: string; days: Daily[]; today: Daily; active_days: number };
 
 const top = "s.parent_id IS NULL AND COALESCE(s.settings ->> '$.helper_cards', 0) = 0";
-const local = "s.outside IS NULL";
 const modeOf = (v: unknown) => isMode(v) ? v : null;
 const has = (db: Database, table: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
 
@@ -102,7 +101,7 @@ export function readDailyCards(db: Database, { now, log_dir }: { now: number; lo
           a.data ->> '$.why' AS why, a.data ->> '$.rule' AS rule, a.data ->> '$.facts.held' AS held,
           a.data ->> '$.facts.account' AS account, a.data ->> '$.facts.unparsed' AS unparsed, a.data ->> '$.facts.provenance' AS provenance
         FROM approvals a JOIN sessions s ON s.id = a.session_id
-        WHERE a.created BETWEEN ? AND ? AND ${top} AND ${local}
+        WHERE a.created BETWEEN ? AND ? AND ${top} AND s.outside IS NULL
           AND COALESCE(
             (SELECT MIN(COALESCE(q.data ->> '$.helper_first', 0)) FROM alerts q
               WHERE q.kind = 'approval' AND json_extract(q.data, '$.approval_id') = a.id AND q.far_id IS NULL),
@@ -124,7 +123,7 @@ export function readDailyCards(db: Database, { now, log_dir }: { now: number; lo
           a.data ->> '$.card_mode' AS mode, a.data ->> '$.card_build' AS build
         FROM activity a JOIN sessions s ON s.id = a.session_id
         WHERE a.ts BETWEEN ? AND ? AND a.kind = 'alert' AND a.sub = 'question' AND a.data ->> '$.card' IS NOT NULL
-          AND a.data ->> '$.child_session' IS NULL AND ${top} AND ${local}`).all(lo, now)) {
+          AND a.data ->> '$.child_session' IS NULL AND ${top} AND s.outside IS NULL`).all(lo, now)) {
         alertsSeen.add(q.alert);
         add(key("question", q.sid, q.id), q.ts, q.mode, ["question"], q.build);
       }
@@ -135,7 +134,7 @@ export function readDailyCards(db: Database, { now, log_dir }: { now: number; lo
           COALESCE(a.data ->> '$.ask_id', a.data ->> '$.plan_id', a.data ->> '$.secret_id') AS asked
         FROM alerts a JOIN sessions s ON s.id = a.session_id
         WHERE a.ts BETWEEN ? AND ? AND a.kind = 'question' AND a.far_id IS NULL
-          AND a.data ->> '$.expired' IS NULL AND a.data ->> '$.child_session' IS NULL AND ${top} AND ${local}`).all(lo, now)) {
+          AND a.data ->> '$.expired' IS NULL AND a.data ->> '$.child_session' IS NULL AND ${top} AND s.outside IS NULL`).all(lo, now)) {
         if (alertsSeen.has(q.alert) || (!q.asked && q.call && result.get(q.sid, 0, q.ts, now, q.call)?.ruled)) continue;
         add(key("question", q.sid, q.asked ?? q.call ?? q.alert), q.ts, null, ["question"]);
       }
@@ -157,7 +156,7 @@ export function readDailyCards(db: Database, { now, log_dir }: { now: number; lo
       SELECT e.ts, s.workspace, e.data ->> '$.held.repo' AS repo,
         e.data ->> '$.held.set' AS held, e.data ->> '$.card_build' AS build, e.data ->> '$.text' AS text
       FROM sessions s CROSS JOIN events e ON e.session_id = s.id
-      WHERE ${top} AND ${local} AND ${notes.kept} AND e.ts BETWEEN ? AND ?
+      WHERE ${top} AND s.outside IS NULL AND ${notes.kept} AND e.ts BETWEEN ? AND ?
         AND e.kind = 'note' AND e.data ->> '$.kind' = 'trust'
         AND (e.data ->> '$.held.set' IS NOT NULL OR e.data ->> '$.card' = 1
           OR e.data ->> '$.text' LIKE '%held until you trust%Open the Trust panel%')
@@ -180,7 +179,7 @@ export function readDailyCards(db: Database, { now, log_dir }: { now: number; lo
       if (!has(db, table)) continue;
       for (const { ts } of db.query<{ ts: number }, [number, number]>(`
         SELECT t.ts FROM ${table} t JOIN sessions s ON s.id = t.session_id
-        WHERE t.ts BETWEEN ? AND ? AND ${top} AND ${local}${field === "model_calls" ? " AND t.purpose = 'turn'" : ""}`).iterate(lo, now)) {
+        WHERE t.ts BETWEEN ? AND ? AND ${top} AND s.outside IS NULL${field === "model_calls" ? " AND t.purpose = 'turn'" : ""}`).iterate(lo, now)) {
         const d = at(ts);
         if (!d) continue;
         d[field]++;
@@ -191,7 +190,7 @@ export function readDailyCards(db: Database, { now, log_dir }: { now: number; lo
       SELECT e.ts, s.parent_id IS NOT NULL AS agent, e.data ->> '$.reason' AS reason,
         COALESCE(e.data ->> '$.tool_denied', 0) AS denied
       FROM sessions s CROSS JOIN events e ON e.session_id = s.id
-      WHERE ${local} AND (s.parent_id IS NOT NULL OR (${top})) AND ${TURN}
+      WHERE s.outside IS NULL AND (s.parent_id IS NOT NULL OR (${top})) AND ${TURN}
         AND e.kind = 'turn_end' AND e.ts BETWEEN ? AND ?`).all(lo, now)) {
       const d = at(t.ts);
       if (!d) continue;
