@@ -341,11 +341,12 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         <Combobox.ItemIndicator className={cn("col-start-1 text-accent", NARROW.mark)}>
                           <Check className="size-3.5" />
                         </Combobox.ItemIndicator>
-                        <span className={cn("col-start-2 flex min-w-0 items-center gap-1.5", NARROW.apart)}>
+                        <span className={cn("col-start-2 flex min-w-0 items-center gap-1.5", item.unavailable && "flex-wrap gap-y-0", NARROW.apart)}>
                           <span className={cn("min-w-0 truncate", NARROW.name, item.hidden && "max-w-[55%]")} title={item.label} data-testid="model-name">{item.label}</span>
                           {item.value === def && <span data-testid="model-default" className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
                           {!group.provider && !item.hidden && <span className={cn("min-w-16 shrink-[8] truncate text-micro text-faint", NARROW.wrap)} title={item.providerLabel} data-testid="model-provider">{item.providerLabel}</span>}
-                          {item.unavailable && <span className={cn("min-w-0 shrink truncate text-micro text-warn", NARROW.wrap)} title={`Unavailable: ${item.unavailable}`} data-testid="model-unavailable">unavailable: {item.unavailable}</span>}
+                          {/* Why it cannot answer is read whole on a line of its own under the name: beside it, the two cut each other short. */}
+                          {item.unavailable && <span className={cn("min-w-0 basis-full text-micro text-warn", NARROW.wrap)} title={`Unavailable: ${item.unavailable}`} data-testid="model-unavailable">unavailable: {item.unavailable}</span>}
                           {item.hidden && <span className={cn("min-w-0 truncate text-micro text-faint", NARROW.wrap)} title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
                         {session && !item.hidden && <CacheCost loss={lossOf(item)} column={cols.cost} />}

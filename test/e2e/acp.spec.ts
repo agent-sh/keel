@@ -594,6 +594,10 @@ test("acp agent twins and unavailable", async ({ page, request }) => {
     const out = page.getByTestId("model-option").filter({ hasText: "twin-out" });
     await expect(out).toHaveAttribute("data-unavailable", "");
     await expect(out.getByTestId("model-unavailable")).toContainText("it needs its own sign-in first");
+    // The reason stands whole on a line of its own under the name, so neither cuts the other short on a narrow picker.
+    const [name, why] = [(await out.getByTestId("model-name").boundingBox())!, (await out.getByTestId("model-unavailable").boundingBox())!];
+    expect(why.y).toBeGreaterThanOrEqual(name.y + name.height - 1);
+    expect(await out.getByTestId("model-unavailable").evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
     await shoot(page, "acp-20-twins-unavailable");
     await page.keyboard.press("Escape");
     // Settings names the later entry as the same program.
