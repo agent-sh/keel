@@ -40,7 +40,8 @@
 # every stage passed, 1 when one failed, 2 for a refusal (a tree with changes that are not
 # committed, no host, a tool missing there), 3 when the host is too busy to start (a load
 # over 20, or no free place within the wait: at most four runs are on a host at once; KEEL_VERIFY_MAX_LOAD and
-# KEEL_VERIFY_MAX_RUNS change both). The last line, a refusal's too, is the outcome with that
+# KEEL_VERIFY_MAX_RUNS change both; a landing queue's own run, KEEL_LAND_QUEUE=1 in its environment, has a place
+# of its own that no other run takes and is not refused for the load). The last line, a refusal's too, is the outcome with that
 # code: `remote-verify: Summary: every stage passed (exit 0)`, so a wait on the output can
 # match `remote-verify: Summary:` and know the run is over.
 set -euo pipefail
@@ -109,6 +110,8 @@ if [ "${1:-}" != "__remote" ]; then
   # Whether the commit changes what the Qt engine is built from (the qt stage runs by itself then).
   qt=0
   if mb=$(git merge-base origin/main "$sha" 2> /dev/null) && git diff --name-only "$mb" "$sha" | grep -qE '^desktop/(qt/|build\.sh$|src/(said|clip|links|qt)\.rs$|test/paths\.txt$)'; then qt=1; fi
+  # A landing queue's own run (the queue gives its commands KEEL_LAND_QUEUE=1): its place on the host is kept for it.
+  land=0; [ "${KEEL_LAND_QUEUE:-}" = 1 ] && land=1
   ssh_() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$@"; }
   run=$(date -u +%Y%m%dT%H%M%SZ)-${sha:0:12}-$$
   # The host's folder and its bare repository; this script goes with the run, so a commit from before it can be checked too.
@@ -121,7 +124,7 @@ if [ "${1:-}" != "__remote" ]; then
   # session), the far side is hung up and ends its run. This side waits for it as a job, so a
   # signal to this script is acted on at once and takes the connection with it.
   ssh -q -tt -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-    "KEEL_VERIFY_MAX_RUNS=$MAX_RUNS KEEL_VERIFY_MAX_LOAD=$MAX_LOAD KEEL_VERIFY_QT=$qt bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
+    "KEEL_VERIFY_MAX_RUNS=$MAX_RUNS KEEL_VERIFY_MAX_LOAD=$MAX_LOAD KEEL_VERIFY_QT=$qt KEEL_VERIFY_LAND=$land bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
   far=$!; started=1
   trap 'kill "$far" 2> /dev/null || true; wait "$far" 2> /dev/null || true; echo "remote-verify: stopped; the run on $host is ended" >&2; exit 130' INT TERM HUP
   wait "$far" || rc=$?
@@ -171,8 +174,13 @@ sweep() {
 }
 trap 'say "cut off: ending the run"; sweep; exit 130' HUP INT TERM
 
-# At most MAX_RUNS at once on the host: a place is a lock held for the run's life.
+# At most MAX_RUNS at once on the host: a place is a lock held for the run's life. A landing queue's run takes the
+# place kept for it first (no other run takes it, so a landing never waits behind agents' runs), else one of the rest.
 got=0; waited=0
+if [ "${KEEL_VERIFY_LAND:-0}" = 1 ]; then
+  exec 8> "$base/locks/place-land"
+  if flock -n 8; then got=land; fi
+fi
 while [ "$got" = 0 ]; do
   for n in $(seq 1 "$MAX_RUNS"); do
     exec 8> "$base/locks/place-$n"
@@ -184,7 +192,8 @@ while [ "$got" = 0 ]; do
   run sleep 10; waited=$((waited + 10))
 done
 load=$(cut -d' ' -f1 /proc/loadavg)
-if awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l > m) }'; then say "this host's load is $load (over $MAX_LOAD): not started"; exit 3; fi
+# (A landing's run is not refused: the landing would fail for it, and its run is niced like every other.)
+if [ "$got" != land ] && awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l > m) }'; then say "this host's load is $load (over $MAX_LOAD): not started"; exit 3; fi
 
 # Folders of commits and runs older than KEEP_DAYS go, unless a run holds them.
 old() { find "$1" -mindepth 1 -maxdepth 1 -type d -mtime +$((KEEP_DAYS - 1)) 2> /dev/null; }
@@ -252,7 +261,8 @@ stage() {
   return 0
 }
 
-say "run $run (place $got of $MAX_RUNS, load $load, Bun $("$BUN" --version))"
+if [ "$got" = land ]; then said_place="the landing queue's place"; else said_place="place $got of $MAX_RUNS"; fi
+say "run $run ($said_place, load $load, Bun $("$BUN" --version))"
 stage install "$BUN" install --frozen-lockfile
 if [ "${codes[0]}" != 0 ]; then say "the packages could not be installed: nothing else was run"
 else

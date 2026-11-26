@@ -922,7 +922,8 @@ export class LandingQueue {
   // A command of the repository's (setup, a check, the after step) in `cwd`,
   // its output to a log of its own, in a process group of its own: at the time
   // limit the whole group is killed (exit null), and so is one still running
-  // when the daemon exits.
+  // when the daemon exits. KEEL_LAND_QUEUE=1 says the command is the queue's own (a
+  // verify host keeps a place for it: scripts/remote-verify.sh).
   private async sh(command: string, cwd: string, name: string, who: string | null, repo: string, timeoutMs: number, extra: Record<string, string> = {}): Promise<{ exit: number | null; text: string; log: string; cpu_ms?: number | null }> {
     const log = join(this.dir, "logs", `${name.replace(/[^\w.-]/g, "_")}.log`);
     mkdirSync(join(this.dir, "logs"), { recursive: true });
@@ -931,7 +932,7 @@ export class LandingQueue {
     try {
       writeSync(fd, `$ ${command}\n`);
       const argv = this.d.confine(["bash", "-c", command], who, cwd);
-      const p = Bun.spawn(argv, { cwd, env: { ...tempEnv(this.d.env(who)), KEEL_LAND_REPO: repo, CI: "1", ...extra }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
+      const p = Bun.spawn(argv, { cwd, env: { ...tempEnv(this.d.env(who)), KEEL_LAND_REPO: repo, KEEL_LAND_QUEUE: "1", CI: "1", ...extra }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
       pid = p.pid;
       groups.add(pid);
       let late = false;

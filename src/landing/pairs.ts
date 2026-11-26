@@ -166,6 +166,27 @@ export function relatedPairs(sides: readonly Side[], g: Graph, tests: readonly s
   return out.sort((x, y) => rank[x.why] - rank[y.why]);
 }
 
+// Where two sides meet: the files both change, the files of an import from one side's files to the other's (both
+// ends), and the tests the pair runs. A pair checked green at earlier heads keeps its answer when neither side's
+// step since then, nor the base's, changed any of them (`carried`): what each side changed elsewhere is checked by
+// its own checks, and the merge of the two meets only here.
+export function meetOf(a: Pick<Side, "files">, b: Pick<Side, "files">, g: Graph, tests: readonly string[] = []): Set<string> {
+  const fa = new Set(a.files), fb = new Set(b.files);
+  const out = new Set<string>(tests);
+  for (const f of fa) if (fb.has(f)) out.add(f);
+  const edges = (x: Set<string>, y: Set<string>) => { for (const f of x) for (const t of g.get(f) ?? []) if (y.has(t)) { out.add(f); out.add(t); } };
+  edges(fa, fb);
+  edges(fb, fa);
+  return out;
+}
+// Whether a pair's last green answer stands for its heads now: each step (a side's files changed since the heads
+// of that answer, the base's since its tip then) is known and touches nothing of `meet` taken at the heads now. A
+// place where the sides meet now and did not then was made by a step, so that step touches it. Null: git could not say.
+export function carried(o: { steps: readonly (readonly string[] | null)[]; meet: ReadonlySet<string> }): boolean {
+  if (o.steps.some((s) => s === null)) return false;
+  return !o.steps.some((s) => s!.some((f) => o.meet.has(f)));
+}
+
 // Two sides meet in a hub file when they change lines of it within HUNK_NEAR of each other: the same
 // function or table, not two ends of a long file. The first such line, or undefined.
 export const HUNK_NEAR = 30;

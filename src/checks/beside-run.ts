@@ -23,14 +23,14 @@ import { outputOf } from "../core/proc.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
-import { pool } from "../tools/heavy.ts";
+import { machine, pool } from "../tools/heavy.ts";
 import { toolEnv } from "../tools/jobs.ts";
 import { howToRun, limitFor, LOCKS, quote } from "./before.ts";
 import { INSTALL_MS, mainTop, packagesFor, readsIn, runCommand, type Ran } from "./before-run.ts";
 import * as cache from "./package-cache.ts";
 import { setupLineOf } from "../landing/pairs.ts";
 import { timed } from "../admin/stall.ts";
-import { BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, hostLoadOf, limitOf, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
+import { askHost, BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, gapOf, hostLoadOf, limitOf, PER_HOUR, reachOf, stillGreen, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Green, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
 import { countsOf } from "./counts.ts";
 import { baseFor, inFlight } from "./runs.ts";
 import { baseOf, holdCheckCache, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
@@ -47,8 +47,9 @@ type Deps = {
   tellAgent: (sessionId: string, text: string, key: string) => Promise<boolean>;
   // A red of a finished agent, to the session that started it: its failures notice, with its next input.
   tellParent: (sessionId: string, cls: string, message: string) => void;
-  // (A test's own window; the owner's setting otherwise.)
+  // (A test's own window and gap between runs; the owner's setting otherwise.)
   windowMs?: number;
+  gapMs?: number;
 };
 let d: Deps | undefined;
 const dir = () => join(d!.store.stateDir, ...BESIDE_DIR);
@@ -70,17 +71,19 @@ const REFS_MAX = 20_000;
 // What the checks beside agents cost since the daemon started (the resources view reads it).
 export const besideStats = () => ({ ...stats, lanes: lanes.size, running: [...lanes.values()].filter((l) => l.running).length });
 
-// The owner's setting (checks.beside): the window, and a host to run on when this machine has no room.
-type Setting = { window_s: number; host: string | null; host_path: string[] };
+// The owner's setting (checks.beside): the window, the runs an agent gets an hour (0: no cap), and a host to run
+// on when this machine has no room or is over half its threads.
+type Setting = { window_s: number; per_hour: number; host: string | null; host_path: string[] };
 export function setting(): Setting {
   const b = (settings().checks?.beside ?? {}) as Partial<Setting>;
-  return { window_s: typeof b.window_s === "number" ? b.window_s : WINDOW_MS / 1000, host: typeof b.host === "string" && b.host ? b.host : null, host_path: Array.isArray(b.host_path) ? b.host_path.filter((p) => typeof p === "string") : [] };
+  return { window_s: typeof b.window_s === "number" ? b.window_s : WINDOW_MS / 1000, per_hour: typeof b.per_hour === "number" ? b.per_hour : PER_HOUR, host: typeof b.host === "string" && b.host ? b.host : null, host_path: Array.isArray(b.host_path) ? b.host_path.filter((p) => typeof p === "string") : [] };
 }
 export function checkSetting(v: unknown): string | undefined {
   if (v === undefined) return undefined;
-  if (!v || typeof v !== "object" || Array.isArray(v)) return "beside is an object (window_s, host, host_path)";
+  if (!v || typeof v !== "object" || Array.isArray(v)) return "beside is an object (window_s, per_hour, host, host_path)";
   const b = v as Record<string, unknown>;
   if (b.window_s !== undefined && !(typeof b.window_s === "number" && b.window_s >= 0 && b.window_s <= 3600)) return "beside.window_s is seconds, 0 to 3600";
+  if (b.per_hour !== undefined && !(typeof b.per_hour === "number" && Number.isInteger(b.per_hour) && b.per_hour >= 0 && b.per_hour <= 3600)) return "beside.per_hour is a whole number of runs an hour, 0 (no cap) to 3600";
   if (b.host !== undefined && b.host !== null && !(typeof b.host === "string" && /^[\w.@-]{1,120}$/.test(b.host))) return "beside.host is an ssh host name, or null";
   if (b.host_path !== undefined && !(Array.isArray(b.host_path) && b.host_path.every((p) => typeof p === "string" && /^[\w./~$-]{1,200}$/.test(p)))) return "beside.host_path is a list of folders on the host's PATH";
   return undefined;
@@ -154,7 +157,8 @@ function schedule(id: string) {
   clearTimeout(timers.get(id));
   timers.delete(id);
   const l = lanes.get(id);
-  const due = l ? dueAt(l, d?.windowMs ?? setting().window_s * 1000) : null;
+  const cfg = setting();
+  const due = l ? dueAt(l, d?.windowMs ?? cfg.window_s * 1000, d?.gapMs ?? gapOf(cfg.per_hour)) : null;
   if (due === null) return;
   const t = setTimeout(() => { timers.delete(id); go(id); }, Math.max(0, due - Date.now()));
   (t as any).unref?.();
@@ -165,11 +169,12 @@ function go(id: string) {
   const l = lanes.get(id);
   if (!l || l.running) return;
   lanes.set(id, started(l));
-  let tree: string | null = null, told: string | null | undefined, said: string | null | undefined;
-  void run(id).then((r) => { tree = r.tree; told = r.told; said = r.said; }, (e) => d?.capture(e, { at: "checks beside", session: id })).finally(() => {
+  let tree: string | null = null, told: string | null | undefined, said: string | null | undefined, ran = false;
+  void run(id).then((r) => { tree = r.tree; told = r.told; said = r.said; ran = !!r.ran; }, (e) => d?.capture(e, { at: "checks beside", session: id })).finally(() => {
     const now = lanes.get(id);
     if (!now) return;
-    lanes.set(id, finished(now, tree, told, said));
+    // A pass that ran no check (the same tree, nothing of the agent's) does not count toward the hour's runs.
+    lanes.set(id, { ...finished(now, tree, told, said), ...(ran ? {} : { ranAt: l.ranAt }) });
     if (sweepable(lanes.get(id)!)) sweep(id);
     schedule(id);
   });
@@ -197,7 +202,8 @@ async function settleOwed(id: string) {
 }
 
 // One run of a lane: the tree it checked (null: none was read) and the failure told (undefined: as it was).
-type Done = { tree: string | null; told?: string | null; said?: string | null };
+// `ran`: a check ran (the pass counts toward the agent's runs of the hour).
+type Done = { tree: string | null; told?: string | null; said?: string | null; ran?: boolean };
 async function run(id: string): Promise<Done> {
   const held: string[] = [];
   try { return await during("task", () => runIn(id, held), "checks beside an agent"); } finally { for (const k of held) cache.release(k); }
@@ -222,11 +228,17 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
   const scratch = join(dir(), scratchName(id));
   const tool = `${scratch}.tool`;
   const copy = await copyTree(repo, tree, look.head, scratch, checks);
-  if (!copy) return { tree };
+  // (The tree moves on with nothing run: what passed before is not known to stand on it.)
+  const forgetGreen = () => { const now = lanes.get(id); if (now) lanes.set(id, { ...now, green: {} }); };
+  if (!copy) { forgetGreen(); return { tree }; }
   const change = await changesOf(repo, tree, look.head, scratch, lane.tree);
   // Nothing of the agent's own: the files are the base's, which are not its to fix.
-  if (!change.length) { stats.skipped++; return { tree }; }
+  if (!change.length) { forgetGreen(); stats.skipped++; return { tree }; }
   await readRefs(scratch, copy, checks);
+  // `change` is the difference from the tree checked last only when one was (else the whole change, which holds it).
+  const step = lane.tree ? change : null;
+  const greens: Record<string, Green> = {};
+  let didRun = false;
   // The base's installed packages for the copy when the agent has none of its own (it unlinked them), as a
   // fails-before run has them (packagesFor): linked from the repository's checkout or the cache, else installed once.
   const pk = await provide(id, repo, scratch, tool, checks, held);
@@ -238,15 +250,22 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
   for (const check of checks) {
     const rate = `${repo.scope}\0${check.name}`;
     let tests: string[] = [], of = 0;
+    const inputs = inputsOf(repo.top, check.inputs) ?? null;
+    // The test files that passed before and read nothing the change touched: not run again.
+    let standing: string[] = [];
     if (check.tests?.length) {
-      const all = timed(() => "checks beside: the tests a change touches", () => testsFor(change, testFilesOf(check, copy.files), (p) => refs.get(copy.blobs.get(p) ?? ""), lane.carry));
-      if (!all.length) continue; // the change touches none of its tests
+      const was = lane.green[check.name];
+      if (step && was && was.inputs === inputs && was.files.length) standing = await standingGreen(scratch, copy, was.files, step);
+      greens[check.name] = { inputs, files: standing };
+      const stands = new Set(standing);
+      const all = timed(() => "checks beside: the tests a change touches", () => testsFor(change, testFilesOf(check, copy.files), (p) => refs.get(copy.blobs.get(p) ?? ""), lane.carry))
+        .filter((t) => !stands.has(t) || lane.carry.includes(t));
+      if (!all.length) continue; // the change touches none of its tests, or only ones that still pass
       of = all.length;
       tests = all.slice(0, PICK_MAX);
     }
     const command = commandOf(check, tests);
     const key = keyOf(check.dir, command);
-    const inputs = inputsOf(repo.top, check.inputs) ?? null;
     // Run on these files already (by the agent itself, or before): not again.
     if (onTree(key, tree, inputs).length) { stats.skipped++; continue; }
     // The agent's own run of this check on these files is on its way: it reads its own result, and a run beside
@@ -270,6 +289,7 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
     if (!r) continue;
     ran.push(!tests.length ? check.name : of > tests.length ? `${check.name} (the ${tests.length} most direct of the ${of} test files the change touches)` : `${check.name} (${tests.length} test file${tests.length === 1 ? "" : "s"})`);
     if (r.where) where = r.where;
+    didRun = true;
     stats.runs++;
     stats.ms += r.ran.ms;
     stats.cpu_ms += r.ran.cpu_ms ?? 0;
@@ -280,6 +300,10 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
     // (below): not a result of the check, not a red of the agent's, and never told to its parent.
     const missing = result === "fail" ? setupLineOf(r.ran.out, r.ran.code) : undefined;
     if (missing) { setups.push({ name: check.name, line: missing, check, command, t0, log: r.log }); continue; }
+    if (tests.length && result !== "stopped") {
+      const failed = new Set(result === "fail" ? failedFiles(r.ran.out, tests) : []);
+      greens[check.name] = { inputs, files: [...new Set([...standing, ...tests.filter((t) => !failed.has(t))])] };
+    }
     const row = record({ name: check.name, command, dir: check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result, exit: r.ran.timedOut ? null : r.ran.code, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: repo.top, cpu_ms: r.ran.cpu_ms });
     if (result !== "fail") continue;
     if (tests.length) carry.push(...failedFiles(r.ran.out, tests));
@@ -287,21 +311,45 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
     const base = row ? await baseFor(row, repo).catch(() => undefined) : undefined;
     reds.push({ name: check.name, command, exit: r.ran.code, pass: counts?.pass ?? null, fail: counts?.fail ?? null, failure: timed(() => "checks beside: what a failure says", () => failureOf(r.ran.out)), ...(base && !base.startsWith("not run on") ? { base } : {}) });
   }
-  lanes.set(id, { ...lanes.get(id)!, carry });
+  lanes.set(id, { ...lanes.get(id)!, carry, green: greens });
   // Every check that ran passed: nothing is said, and a failure found again later is told again.
-  if (!ran.length) return { tree };
+  if (!ran.length) return { tree, ran: didRun };
   // A setup failure is said once, until a run has none.
   const said = setupKey(setups);
   if (said !== null && said !== (lanes.get(id) ?? lane).said) {
     for (const x of setups) record({ name: x.name, command: x.command, dir: x.check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result: "stopped", exit: null, pass: null, fail: null, started: x.t0, ended: Date.now(), log: x.log, from_run: null, inputs: null, top: repo.top, note: x.line });
   }
   const t = toTell(lanes.get(id) ?? lane, reds);
-  if (!reds.length) return { tree, told: null, said };
-  if (!t.tell) return { tree, told: t.told, said };
+  if (!reds.length) return { tree, told: null, said, ran: didRun };
+  if (!t.tell) return { tree, told: t.told, said, ran: didRun };
   const text = noticeText(reds, { tree, at: localTime(at).slice(0, 5), ran, where });
   lanes.set(id, { ...lanes.get(id)!, owed: { text, key: `beside:${tree}`, ...parentWords(reds, tree) } });
   await settleOwed(id);
-  return { tree, told: t.told, said };
+  return { tree, told: t.told, said, ran: didRun };
+}
+
+// The test files of `green` whose reach (what they import, to the end, and the folders they walk) the change does
+// not touch. Each file of the reach is read once a content, off the loop's long stretches.
+async function standingGreen(scratch: string, copy: Copy, green: readonly string[], change: readonly string[]): Promise<string[]> {
+  const known = new Set(copy.files);
+  const refsOf = (p: string) => refs.get(copy.blobs.get(p) ?? "");
+  // What each reached file imports, read as the walk finds it.
+  for (const t of green) {
+    if (!known.has(t)) continue;
+    for (let more = true; more;) {
+      more = false;
+      const r = reachOf(t, refsOf, copy.files);
+      for (const f of r.files) {
+        const blob = copy.blobs.get(f);
+        if (!blob || refs.has(blob) || !/\.(?:[cm]?[jt]sx?)$/.test(f)) continue;
+        let text: string;
+        try { text = await Bun.file(join(scratch, f)).text(); } catch { continue; } // gone meanwhile
+        refs.set(blob, refsIn(text, f));
+        more = true;
+      }
+    }
+  }
+  return stillGreen(green.filter((t) => known.has(t)), change, (t) => reachOf(t, refsOf, copy.files));
 }
 
 // The test files whose tests failed, from a runner that names each file before its tests (bun: `path:`),
@@ -343,8 +391,10 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
   const cfg = setting();
   const heavy = pool.heavy(command);
   const localFree = !heavy || pool.room(heavy.cost).free > 0;
-  const hostLoad = !localFree && cfg.host ? hostLoadOf(await sshOut(cfg.host, "cat /proc/loadavg; nproc", 15_000).catch(() => "")) : undefined;
-  const place = placeOf({ localFree, host: cfg.host, hostLoad, share: 0.83 });
+  const m = machine.read();
+  const localLoad = { load1: m.load1, cores: m.cores };
+  const hostLoad = askHost({ localFree, host: cfg.host, localLoad }) ? hostLoadOf(await sshOut(cfg.host!, "cat /proc/loadavg; nproc", 15_000).catch(() => "")) : undefined;
+  const place = placeOf({ localFree, host: cfg.host, hostLoad, share: 0.83, localLoad });
   let ran: Ran | { error: string };
   if (place === "host") ran = await onHost(cfg, id, scratch, check, command, limitMs, linksOf([check]));
   else {

@@ -43,7 +43,7 @@ import type { Store } from "../core/store.ts";
 import { pool } from "../tools/heavy.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
-import { brokenText, commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, noTestFiles, pairKey, pairTests, redText, relatedPairs, setupLineOf, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
+import { brokenText, carried, commandOf, due, meetOf, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, noTestFiles, pairKey, pairTests, redText, relatedPairs, setupLineOf, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
 import { readTail } from "./queue.ts";
 import { importLines, readTree } from "./repo-map.ts";
 import { readLand } from "./rules.ts";
@@ -137,8 +137,9 @@ export class Together {
   private graphs = new Map<string, { known: Set<string>; lines: { path: string; line: string }[]; touched: Map<string, number>; commits: number }>(); // `${repo}\0${baseTip}`
   private changes = new Map<string, Side["files"] | null>(); // `${tip} ${baseTip}`
   private work = new Set<Promise<unknown>>();
-  // dropped: a pair whose head moved before it ran or between its runs (its answer would be old).
-  stats = { passes: 0, due: 0, ran: 0, red: 0, dropped: 0 };
+  // dropped: a pair whose head moved before it ran or between its runs (its answer would be old). carried: a pair
+  // whose last green answer stands for its new heads (pairs.ts carried), kept with no run.
+  stats = { passes: 0, due: 0, ran: 0, red: 0, dropped: 0, carried: 0 };
 
   constructor(private store: Store, private ov: Overlaps, private d: TogetherDeps) {
     store.migrate(SCHEMA);
@@ -270,6 +271,8 @@ export class Together {
       if (this.store.db.query("SELECT 1 FROM pair_checks WHERE repo = ? AND tip1 = ? AND tip2 = ?").get(repo, k.tip1, k.tip2)) continue;
       const sa = seen.get(a.branch) ?? now, sb = seen.get(b.branch) ?? now;
       if (!due(sa, sb, now, quietMs)) { next = Math.min(next, Math.max(sa, sb) + quietMs - now); continue; }
+      // The pair's last green run, at other heads: its answer stands when no step since touched where they meet.
+      if (await this.carry(repo, a, b, baseTip, print, meetOf(a, b, g, rel.tests), rel)) continue;
       const holder = owners.get(a.branch) ?? owners.get(b.branch) ?? null;
       this.stats.due++;
       this.line.push({ id, repo, base: short(baseRef), baseTip, rules: print, a, b, rel, who: holder ? this.store.session(holder)?.parent_id ?? holder : null, checks, ...(rules.setup ? { setup: rules.setup } : {}), timeoutMs: rules.timeoutMs });
@@ -280,6 +283,38 @@ export class Together {
       t.unref?.();
     }
     this.pump();
+  }
+
+  // A pair whose last run that ran (not one carried itself) was green, with the same rules, keeps that answer at
+  // the heads now when no step since touched `meet`: a row of its own, green, place "carried", saying from where.
+  private async carry(repo: string, a: Side, b: Side, baseTip: string, print: string, meet: Set<string>, rel: Related): Promise<boolean> {
+    const last = this.store.db.query<{ tip1: string; tip2: string; branch1: string; branch2: string; base: string | null; base_tip: string | null; checks: string | null }, [string, string, string, string]>(
+      "SELECT tip1, tip2, branch1, branch2, base, base_tip, checks FROM pair_checks WHERE repo = ?1 AND ((branch1 = ?2 AND branch2 = ?3) OR (branch1 = ?3 AND branch2 = ?2)) AND state = 'green' AND COALESCE(place, '') != 'carried' AND rules = ?4 ORDER BY COALESCE(ended, started) DESC LIMIT 1",
+    ).get(repo, a.branch, b.branch, print);
+    if (!last?.base_tip) return false;
+    const was = (branch: string) => (last.branch1 === branch ? last.tip1 : last.tip2);
+    const steps = await Promise.all([this.step(repo, was(a.branch), a.tip), this.step(repo, was(b.branch), b.tip), this.step(repo, last.base_tip, baseTip)]);
+    if (!carried({ steps, meet })) return false;
+    const k = pairKey(repo, a.tip, b.tip);
+    const [s1, s2] = k.tip1 === a.tip ? [a, b] : [b, a];
+    const now = Date.now();
+    this.store.db.query("INSERT OR REPLACE INTO pair_checks (repo, tip1, tip2, branch1, branch2, base, base_tip, rules, why, detail, state, checks, runs, place, started, ended) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'green', ?, '[]', 'carried', ?, ?)")
+      .run(repo, k.tip1, k.tip2, s1.branch, s2.branch, last.base, baseTip, print, rel.why, `${rel.detail}; green at ${was(s1.branch).slice(0, 9)} and ${was(s2.branch).slice(0, 9)}, and no step since touched where the two meet`, last.checks, now, now);
+    this.stats.carried++;
+    this.d.changed(this.viewers(repo, [a.branch, b.branch]));
+    return true;
+  }
+  // The files changed from one commit to another (null: git could not say).
+  private steps = new Map<string, string[] | null>();
+  private async step(repo: string, from: string, to: string): Promise<string[] | null> {
+    if (from === to) return [];
+    const key = `${from} ${to}`;
+    if (this.steps.has(key)) return this.steps.get(key)!;
+    const d = await git(repo, ["-c", "core.quotePath=false", "diff", "--name-only", "-z", "--no-renames", from, to], { read: true });
+    const files = d.code === 0 ? d.out.split("\0").filter(Boolean) : null;
+    if (this.steps.size > 4096) this.steps.clear();
+    this.steps.set(key, files);
+    return files;
   }
 
   // The rules as the base's own commit names them, with the owner's setting laid over.

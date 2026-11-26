@@ -42,7 +42,7 @@ bindBeside({
     return true;
   },
   tellParent: (id, cls, message) => void toParent.push({ id, cls, message }),
-  windowMs: 0,
+  windowMs: 0, gapMs: 0,
 });
 
 // A repository whose check runs its test files with `sh t.sh FILE...` (each a sh script that exits 1 to fail),

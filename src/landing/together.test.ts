@@ -90,10 +90,20 @@ function setup(o: { confine?: (argv: string[], who: string | null, folder: strin
     ov.committed(repo, name, holders.get(name)!);
     return g(repo, "rev-parse", name);
   };
+  // A commit on an existing branch `name` that writes `file` (a file of its own, no other branch's).
+  const commitOwn = (name: string, file: string) => {
+    g(repo, "checkout", "-q", name);
+    writeFileSync(join(repo, file), `${name} ${++k}\n`);
+    g(repo, "add", file);
+    g(repo, "commit", "-qm", `${name} ${k}`);
+    g(repo, "checkout", "-q", "main");
+    ov.committed(repo, name, holders.get(name)!);
+    return g(repo, "rev-parse", name);
+  };
   // A forecast pass, then a pass of the pairs.
   const pass = async () => { await ov.scan(repo); await tg.scan(repo); };
   const rows = () => store.db.query<{ branch1: string; branch2: string; tip1: string; tip2: string; state: string; error: string | null }, []>("SELECT branch1, branch2, tip1, tip2, state, error FROM pair_checks ORDER BY started").all();
-  return { dir, repo, store, tg, commit, commitFile, pass, rows, told, broken, errors };
+  return { dir, repo, store, tg, commit, commitFile, commitOwn, pass, rows, told, broken, errors };
 }
 
 test("a pair whose head moved is dropped: from the line when a pass sees it, and by the run itself before it starts", async () => {
@@ -122,6 +132,27 @@ test("a pair whose head moved is dropped: from the line when a pass sees it, and
   const made = t.rows().map((r) => [r.branch1, r.branch2].sort().join("+") + " " + [r.tip1, r.tip2].map((x) => x.slice(0, 7)).sort().join(" ")).sort();
   // Only the pair already running and y with z's new head were checked; nothing of z's old head, nothing of x's old head with z's new one.
   expect(made).toEqual([`keel/x+keel/y ${[x0, y0].map((x) => x.slice(0, 7)).sort().join(" ")}`, `keel/y+keel/z ${[y0, z1].map((x) => x.slice(0, 7)).sort().join(" ")}`]);
+  expect(t.errors).toEqual([]);
+});
+
+test("a pair green at earlier heads keeps its answer with no run while no step touched where the two meet", async () => {
+  expect(patchSettings({ together: { quiet_s: 0, at_once: 1, host: null } }).ok).toBe(true);
+  const t = setup({ check: 'echo ran >> "$KEEL_LAND_REPO/../count"\n' });
+  const runs = () => (existsSync(join(t.dir, "count")) ? readFileSync(join(t.dir, "count"), "utf8").trim().split("\n").length : 0);
+  t.commit("keel/x", 2); t.commit("keel/y", 12);
+  await t.pass(); await t.tg.idle(t.repo);
+  expect(runs()).toBe(1);
+  // x changes a file of its own: the two still meet only in shared.txt, which no step touched.
+  const x1 = t.commitOwn("keel/x", "own-x.txt");
+  await t.pass(); await t.tg.idle(t.repo);
+  expect(runs()).toBe(1);
+  const carried = t.rows().find((r) => r.tip1 === x1 || r.tip2 === x1);
+  expect(carried?.state).toBe("green");
+  expect((t.tg as any).stats.carried).toBe(1);
+  // x changes shared.txt again: where they meet changed, so the pair runs.
+  t.commit("keel/x", 3);
+  await t.pass(); await t.tg.idle(t.repo);
+  expect(runs()).toBe(2);
   expect(t.errors).toEqual([]);
 });
 

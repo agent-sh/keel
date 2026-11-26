@@ -425,7 +425,9 @@ under `~/.cache/keel-work/bun/research/`.
   private words as a session's own `git push` is (`publicSend`, `src/safety/public-send.ts`): a hit or a part it
   could not read skips the push with the words, and the step is told nothing was pushed. This repository lands
   through its own queue: the land block runs typecheck, both conventions tests, the touched tests
-  (`scripts/touched-tests.ts`) and the scripts stage on the clone's verify host (`git config keel.verifyHost`),
+  (`scripts/touched-tests.ts`) and the scripts stage on the clone's verify host (`git config keel.verifyHost`; the
+  queue gives its commands `KEEL_LAND_QUEUE=1`, and `scripts/remote-verify.sh` keeps a place on the host for them
+  that no other run takes),
   pushes to origin, and `.keel/land-install.sh` builds the landed commit from a checkout of its own and installs
   over the compiled daemon that landed it what changed (`scripts/install-kind.ts`): nothing when no file the
   binary is compiled from (its import graph, `src/core/api-stamp.ts`), no file of the build and no toolchain file
@@ -629,25 +631,33 @@ under `~/.cache/keel-work/bun/research/`.
   is told to each agent's parent once and shown on both cards; red on both sides alone (or a setup
   that fails) is the base's or the setup's, told to the owner once, and holds the repository's pairs
   until its base or its checks change. A result is kept by the two heads; a pair whose head moves is
-  dropped from the line and between its runs. A pair is due when both heads were still for
+  dropped from the line and between its runs. A pair whose last run at other heads was green keeps that
+  answer with no run when no step of either side, nor of the base, since then touched where they meet
+  (the files both change, an import's two ends between them, the pair's tests: `meetOf`, `carried`); its
+  row is green, place `carried`. A pair is due when both heads were still for
   `together.quiet_s`; at most `together.at_once` run at once, each command after a slot of the heavy
   pool with what the landing queue gives its commands (`KEEL_LAND_REPO`), niced here or on
   `together.host` while its load leaves room.
 - A check a repository marks `beside` runs by itself after an agent's change
   (`src/checks/beside.ts` decides, `src/checks/beside-run.ts` runs): the steps
   of a 30 s window are one run (a turn's end runs it at once), one run at a
-  time per agent, only for a tree that is not the one checked last and that
+  time per agent, at most `checks.beside.per_hour` runs an agent an hour
+  (`PER_HOUR`: a change inside the gap waits for it, and the gap's changes are
+  one run), only for a tree that is not the one checked last and that
   changes something over the base, never for an agent past the owner's Stop.
   It runs on a copy of the agent's files in a folder of Keel's own (its
   installed packages linked from its `inputs`, their real places shown to the
   sandbox), in the agent's sandbox, behind every other command of the heavy
-  pool (or on the owner's `checks.beside.host` when this machine has no room);
+  pool (or on the owner's `checks.beside.host`, when this machine has no room
+  or its load is over half its threads, and the host has room);
   the copy goes when the agent's turn ends with nothing running or waiting. A
   check with `tests` gets the tests the latest change touches (the tree's
   difference from the one checked last), the most direct first and at most
   `PICK_MAX`: the changed tests and the ones still red, a changed file's own
   test, the tests that walk the source tree under one, its folder's tests,
-  the tests that import it. Its time limit is sized from its test files; a
+  the tests that import it; a test file that passed on an earlier tree is not
+  run again while nothing it reaches (its imports to the end, the folders it
+  walks, a non-module file beside one of them) changed (`stillGreen`). Its time limit is sized from its test files; a
   run longer than `RUN_MAX_MS` is not made. Each run is a ledger row on its
   tree (`by: "beside"`), never the base's evidence. A red is told once: to a
   working agent as a harness message (`checks_beside`, its next step takes

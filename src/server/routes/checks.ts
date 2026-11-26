@@ -22,14 +22,14 @@ import { bindBefore, latest, startFor } from "../../checks/before-run.ts";
 import { agentChanged as besideAgent, afterCall as besideCall, afterStep as besideStep, afterTurn as besideTurn, bindBeside, checkSetting as besideSetting, forget as besideForget } from "../../checks/beside-run.ts";
 import * as agents from "../../automation/agents.ts";
 import * as failures from "../../automation/failures.ts";
-import type { AgentState } from "../../checks/beside.ts";
+import { PER_HOUR, type AgentState } from "../../checks/beside.ts";
 import { gate } from "./permissions.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { readsOf } from "../reads.ts";
 import { jobDone as jobDoneTell, jobStarted as jobStartedTell } from "../../tools/jobs.ts";
 import type { RouteModule } from "../app.ts";
 
-registerSettings("checks", { repos: {}, keep_runs: KEEP, beside: { window_s: 30, host: null, host_path: [] } }, (v) => {
+registerSettings("checks", { repos: {}, keep_runs: KEEP, beside: { window_s: 30, per_hour: PER_HOUR, host: null, host_path: [] } }, (v) => {
   if (!v.repos || typeof v.repos !== "object" || Array.isArray(v.repos)) return "repos maps a repository's main checkout to its checks";
   for (const [dir, c] of Object.entries(v.repos)) {
     if (!isAbsolute(dir)) return `repos: ${dir} is not an absolute folder`;

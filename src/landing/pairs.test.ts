@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Check } from "../checks/named.ts";
-import { commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, nearHunks, pairKey, pairTests, PAIR_TESTS, relatedPairs, setupLineOf, noTestFiles, brokenText, testMatcher, verdictOf, type Side } from "./pairs.ts";
+import { carried, commandOf, due, meetOf, fastChecks, graphOf, hubsOf, hunksOf, nearHunks, pairKey, pairTests, PAIR_TESTS, relatedPairs, setupLineOf, noTestFiles, brokenText, testMatcher, verdictOf, type Side } from "./pairs.ts";
 
 const check = (name: string, o: Partial<Check> = {}): Check => ({ name, run: name === "unit" ? "bun test" : `run-${name}`, args: false, dir: ".", cache: true, tree: { kind: "work" }, drop: [], inputs: [], ...o });
 
@@ -175,4 +175,19 @@ describe("a run that could not start is the setup's, not a red base", () => {
     expect(t).toContain("not a red base");
     expect(t).not.toContain("checked again until");
   });
+});
+
+test("where two sides meet, and a green answer carried to new heads only while no step touched it", () => {
+  const g = graphOf([{ path: "src/a.ts", line: 'import { b } from "./b.ts"' }], new Set(["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/s.ts", "src/s.test.ts"]));
+  const a = { files: ["src/a.ts", "src/s.ts", "src/c.ts"] }, b = { files: ["src/b.ts", "src/s.ts", "src/d.ts"] };
+  const meet = meetOf(a, b, g, ["src/s.test.ts"]);
+  expect([...meet].sort()).toEqual(["src/a.ts", "src/b.ts", "src/s.test.ts", "src/s.ts"]);
+  // Steps elsewhere: carried. A step on a file both change, an import's end or the pair's test: run again.
+  expect(carried({ steps: [["src/c.ts"], ["src/d.ts"], []], meet })).toBe(true);
+  expect(carried({ steps: [["src/c.ts"], [], ["README.md"]], meet })).toBe(true);
+  expect(carried({ steps: [["src/s.ts"], [], []], meet })).toBe(false);
+  expect(carried({ steps: [[], ["src/b.ts"], []], meet })).toBe(false);
+  expect(carried({ steps: [[], [], ["src/s.test.ts"]], meet })).toBe(false);
+  // A step git could not read: run.
+  expect(carried({ steps: [null, [], []], meet })).toBe(false);
 });

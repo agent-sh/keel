@@ -8,9 +8,12 @@
 // says and when it is told. Pure: the runner is src/checks/beside-run.ts.
 //
 // The cost is bounded per agent: one run at a time, the steps of a window
-// (WINDOW_MS from the first change that waits) taken together, a run only for
-// a tree that is not the one checked last, and a failure told once (the same
-// failure on a later tree is not told again).
+// (WINDOW_MS from the first change that waits) taken together, at most
+// `per_hour` runs an hour (a run starts no sooner than an hour over that after
+// the one before: the changes of the gap are one run), a run only for a tree
+// that is not the one checked last, no test file run again that passed on an
+// earlier tree when nothing it reaches changed since, and a failure told once
+// (the same failure on a later tree is not told again).
 import { createHash } from "node:crypto";
 import { dirname, posix, relative } from "node:path";
 import { quote } from "./before.ts";
@@ -30,20 +33,35 @@ export const WINDOW_MS = 30_000;
 // they pass (a later step's change may not touch them). `owed`: a red not told
 // yet, kept while the agent waits on a wait of its own (see toWhom). `said`: the setup failures said last
 // (what the copy lacked, never the agent's red: a fingerprint of them), cleared by a run with none.
+// `ranAt`: when its last run started (the gap of `per_hour` counts from it). `green`: by check, the test files
+// that passed on `tree` or on an earlier tree with nothing they reach changed since, and the check's inputs then.
 export type Owed = { text: string; key: string; cls: string; message: string };
-export type Lane = { first: number | null; ended: boolean; over: boolean; running: boolean; tree: string | null; told: string | null; carry: string[]; owed: Owed | null; said: string | null };
-export const fresh = (): Lane => ({ first: null, ended: false, over: false, running: false, tree: null, told: null, carry: [], owed: null, said: null });
+export type Green = { inputs: string | null; files: string[] };
+export type Lane = { first: number | null; ended: boolean; over: boolean; running: boolean; tree: string | null; told: string | null; carry: string[]; owed: Owed | null; said: string | null; ranAt: number | null; green: Record<string, Green> };
+export const fresh = (): Lane => ({ first: null, ended: false, over: false, running: false, tree: null, told: null, carry: [], owed: null, said: null, ranAt: null, green: {} });
+
+// How many runs an agent gets an hour by default (the setting checks.beside.per_hour): one each ten minutes.
+// The agent's own run of a check is the check; a run beside it is the net under it, and a busy agent changes its
+// files many times a step's length apart, each change a whole typecheck. On a replay of six hours of this
+// repository's agents (scripts/bench/beside-replay.ts) the cap with the standing of passed tests took the runs'
+// processor time to 41% of what it was, a red told four minutes after its change on average instead of one; at 12
+// an hour, 53% and two minutes. The turn's end still runs at once.
+export const PER_HOUR = 6;
+// The least time between two runs of one agent for `perHour` runs an hour (0: no cap).
+export const gapOf = (perHour: number) => (perHour > 0 ? Math.round(3_600_000 / perHour) : 0);
 
 // A step changed files (or may have: a shell call).
 export const changed = (l: Lane, now: number): Lane => ({ ...l, first: l.first ?? now, over: false });
 // Its turn ended: what waits runs now, with no more of the window.
 export const turnEnded = (l: Lane): Lane => ({ ...l, over: true, ended: l.first !== null });
-// When a run is due: never while one runs, else at the end of the window (or now, after the turn's end).
-export function dueAt(l: Lane, windowMs = WINDOW_MS): number | null {
+// When a run is due: never while one runs, else at the end of the window and no sooner than `gapMs` after the
+// last run started (or now, after the turn's end: the files as the agent left them are what its report stands on).
+export function dueAt(l: Lane, windowMs = WINDOW_MS, gapMs = 0): number | null {
   if (l.first === null || l.running) return null;
-  return l.ended ? l.first : l.first + windowMs;
+  if (l.ended) return l.first;
+  return gapMs > 0 && l.ranAt !== null ? Math.max(l.first + windowMs, l.ranAt + gapMs) : l.first + windowMs;
 }
-export const started = (l: Lane): Lane => ({ ...l, first: null, ended: false, running: true });
+export const started = (l: Lane, now = Date.now()): Lane => ({ ...l, first: null, ended: false, running: true, ranAt: now });
 // A run ended (or found nothing to do): the tree it checked, the failure it told and the setup failures it said
 // (undefined: as they were).
 export const finished = (l: Lane, tree: string | null, told?: string | null, said?: string | null): Lane => ({ ...l, running: false, tree: tree ?? l.tree, ...(told !== undefined ? { told } : {}), ...(said !== undefined ? { said } : {}) });
@@ -178,6 +196,41 @@ export function testsFor(changed: readonly string[], tests: readonly string[], r
     if (refs?.imports.some((spec) => changed.some((f) => names(spec, f)))) at(4);
   }
   return ranked.sort((a, b) => a.rank - b.rank || a.near - b.near || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0)).map((r) => r.t);
+}
+
+// What a test file reads of the tree: itself, the files it imports and what they import, to the end (by
+// relative path; a package is not the tree's), and the folders it walks. `refsOf`: what a file reaches
+// (undefined: not read, so nothing more is known through it); `files`: the tree's files.
+export function reachOf(test: string, refsOf: (path: string) => Refs | undefined, files: readonly string[]): { files: Set<string>; folders: string[] } {
+  const byBare = new Map<string, string>();
+  for (const f of files) { byBare.set(f, f); byBare.set(f.replace(EXT, ""), f); if (/\/index\.[cm]?[jt]sx?$/.test(f)) byBare.set(posix.dirname(f), f); }
+  const resolve = (spec: string) => byBare.get(spec) ?? byBare.get(spec.replace(EXT, ""));
+  const seen = new Set<string>(), folders: string[] = [];
+  const todo = [test];
+  while (todo.length) {
+    const f = todo.pop()!;
+    if (seen.has(f)) continue;
+    seen.add(f);
+    const r = refsOf(f);
+    if (!r) continue;
+    folders.push(...r.reads);
+    for (const spec of r.imports) { const to = resolve(spec); if (to && !seen.has(to)) todo.push(to); }
+  }
+  return { files: seen, folders };
+}
+// The test files of `green` (they passed on the tree checked last, or on one before it) that still stand: nothing
+// they read changed in `change` (the tree's difference from the one checked last). A test that reads a file the
+// change deleted reads a changed file. Only a JavaScript or TypeScript test can stand: what another kind reads is
+// not known from its text. A file that is no module, changed in a folder of the reach, is read (a fixture the test
+// opens by its path). Pure: the reach comes from reachOf.
+export function stillGreen(green: readonly string[], change: readonly string[], reach: (test: string) => { files: Set<string>; folders: string[] }): string[] {
+  return green.filter((t) => {
+    if (!EXT.test(t)) return false;
+    if (!change.length) return true;
+    const r = reach(t);
+    const dirs = new Set([...r.files].map((f) => posix.dirname(f)));
+    return !change.some((f) => r.files.has(f) || r.folders.some((d) => under(d, f)) || (!EXT.test(f) && dirs.has(posix.dirname(f))));
+  });
 }
 
 // How many test files one run takes: the most direct of what a change touches.
@@ -332,12 +385,20 @@ export function parentWords(reds: readonly Red[], tree: string): { cls: string; 
 // This machine when its heavy pool has room for the run, else the owner's host
 // when one is set and its load leaves room, else this machine's pool line
 // (behind every other command: the run waits for room there).
+// With `localLoad` over half of this machine's threads (BUSY_SHARE), the host goes first when it has room: a run
+// that has a slot here still adds to a machine the owner's own work shares.
 export type HostLoad = { load1: number; cores: number } | undefined;
-export function placeOf(o: { localFree: boolean; host: string | null; hostLoad: HostLoad; share: number }): "local" | "host" | "line" {
+export const BUSY_SHARE = 0.5;
+export function placeOf(o: { localFree: boolean; host: string | null; hostLoad: HostLoad; share: number; localLoad?: HostLoad }): "local" | "host" | "line" {
+  const hostRoom = !!o.host && !!o.hostLoad && o.hostLoad.load1 < o.hostLoad.cores * o.share;
+  if (hostRoom && o.localLoad && o.localLoad.load1 > o.localLoad.cores * BUSY_SHARE) return "host";
   if (o.localFree) return "local";
-  if (o.host && o.hostLoad && o.hostLoad.load1 < o.hostLoad.cores * o.share) return "host";
+  if (hostRoom) return "host";
   return "line";
 }
+// Whether the host is worth asking about its load: this machine has no room, or it is over BUSY_SHARE.
+export const askHost = (o: { localFree: boolean; host: string | null; localLoad?: HostLoad }) =>
+  !!o.host && (!o.localFree || (!!o.localLoad && o.localLoad.load1 > o.localLoad.cores * BUSY_SHARE));
 // `cat /proc/loadavg; nproc` from the host, as one reading.
 export function hostLoadOf(text: string): HostLoad {
   const [load, cores] = text.trim().split("\n");

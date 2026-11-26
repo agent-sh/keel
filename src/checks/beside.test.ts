@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { changed, commandOf, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
+import { askHost, changed, commandOf, gapOf, reachOf, stillGreen, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
 import { parseChecks } from "./named.ts";
 
 test("the steps of a window are one run, one run at a time, and a turn's end runs what waits at once", () => {
@@ -178,6 +178,15 @@ test("where a run goes: here with room, else the host with room, else the line h
   expect(placeOf({ localFree: false, host: "h", hostLoad: { load1: 7, cores: 8 }, share: 0.83 })).toBe("line");
   expect(placeOf({ localFree: false, host: "h", hostLoad: undefined, share: 0.83 })).toBe("line");
   expect(placeOf({ localFree: false, host: null, hostLoad: undefined, share: 0.83 })).toBe("line");
+  // This machine over half its threads: the host goes first when it has room, even with a slot here.
+  expect(placeOf({ localFree: true, host: "h", hostLoad: { load1: 2, cores: 32 }, share: 0.83, localLoad: { load1: 9, cores: 16 } })).toBe("host");
+  expect(placeOf({ localFree: true, host: "h", hostLoad: { load1: 30, cores: 32 }, share: 0.83, localLoad: { load1: 9, cores: 16 } })).toBe("local");
+  expect(placeOf({ localFree: true, host: "h", hostLoad: { load1: 2, cores: 32 }, share: 0.83, localLoad: { load1: 8, cores: 16 } })).toBe("local");
+  expect(placeOf({ localFree: true, host: null, hostLoad: undefined, share: 0.83, localLoad: { load1: 15, cores: 16 } })).toBe("local");
+  expect(askHost({ localFree: true, host: "h", localLoad: { load1: 9, cores: 16 } })).toBe(true);
+  expect(askHost({ localFree: true, host: "h", localLoad: { load1: 3, cores: 16 } })).toBe(false);
+  expect(askHost({ localFree: false, host: "h" })).toBe(true);
+  expect(askHost({ localFree: false, host: null })).toBe(false);
   expect(hostLoadOf("1.70 2.30 2.36 3/900 1234\n32\n")).toEqual({ load1: 1.7, cores: 32 });
   expect(hostLoadOf("")).toBeUndefined();
 });
@@ -188,4 +197,48 @@ test("a run of a check covers the files of a run beside it when it is the whole 
   expect(covers(unit!, ["src/a.test.ts"], "bun test")).toBe(true);
   expect(covers(unit!, ["src/a.test.ts", "src/b.test.ts"], "bun test ./src/b.test.ts  'src/a.test.ts'")).toBe(true);
   expect(covers(unit!, ["src/a.test.ts", "src/b.test.ts"], "bun test src/a.test.ts")).toBe(false);
+});
+
+test("an agent gets at most per_hour runs an hour: a change inside the gap waits for it, a turn's end does not", () => {
+  const gap = gapOf(6);
+  expect(gap).toBe(600_000);
+  expect(gapOf(0)).toBe(0);
+  let l = finished(started(changed(fresh(), 0), 30_000), "t1");
+  l = changed(l, 60_000);
+  // The window ends at 90 s, the gap at 630 s: the run waits for the gap, and the changes of the gap are one run.
+  expect(dueAt(l, WINDOW_MS, gap)).toBe(630_000);
+  expect(dueAt(changed(l, 400_000), WINDOW_MS, gap)).toBe(630_000);
+  // Past the gap, the window as before.
+  expect(dueAt(changed(finished(started(changed(fresh(), 0), 0), "t1"), 900_000), WINDOW_MS, gap)).toBe(900_000 + WINDOW_MS);
+  // No cap: the window alone.
+  expect(dueAt(l, WINDOW_MS, 0)).toBe(60_000 + WINDOW_MS);
+  // The turn ended: what waits runs now.
+  expect(dueAt(turnEnded(l), WINDOW_MS, gap)).toBe(60_000);
+});
+
+test("a test that passed stands while nothing it reaches changed: its imports to the end and the folders it walks", () => {
+  const files = ["src/a.ts", "src/b.ts", "src/c.ts", "src/lib/index.ts", "src/a.test.ts", "src/d.test.ts", "src/walk.test.ts", "docs/x.md"];
+  const refs: Record<string, { imports: string[]; reads: string[] }> = {
+    "src/a.test.ts": { imports: ["src/a"], reads: [] },
+    "src/a.ts": { imports: ["src/b.ts"], reads: [] },
+    "src/b.ts": { imports: ["src/lib"], reads: [] },
+    "src/lib/index.ts": { imports: [], reads: [] },
+    "src/d.test.ts": { imports: ["src/c.js"], reads: [] },
+    "src/c.ts": { imports: [], reads: [] },
+    "src/walk.test.ts": { imports: [], reads: ["src"] },
+  };
+  const reach = (t: string) => reachOf(t, (p) => refs[p], files);
+  expect([...reach("src/a.test.ts").files].sort()).toEqual(["src/a.test.ts", "src/a.ts", "src/b.ts", "src/lib/index.ts"]);
+  const green = ["src/a.test.ts", "src/d.test.ts", "src/walk.test.ts"];
+  // A change three imports down touches a.test.ts; a doc touches nothing.
+  expect(stillGreen(green, ["src/lib/index.ts"], reach)).toEqual(["src/d.test.ts"]);
+  expect(stillGreen(green, ["docs/x.md"], reach)).toEqual(green);
+  expect(stillGreen(green, ["src/c.ts"], reach)).toEqual(["src/a.test.ts"]);
+  // A test file changed is not green any more.
+  expect(stillGreen(green, ["src/d.test.ts"], reach)).toEqual(["src/a.test.ts"]);
+  // A fixture beside a file of the reach is read (and the walk of src reads it too); another kind of test never stands.
+  expect(stillGreen(green, ["src/lib/data.json"], reach)).toEqual(["src/d.test.ts"]);
+  expect(stillGreen(["t/a.sh", "src/a.test.ts"], ["docs/x.md"], reach)).toEqual(["src/a.test.ts"]);
+  // A file not read yet ends the walk there: what it imports is not known, so nothing past it is counted.
+  expect([...reachOf("src/a.test.ts", (p) => (p === "src/a.ts" ? undefined : refs[p]), files).files].sort()).toEqual(["src/a.test.ts", "src/a.ts"]);
 });
