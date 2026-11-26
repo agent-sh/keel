@@ -2,7 +2,7 @@ import { onInboxView, peekInboxView } from "../../lib/inbox-view.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { Bell, CheckCheck, Settings2, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { alertTarget, auto, coverPanes, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
+import { alertTarget, auto, coverPanes, focusApproval, openSession, placeName, useAuto, useReachLine, type Alert, type Target } from "../../lib/automation.ts";
 import { useToldStates } from "../../lib/watch.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
@@ -341,6 +341,9 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
   const panel = useId();
   const routes = useAuto((s) => s.settings?.routes);
   const channels = useAuto((s) => s.channels);
+  // Where a reminder of a card that waits reaches is said here, with the routes, not over every card.
+  const reach = useReachLine();
+  const goes = [routesLine(routes, channels), ...(reach ? [`${reach}.`] : [])].join(" ");
   useEffect(() => {
     if (open) auto.loadAlerts().catch(reportError);
     // What lies behind the open Inbox is not shown: nothing is read there because its session is on screen.
@@ -376,9 +379,9 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
                 tooltip and a reader's words: a line of what is not set up, always on screen, asked nothing of the owner. */}
             <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-1 border-t border-line px-3 py-2">
               <GlobalSnoozeButton />
-              <button type="button" data-testid="alert-routes-link" title={routesLine(routes, channels)} onClick={() => { close(); navigate({ name: "settings", section: "alerts" }); }} className={actCls}>
+              <button type="button" data-testid="alert-routes-link" title={goes} onClick={() => { close(); navigate({ name: "settings", section: "alerts" }); }} className={actCls}>
                 <Settings2 className="size-3.5" /> Routes
-                <span className="sr-only" data-testid="inbox-routes">. {routesLine(routes, channels)}</span>
+                <span className="sr-only" data-testid="inbox-routes">. {goes}</span>
               </button>
             </div>
           </div>

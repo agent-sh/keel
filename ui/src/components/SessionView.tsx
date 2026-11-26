@@ -3,7 +3,6 @@ import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type ReactN
 import { setBaseTitle } from "./Attention.tsx";
 import { FolderX, WifiOff } from "lucide-react";
 import { WaitingElsewhere } from "./AnswerQueue.tsx";
-import { ReachLine } from "./ReachLine.tsx";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { sequenceAt } from "../lib/asks.ts";
@@ -193,7 +192,6 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
   const asks = useMemo(() => (
     <>
       <WaitingElsewhere sessionId={id} />
-      <ReachLine sessionId={id} />
       <Suspense fallback={null}><Questions sessionId={id} /></Suspense>
       <Suspense fallback={null}><Approvals sessionId={id} /></Suspense>
       <ChildApprovals parentId={id} />
