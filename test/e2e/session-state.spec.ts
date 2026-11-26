@@ -1062,6 +1062,13 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
       const box = (await b.boundingBox())!;
       expect(box.y + box.height).toBeLessThanOrEqual(railBox.y + railBox.height + 1);
     }
+    // A finished session's mark is the quiet grey, in its band's head too: the folded rail's column of them is not a column of green.
+    {
+      const ink = (v: string) => page.evaluate((v) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = `var(${v})`; const c = getComputedStyle(p).color; p.remove(); return c; }, v);
+      const done = page.locator('[data-testid="rail-band"][data-watch="done"] .k-mark[data-watch="done"]');
+      expect(await done.count()).toBeGreaterThan(1);
+      expect(await done.evaluateAll((els) => [...new Set(els.map((el) => getComputedStyle(el).backgroundColor))])).toEqual([await ink("--st-idle")]);
+    }
     await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${approval}"]`).hover();
     await expect(page.getByTestId("rail-card")).toBeVisible();
     await shoot(page, "session-state-12-rail");

@@ -382,6 +382,14 @@ test("while the owner is away, one digest tells what each session did, what wait
       await expect(el.getByTestId("away-facts")).toHaveText(r.text);
     }
     await expect(block.locator(`[data-session="${billing}"] .text-danger`)).toHaveText("1 failed (billing)");
+    // What finished while the owner was away is a small grey mark, as in the Inbox's rows: the colour is what failed and what waits.
+    {
+      const ink = (v: string) => page.evaluate((v) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = `var(${v})`; const c = getComputedStyle(p).color; p.remove(); return c; }, v);
+      const done = block.locator('[data-testid="away-row"][data-watch="done"] .k-mark');
+      expect(await done.count()).toBeGreaterThan(0);
+      expect(await done.evaluateAll((els) => [...new Set(els.map((el) => getComputedStyle(el).backgroundColor))])).toEqual([await ink("--st-idle")]);
+      expect(await block.locator(`[data-testid="away-row"][data-session="${billing}"] .k-mark`).evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await ink("--dot-fail"));
+    }
     await expect(block.getByTestId("away-quiet")).toHaveText("2 other sessions: nothing happened.");
     await expect.poll(away).toBeNull();
     await page.mouse.move(1200, 600);

@@ -104,7 +104,7 @@ export function AwayDigest({ onClose }: { onClose: () => void }) {
                   onClick={() => { openSession(r.id); onClose(); }}
                   className="flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <Mark w={r.watch} className="mt-[0.3125rem]" />
+                  <span className="k-away-mark mt-[0.3125rem]"><Mark w={r.watch} /></span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-baseline gap-2">
                       <span className="min-w-0 flex-1 truncate text-ui text-fg">{r.title || "Untitled"}</span>
