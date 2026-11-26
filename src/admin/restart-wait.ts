@@ -38,7 +38,7 @@ export function join(w: RestartWaiting | null, a: RestartAsk, maxMs = waitMaxMs(
     since_ms: w?.since_ms ?? a.at,
     until_ms: w?.until_ms ?? a.at + maxMs,
     asks: (w?.asks ?? 0) + 1,
-    reasons: reasons.slice(-5),
+    reasons,
     timeout_ms: Math.max(w?.timeout_ms ?? 0, a.timeoutMs),
   };
 }

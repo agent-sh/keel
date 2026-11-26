@@ -72,7 +72,6 @@ CREATE TABLE IF NOT EXISTS check_pending (call_id TEXT PRIMARY KEY, data TEXT NO
 CREATE TABLE IF NOT EXISTS check_anyway (session_id TEXT NOT NULL, key TEXT NOT NULL, tree TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (session_id, key, tree)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS check_runs_key_tree ON check_runs(key, tree, ended);
 -- A session's last check, for the line its row says (src/automation/results.ts): by session, not a pass over every run.
-CREATE INDEX IF NOT EXISTS check_runs_session ON check_runs(session_id, ended);
 CREATE INDEX IF NOT EXISTS check_runs_session ON check_runs(session_id, ended, id);
 CREATE INDEX IF NOT EXISTS check_runs_tree ON check_runs(tree, ended);
 CREATE INDEX IF NOT EXISTS check_runs_head ON check_runs(head, session_id, ended);

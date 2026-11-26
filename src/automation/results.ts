@@ -16,7 +16,7 @@ function table(store: Store, name: string): boolean {
 }
 
 // What either table holds now: a new check run or a landing entry that changed moves it. Both are
-// one seek on an index (the rowid, landing_queue_updated).
+// one seek on an index (the rowid, landing_queue_by).
 function stamp(store: Store): string {
   const runs = table(store, "check_runs") ? store.db.query<{ n: number | null }, []>("SELECT max(id) AS n FROM check_runs").get()?.n ?? 0 : 0;
   const lands = table(store, "landing_queue") ? store.db.query<{ n: number | null }, []>("SELECT max(updated) AS n FROM landing_queue").get()?.n ?? 0 : 0;
