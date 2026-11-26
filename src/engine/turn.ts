@@ -1964,13 +1964,16 @@ export class Engine {
     // session's to keep: it gets this build's tools.
     const own = info.id === session.model;
     const to = { model: info.id, native, own: info.tools === false ? "no tools" : sessionToolsKey(info.family, session.id) };
-    const why = own ? this.pins.due(session, to, built, () => this.coldWhy(session.id, provider, info)) : undefined;
+    // A parked session's first step after a restart may have no events in memory yet.
+    const warmed = own && !this.store.isKept(session.id) ? await this.warmContext(session.id) : undefined;
+    const cold = () => this.coldWhy(session.id, provider, info, warmed ?? this.lineage(session.id));
+    const why = own ? this.pins.due(session, to, built, cold) : undefined;
     const local = !!session.parent_id && !session.machine;
     // (Made again for this build at a cold moment: not a move, so its subagents may keep their copies.)
     if (why && !local) { this.forgetSystem(session.id); this.adopting.add(session.id); }
     // A subagent that kept its parent's earlier prompt rides the parent's again once its cache is cold.
     const copy = local ? this.diverged.get(session.id) : undefined;
-    if (own && copy !== undefined && (pinAged(copy) || this.coldWhy(session.id, provider, info))) this.systems.delete(session.id);
+    if (own && copy !== undefined && (pinAged(copy) || cold())) this.systems.delete(session.id);
     this.pins.begin(session.id, why);
     try {
       const system = await this.systemOf(session, info);
@@ -2005,8 +2008,10 @@ export class Engine {
   }
 
   // Why no warm cache holds the session's context on this model, if none does.
-  private coldWhy(id: string, provider: Provider, info: ModelInfo, events = this.lineage(id)): string | undefined {
-    return coldReason(events, info.id, retention(provider.wire, events, info.id).max, Date.now(), this.preparedMs(id, events, { info } as Step));
+  private coldWhy(id: string, provider: Provider, info: ModelInfo, events: readonly StoredEvent[]): string | undefined {
+    const at = events.findLastIndex((e) => e.kind === "compaction");
+    const context = at > 0 ? events.slice(at) : events;
+    return coldReason(context, info.id, retention(provider.wire, context, info.id).max, Date.now(), this.preparedMs(id, context, { info } as Step));
   }
 
   // Which build the session's tools and prompt are from, and what waits.
@@ -2071,7 +2076,7 @@ export class Engine {
     const { behind, unknown, asked } = this.pins.open();
     const sessions = await Promise.all(behind.map(async (id) => {
       const s = this.store.session(id)!;
-      const events = this.lineage(id);
+      const events = await this.warmContext(id) ?? this.lineage(id);
       const warm = await this.providers.resolve(s.model).then((r) => !this.coldWhy(id, r.provider, r.info, events), () => false);
       return { id, title: s.title, tokens: contextTokens(events, s.model).used, warm };
     }));
@@ -2193,10 +2198,11 @@ export class Engine {
   // may; a model that does not resolve has no cache to keep.
   private async coldOf(session: Session): Promise<string | undefined> {
     const r = await this.providers.resolve(session.model).catch(() => undefined);
+    if (!r) return "the model is not available";
     // (Read off the loop first: the session in hand may be another's parent, not in memory. Only its
     // context: coldWhy reads the last checkpoint and what follows it, never a body from before.)
-    if (r) await this.warmContext(session.id);
-    return r ? this.coldWhy(session.id, r.provider, r.info) : "the model is not available";
+    const events = await this.warmContext(session.id) ?? this.lineage(session.id);
+    return this.coldWhy(session.id, r.provider, r.info, events);
   }
 
   // The session's prompt is replaced (`kept` was sent until now). Its

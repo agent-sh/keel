@@ -61,3 +61,22 @@ test("a start that asks whether a session's cache is cold reads no body from bef
   expect(kept).toBeLessThan(whole / 3);
   again.store.db.close();
 });
+
+test("comparing a parked session's cache after restart does not read its whole event index on the loop", async () => {
+  const first = rig();
+  const s = first.store.createSession({ model: "scripted:stand-in", workspace: work, settings: { cache_plan: false } });
+  first.engine.send(s.id, "make a pinned request");
+  await first.engine.idle(s.id);
+  await first.engine.compactNow(s.id);
+  expect(first.engine.buildState(s.id).pinned).not.toBeNull();
+  first.store.db.close();
+
+  const again = rig();
+  try {
+    again.store.serving = true;
+    again.engine.waitShape = (id) => id === s.id ? { kind: "timer", due: Date.now() + 60_000 } : undefined;
+    expect(again.store.isKept(s.id)).toBe(false);
+    await again.engine.resumeIdle();
+    expect(again.store.coldReads().by).toEqual([]);
+  } finally { again.store.db.close(); }
+});
