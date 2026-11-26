@@ -68,8 +68,9 @@ test("a session with agents opens on the conversation, its stretches folded and 
     await shoot(page, "lens-00-full-stream");
     await page.reload();
     await expect(page.getByTestId("transcript")).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(300);
     await expect(page.getByTestId("lens")).toHaveCount(0);
+    // This spec's own daemon is on another origin, so it opens in Focus.
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 });
     await page.getByTestId("session-menu").click();
     await page.getByTestId("menu-lens").click();
     await expect(page.getByTestId("lens")).toBeVisible();
