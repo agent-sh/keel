@@ -604,6 +604,11 @@ test("acp agent twins and unavailable", async ({ page, request }) => {
     await page.goto("/settings/acp-agents");
     await expect(page.getByTestId("acp-agent-same")).toHaveCount(1);
     await expect(page.getByTestId("acp-agent-same")).toContainText("same models, modes and commands");
+    const row = page.locator(".k-setting").filter({ has: page.getByTestId("acp-agent-twin-out") });
+    await shoot(page, "acp-out-settings");
+    await expect.soft(row).toContainText("Unavailable: it needs its own sign-in first");
+    await expect.soft(row.getByTestId("acp-agent-start")).toHaveCount(0);
+    await expect(page.getByTestId("acp-agent-twin-a").getByTestId("acp-agent-start")).toBeEnabled();
   } finally {
     for (const id of ["twin-a", "twin-b", "twin-out"]) await request.delete(`/api/acp/agents/${id}`);
   }

@@ -8,7 +8,7 @@ import { navigate } from "../lib/ui.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Cmd = { command: string; args: string[] };
-type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; same_as?: string; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string }; folders?: { list: string[]; own: boolean } };
+type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; same_as?: string; unavailable?: string; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string }; folders?: { list: string[]; own: boolean } };
 type Listing = { agents: Agent[]; error?: string; running: { session: string; agent: string }[] };
 
 const line = (c?: Cmd) => (c ? [c.command.replace(/^\/home\/[^/]+/, "~"), ...c.args].join(" ") : "");
@@ -85,13 +85,14 @@ export function AcpAgentsSettings() {
         {installed.map((a) => (
           <SettingRow key={a.id} label={a.name} hint={<>
             <span className="block font-mono text-caption" data-testid="acp-agent-command">{line(a.run)}</span>
+            {a.unavailable && <span className="block text-caption text-warn">Unavailable: {a.unavailable}</span>}
             {a.same_as && <span className="block text-caption text-muted" data-testid="acp-agent-same">Same program as {l?.agents.find((x) => x.id === a.same_as)?.name ?? a.same_as}: it states the same models, modes and commands, so the model picker lists only the first.</span>}
             {a.sandbox && <span className={a.sandbox.confined ? "block text-caption text-muted" : "block text-caption text-warn"} data-testid="acp-agent-sandbox" data-confined={String(a.sandbox.confined)}>{a.sandbox.note}</span>}
             {a.folders && <AgentFolders agent={a} busy={busy} save={(folders) => act(() => api<Listing>(`/api/acp/agents/${a.id}/folders`, { method: "PUT", body: JSON.stringify({ folders }) }))} />}
           </>}>
             <div className="flex items-center gap-2" data-testid={`acp-agent-${a.id}`}>
               <span className="text-caption text-faint">{a.source === "custom" ? "Yours" : "Registry"}</span>
-              <button type="button" className={btn} onClick={() => void start(a)} data-testid="acp-agent-start">New session</button>
+              {!a.unavailable && <button type="button" className={btn} onClick={() => void start(a)} data-testid="acp-agent-start">New session</button>}
               {a.source === "custom" && <button type="button" className={btn} disabled={busy} onClick={() => act(() => api<Listing>(`/api/acp/agents/${a.id}`, { method: "DELETE" }))}>Remove</button>}
             </div>
           </SettingRow>

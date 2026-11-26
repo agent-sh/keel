@@ -6,6 +6,7 @@ import { agentFolders, checkFolder, confineAgent, readFolders, writeFolders } fr
 import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
+import { unavailableOf } from "../../acp/choices.ts";
 import { acpJobs } from "../../acp/jobs-hook.ts";
 import { AcpRunner, agentOf, isAcpModel, type ChildHost, type Judge } from "../../acp/external.ts";
 import * as agents from "../../automation/agents.ts";
@@ -97,7 +98,7 @@ export const acpRoutes: RouteModule = (deps) => {
     return json({
     // How a new session's agent would run (the default sandbox): the card says it plainly.
     agents: all.map((a) => ({ ...a, installed: !!a.run, model: `acp:${a.id}`, ...(twins[a.id] ? { same_as: twins[a.id] } : {}), run: a.run ? { command: a.run.command, args: a.run.args } : undefined,
-      ...(a.run ? { sandbox: (({ confined, note }) => ({ confined, note }))(confineAgent(a, permOf(), deps.workspace, false)),
+      ...(a.run ? { unavailable: unavailableOf(provider.agents.learned(a.id)), sandbox: (({ confined, note }) => ({ confined, note }))(confineAgent(a, permOf(), deps.workspace, false)),
         // The folders it may write: the owner's list, else the guess by its name.
         folders: { list: a.folders ?? agentFolders(a, false).map((f) => (f.startsWith(homeDir() + "/") ? `~${f.slice(homeDir().length)}` : f)), own: !!a.folders } } : {}) })),
     error: provider.agents.error,

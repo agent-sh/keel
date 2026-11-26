@@ -172,14 +172,16 @@ export function twinsOf(agents: { id: string }[], learned: (id: string) => Learn
 
 // A failed probe's words, short enough for a picker row.
 const shortReason = (e: string): string => { const t = e.replace(/\s+/g, " ").trim(); return t.length > 80 ? `${t.slice(0, 79)}…` : t; };
+export const unavailableOf = (c?: AgentChoices & Partial<Learned>): string | undefined =>
+  c?.error && !pickable(c)?.options.length ? shortReason(c.error) : undefined;
 
 // The listing of one agent: itself, then each of its choices. An agent whose last probe failed and left
 // nothing to choose from is listed as unavailable, with the reason; one that is a later copy of
 // the agent `twin` carries that.
 export function listedOf(agent: { id: string; name: string }, c?: AgentChoices & Partial<Learned>, twin?: string): ListedModel[] {
   const set = pickable(c);
-  const note = c?.error && !set?.options.length ? { unavailable: shortReason(c.error) } : {};
-  const base = { billing: { kind: "subscription" as const, plan: agent.name }, images: true, ...(c?.efforts ? { efforts: c.efforts.options.map((o) => o.value) } : {}), ...note, ...(twin ? { same_as: twin } : {}) };
+  const unavailable = unavailableOf(c);
+  const base = { billing: { kind: "subscription" as const, plan: agent.name }, images: true, ...(c?.efforts ? { efforts: c.efforts.options.map((o) => o.value) } : {}), ...(unavailable ? { unavailable } : {}), ...(twin ? { same_as: twin } : {}) };
   const out: ListedModel[] = [{ model: agent.id, name: agent.name, ...base }];
   for (const o of once(set?.options ?? [])) out.push({ model: `${agent.id}/${o.value}`, name: `${agent.name}: ${o.name}`, ...base });
   return out;
