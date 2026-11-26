@@ -56,7 +56,7 @@ test.describe("Focus is the default", () => {
       expect(Math.abs(box.x + box.width / 2 - 960)).toBeLessThan(40);
       // The title in quiet ink at the body's size, regular weight.
       const look = await titleLook(page);
-      expect(look.size).toBeCloseTo(0.9375 * (await rootPx(page)), 0);
+      expect(look.size).toBeCloseTo(0.875 * (await rootPx(page)), 1);
       expect(look.weight).toBe("400");
       // The other two sessions that wait: one line at the bottom edge.
       const others = page.getByTestId("focus-others");
@@ -184,7 +184,7 @@ test.describe("the bar in the workbench", () => {
       await expect(title).toHaveText("Focus: a quiet bar");
       const px = await rootPx(page);
       const look = await titleLook(page);
-      expect(look.size).toBeCloseTo(0.9375 * px, 0);
+      expect(look.size).toBeCloseTo(0.875 * px, 1);
       expect(look.weight).toBe("400");
       // One text line and a small pad.
       const head = (await page.getByTestId("station-head").boundingBox())!, t = (await title.boundingBox())!;

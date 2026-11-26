@@ -291,7 +291,7 @@ test("the list's top block, its rows and the top bar are set in one face, at the
     expect(await high(".k-logo svg"), "the mark is the height of the rail's icons").toBe(await high('[data-testid="open-palette"] svg'));
     expect(await high(".k-logo svg"), "the mark is no taller than the name's line").toBeLessThanOrEqual(await high(".k-brand-name"));
     // The session's title is quiet: the body's size in regular weight.
-    expect(await font(`section.k-station[data-station="${asks}"] [data-testid="station-title"]`), "the session's title is the body's size in regular weight").toBe(await page.evaluate(() => `${0.9375 * parseFloat(getComputedStyle(document.documentElement).fontSize)}px 400`));
+    expect(await font(`section.k-station[data-station="${asks}"] [data-testid="station-title"]`), "the session's title is the body's size in regular weight").toBe(await page.evaluate(() => `${0.875 * parseFloat(getComputedStyle(document.documentElement).fontSize)}px 400`));
     expect(await font('[data-testid="new-session"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${asks}"] .k-row-title`));
     expect(await font('[data-testid="open-palette"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
     expect(await font(`[data-testid="session-row"][data-session="${failed}"] .k-row-title`), "a failed row's title is a read row's weight").toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
