@@ -5,6 +5,7 @@
 // a day). `refresh` samples first. `daemon.given_back`: when memory was last given back to the system, why (the daemon
 // came to rest, or its unit's bound was passed) and its resident memory before and after. `daemon.kept_events`: the sessions whose
 // events the daemon holds in memory, what they are charged and the budget.
+// `daemon.ignored_client_errors`: browser notices suppressed since daemon start.
 // `daemon.checkpoint`: the checkpoint thread's counts (passes, starts of the
 // log, how long it held the write lock, the most frames the log held).
 // `heavy`: the heavy-command pool (src/tools/heavy.ts): its settings, the
@@ -33,7 +34,7 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 export let resources: Resources | undefined;
 
-export const resourceRoutes: RouteModule = ({ store, bus }) => {
+export const resourceRoutes: RouteModule = ({ store, bus, errors }) => {
   resources?.stop(); // a hot reload makes a new sampler
   const r = (resources = new Resources(bus, store.stateDir, readsOf(store), () => store.readTotals()));
   heavyChanged.tell = (c) => bus.emit({ t: "feature", name: "heavy", session_id: c.session_id, data: c });
@@ -49,7 +50,7 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
         // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
         const checkpoint = checkpointerOf(store)?.counts;
-        return json({ ...report, left: heldNow(), daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, collector: collected, stalls_per_start: stallsPerStart(store.db, Date.now()), ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
+        return json({ ...report, left: heldNow(), daemon: { ...report.daemon, kept_events: store.keptEvents(), ignored_client_errors: errors.ignoredClientErrors(), given_back: restOf()?.last ?? null, collector: collected, stalls_per_start: stallsPerStart(store.db, Date.now()), ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
       },
     },
   };

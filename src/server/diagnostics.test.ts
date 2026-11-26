@@ -11,6 +11,35 @@ import type { ModelInfo, ProviderRequest } from "../providers/types.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
 import { errorRoutes } from "./routes/errors.ts";
 
+test("browser error capture counts only the exact ResizeObserver notice without recording it", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "browser-notice-"));
+  const store = new Store(dir);
+  const bus = new Bus();
+  const errors = new ErrorTracker(store, bus);
+  const notice = "ResizeObserver loop completed with undelivered notifications.";
+  const frames: string[] = [];
+  bus.on((f) => { if (f.t === "error") frames.push(f.error.message); });
+  try {
+    const routes = errorRoutes({ store, bus, errors } as Parameters<typeof errorRoutes>[0]);
+    const post = (message: string) => routes["/api/errors"]!.POST!(new Request("http://localhost/api/errors", {
+      method: "POST",
+      body: JSON.stringify({ message, context: { kind: "window.error" } }),
+    }) as never, {} as never);
+    const first = await post(notice);
+    await post(notice);
+    expect(store.errors(10)).toEqual([]);
+    expect(frames).toEqual([]);
+    expect(await first.json()).toEqual({ ok: true, ignored: true });
+    const real = await post(`${notice} Then the page failed`);
+    expect(real.status).toBe(201);
+    expect(frames).toEqual([`${notice} Then the page failed`]);
+    expect(errors.ignoredClientErrors()).toEqual({ resize_observer: 2 });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("captured failures wake only the designated session with a bounded, safe batch", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "diagnostics-"));
   const store = new Store(dir);

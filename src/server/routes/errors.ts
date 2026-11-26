@@ -41,9 +41,8 @@ export const errorRoutes: RouteModule = ({ store, errors: tracker, bus }) => {
       },
       POST: async (req: Request) => {
         const b = (await req.json().catch(() => ({}))) as any;
-        const err = Object.assign(new Error(String(b.message ?? "client error").slice(0, 2000)), { stack: b.stack });
-        const rec = errors.capture("client", err, b.context);
-        return json({ ok: true, id: rec.id }, 201);
+        const rec = errors.captureClient(String(b.message ?? "client error"), b.stack, b.context);
+        return rec ? json({ ok: true, id: rec.id }, 201) : json({ ok: true, ignored: true });
       },
     },
     // { resolved?: boolean, read?: boolean }

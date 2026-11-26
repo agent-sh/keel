@@ -58,6 +58,7 @@ export function failureFacts(err: unknown): { failure?: string; status?: number 
 
 export class ErrorTracker {
   private captures = new Set<(e: ErrorCapture) => void>();
+  private resizeObserverNotices = 0;
 
   // Where each kind happened, per session (error-sites.ts).
   readonly sites: ErrorSites;
@@ -65,6 +66,18 @@ export class ErrorTracker {
   constructor(private store: Store, private bus: Bus) {
     this.sites = new ErrorSites(store.db);
   }
+
+  // The browser defers these resize notifications to its next paint. Count its
+  // exact notice without creating an error row, frame or diagnostic wake.
+  captureClient(message: string, stack?: string, context?: unknown): ErrorRecord | undefined {
+    if (message === "ResizeObserver loop completed with undelivered notifications.") {
+      this.resizeObserverNotices++;
+      return;
+    }
+    return this.capture("client", Object.assign(new Error(message.slice(0, 2000)), { stack }), context);
+  }
+
+  ignoredClientErrors() { return { resize_observer: this.resizeObserverNotices }; }
 
   // One kind, and the list, each with where it happened and whether a retry healed it.
   get(id: string): ErrorRecord | undefined {
