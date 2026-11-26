@@ -504,6 +504,28 @@ test("a measured count the bytes cannot be is not this context's: it is counted 
   expect(contextBytes(fresh)).toBe(before);
 });
 
+// Each reply moves a model's learned ratio, and the ratio matters to images alone: a context counted once is
+// not serialized again when it moves, and its images still count at the ratio of the moment.
+test("a context counted once is not counted again when the model's ratio moves", async () => {
+  const model = "lab:moving";
+  const png = (w: number, h: number) => { const b = new Uint8Array(24); b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0); new DataView(b.buffer).setUint32(16, w); new DataView(b.buffer).setUint32(20, h); return btoa(String.fromCharCode(...b)); };
+  const shot = { type: "image", media_type: "image/png", data: png(280, 280) }; // 100 tokens
+  const line = [ev("user", { text: "look" }), ev("tool_result", { results: [{ type: "tool_result", tool_use_id: "c1", content: [{ type: "text", text: "z".repeat(5_000) }, shot] }] })];
+  await countPaced(line, model);
+  const before = contextBytes(line, model);
+  const per0 = bytesPerToken(model);
+  learnRatio(model, 600_000, 100_000);
+  const per1 = bytesPerToken(model);
+  expect(per1).not.toBe(per0);
+  const stringify = JSON.stringify;
+  let calls = 0;
+  JSON.stringify = ((...a: Parameters<typeof stringify>) => (calls++, stringify(...a))) as typeof stringify;
+  let after: number;
+  try { after = contextBytes(line, model); } finally { JSON.stringify = stringify; }
+  expect(calls).toBe(0);
+  expect(after - before).toBeCloseTo(100 * (per1 - per0), 6);
+});
+
 // An output's size in the transcript is taken from its parts, without putting the piece together:
 // the same number as the piece's own bytes, also where the output ends in half a character.
 test("a tool output is measured in the transcript as it is written there", () => {

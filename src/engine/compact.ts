@@ -1076,30 +1076,55 @@ export function messagesBytes(messages: Message[], model?: string): number {
   let n = 0;
   for (const m of messages) {
     for (const b of m.content as any[]) {
-      if (b.type === "text") n += utf8Bytes(String(b.text ?? ""));
-      else if (b.type === "thinking") n += utf8Bytes(String(b.thinking ?? ""));
-      else if (b.type === "tool_use") n += utf8Bytes(String(b.name)) + utf8Bytes(JSON.stringify(b.input ?? {}));
-      else if (b.type === "tool_result") n += jsonBytes(b, per);
-      else if (b.type === "image") n += imageTokens(b) * per;
-      else if (b.type === "attachment") n += attachmentBytes(b);
-      else if (b.type === "document") n += PATH_NOTE_BYTES;
+      const x = blockMeasure(b);
+      n += x.bytes + x.images * per;
     }
   }
   return n;
 }
 
-// UTF-8 bytes of a value as JSON, with each image counted at its estimated
-// token cost (`per` bytes a token, as the rest of the estimate) instead of its base64.
-function jsonBytes(v: unknown, per = BYTES_PER_TOKEN): number {
+// A measure apart from the ratio: the UTF-8 bytes of the text, and the tokens of
+// the images, which the caller turns into bytes at the model's ratio. The ratio
+// moves with every reply a model's provider counts, so a measure kept with it
+// was made again for the whole context at each step.
+type Measure = { bytes: number; images: number };
+
+// A block's measure. A frozen block (a stored body's, or one a projection made
+// once) cannot change, so it is measured once: a request's messages are made
+// again for each request around the same blocks, and its built messages (what
+// the hooks gave back, the part already sent included) around those blocks too.
+const blocks = new WeakMap<object, Measure>();
+function blockMeasure(b: any): Measure {
+  const frozen = !!b && typeof b === "object" && Object.isFrozen(b);
+  const had = frozen ? blocks.get(b) : undefined;
+  if (had) return had;
+  const m = measureBlock(b);
+  if (frozen) blocks.set(b, m);
+  return m;
+}
+function measureBlock(b: any): Measure {
+  if (b.type === "text") return { bytes: utf8Bytes(String(b.text ?? "")), images: 0 };
+  if (b.type === "thinking") return { bytes: utf8Bytes(String(b.thinking ?? "")), images: 0 };
+  if (b.type === "tool_use") return { bytes: utf8Bytes(String(b.name)) + utf8Bytes(JSON.stringify(b.input ?? {})), images: 0 };
+  if (b.type === "tool_result") return jsonMeasure(b);
+  if (b.type === "image") return { bytes: 0, images: imageTokens(b) };
+  if (b.type === "attachment") return { bytes: attachmentBytes(b), images: 0 };
+  if (b.type === "document") return { bytes: PATH_NOTE_BYTES, images: 0 };
+  return { bytes: 0, images: 0 };
+}
+
+// UTF-8 bytes of a value as JSON, with each image counted as its estimated
+// tokens instead of its base64.
+function jsonMeasure(v: unknown): Measure {
   let images = 0;
   const text = JSON.stringify(v, (_k, x) => {
     if (x && typeof x === "object" && x.type === "image" && typeof x.data === "string") {
-      images += imageTokens(x) * per;
+      images += imageTokens(x);
       return { type: "image" };
     }
     return x;
   });
-  return utf8Bytes(text ?? "") + images;
+  return { bytes: utf8Bytes(text ?? ""), images };
 }
 
 // UTF-8 bytes of a string (what "bytes" means wherever it is reported), as an
@@ -1129,16 +1154,15 @@ const PATH_NOTE_BYTES = 330;
 // the model adds its text, and an attached file adds what it resolves to (its
 // text when it goes inline, else the note with its path; a PDF read natively
 // is model-specific and counted as that note).
-// An event's bytes are worked out once: an event never changes, and a count
+// An event's measure is worked out once: an event never changes, and a count
 // of a context walks every event after its checkpoint, several times a step
-// (a tool result is serialized to be counted). `per` matters to images alone.
-const counted = new WeakMap<StoredEvent, { per: number; n: number }>();
+// (a tool result is serialized to be counted). `per` matters to images alone,
+// so it is applied to the kept measure, not kept with it.
+const counted = new WeakMap<StoredEvent, Measure>();
 function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
-  const had = counted.get(e);
-  if (had && had.per === per) return had.n;
-  const n = eventBytes(e, per);
-  counted.set(e, { per, n });
-  return n;
+  let m = counted.get(e);
+  if (!m) counted.set(e, (m = eventMeasure(e)));
+  return m.bytes + m.images * per;
 }
 
 // Counts the events of a context that were not counted yet, a slice at a
@@ -1152,8 +1176,7 @@ export async function countPaced(lineage: readonly StoredEvent[], model?: string
   let worked = 0;
   for (let i = Math.max(0, Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); i < lineage.length; i++) {
     const e = lineage[i]!;
-    const had = counted.get(e);
-    if (had && had.per === per) continue;
+    if (counted.has(e)) continue;
     if ((worked += tailBytes(e, per)) >= PACE_BYTES) {
       worked = 0;
       await new Promise<void>((ok) => setImmediate(ok));
@@ -1161,15 +1184,20 @@ export async function countPaced(lineage: readonly StoredEvent[], model?: string
   }
 }
 
-function eventBytes(e: StoredEvent, per: number): number {
-  if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : replyBytes(e.data.blocks ?? []);
-  if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
-  if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
-  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, trail_text: e.data.trail_text, fixed: e.data.fixed, owner_messages: e.data.owner_messages, owner_about: e.data.owner_about, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
-  if (e.kind !== "user") return 0;
-  let n = utf8Bytes(String(e.data.text ?? ""));
-  for (const b of (e.data.images ?? []) as any[]) n += b.type === "attachment" ? attachmentBytes(b) : jsonBytes(b, per);
-  return n;
+const none: Measure = { bytes: 0, images: 0 };
+const textOnly = (bytes: number): Measure => ({ bytes, images: 0 });
+function eventMeasure(e: StoredEvent): Measure {
+  if (e.kind === "assistant") return e.data.stop === "refusal" ? none : textOnly(replyBytes(e.data.blocks ?? []));
+  if (e.kind === "tool_result") return jsonMeasure(e.data.results ?? []);
+  if (e.kind === "note") return e.data.model ? textOnly(utf8Bytes(String(e.data.text ?? ""))) : none;
+  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonMeasure({ summary: e.data.summary, trail_text: e.data.trail_text, fixed: e.data.fixed, owner_messages: e.data.owner_messages, owner_about: e.data.owner_about, owner_media: e.data.owner_media, other_messages: e.data.other_messages }) : none;
+  if (e.kind !== "user") return none;
+  const m = textOnly(utf8Bytes(String(e.data.text ?? "")));
+  for (const b of (e.data.images ?? []) as any[]) {
+    if (b.type === "attachment") m.bytes += attachmentBytes(b);
+    else { const x = jsonMeasure(b); m.bytes += x.bytes; m.images += x.images; }
+  }
+  return m;
 }
 
 const attachmentBytes = (b: { size: number; media_type: string }) =>
