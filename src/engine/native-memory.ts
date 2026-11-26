@@ -66,7 +66,7 @@ import { Carried, norm } from "./sections.ts";
 export type Roots = { home: string; claude: string; codex: string };
 // `same`: a file the chain holds already (the path it is one with, or the files it only imports): listed, not read again.
 export type Same = { of: string; imports: boolean };
-export type Entry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number; same?: Same };
+export type Entry = { path: string; scope: "owner" | "parent" | "folder"; same?: Same };
 
 // Where the harnesses keep their files for this daemon: the owner's, or the
 // scratch home a daemon that may not read his was given (core/paths.ts).

@@ -319,7 +319,7 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 // `marks`: every path looked for is noted with its mark on disk, before it is
 // looked at (src/engine/instruction-marks.ts).
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-export type InstructionEntry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number; of?: "claude" | "codex"; same?: Same };
+export type InstructionEntry = { path: string; scope: "owner" | "parent" | "folder"; of?: "claude" | "codex"; same?: Same };
 // `o.covered`: also the files one with another the chain holds (their `same` says which); `o.once`: the set the chain fills.
 export function instructionPaths(cwd: string, marks?: Marks, o: { covered?: boolean; once?: OnceSet } = {}): InstructionEntry[] {
   const once = o.once ?? new OnceSet();
@@ -455,7 +455,7 @@ export function instructionsMade(cwd: string, window?: number, marks?: Marks): {
   // A harness's user file that is read has no use for the copy Keel's import made of it in the owner's file.
   const own = join(configDir(), "AGENTS.md");
   const ported = { claude: files.some((f) => f.of === "claude" && f.same === undefined), codex: files.some((f) => f.of === "codex" && f.same === undefined) };
-  for (const { path: p, limit: cap, same } of files) {
+  for (const { path: p, same } of files) {
     if (same !== undefined) {
       made.push(`${p}\0same ${same.imports ? "imports" : "as"} ${same.of}`);
       parts.push(`# ${p}\n\n(${same.imports ? "It only imports" : "The same as"} ${same.of}, above.)`);
@@ -491,7 +491,7 @@ export function instructionsMade(cwd: string, window?: number, marks?: Marks): {
     // file that says it again keeps it.
     const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined, { record: false });
     if (!fresh.text.trim()) continue;
-    const limit = Math.min(cap === undefined ? whole : Math.min(whole, cap), room);
+    const limit = Math.min(whole, room);
     fresh.commit(cutPoint(fresh.text, limit));
     const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
     room -= Math.min(fresh.text.length, limit);
