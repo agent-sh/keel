@@ -300,7 +300,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   // server bundles on request with HMR and serves the files itself.
   const uiError = (e: Error) => errors.capture("server", e, { at: "ui bundle" });
   const built = embeddedBuilt();
-  const ui = new UiBundles(store.stateDir, daemonApi(), { version: built ? String(built) : "dev", built: built || Date.now(), page: embeddedPage(), revision: built ? buildInfo().revision : undefined }, uiError);
+  // The sources stamp is asked when a bundle's install or status needs it (a daemon run from source walks its sources).
+  const ui = new UiBundles(store.stateDir, () => timed(() => "the daemon's sources stamp", daemonApi), { version: built ? String(built) : "dev", built: built || Date.now(), page: embeddedPage(), revision: built ? buildInfo().revision : undefined }, uiError);
   const embeddedUi = bundleRoutes(index, PAGES, uiError, (h) => stamp(h, ui.embedded.version)) ?? Object.fromEntries(PAGES.map((p) => [p, index]));
   const swapUi = () => {
     server.reload({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } });

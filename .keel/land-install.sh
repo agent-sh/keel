@@ -12,7 +12,9 @@
 # that runs (scripts/install-kind.ts): none, when nothing the binary or the page uses changed (docs, tests, files the
 # binary never imports); the page alone, when only the page did, through `keel ui install`, with no restart (the
 # daemon's pid and its turns go on); else the engine, as below. Each says which in its output, its status and its
-# receipt. A change that cannot be compared is the engine's.
+# receipt, and its last line (`keel-land-installed: none|page|engine`) is the queue's record of it: the work board
+# counts a landing installed as none or the page as running beside the daemon's revision. One whose turn waits behind
+# another install says no kind. A change that cannot be compared is the engine's.
 # The engine's install starts apart from the daemon (a user unit of the
 # service manager, else a process of its own session): the install stops the daemon, and with it
 # everything the daemon started. The install waits its turn (one at a time), puts the binary in
@@ -44,7 +46,8 @@ light() {
     none)
       printf '{"commit":"%s","kind":"none"}\n' "$c" > "$d/receipt.json"
       status verified
-      echo "land-install: ${c:0:12}: $why" ;;
+      echo "land-install: ${c:0:12}: $why"
+      echo "keel-land-installed: none" ;;
     page)
       pid=$(pidof_daemon "$url") || pid=""
       [[ $pid =~ ^[0-9]+$ ]] || { echo "land-install: no daemon that is not draining answers at $url: the engine is replaced"; return 1; }
@@ -58,7 +61,8 @@ light() {
       [ "$after" = "$pid" ] || fail "the daemon's pid moved from $pid to ${after:-none} during a page install"
       printf '{"commit":"%s","kind":"page","engine":"%s","page":"%s","pid":%s}\n' "$c" "$(curl -fsS --max-time 5 "$url/api/daemon" | bun -e 'process.stdout.write(String(JSON.parse(await Bun.stdin.text()).build?.revision ?? ""))')" "$page" "$pid" > "$d/receipt.json"
       status verified
-      echo "land-install: ${c:0:12}: $why (pid $pid goes on)" ;;
+      echo "land-install: ${c:0:12}: $why (pid $pid goes on)"
+      echo "keel-land-installed: page" ;;
     *)
       echo "land-install: ${c:0:12}: $why: the binary is replaced and the daemon restarted"
       return 1 ;;
@@ -128,6 +132,7 @@ if [ "${1:-}" != "--install" ]; then
     exec 9>&-
   else
     echo "land-install: another install runs: which install ${c:0:12} needs is decided when its turn comes"
+    deferred=1
   fi
   if command -v systemd-run > /dev/null && systemctl --user show-environment > /dev/null 2>&1; then
     systemd-run --user --quiet --collect --unit="keel-land-install-${c:0:12}" --description="Install the landed Keel ${c:0:12}" \
@@ -138,6 +143,8 @@ if [ "${1:-}" != "--install" ]; then
     setsid nohup bash "$d/install.sh" --install "$c" "$d" > /dev/null 2>&1 < /dev/null &
     echo "land-install: install started (pid $!); its state: $d/status"
   fi
+  # The queue's record of what ran (the work board's live): the engine, unless the install decides later.
+  [ -n "${deferred:-}" ] || echo "keel-land-installed: engine"
   exit 0
 fi
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseChecks } from "../checks/named.ts";
-import { buildOrder, checksToRun, outcomeText, queueWarning, readLand, tailOf, TIMEOUT_MINUTES } from "./rules.ts";
+import { buildOrder, checksToRun, installedOf, outcomeText, queueWarning, readLand, tailOf, TIMEOUT_MINUTES } from "./rules.ts";
 
 const named = parseChecks(JSON.stringify({ checks: { typecheck: "bunx tsc --noEmit -p .", unit: { run: "bun test", args: true }, any: { run: "x", dir: "*" }, remote: { run: "~/bin/rv", args: true, tree: { commit: "last" } } } })).checks;
 
@@ -57,4 +57,12 @@ test("the land text holds each check whole", async () => {
   expect(text({ dir: "ui" })).not.toBe(one);
   expect(text({ cache: false })).not.toBe(one);
   expect(text({})).toBe(one);
+});
+
+test("the install an after step says it made: its last line of the form, else nothing", () => {
+  expect(installedOf("land-install: built\nkeel-land-installed: page\n")).toBe("page");
+  expect(installedOf("keel-land-installed: engine\nkeel-land-installed: none")).toBe("none");
+  expect(installedOf("land-install: another install runs\n")).toBeNull();
+  // Only a line of its own: the words inside another line, or another word, say nothing.
+  expect(installedOf("echo keel-land-installed: none\nkeel-land-installed: all")).toBeNull();
 });

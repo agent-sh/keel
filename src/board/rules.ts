@@ -72,9 +72,14 @@ export type Live =
 export type Deploy = { sha: string; how: "after step passed" | "this daemon"; at: number | null };
 // What runs of a repository: this daemon's build when the repository holds its revision (an after step that installs
 // this daemon only started the install, which may still fail, so the daemon's own revision says what runs); else
-// the commit the after-land step last passed on.
-export function deploysOf(own: string | null, after: { to_sha: string; ended: number } | undefined): Deploy[] {
-  if (own) return [{ sha: own, how: "this daemon", at: null }];
+// the commit the after-land step last passed on. An after step that said it installed nothing or the page alone
+// (`after_install`, src/landing/rules.ts installedOf) left the engine as it was with the landed work in place: its
+// commit runs too. After an engine install, or a step that said nothing, only the daemon's own revision counts.
+export function deploysOf(own: string | null, after: { to_sha: string; ended: number; after_install?: string | null } | undefined): Deploy[] {
+  if (own) {
+    const light = after && (after.after_install === "none" || after.after_install === "page") && after.to_sha !== own;
+    return [{ sha: own, how: "this daemon", at: null }, ...(light ? [{ sha: after.to_sha, how: "after step passed" as const, at: after.ended }] : [])];
+  }
   return after ? [{ sha: after.to_sha, how: "after step passed", at: after.ended }] : [];
 }
 

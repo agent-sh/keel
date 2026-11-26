@@ -108,6 +108,12 @@ describe("landed and live", () => {
     expect(R.deploysOf(null, after)).toEqual([{ sha: "a".repeat(40), how: "after step passed", at: 5 }]);
     expect(R.deploysOf(null, undefined)).toEqual([]);
   });
+  test("a landing installed as nothing or as the page alone runs beside the daemon's revision; an engine install does not", () => {
+    const own = "d".repeat(40), to = "a".repeat(40);
+    for (const kind of ["none", "page"]) expect(R.deploysOf(own, { to_sha: to, ended: 5, after_install: kind })).toEqual([{ sha: own, how: "this daemon", at: null }, { sha: to, how: "after step passed", at: 5 }]);
+    for (const kind of ["engine", null, undefined]) expect(R.deploysOf(own, { to_sha: to, ended: 5, after_install: kind })).toEqual([{ sha: own, how: "this daemon", at: null }]);
+    expect(R.deploysOf(own, { to_sha: own, ended: 5, after_install: "none" })).toEqual([{ sha: own, how: "this daemon", at: null }]);
+  });
   test("live: whichever deploy holds the head", () => {
     const after = { sha: "a".repeat(40), how: "after step passed" as const, at: 1 }, daemon = { sha: "d".repeat(40), how: "this daemon" as const, at: null };
     expect(R.liveFrom([{ deploy: after, holds: { state: "no", missing: 1 } }, { deploy: daemon, holds: { state: "yes", how: "ancestor" } }])).toEqual({ state: "yes", at: daemon.sha, how: "this daemon" });

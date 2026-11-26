@@ -5,7 +5,8 @@
 //                                        keel.inputs.json), REPO the git history, URL the daemon
 //
 // The engine is the same when the files the binary is compiled from hash the same (the build's api stamp
-// against the daemon's) and the change touches none of the build's own files or the toolchain's at the root.
+// against the daemon's), the binary was built with the runtime the daemon runs on (a Bun upgrade changes no file of
+// the repository), and the change touches none of the build's own files or the toolchain's at the root.
 // The page is the same when the built page's digest is the one served. Whatever cannot be compared (a daemon
 // of no known commit, a history without it, a daemon that does not say) is the engine: a restart, as before.
 
@@ -14,10 +15,10 @@ export type Facts = {
   // The landed commit.
   target: string;
   // The daemon: its engine's revision and sources stamp, and the page it serves (by digest and commit).
-  engine: { revision: string | null; api: string | null };
+  engine: { revision: string | null; api: string | null; bun: string | null };
   served: { page: string | null; revision: string | null };
   // The build of the target: its stamp, its page's digest, the files the binary and the build read.
-  built: { api: string; page: string; binary: string[]; build: string[] };
+  built: { api: string; page: string; binary: string[]; build: string[]; bun: string | null };
   // The files that differ between the engine's revision and the target; null when git could not say.
   changed: string[] | null;
   // The engine runs a later commit than the target; the page served is from a later commit than the target.
@@ -36,6 +37,7 @@ export function installKind(f: Facts): { kind: Kind; why: string } {
   const { engine, served, built } = f;
   if (!engine.revision || !COMMIT.test(engine.revision)) return { kind: "engine", why: `the daemon runs no known commit (${engine.revision ?? "none"}): it is replaced` };
   if (f.engineLater) return { kind: "none", why: `the daemon already runs ${engine.revision.slice(0, 12)}, a later commit: nothing installed` };
+  if (!built.bun || engine.bun !== built.bun) return { kind: "engine", why: `the build ran on Bun ${built.bun ?? "unknown"}, the daemon on Bun ${engine.bun ?? "unknown"}: the engine is replaced` };
   if (engine.revision !== f.target) {
     if (f.changed === null) return { kind: "engine", why: `what changed since ${engine.revision.slice(0, 12)} could not be read: the engine is replaced` };
     const build = new Set(built.build);
@@ -79,9 +81,9 @@ if (import.meta.main) {
   }
   const facts: Facts = {
     target,
-    engine: { revision, api: typeof ui.api === "string" ? ui.api : null },
+    engine: { revision, api: typeof ui.api === "string" ? ui.api : null, bun: typeof daemon.bun === "string" ? daemon.bun : null },
     served: { page: typeof ui.active?.page === "string" ? ui.active.page : null, revision: typeof ui.active?.revision === "string" ? ui.active.revision : null },
-    built: { api: inputs.api, page: inputs.page, binary: inputs.binary, build: inputs.build },
+    built: { api: inputs.api, page: inputs.page, binary: inputs.binary, build: inputs.build, bun: typeof inputs.bun === "string" ? inputs.bun : null },
     changed,
     engineLater: later(revision),
     pageLater: later(ui.active?.revision),

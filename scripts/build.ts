@@ -168,6 +168,6 @@ if (missing.length || extra.length) {
 }
 await pack(`${out}-ui.tar.gz`, files);
 // What the landing install decides by (.keel/land-install.sh, scripts/install-kind.ts): the files the binary is
-// compiled from, the build's own files, the stamp and the page's digest.
-writeFileSync(`${out}.inputs.json`, JSON.stringify({ revision, api, page: pageDigest(files), binary: graph, build: importGraph(root, ["scripts/build.ts"]) }, null, 1));
+// compiled from, the build's own files, the stamp, the page's digest and the runtime the binary carries.
+writeFileSync(`${out}.inputs.json`, JSON.stringify({ revision, api, page: pageDigest(files), bun: Bun.version, binary: graph, build: importGraph(root, ["scripts/build.ts"]) }, null, 1));
 console.log(`built ${out} and ${out}-ui.tar.gz (revision ${revision}, api ${api}, UI ${built}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);

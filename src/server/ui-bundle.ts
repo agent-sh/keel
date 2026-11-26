@@ -86,7 +86,12 @@ export class UiBundles {
   // Which page is served now: an installed version, or the embedded one.
   active: { source: "installed" | "embedded"; version: string } = { source: "embedded", version: "dev" };
 
-  constructor(stateDir: string, private api: string, readonly embedded: Embedded, private onError: (e: Error) => void) {
+  // `api` is asked only when it decides something: a daemon run from source walks its sources for it.
+  private apiOf: () => string;
+  private get api() { return this.apiOf(); }
+
+  constructor(stateDir: string, api: string | (() => string), readonly embedded: Embedded, private onError: (e: Error) => void) {
+    this.apiOf = typeof api === "string" ? () => api : api;
     this.root = join(stateDir, "ui");
     mkdirSync(this.root, { recursive: true });
     try { this.ptr = JSON.parse(readFileSync(join(this.root, "current.json"), "utf8")); } catch {}
@@ -97,7 +102,7 @@ export class UiBundles {
     this.sweep();
     const cur = this.ptr.current ? this.held.get(this.ptr.current) : undefined;
     // At start the newer wins; one built from other sources never does.
-    if (cur && cur.manifest.api === api && cur.manifest.version > embedded.built) this.active = { source: "installed", version: String(cur.manifest.version) };
+    if (cur && cur.manifest.version > embedded.built && cur.manifest.api === this.api) this.active = { source: "installed", version: String(cur.manifest.version) };
     else this.active = { source: "embedded", version: embedded.version };
   }
 

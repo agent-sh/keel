@@ -187,6 +187,15 @@ export function outcomeText(o: Outcome, own: (branch: string) => boolean = () =>
 // The failure a branch's session is told (src/automation/failures.ts), one line.
 export const failureText = (l: Left, base: string) => `${l.branch} left the landing queue of ${base}: ${l.why}.${l.log ? ` Its output: ${l.log}` : ""}`;
 
+// Which install an after step says it made, by a line of its output (`keel-land-installed: none|page|engine`, the
+// last one wins): none or page leaves the daemon on its revision with the landed commit's work in place, so the
+// work board counts the landed commit as running too (src/board/rules.ts deploysOf). Null: the step said nothing.
+export type Installed = "none" | "page" | "engine";
+export function installedOf(text: string): Installed | null {
+  const said = [...text.matchAll(/^keel-land-installed: (none|page|engine)\s*$/gm)];
+  return (said.at(-1)?.[1] as Installed | undefined) ?? null;
+}
+
 // The last lines of a check's output, for the line its failure is told in.
 export function tailOf(text: string, lines = 6, chars = 600): string {
   const t = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "").trimEnd().split("\n").filter((l) => l.trim()).slice(-lines).join(" | ");

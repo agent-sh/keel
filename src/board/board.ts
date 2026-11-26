@@ -244,7 +244,8 @@ export class WorkBoard {
         tips.set(ref!, { sha: sha!, ...(counted ? { ahead, behind } : {}) });
       }
       const baseTip = base ? tips.get(base)?.sha ?? ((await this.git(repo, ["rev-parse", "-q", "--verify", base], undefined, by)).out.trim() || null) : null;
-      // What runs (deploysOf in rules.ts): this daemon's build when this repository holds it, else the after step's commit.
+      // What runs (deploysOf in rules.ts): this daemon's build when this repository holds it (with the after step's commit when
+      // it installed nothing or the page alone), else the after step's commit.
       const own = revision ? await this.git(repo, ["rev-parse", "-q", "--verify", `${revision}^{commit}`], undefined, by) : undefined;
       const deploys = deployRows(own && own.code === 0 && SHA.test(own.out.trim()) ? own.out.trim() : null, facts.deploys.find((d) => d.repo === repo));
       repos.push({ repo, base: base?.replace(/^refs\/(heads|remotes)\//, "") ?? null, base_tip: baseTip, deploys });

@@ -16,7 +16,7 @@ export type AgentFact = {
 export type { ReviewFact };
 export type QueueRow = { id: string; repo: string; branch: string; tip: string; state: string; why: string | null; landed: string | null; updated: number };
 export type VerdictRow = { agent_id: string; commit_sha: string; branches: string; land: string; why: string; at: number };
-export type DeployRow = { repo: string; to_sha: string; ended: number };
+export type DeployRow = { repo: string; to_sha: string; ended: number; after_install?: string | null };
 // A pair the branches were checked in (src/landing/together.ts), as its row keeps it.
 export type PairCheckRow = { repo: string; tip1: string; tip2: string; branch1: string; branch2: string; base_tip: string | null; why: string; detail: string | null; state: string; checks: string | null; error: string | null; started: number; ended: number | null };
 // live_cut: agents that work or wait and are still not among `agents` (only when more of them work than MAX_ROWS).
@@ -126,7 +126,7 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   const repos = [...new Set(agents.map((x) => x.repo_root).filter((r): r is string => !!r))];
   const deploys: DeployRow[] = [];
   for (const repo of repos.slice(0, 20)) {
-    deploys.push(...tried(() => db.query<DeployRow, [string]>("SELECT repo, to_sha, ended FROM landing_batches WHERE repo = ? AND to_sha IS NOT NULL AND after IS NOT NULL AND after_exit = 0 ORDER BY ended DESC LIMIT 1").all(repo)));
+    deploys.push(...tried(() => db.query<DeployRow, [string]>("SELECT repo, to_sha, ended, after_install FROM landing_batches WHERE repo = ? AND to_sha IS NOT NULL AND after IS NOT NULL AND after_exit = 0 ORDER BY ended DESC LIMIT 1").all(repo)));
   }
   const pairs: PairCheckRow[] = [];
   for (const repo of repos.slice(0, 20)) {

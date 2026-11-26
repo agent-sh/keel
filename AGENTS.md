@@ -428,7 +428,9 @@ under `~/.cache/keel-work/bun/research/`.
   changed and the built page is the one served (by digest); the page alone through `keel ui install`, with no
   restart, when only the page did; else the binary, through the daemon's own restart (which may wait for the owner to
   step away). What cannot be compared is the binary's. Its output and receipt say which; a failed install puts the previous binary back unless a new daemon runs, and is an Errors row. The
-  work board takes what runs from the daemon's own revision when this repository holds it, never from the step.
+  work board takes what runs from the daemon's own revision when this repository holds it, and from the step only
+  when its last line said it installed nothing or the page alone (`keel-land-installed:`, `installedOf` in
+  `src/landing/rules.ts`): the engine is then the same and the landed commit's work is in place.
 - A plan of lanes is checked before any of its agents starts
   (`src/automation/lane-plans.ts`, the pure part in `src/landing/lanes.ts`):
   each lane's files (declared, named by its brief, their importers), the pairs

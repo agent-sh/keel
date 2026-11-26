@@ -61,7 +61,7 @@ import type { Store } from "../core/store.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
 import { afterTask, baseLines, rebaseTask, TRIES, type ConflictAt, type Stop } from "./resolve.ts";
-import { buildOrder, checksToRun, failureText, leftWhy, outcomeText, queueWarning, readLand, tailOf, type LandRules, type Left, type Outcome, type Push, type ToRun } from "./rules.ts";
+import { buildOrder, checksToRun, failureText, installedOf, leftWhy, outcomeText, queueWarning, readLand, tailOf, type LandRules, type Left, type Outcome, type Push, type ToRun } from "./rules.ts";
 import { homeDir } from "../core/paths";
 import type { Landing } from "../safety/landed-trust.ts";
 import { lockedDaemon } from "../core/daemon-lock.ts";
@@ -197,6 +197,8 @@ export class LandingQueue {
     store.migrate(SCHEMA);
     this.afterPins = new AfterPins(store);
     for (const [c, t] of RESOLVE_COLUMNS) if (!store.columnExists("landing_queue", c)) store.migrate(`ALTER TABLE landing_queue ADD COLUMN ${c} ${t}`);
+    // Which install the after step said it made (installedOf in rules.ts): what the work board counts as running.
+    if (!store.columnExists("landing_batches", "after_install")) store.migrate("ALTER TABLE landing_batches ADD COLUMN after_install TEXT");
   }
 
   private get dir() { return join(this.store.stateDir, "landing"); }
@@ -882,7 +884,7 @@ export class LandingQueue {
       // not pushed), and the address of the daemon whose queue landed it.
       const pushed = push && "ok" in push && push.ok ? push.remote : "";
       const a = await this.sh(command, at ?? own!, `${batch}-after`, who, repo, timeoutMs, { KEEL_LANDED: tip, KEEL_LANDED_FROM: from, KEEL_LANDED_BRANCHES: branches.join(" "), KEEL_LANDED_BASE: short(base), KEEL_LANDED_PUSHED: pushed, KEEL_LAND_DAEMON: lockedDaemon(this.store.stateDir)?.url ?? "" });
-      this.store.db.query("UPDATE landing_batches SET after_exit = ?, after_log = ? WHERE id = ?").run(a.exit ?? -1, a.log, batch);
+      this.store.db.query("UPDATE landing_batches SET after_exit = ?, after_log = ?, after_install = ? WHERE id = ?").run(a.exit ?? -1, a.log, a.exit === 0 ? installedOf(a.text) : null, batch);
       return { exit: a.exit, log: a.log };
     } finally {
       if (own) { await worktreeGit(repo, ["worktree", "remove", "--force", own], { ok: true }); rmSync(own, { recursive: true, force: true }); }

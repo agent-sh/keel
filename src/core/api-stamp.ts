@@ -55,8 +55,10 @@ export function sourceApi(root: string, files = binaryGraph(root)): string {
   return h.digest("hex").slice(0, 16);
 }
 
-// What this daemon was built from: stamped in by scripts/build.ts, read from the sources when run from them.
-export const daemonApi = () => (typeof __KEEL_API__ === "string" ? __KEEL_API__ : sourceApi(resolve(import.meta.dir, "../..")));
+// What this daemon was built from: stamped in by scripts/build.ts, read from the sources when run from them (a walk
+// of the import graph, about 100 ms: made once, when something first asks, never at start).
+let fromSources: string | undefined;
+export const daemonApi = () => (typeof __KEEL_API__ === "string" ? __KEEL_API__ : (fromSources ??= sourceApi(resolve(import.meta.dir, "../.."))));
 
 // A page by its bytes: the digest of its files, names and contents, with the hash each output name carries
 // (chunk-<hash>.js) left out wherever it stands. The bundler's chunk hashes also hash where the build's packages

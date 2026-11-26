@@ -5,14 +5,15 @@ const R = "a".repeat(40);
 const C = "c".repeat(40);
 const binary = ["package.json", "src/main.ts", "src/engine/turn.ts", "ui/src/lib/tools.ts", "test/fixtures/plugin-v1/expected.json"];
 const build = ["scripts/build.ts", "scripts/page-graph.ts", "src/core/api-stamp.ts"];
-const facts = (over: Partial<Facts> & { changed: string[] | null }): Facts => ({
+type Over = Omit<Partial<Facts>, "engine" | "built"> & { changed: string[] | null; engine?: Partial<Facts["engine"]>; built?: Partial<Facts["built"]> };
+const facts = ({ engine, built, ...over }: Over): Facts => ({
   target: C,
-  engine: { revision: R, api: "api1" },
   served: { page: "page1", revision: R },
-  built: { api: "api1", page: "page1", binary, build },
   engineLater: false,
   pageLater: false,
   ...over,
+  engine: { revision: R, api: "api1", bun: "1.3.0", ...engine },
+  built: { api: "api1", page: "page1", binary, build, bun: "1.3.0", ...built },
 });
 const kind = (f: Facts) => installKind(f).kind;
 
@@ -59,4 +60,13 @@ test("a later engine or page is never replaced by an earlier commit", () => {
 
 test("the daemon already at the commit, with its page, installs nothing", () => {
   expect(kind(facts({ changed: [], engine: { revision: C, api: "api1" } }))).toBe("none");
+});
+
+test("a binary built with another Bun is the engine, even when no file changed", () => {
+  expect(kind(facts({ changed: ["README.md"], built: { bun: "1.3.1" } }))).toBe("engine");
+  expect(kind(facts({ changed: ["ui/src/App.tsx"], built: { page: "page2", bun: "1.3.1" } }))).toBe("engine");
+  expect(kind(facts({ changed: [], target: R, built: { bun: null } }))).toBe("engine");
+  expect(kind(facts({ changed: ["README.md"], engine: { bun: null } }))).toBe("engine");
+  // A daemon already past the commit is left alone whatever it runs on.
+  expect(kind(facts({ changed: ["README.md"], engineLater: true, built: { bun: "1.3.1" } }))).toBe("none");
 });

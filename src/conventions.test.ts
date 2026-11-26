@@ -220,3 +220,26 @@ test("a settings load of the run's folder counts only at the end of the file (af
   // A file that loads only the run's folder, or none, leaves nothing.
   expect(leavesSettingsOwn(`loadSettings(${RUN}, () => {});`)).toBe(false);
 });
+
+test("every build of the binary in scripts/build.ts is noted, so the sources stamp covers what it read", () => {
+  // The stamp a page bundle is checked against hashes the binary's import graph (src/core/api-stamp.ts), and the
+  // build fails when what its builds read differs from it: a build whose metafile is not given to note() would
+  // read files nothing checks. The page (target "browser") is built apart and known by its own digest.
+  const text = textOf(join(ROOT, "scripts/build.ts"));
+  const calls = [...text.matchAll(/(\w+) = await Bun\.build\(/g)];
+  expect(calls.length).toBeGreaterThanOrEqual(3);
+  const unnoted: string[] = [];
+  for (const m of calls) {
+    let depth = 0;
+    let end = m.index! + m[0].length - 1;
+    do {
+      const ch = text[end++];
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+    } while (depth > 0 && end < text.length);
+    const options = text.slice(m.index!, end);
+    if (/target: "browser"/.test(options)) continue;
+    if (!new RegExp(`\\bnote\\(${m[1]}\\)`).test(text.slice(end))) unnoted.push(`${m[1]} (line ${text.slice(0, m.index!).split("\n").length})`);
+  }
+  expect(unnoted).toEqual([]);
+});
