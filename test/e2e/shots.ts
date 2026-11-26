@@ -4,7 +4,10 @@ import { relative } from "node:path";
 
 // A page with no saved state but the one choice every spec makes: the workbench (the list, the panes, the dock),
 // not Focus, the owner's default (ui/src/lib/focus.ts; focus-mode.spec.ts drives that).
-export const WORKBENCH = { cookies: [], origins: [{ origin: new URL(process.env.KEEL_URL ?? "http://127.0.0.1:1").origin, localStorage: [{ name: "keel.workbench", value: "true" }] }] };
+// (With it, the list's order as this version keeps it after a first visit: a browser that holds a choice of Keel's
+// and no order is told once that the default order changed, a line no spec but that note's wants over its list.)
+export const LIST_ORDER = JSON.stringify({ group: "folder", sort: "created", hideDone: false, v: 2 });
+export const WORKBENCH = { cookies: [], origins: [{ origin: new URL(process.env.KEEL_URL ?? "http://127.0.0.1:1").origin, localStorage: [{ name: "keel.workbench", value: "true" }, { name: "keel.listArrange", value: LIST_ORDER }] }] };
 export const SHOTS = process.env.KEEL_SHOTS ?? `${process.env.HOME}/.cache/keel-work/bun/shots`;
 mkdirSync(SHOTS, { recursive: true });
 

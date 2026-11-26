@@ -99,6 +99,9 @@ export default defineConfig({
     // (focus mode). bridge.spec.ts clears this to drive several stations.
     // They drive the workbench (the list, the dock, the tools); focus-mode.spec.ts
     // clears keel.workbench to drive Focus, the owner's default.
-    storageState: { cookies: [], origins: [{ origin: new URL(url).origin, localStorage: [{ name: "keel.focus", value: "true" }, { name: "keel.workbench", value: "true" }] }] },
+    // The list's order is kept as this version's, as after a first visit: a browser that holds other choices of
+    // Keel's and no order is told once that the default order changed (ListArrange.tsx), which no spec but the
+    // ones of that note wants over its list.
+    storageState: { cookies: [], origins: [{ origin: new URL(url).origin, localStorage: [{ name: "keel.focus", value: "true" }, { name: "keel.workbench", value: "true" }, { name: "keel.listArrange", value: JSON.stringify({ group: "folder", sort: "created", hideDone: false, v: 2 }) }] }] },
   },
 });

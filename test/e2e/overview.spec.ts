@@ -1,4 +1,4 @@
-import { expect, test } from "./isolate.ts";
+import { expect, test, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { digestBrief, digestTotals, type Digest } from "../../src/admin/away.ts"
 import { TEXT_TOKENS, tokensOf, type Overview } from "../../src/admin/overview.ts";
 import type { StoredEvent } from "../../src/core/types.ts";
 import { exited, ownDaemon, ownEnv } from "./peer.ts";
-import { shoot, SHOTS } from "./shots.ts";
+import { LIST_ORDER, shoot, SHOTS } from "./shots.ts";
 
 // Feature: every session at once. One route, one command and the sessions
 // tool say, for twenty sessions in under 1.5k tokens, what needs the owner,
@@ -24,8 +24,13 @@ const PRIVATE = ["overview-prompt-marker", "overview-tool-marker", "script:", "c
 const made: string[] = [];
 test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 
+// The pages of a daemon of the spec's own are another origin than the run's: they get the workbench (the list, the
+// foot's Inbox) the run's pages have, and the list's order as kept after a first visit.
+const workbench = (page: Page) => page.addInitScript((order) => { localStorage.setItem("keel.workbench", "true"); if (!localStorage.getItem("keel.listArrange")) localStorage.setItem("keel.listArrange", order); }, LIST_ORDER);
+
 test("one report tells every session's state, failure, run time and spend, as the page shows them", async ({ page }) => {
   test.setTimeout(300_000);
+  await workbench(page);
   const state = join(ROOT, `overview-${Date.now()}`);
   made.push(state);
   mkdirSync(state, { recursive: true });
@@ -224,6 +229,7 @@ test("one report tells every session's state, failure, run time and spend, as th
 
 test("while the owner is away, one digest tells what each session did, what waits and what it cost", async ({ page }) => {
   test.setTimeout(420_000);
+  await workbench(page);
   const state = join(ROOT, `away-${Date.now()}`);
   made.push(state);
   mkdirSync(state, { recursive: true });
