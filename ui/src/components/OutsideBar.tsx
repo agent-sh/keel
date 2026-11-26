@@ -104,7 +104,8 @@ export function OutsideBar({ session }: { session: Session }) {
   const dismiss = (id: string) => api(`/api/sessions/${session.id}/outside/sends/${id}`, { method: "DELETE" }).catch((e) => setNote(failed(e, { at: "OutsideBar dismiss" })));
   // Stale: it worked or waited and has written nothing since (no process vouches for it): said as that, in no state's colour.
   // A card of Codex's waits on the owner above: that is what the session waits for now, whatever its record says.
-  const said = st.watch === "need" && o.state !== "waiting" ? `Waits for your answer: ${where} asks above` : o.state === "waiting" ? `Waits in ${where} for ${o.waiting_for ?? "your answer"}` : o.state === "working" ? `Working in ${where}` : o.state === "stale" ? `No record from ${where}` : `Done in ${where}`;
+  const above = st.watch === "need" && o.state !== "waiting";
+  const said = above ? `Waits for your answer: ${where} asks above` : o.state === "waiting" ? `Waits in ${where} for ${o.waiting_for ?? "your answer"}` : o.state === "working" ? `Working in ${where}` : o.state === "stale" ? `No record from ${where}` : `Done in ${where}`;
   const u = session.usage;
   const cost = typeof u.cost === "number" && !u.unpriced ? fmtSessionCost(u.cost) : typeof u.cost === "number" && u.cost > 0 ? `${fmtSessionCost(u.cost)} and more unpriced` : "";
   const spent = [o.model, tokensOf(u) ? `${fmtTokens(tokensOf(u))} tokens` : "", cost].filter(Boolean).join(" · ");
@@ -120,7 +121,7 @@ export function OutsideBar({ session }: { session: Session }) {
     : route === "none" ? `Read-only here: Keel sends nothing to ${where}. Copy into Keel makes a copy you work on here; the session there keeps running.`
     : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards. Copy into Keel makes a copy instead.`;
   return (
-    <section className="k-outside" data-testid="outside-bar" data-state={st.watch === "need" ? "waiting" : o.state} data-harness={o.harness} data-answering={answering ? "" : undefined} aria-label={`${where} session`}>
+    <section className="k-outside" data-testid="outside-bar" data-state={st.watch === "need" ? "waiting" : o.state} data-harness={o.harness} data-answering={answering ? "" : undefined} data-above={above ? "" : undefined} aria-label={`${where} session`}>
       <div className="k-outside-head">
         <Mark w={st.watch} />
         <div className="min-w-0 flex-1">

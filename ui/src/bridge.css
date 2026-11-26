@@ -2028,6 +2028,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* Who holds it now: one word among its facts, the holder named while another process has it. */
 .k-outside-holder { color: var(--muted); }
 .k-outside-holder:not([data-kind="free"]) { color: var(--fg); font-weight: 600; }
+/* Under a card that asks: the card is where the answer goes, and it has the colour and the weight. The bar says the
+   same once more as plain lines beside its mark, so one thing on the screen asks, not two. */
+.k-outside[data-above] :is(.k-outside-state, .k-outside-holder) { font-weight: 400; color: var(--muted); }
 /* The box of a session answered in place: the text, then Stop and Send. */
 .k-outside-compose { display: flex; align-items: flex-end; gap: 0.5rem; margin-left: 1.25rem; padding: 0.375rem 0.375rem 0.375rem 0.625rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg); }
 .k-outside-compose:focus-within { border-color: var(--ring); }

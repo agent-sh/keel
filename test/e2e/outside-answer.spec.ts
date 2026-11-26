@@ -75,6 +75,9 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     // The card waits on the owner: the session needs him, on its row and in its bar, not "working".
     await expect(page.locator(`[data-testid="session-row"][data-session="${sid}"]`)).toHaveAttribute("data-watch", "need");
     await expect(bar.getByTestId("outside-state")).toContainText("Waits for your answer: Codex asks above");
+    // The card asks, with the colour and the weight; the bar under it says so as plain lines beside its mark.
+    const weights = () => bar.evaluate((el) => ["outside-state", "outside-holder"].map((id) => getComputedStyle(el.querySelector(`[data-testid="${id}"]`)!).fontWeight));
+    expect(await weights()).toEqual(["400", "400"]);
     await shoot(page, "outside-answer-card");
     // On a phone the bar is one quiet line over a box that fits: Send and Stop are in view, nothing runs off.
     const desk = page.viewportSize()!;
@@ -103,6 +106,8 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
     await expect(bar.getByTestId("outside-sends")).toHaveCount(0);
     expect((await sessionOf())?.id).toBe(sid);
+    // With no card above, the bar's own state has its weight back.
+    expect((await weights())[0]).toBe("600");
     await shoot(page, "outside-answer-reply");
 
     // An MCP server of Codex's asks for a form: Keel declines it, and the bar says so until the next send.
