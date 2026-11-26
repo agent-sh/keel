@@ -93,8 +93,16 @@ test("a settled branch stays settled across a restart, and one its board's row c
   t.rows.set(t.old, [row("other", { parent_id: t.old, review: null })]);
   t.total.set(t.old, 201);
   await t.L.list();
+  // It is said on the list, not as a card, and its tree is still read in turn: when the board shows it again
+  // (an agent before it landed), it is a card again.
+  const v = await t.L.view();
+  expect(v.not_shown.filter((n) => n.agent_id === t.oldAgent)).toEqual([{ chat_id: t.old, agent_id: t.oldAgent, branch: `keel/${t.oldAgent}`, why: "past its board's rows" }]);
+  expect(v.cards.some((c) => c.agent_id === t.oldAgent)).toBe(false);
+  t.rows.set(t.old, [row(t.oldAgent, { parent_id: t.old })]);
+  t.total.set(t.old, 1);
   await t.L.list();
-  expect(t.read.filter((r) => r === t.old).length).toBe(1);
+  const back = await t.L.view();
+  expect([back.cards.some((c) => c.agent_id === t.oldAgent && c.ready), back.not_shown.some((n) => n.agent_id === t.oldAgent)]).toEqual([true, false]);
 });
 
 test("trees read only for an approved branch are read a few a list, not fresh, and keep their cards between", async () => {
@@ -130,6 +138,16 @@ test("trees read only for an approved branch are read a few a list, not fresh, a
   expect(lists.every((l) => l.length <= APPROVED_READ)).toBe(true);
   expect(extra.every((r) => s.read.includes(r))).toBe(true);
   expect(extra.every((r) => last.includes(r)) && last.includes(s.old)).toBe(true);
+  // A new daemon goes on with the rotation where it was: the tree read longest ago is read first (a tree never read counts as read at 0).
+  const at = store.db.query<{ root: string; at: number }, []>("SELECT root, at FROM landing_reads").all().filter((r) => extra.includes(r.root));
+  expect(at.length).toBe(extra.length);
+  // (Read longest ago: the fifth; then the others in order; the last two most lately.)
+  extra.forEach((r, i) => store.db.query("UPDATE landing_reads SET at = ? WHERE root = ?").run(i === 5 ? -1 : 10 ** 12 + i, r));
+  store.db.query("UPDATE landing_reads SET at = ? WHERE root NOT IN (SELECT value FROM json_each(?))").run(10 ** 12 - 1, JSON.stringify(extra));
+  const from = s.read.length;
+  await s.make().list();
+  const now = s.read.slice(from);
+  expect([now.includes(extra[5]!), now.includes(extra[8]!), now.includes(extra[9]!)]).toEqual([true, false, false]);
 });
 
 test("a verdict that names only a commit approves the branch its reviewer was named for, while it still works", async () => {

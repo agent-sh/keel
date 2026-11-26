@@ -54,10 +54,14 @@ export const READY_WORD = "Ready to land";
 
 // The part, or nothing. `inbox`: the list's own row and head.
 export function ReadyToLand({ inbox }: { inbox?: boolean }) {
-  const cards = useSteady(useReadyToLand());
-  if (!cards.length) return null;
+  const got = useReadyToLand();
+  const cards = useSteady(got.cards);
+  if (!cards.length && !got.not_shown.length) return null;
   const head = <h2 className={inbox ? "k-label" : "k-pane-empty-word"} data-testid="ready-head">{READY_WORD}<span className="ml-2 tabular-nums font-normal text-faint">{cards.length}</span></h2>;
-  const rows = cards.map((c) => <Row key={c.key} c={c} />);
+  const n = got.not_shown.length;
+  const rows = [...cards.map((c) => <Row key={c.key} c={c} />),
+    ...(n ? [<p key="not-shown" className="py-1 text-caption text-muted" data-testid="ready-not-shown" title={got.not_shown.map((x) => x.branch).join("\n")}>
+      {n} approved {n === 1 ? "branch is" : "branches are"} not shown: past {n === 1 ? "its" : "their"} work board's rows</p>] : [])];
   return inbox
     ? <li role="presentation" className={cn("@container px-2.5 pb-1 pt-3 first:pt-1.5")} data-testid="ready-part">{head}<div className="pt-1">{rows}</div></li>
     : <section className="k-home-sec @container" data-testid="ready-part">{head}<div className="k-home-list">{rows}</div></section>;

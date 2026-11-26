@@ -6,39 +6,45 @@ import type { LandCard } from "../../../src/board/card.ts";
 import { api, onFeature, scope } from "./store.ts";
 import { navigate, savePref } from "./ui.ts";
 
-let now: LandCard[] = [];
+// An approved branch no card shows: its board's rows left it out (src/integrations/mobile/landings.ts).
+export type NotShown = { chat_id: string; agent_id: string; branch: string; why: string };
+type Ready = { cards: LandCard[]; not_shown: NotShown[] };
+let now: Ready = { cards: [], not_shown: [] };
 let loaded = false;
 const subs = new Set<() => void>();
-const same = (a: LandCard[], b: LandCard[]) => a.length === b.length && a.every((c, i) => c.key === b[i]!.key && c.fp === b[i]!.fp);
-function set(list: LandCard[]) {
+const same = (a: Ready, b: Ready) => a.cards.length === b.cards.length && a.cards.every((c, i) => c.key === b.cards[i]!.key && c.fp === b.cards[i]!.fp)
+  && a.not_shown.length === b.not_shown.length && a.not_shown.every((n, i) => n.agent_id === b.not_shown[i]!.agent_id);
+function set(r: Partial<Ready>) {
   loaded = true;
-  if (same(now, list)) return;
-  now = list;
+  const next = { cards: r.cards ?? [], not_shown: r.not_shown ?? [] };
+  if (same(now, next)) return;
+  now = next;
   subs.forEach((f) => f());
 }
 
 let bound = false;
 let views = 0;
-const read = () => api<{ cards: LandCard[] }>("/api/landings").then((r) => set(r.cards));
+const read = () => api<Ready>("/api/landings").then(set);
 function bind() {
   if (bound) return;
   bound = true;
-  onFeature({ frame: (f) => { if (f.name === "landings") set((f.data as { cards: LandCard[] }).cards); }, reconnect: () => { if (views) read().catch(() => {}); } });
+  onFeature({ frame: (f) => { if (f.name === "landings") set(f.data as Ready); }, reconnect: () => { if (views) read().catch(() => {}); } });
 }
 const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 
-// The cards that have nothing missing, ready first. While a view uses this the page hears the feed (a frame only
-// when the list changed); it reads the list as the view comes up, since frames of the time between were not sent.
-export function useReadyToLand(): LandCard[] {
+// The cards that have nothing missing, ready first, and the approved branches no card shows. While a view uses this
+// the page hears the feed (a frame only when the list changed); it reads the list as the view comes up, since frames
+// of the time between were not sent.
+export function useReadyToLand(): Ready {
   bind();
-  const cards = useSyncExternalStore(subscribe, () => now);
+  const got = useSyncExternalStore(subscribe, () => now);
   useEffect(() => {
     views++;
     const stop = scope.feed("landings");
     read().catch(() => {});
     return () => { views--; stop(); };
   }, []);
-  return cards;
+  return got;
 }
 export const readyLoaded = () => loaded;
 

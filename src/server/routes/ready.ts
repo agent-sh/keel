@@ -6,7 +6,7 @@
 // Nothing here counts as something that needs the owner: it is a list of what could land, not a request.
 import { report as agentReport, rootSession, send as sendToAgent } from "../../automation/agents.ts";
 import type { LandCard } from "../../board/card.ts";
-import { landings } from "../../integrations/mobile/landings.ts";
+import { landings, type NotShown } from "../../integrations/mobile/landings.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { sessionOfCaller } from "../caller.ts";
 import { feedHeard } from "../feed-heard.ts";
@@ -26,8 +26,12 @@ export const readyRoutes: RouteModule = (deps: Deps) => {
     sendBack: (id, text, key) => sendToAgent(id, text, false, key, undefined, undefined, "owner_back"),
   });
 
-  const ready = async (fresh = false): Promise<LandCard[]> => (await L.list(fresh)).filter((c) => c.ready);
-  const printOf = (cards: LandCard[]) => cards.map((c) => `${c.key}:${c.fp}`).join("|");
+  // The ready cards, and the approved branches no card shows because their board's rows left them out.
+  const ready = async (fresh = false): Promise<{ cards: LandCard[]; not_shown: NotShown[] }> => {
+    const v = await L.view(fresh);
+    return { cards: v.cards.filter((c) => c.ready), not_shown: v.not_shown };
+  };
+  const printOf = (v: { cards: LandCard[]; not_shown: NotShown[] }) => [...v.cards.map((c) => `${c.key}:${c.fp}`), ...v.not_shown.map((n) => `-${n.chat_id}.${n.agent_id}`)].join("|");
 
   // One read at a time; one asked for while it runs is made again after it.
   let told = "", busy = false, again = false;
@@ -35,9 +39,9 @@ export const readyRoutes: RouteModule = (deps: Deps) => {
     if (busy) { again = true; return; }
     busy = true;
     try {
-      const cards = await ready(true);
-      const print = printOf(cards);
-      if (print !== told) { told = print; bus.emit({ t: "feature", name: "landings", data: { cards } }); }
+      const got = await ready(true);
+      const print = printOf(got);
+      if (print !== told) { told = print; bus.emit({ t: "feature", name: "landings", data: got }); }
     } catch (e) {
       errors.capture("server", e, { at: "ready to land" });
     } finally {
@@ -61,10 +65,10 @@ export const readyRoutes: RouteModule = (deps: Deps) => {
   return {
     "/api/landings": {
       GET: async () => {
-        const cards = await ready();
+        const got = await ready();
         // What a page was shown last is what the next frame is compared with.
-        told = printOf(cards);
-        return json({ cards });
+        told = printOf(got);
+        return json(got);
       },
     },
     // Land one card, only on the facts it was shown with: the owner's own hand, and from a remote device
