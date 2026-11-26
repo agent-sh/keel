@@ -2,11 +2,12 @@
 // files and making the folder a repository), clone it into a new folder or a
 // worktree of its own, open one of its files in the owner's editor, serve an
 // image from its folder, and the repositories the folder picker offers.
+import { credentialAt, linkedCredential, realPlaces } from "../../safety/credentials.ts";
 import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { heldFile } from "../../core/store-files.ts";
 import { gitSync } from "../../core/git.ts";
-import { contains, homeDir } from "../../core/paths.ts";
+import { contains, defaultConfigDir, homeDir } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
 import { instructionFilter, instructionPaths } from "../../engine/turn.ts";
 import { jobsOf, running, toolEnv } from "../../tools/jobs.ts";
@@ -103,6 +104,10 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
     if (!contains(root, real)) return bad("the file is outside the session's folder", 403);
     // (A worktree Keel made for an agent is under the state folder: its files are the session's own, not the daemon's.)
     if (contains(store.stateDir, real) && !keelWorktree(root)) return bad("that is the daemon's own state", 403);
+    // A hard link in a worktree to the daemon's token, sign-ins or vault (or the owner's credential stores) is
+    // refused by what it is, as the folder route refuses it.
+    { const c = credentialAt(real, { ...realPlaces(homeDir(), { state: store.stateDir, config: defaultConfigDir() }), names: false }) ?? linkedCredential(real, realPlaces(homeDir(), { state: store.stateDir, config: defaultConfigDir() }));
+      if (c) return bad(`${c.what}: it is not shown here`, 403); }
     if (!statSync(real).isFile()) return bad("not a file");
     return real;
   };
