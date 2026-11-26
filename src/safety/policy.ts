@@ -1334,11 +1334,12 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[],
     for (const c of wordStands(word, i, s, home)) for (const { path, shown, within } of s.cost.over ? [] : pathsOf(c, i)) {
       const cred = looked(s.cost.read, path, () => credentialOf(path, f));
       if (!cred) continue;
-      if (all) { all.push(cred.path); continue; }
-      // (As a written-out read is judged: in the sandbox only one it shows, outside the session's folder, to an agent.)
-      if (f.confinedShown && !(f.confinedShown(cred.path).shown && (cred.foreign || !contains(f.workspace, cred.path)) && !!f.agent)) continue;
       // (A name nobody shows in a folder that is a store of credentials is one of its files, as a wildcard there is.)
       const store = !shown && within ? credentialOf(within, f) : null;
+      // (For the vault: the file, or the store whose files the name may be any of.)
+      if (all) { all.push((store ?? cred).path); continue; }
+      // (As a written-out read is judged: in the sandbox only one it shows, outside the session's folder, to an agent.)
+      if (f.confinedShown && !(f.confinedShown(cred.path).shown && (cred.foreign || !contains(f.workspace, cred.path)) && !!f.agent)) continue;
       if (shown || store) { const c = store ?? cred; return { word, path: tilded(c.path), rule: CREDENTIAL_RULE, reads: true, shown: { why: c.what, by, ...(c.api ? { api: c.api } : {}) } }; }
       found ??= { word, path: tilded(cred.path), rule: CREDENTIAL_RULE, reads: true };
     }

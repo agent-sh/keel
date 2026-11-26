@@ -162,6 +162,12 @@ test("a listed file read through names the line sets is the owner's card, refuse
   expect(held()).toBe(0);
   expect(await through(free, "Bash", { command: "p=~/.aws; q=$p; cat $q/credentials" })).toBe("ran");
   expect(held()).toBeGreaterThan(0);
+  // A name nobody shows in a store of credentials may be any of its files: the store's own are kept.
+  const other = (gate as any).store.createSession({ model: "fixture:m", workspace: ws }) as Session;
+  gate.setPerm(other.id, { mode: "full-auto", sandbox: "off" });
+  const kept = () => vault.list(other.id).filter((e) => e.kind === "credential file").length;
+  expect(await through(other, "Bash", { command: "read y; cat ~/.aws/$y" })).toBe("ran");
+  expect(kept()).toBeGreaterThan(0);
 });
 
 test(".envrc, history and Keel's own files: refused to an agent; the servers and providers say where the masked view is", async () => {
