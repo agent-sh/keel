@@ -14,7 +14,7 @@
 import { registerCommand } from "./keys.ts";
 import { PHONE_QUERY } from "./phone.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 export const FOCUS_KEYS = "mod+.";
 const desk = () => !matchMedia(PHONE_QUERY).matches;
@@ -35,16 +35,12 @@ export function usePhoneFocus(): boolean {
   return !useDesk() && calm;
 }
 
-// Whether the page is laid out for a desk (not a phone).
+// Whether the page is laid out for a desk (not a phone). Read as an outside store, so a window that crosses a
+// phone's width is drawn anew at once: the message box changes its whole layout there (one line, or its row of
+// tools), and a change left pending is otherwise flushed from inside whichever size observer runs next.
+const deskChanges = (f: () => void) => { const m = matchMedia(PHONE_QUERY); m.addEventListener("change", f); return () => m.removeEventListener("change", f); };
 export function useDesk(): boolean {
-  const [d, setD] = useState(desk);
-  useEffect(() => {
-    const m = matchMedia(PHONE_QUERY);
-    const f = () => setD(!m.matches);
-    m.addEventListener("change", f);
-    return () => m.removeEventListener("change", f);
-  }, []);
-  return d;
+  return useSyncExternalStore(deskChanges, desk);
 }
 
 export function useFocus(): boolean {
