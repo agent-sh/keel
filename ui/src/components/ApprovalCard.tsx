@@ -1536,6 +1536,11 @@ const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as c
 // and the text wraps anew or is cut) closes, and grants nothing.
 function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }: { a: Approval; digits: boolean | null; busy: boolean; live: boolean; armed: () => boolean; refusal: (stood: boolean, key: Element | null) => string; unread: boolean; onGrant: (rules: Suggest[], session: boolean) => void }) {
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
+  // A compound command's card offers a rule a part: the owner keeps the ones he picks (all at first). The call
+  // itself runs whatever is kept; picking none keeps nothing, so the grant buttons wait for a pick.
+  const [kept, setKept] = useState<boolean[]>(() => a.suggest.map(() => true));
+  const picked = rules.filter((_, i) => kept[i] !== false);
+  const many = rules.length > 1;
   const [open, setOpen] = useState(false);
   useEffect(() => { if (unread) setOpen(false); }, [unread]);
   // A grant for the session of an agent's card covers its whole tree: the session at the top, the agents
@@ -1572,17 +1577,27 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
           <Popover.Popup data-ask-part="" className="w-[min(26rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
             <Popover.Title className="text-ui font-medium">Grant</Popover.Title>
             <Popover.Description className="mt-0.5 text-caption text-muted">
-              {a.kind === "shell" ? "A trailing * covers any arguments. Edit the rule to narrow it." : "Calls this rule covers run without asking."}
+              {a.kind === "shell" ? (many ? "Keep the parts to allow from now on; the rest still ask. A trailing * covers any arguments." : "A trailing * covers any arguments. Edit the rule to narrow it.") : "Calls this rule covers run without asking."}
             </Popover.Description>
             <div className="mt-2.5 flex flex-col gap-1.5">
               {rules.map((r, i) => (
-                <label key={i} className="flex items-center gap-2">
-                  <span className="w-20 shrink-0 text-caption text-faint">{KIND_LABEL[r.kind]}</span>
+                <label key={i} className="flex items-center gap-2" data-testid="grant-rule" data-kept={kept[i] !== false || undefined}>
+                  {many && (
+                    <input
+                      type="checkbox"
+                      data-testid="grant-keep"
+                      aria-label={`Keep ${r.pattern}`}
+                      checked={kept[i] !== false}
+                      onChange={(e) => setKept(rules.map((_, j) => (j === i ? e.target.checked : kept[j] !== false)))}
+                      className="shrink-0 accent-[var(--accent)]"
+                    />
+                  )}
+                  <span className={cn("shrink-0 text-caption text-faint", many ? "w-16" : "w-20")}>{KIND_LABEL[r.kind]}</span>
                   <input
                     data-testid="grant-pattern"
                     value={r.pattern}
                     onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, pattern: e.target.value } : x)))}
-                    className="k-field min-w-0 flex-1 font-mono text-caption"
+                    className={cn("k-field min-w-0 flex-1 font-mono text-caption", kept[i] === false && "text-faint line-through")}
                   />
                 </label>
               ))}
@@ -1590,15 +1605,17 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
             <div className="mt-3 flex items-center gap-1.5">
               <button
                 data-testid="grant-always"
-                onClick={() => { setOpen(false); onGrant(rules, false); }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90"
+                disabled={!picked.length}
+                onClick={() => { setOpen(false); onGrant(picked, false); }}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:cursor-default disabled:opacity-50"
               >
                 <Check className="size-3.5" /> In this folder
               </button>
               <button
                 data-testid="grant-session"
-                onClick={() => { setOpen(false); onGrant(rules, true); }}
-                className="k-btn k-btn-lg"
+                disabled={!picked.length}
+                onClick={() => { setOpen(false); onGrant(picked, true); }}
+                className="k-btn k-btn-lg disabled:cursor-default disabled:opacity-50"
               >
                 {ofAgent ? "The whole agent tree" : "This session and its agents"}
               </button>

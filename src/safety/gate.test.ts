@@ -788,3 +788,25 @@ test("the cards of one reply list in the order the model wrote the calls, whiche
   for (const x of listed) g.resolve(x.id, session.id, { choice: "deny" });
   await Promise.all(checks);
 });
+
+// RSH-S143: a compound command's card offers a rule a part, and the owner keeps only the parts he picks. The call
+// runs; a later run of the part he left out still asks, and the part he kept does not. An explicit empty pick keeps
+// nothing (never every suggestion) and the card stays open for another answer.
+test("a compound command's grant keeps only the parts picked, and an empty pick keeps nothing", async () => {
+  const { g, make, call, opened } = treeGate();
+  const s = make("compound");
+  g.setPerm(s.id, { mode: "ask", sandbox: "off", network: true });
+  const asking = g.check(s, call(s, "touch a.txt && mkdir one"));
+  const card = await opened(s);
+  expect(card.suggest.map((r) => r.pattern).sort()).toEqual(["mkdir *", "touch *"]);
+  expect(g.resolve(card.id, s.id, { choice: "session", rules: [] })).toMatchObject({ status: 400 });
+  expect(g.approval(card.id)?.state).toBe("pending");
+  expect(g.resolve(card.id, s.id, { choice: "session", rules: [{ kind: "shell", pattern: "mkdir *" }] })).toEqual({ ok: true });
+  expect(await asking).not.toHaveProperty("deny");
+  const unasked = async (command: string) => {
+    const r = await Promise.race([g.check(s, call(s, command)), Bun.sleep(300).then(() => "asked" as const)]);
+    return r !== "asked" && !("deny" in r);
+  };
+  expect(await unasked("mkdir two")).toBe(true);
+  expect(await unasked("touch b.txt")).toBe(false);
+});

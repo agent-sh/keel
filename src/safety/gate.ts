@@ -2477,8 +2477,10 @@ export class Gate {
     const unread = refusal(form, c.choice, seen, by.client);
     if (unread) return { error: unread, status: 409, approval: a, hold: form.hold };
     if (c.choice === "session" || c.choice === "always") {
-      const rules = (c.rules?.length ? c.rules : a.suggest).filter((r) => r.pattern?.trim());
-      if (!rules.length) return { error: "nothing to grant: give a rule", status: 400 };
+      // The rules the owner picked (a compound command's card offers one a part): a list given is the whole grant,
+      // and an empty one keeps nothing. Only no list at all means the card's suggestions.
+      const rules = (c.rules ?? a.suggest).filter((r) => r.pattern?.trim());
+      if (!rules.length) return { error: "nothing to grant: pick a rule, or allow this once", status: 400 };
       // A tool grant is for the source the card judged (taken from the card, never the client).
       for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
     }

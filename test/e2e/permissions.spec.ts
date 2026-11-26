@@ -136,6 +136,72 @@ test("permission gate", async ({ page, request }) => {
   expect(errorsAfter).toBe(errorsBefore);
 });
 
+// A compound command's grant keeps only the parts the owner picks: the call runs, a later run of the part he left
+// out still asks, and the kept part does not. With none picked the grant waits for a pick.
+test("a compound command's grant keeps only the parts picked", async ({ page, request }) => {
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-pick-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  try {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    await page.goto(`/s/${session.id}`);
+    const say = async (text: string) => {
+      await page.getByTestId("composer").fill(text);
+      await page.keyboard.press("Enter");
+    };
+    await say(ask("Run exactly this Bash command and nothing else: touch one.txt && mkdir two. Then reply with one word: ok.", scriptBash("touch one.txt && mkdir two")));
+    const card = page.getByTestId("approval");
+    await expect(card).toBeVisible({ timeout: 60_000 });
+    await card.getByTestId("allow-always").click();
+    const rule = page.getByTestId("grant-rule");
+    await expect(rule).toHaveCount(2);
+    const keep = (pattern: string) => rule.filter({ has: page.locator(`input[value="${pattern}"]`) }).getByTestId("grant-keep");
+    await keep("touch *").uncheck();
+    await keep("mkdir *").uncheck();
+    await expect(page.getByTestId("grant-session")).toBeDisabled();
+    await keep("mkdir *").check();
+    await shoot(page, "perm-07-pick-1920x1040");
+    await page.getByTestId("grant-session").click();
+    await expect(card).toHaveCount(0);
+    await endsAre(page, 1, 120_000);
+    expect(existsSync(join(ws, "one.txt")) && existsSync(join(ws, "two"))).toBe(true);
+    // The kept part runs unasked; the part left out asks.
+    await say(ask("Run exactly this Bash command and nothing else: mkdir three. Then reply with one word: ok.", scriptBash("mkdir three")));
+    await endsAre(page, 2, 120_000);
+    expect(existsSync(join(ws, "three"))).toBe(true);
+    await say(ask("Run exactly this Bash command once and nothing else: touch four.txt. If it is denied, reply with one word: no.", scriptBash("touch four.txt")));
+    await expect(card).toBeVisible({ timeout: 60_000 });
+    await card.getByTestId("deny").click();
+    await page.getByTestId("deny-send").click();
+    await endsAre(page, 3, 120_000);
+    expect(existsSync(join(ws, "four.txt"))).toBe(false);
+    // The same pick at a laptop's size and text (a card that arrives at that size: a resize asks a card to be read
+    // again).
+    await narrow(page, true);
+    await say(ask("Run exactly this Bash command once and nothing else: touch five.txt && cp one.txt six.txt. If it is denied, reply with one word: no.", scriptBash("touch five.txt && cp one.txt six.txt")));
+    await expect(card).toBeVisible({ timeout: 60_000 });
+    await card.getByTestId("allow-always").click();
+    await expect(rule).toHaveCount(2);
+    await keep("touch *").uncheck();
+    await shoot(page, "perm-07-pick-1320x860-s90");
+    await card.getByTestId("allow-always").click();
+    await expect(rule).toHaveCount(0);
+    await card.getByTestId("deny").click();
+    await page.getByTestId("deny-send").click();
+    await endsAre(page, 4, 120_000);
+    await narrow(page, false);
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
+// A laptop's 1320x860 with the text at 90%, or the desk size back.
+async function narrow(page: import("@playwright/test").Page, on: boolean) {
+  await page.setViewportSize(on ? { width: 1320, height: 860 } : { width: 1920, height: 1040 });
+  await page.evaluate((v) => document.documentElement.style.setProperty("--ui-scale", v), on ? "0.9" : "1");
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+}
+
 // A permissions read held back past a newer change (a slow reconnect) never
 // puts the older mode back on screen, whichever way the change went.
 test("a late permissions read never brings back an older mode", async ({ page, request }) => {
