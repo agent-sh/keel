@@ -221,6 +221,36 @@ test("a step after a cd spelled with a name may not have been taken: the folders
   expect(performance.now() - t0).toBeLessThan(2000);
 });
 
+// Each folder a step leads to is as long as the steps joined, and the folders double with each step: ten steps of
+// 100,000 characters after `cd $A` held the loop 7.7 seconds and took 2.5 GB, the vault's read of the same line as
+// long again. A step or a folder longer than a word is read is not followed, and the line asks as high risk. What
+// is checked is the cost beside the same line with its name used elsewhere (the line split and read the same way):
+// a multiple of it, not a time, so a loaded machine that slows both does not make it fail.
+test("long steps after a cd spelled with a name cost what the line's length does, and ask as high risk", () => {
+  const step = (i: number, n: number) => `s${i}${"/abcdefghi".repeat(n / 10)}`;
+  const steps = (n: number) => Array.from({ length: 10 }, (_, i) => `cd ${step(i, n)}; `).join("");
+  // (Best of three, each after a collection. A try within `bound` needs no other, and one three times past it says enough.)
+  const best = (run: () => void, bound = 0) => {
+    let b = Infinity;
+    for (let k = 0; k < 3 && (k === 0 || !(b <= bound || (bound && b > 3 * bound))); k++) { Bun.gc(true); const t = performance.now(); run(); b = Math.min(b, performance.now() - t); }
+    return b;
+  };
+  const wrong: string[] = [];
+  for (const n of [3_900, 100_000]) {
+    const led = `read A; cd $A; ${steps(n)}cat f`, elsewhere = `read A; cd x; ${steps(n)}cat $A`;
+    for (const mode of ["ask", "full-auto"] as Mode[]) {
+      const d = (command: string) => decide({ kind: "shell", command, cwd: ws }, facts(mode));
+      expect([n, mode, how(d(led))]).toEqual([n, mode, "ask-high"]);
+      const b = best(() => d(elsewhere)), a = best(() => d(led), 3 * b + 20);
+      if (a > 3 * b + 20) wrong.push(`${mode}: ${led.length} characters: ${a.toFixed(0)} ms led by the name, ${b.toFixed(0)} ms with it elsewhere`);
+    }
+    const vault = (command: string) => () => unspeltCredentials(command, ws, ws, () => null, home);
+    const b = best(vault(elsewhere)), a = best(vault(led), 3 * b + 20);
+    if (a > 3 * b + 20) wrong.push(`the vault's read: ${led.length} characters: ${a.toFixed(0)} ms led by the name, ${b.toFixed(0)} ms with it elsewhere`);
+  }
+  expect(wrong).toEqual([]);
+}, 120_000);
+
 test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
   const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
   // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)
@@ -311,6 +341,10 @@ test("an agent's read of a credential is refused whatever else its line does", (
   // An agent's line that reads none is answered as it was.
   for (const command of ["echo hi >> ~/.bashrc; cat notes.txt", "p=/home/u; q=$p/own; echo x > $q/.git/config; cat $q/README.md"])
     expect([command, judged(command, "ask", true), judged(command, "full-auto", true)]).toEqual([command, "owner", "ask-high"]);
+  // A line of more commands than the rules read through is still read for the credentials its words name.
+  const long = `${"true; ".repeat(4_100)}cat ~/.ssh/id_rsa`;
+  for (const mode of ["ask", "full-auto"] as Mode[]) expect([mode, judged(long, mode, true), judged(long, mode, false)]).toEqual([mode, "deny", "ask-high"]);
+  expect([judged(`${"true; ".repeat(4_100)}cat notes.txt`, "full-auto", true)]).toEqual(["ask-high"]);
 });
 
 test("the decision on a line leaves the credentials it may read through its names, for the gate to keep from the model", () => {
