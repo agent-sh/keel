@@ -116,3 +116,35 @@ test("a session with agents opens on the conversation, its stretches folded and 
     await exited(d.proc);
   }
 });
+
+// The lens reads on its own: with the stream's snapshot held back, the lens's own text paints, and nothing waits for
+// a question about the session's agents when the list already counts them. Once the snapshot comes, the message box
+// keeps what was typed meanwhile and the full stream is a press away.
+test("the lens paints its text while the stream's snapshot is held back", async ({ page }) => {
+  const { state, ids: [id] } = seeded("lens-alone", 600, "coordinator", "Coordinator");
+  const d = await daemon(state);
+  try {
+    await page.setViewportSize({ width: 1320, height: 860 });
+    let release = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const asked: string[] = [];
+    page.on("request", (r) => { const u = new URL(r.url()); if (u.pathname.startsWith(`/api/sessions/${id}`)) asked.push(u.pathname.slice(`/api/sessions/${id}`.length) + u.search); });
+    await page.route((u) => u.pathname === `/api/sessions/${id}` && u.searchParams.has("page"), async (route) => { await held; await route.continue(); });
+    await page.goto(`${d.url}/`);
+    await page.locator(`[data-testid="session-row"][data-session="${id}"]`).locator("visible=true").first().click();
+    const lens = page.getByTestId("lens");
+    await expect(lens.locator('[data-lens-item="reply"]').last()).toContainText("Reply to your message 4");
+    expect(asked.some((a) => a.startsWith("?page="))).toBe(true); // asked, and still held
+    expect(asked.filter((a) => a === "/has-agents")).toEqual([]);
+    await page.getByTestId("composer").fill("Typed while the stream was on its way");
+    await shoot(page, "lens-05-alone");
+    release();
+    await expect(page.getByTestId("composer")).toHaveValue("Typed while the stream was on its way");
+    await page.getByTestId("lens-to-stream").click();
+    await expect(page.getByTestId("transcript")).toContainText("Reply to your message 4");
+    await expect(page.getByTestId("composer")).toHaveValue("Typed while the stream was on its way");
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+  }
+});

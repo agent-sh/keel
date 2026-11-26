@@ -45,10 +45,11 @@ function ask(session: string) {
   });
   asking.set(session, p);
 }
-// (A session whose agents' sessions the page's list holds has agents: known with no question.)
-const kidsHere = (session: string) => Object.values(getState().sessions).some((s) => s.parent_id === session);
+// (A session whose agents' sessions the page's list holds, or whose agents the list counts as left out of it, has
+// agents: known with no question, so its lens is read at the press.)
+const kidsHere = (session: string) => !!getState().agentsLeft[session] || Object.values(getState().sessions).some((s) => s.parent_id === session);
 export function useHasAgents(session: string): boolean {
-  const kids = useStore((s) => Object.values(s.sessions).some((x) => x.parent_id === session));
+  const kids = useStore((s) => !!s.agentsLeft[session] || Object.values(s.sessions).some((x) => x.parent_id === session));
   const auto = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === session)) || kids;
   if (!auto) ask(session);
   return auto || asked.get(session) === true;
@@ -67,7 +68,7 @@ export function useLensView(session: string): LensView {
 // known. Until then the pane waits for the answer rather than draw the stream and then the lens over it.
 export function useLensViewKnown(session: string): boolean {
   useSyncExternalStore(subscribe, () => tick);
-  const kids = useStore((s) => Object.values(s.sessions).some((x) => x.parent_id === session));
+  const kids = useStore((s) => !!s.agentsLeft[session] || Object.values(s.sessions).some((x) => x.parent_id === session));
   const auto = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === session)) || kids;
   const elsewhere = useStore((s) => !!s.sessions[session]?.machine || !!s.sessions[session]?.outside);
   return auto || elsewhere || !!placeOf(session)?.view || (asked.get(session) ?? null) !== null;
