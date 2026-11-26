@@ -1762,6 +1762,14 @@ export class Store {
     return r ? rowToEvent(r) : undefined;
   }
 
+  // The newest seq of an event of one of these kinds, on any branch (0: none): from the events held, else
+  // read backwards on the index until the first that matches, no body read.
+  lastSeqOf(session_id: string, kinds: readonly [EventKind, EventKind]): number {
+    const k = this.kept.get(session_id);
+    if (k) { for (let i = k.all.length - 1; i >= 0; i--) if (kinds.includes(k.all[i]!.kind)) return k.all[i]!.seq; return 0; }
+    return this.db.query<{ seq: number }, string[]>(`SELECT seq FROM events ${bareBy(this.db)} WHERE session_id = ? AND kind IN (?, ?) ORDER BY seq DESC LIMIT 1`).get(session_id, kinds[0], kinds[1])?.seq ?? 0;
+  }
+
   // Whether the session has an event of that kind, on any branch: asked of
   // the index when the session is not in memory, and nothing is brought in.
   hasKind(session_id: string, kind: EventKind): boolean {

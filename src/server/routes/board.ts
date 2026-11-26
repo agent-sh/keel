@@ -13,6 +13,8 @@ import { fail, ok, type Tool } from "../../tools/types.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { landing } from "./landing.ts";
 import { overlaps } from "./overlaps.ts";
+import { readsOf } from "../reads.ts";
+import type { Ask } from "../../board/asks.ts";
 
 let current: { store: Deps["store"]; board: WorkBoard } | undefined;
 export const workBoard = () => current?.board;
@@ -143,7 +145,29 @@ export const boardRoutes: RouteModule = (deps: Deps) => {
   ensureVerdicts(store.db);
   registerShared(WorkBoardTool, VerdictTool);
   const json = (data: unknown, status = 200) => Response.json(data, { status });
+  // Your asks (src/board/asks.ts): read again only when the owner's inputs, the session's turn ends or its tree's agents moved.
+  const asks = new Map<string, { key: string; asks: Promise<Ask[]> }>();
   return {
+    "/api/sessions/:id/asks": {
+      GET: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return json({ error: "no such session" }, 404);
+        if (s.parent_id) return json({ error: "asks are a top-level session's" }, 400);
+        const agents = store.db.query<{ n: number; last: number | null }, [string]>(`WITH RECURSIVE t(s, d) AS (SELECT ?1, 0 UNION SELECT a.session_id, t.d + 1 FROM agents a JOIN t ON a.parent_id = t.s WHERE t.d < 12)
+           SELECT COUNT(*) AS n, MAX(a.created) AS last FROM agents a JOIN t ON a.parent_id = t.s`).get(s.id);
+        // (Keyed on his newest input or turn end and the tree's agents: the events between them tie nothing new.)
+        const key = `${store.lastSeqOf(s.id, ["user", "turn_end"])} ${agents?.n ?? 0} ${agents?.last ?? 0}`;
+        let kept = asks.get(s.id);
+        if (!kept || kept.key !== key) {
+          kept = { key, asks: readsOf(store).run("asks.facts", { root: s.id, head: s.head ?? null }) as Promise<Ask[]> };
+          asks.set(s.id, kept);
+          if (asks.size > 32) asks.delete(asks.keys().next().value!);
+          const k = kept;
+          k.asks.catch(() => { if (asks.get(s.id) === k) asks.delete(s.id); });
+        }
+        return json({ session_id: s.id, asks: await kept.asks });
+      },
+    },
     "/api/sessions/:id/board": {
       GET: async (req: any) => {
         if (!store.session(req.params.id)) return json({ error: "no such session" }, 404);

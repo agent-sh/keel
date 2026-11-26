@@ -33,6 +33,7 @@ import { readProcs, type ProcAsk } from "../admin/proc-read.ts";
 import { sealBundleTo, sealRoots, sealVerify } from "../admin/seal-read.ts";
 import { liveReport, type Experiment } from "../admin/experiment-report.ts";
 import { sentCalls, sentOf, type SentAsk } from "../drive/sent-read.ts";
+import { asksFacts } from "../board/asks-read.ts";
 
 export const tasks = {
   // What /proc says of the processes under the daemon (the resource sampler's pass, src/admin/proc-read.ts).
@@ -90,6 +91,8 @@ export const tasks = {
   "landings.roots": (db: Database, a: { since: number; recent: number; branches: number }) => readyRoots(db, a),
   // One branch head's diff against the base, parsed for the tree review (src/board/tree-review.ts).
   "tree.parse": (_db: Database, a: { text: string }) => parseDiff(a.text),
+  // The owner's asks in a top-level session, tied to the agents of its tree (src/board/asks.ts).
+  "asks.facts": (db: Database, a: { root: string; head: string | null }) => asksFacts(db, a),
   "board.pictures": (db: Database, a: { heads: string[] }) => boardPictures(db, a),
   // The agents of a repository with their task words, and what the review and landing rows say of some branches (src/automation/earlier.ts).
   "agents.earlier": (db: Database, a: { repo: string; skip?: string[] }) => earlierCandidates(db, a),

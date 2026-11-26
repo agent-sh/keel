@@ -27,6 +27,7 @@ import "./features/helper.tsx";
 import "./features/experiments.tsx";
 import "./features/pr-reviews.tsx";
 import "./features/board.tsx";
+import "./features/asks.tsx";
 import "./features/lane-plan.tsx";
 import "./features/shell.ts";
 import "./features/presses.tsx";

@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, ListTodo, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Square, Trash2, X } from "lucide-react";
 import { setLensView, useLensView } from "../lib/lens-view.ts";
 import { askFind } from "../lib/find-ask.ts";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
@@ -20,6 +20,7 @@ import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton, usePanelRows } from "./SidePanel.tsx";
+import { hasAsks } from "../lib/asks-list.ts";
 import { MachineChip } from "./Fleet.tsx";
 import { putAwayCount, stateLabel } from "../../../src/core/state-words.ts";
 import { whyText } from "../../../src/core/watch.ts";
@@ -409,6 +410,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
       ...(crowded ? rest.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "More panels", gap: !hand.length } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })) : []),
     ] : []),
     ...(phone() ? [] : [rename]),
+    // What the owner asked for here and where each ask is (features/asks.tsx), on a phone too.
+    ...(hasAsks(session) ? [{ id: "menu-asks", label: "Your asks", icon: <ListTodo />, run: () => openPanel("asks") }] : []),
     // The Conversation lens or the full stream (lib/lens-view.ts), kept for this session.
     ...(session.machine || session.outside ? [] : [view === "conversation"
       ? { id: "menu-stream", label: "Show the full stream", icon: <LayoutList />, run: () => setLensView(session.id, "stream") }

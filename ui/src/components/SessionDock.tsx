@@ -3,7 +3,7 @@
 // branch is ready).
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Popover } from "@base-ui/react/popover";
-import { ChevronRight, FileDiff, ListChecks, Plug, Square, SquareTerminal } from "lucide-react";
+import { ChevronRight, FileDiff, ListChecks, ListTodo, Plug, Square, SquareTerminal } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { readyToLand, toLand } from "../../../src/board/rules.ts";
@@ -18,6 +18,7 @@ import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { planLine, planState, turnsSince, useMinute } from "../lib/plan-age.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { useUI } from "../lib/ui.ts";
+import { hasAsks } from "../lib/asks-list.ts";
 import { PlanCard } from "./ToolCall.tsx";
 import { openPanel } from "./SidePanel.tsx";
 import { DockNow } from "./DockNow.tsx";
@@ -261,9 +262,19 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
       <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />
     </Collapsible.Trigger>
   ) : null;
+  const asksHere = useStore((s) => hasAsks(s.sessions[sessionId]));
+  // Your asks (AsksPanel.tsx): one quiet word where the session works through agents; what each ask's state is opens in the panel.
+  const asksOn = !inPanel && !!agents && asksHere;
+  const asksEl = asksOn ? (
+    <button type="button" className="k-docket-line k-docket-asks" onClick={() => openPanel("asks")} data-testid="dock-asks" title="What you asked for here, and where each ask is">
+      <ListTodo className="k-docket-glyph" />
+      <span>Your asks</span>
+    </button>
+  ) : null;
   const row = (planLineEl || agents || jobs.length > 0 || calls.length > 0) ? (
     <div className="k-docket-row">
       {planLineEl}
+      {asksEl}
       {agents && <AgentsDock sessionId={sessionId} />}
       {(jobs.length > 0 || calls.length > 0) && <JobsChip sessionId={sessionId} jobs={jobs} calls={calls} cut={cut} />}
     </div>
