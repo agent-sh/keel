@@ -130,3 +130,38 @@ test("a command moved for the owner's steer returns at once and says so", async 
   for (const j of jobsOf("steer-move")) await stopJob(j, "test over");
   rmSync(root, { recursive: true, force: true });
 });
+
+// A call whose limit kills its command (the fleet's run_on kept here) has no background to move it to:
+// neither the owner's Move nor a steer touches it, and it runs to its end with its output.
+test("a command whose call's limit kills it is not moved", async () => {
+  const { moveToBackground, commandInFront } = await import("./jobs.ts");
+  const { runShell } = await import("./shell.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "kill-move-"));
+  const ctx: any = { sessionId: "kill-move", cwd: root, spillDir: join(root, "spill"), signal: new AbortController().signal, seen: new Map() };
+  const call = runShell(ctx, { command: "sleep 1; echo FINISHED", cwd: root, timeoutMs: 60_000, onTimeout: "kill" });
+  let moved = false;
+  for (let i = 0; i < 20; i++) { await Bun.sleep(25); moved ||= moveToBackground("kill-move", {}, "steer") || moveToBackground("kill-move"); }
+  expect(moved).toBe(false);
+  expect(commandInFront("kill-move")).toBeUndefined();
+  const r: any = await call;
+  expect(r.state).toBe("done");
+  expect(r.exitCode).toBe(0);
+  expect(r.output).toContain("FINISHED");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// A command put in front after an owner's steer has already waited its mark goes behind as it starts.
+test("a command started while the owner's steer is due goes behind at once", async () => {
+  const { steerWaiting, stopJob, jobsOf } = await import("./jobs.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "steer-due-"));
+  const ctx: any = { sessionId: "steer-due", cwd: root, spillDir: join(root, "spill"), signal: new AbortController().signal, seen: new Map() };
+  const bash = claudeTools.find((t) => t.name === "Bash")!;
+  steerWaiting.set("steer-due", { at: Date.now() - 1, still: () => true });
+  const t0 = Date.now();
+  const r = await bash.run({ command: "sleep 30" }, ctx);
+  steerWaiting.delete("steer-due");
+  expect(Date.now() - t0).toBeLessThan(10_000);
+  expect(String(r.content)).toStartWith("The owner wrote to you while the command ran, so it was moved to the background");
+  for (const j of jobsOf("steer-due")) await stopJob(j, "test over");
+  rmSync(root, { recursive: true, force: true });
+});

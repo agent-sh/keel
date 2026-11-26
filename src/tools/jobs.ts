@@ -566,6 +566,17 @@ export function backgrounded(job: Job) {
   jobsChanged.tell?.(job.sessionId);
 }
 
+// Whether an owner's steer has waited long enough on this session's step that a command now put in
+// front of a call should go behind it at once (the engine says, src/engine/reply-first.ts): a
+// command started after the steer's timer fired would otherwise hold it for its whole run.
+// `at`: when the steer's wait passed the mark; `still`: whether it still waits (not taken, not removed).
+export const steerWaiting = new Map<string, { at: number; still: () => boolean }>();
+export function steerDue(sessionId: string): boolean {
+  const w = steerWaiting.get(sessionId);
+  if (!w || Date.now() < w.at) return false;
+  try { return w.still(); } catch { return false; }
+}
+
 // The owner moves a command that runs in front of a call behind it, as the timeout does: the call's
 // wait ends at once, the call returns with the command's ID, and the command's end starts the
 // session's next turn like any background command's. False for one that is not in front of a call
@@ -1248,6 +1259,8 @@ export async function waitJob(j: Job, ms: number, signal?: AbortSignal): Promise
     new Promise<boolean>((res) => { timer = setTimeout(() => res(false), ms); }),
     new Promise<boolean>((res) => {
       if (!signal) return;
+      // (One aborted before the wait began, as a command a due steer moves as it starts, ends it at once.)
+      if (signal.aborted) return res(false);
       onAbort = () => res(false);
       signal.addEventListener("abort", onAbort, { once: true });
     }),

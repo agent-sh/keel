@@ -18,7 +18,7 @@ import { diskFull, refusedWrite, type Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { ownerPrompt, ownersMeta } from "../core/owner.ts";
-import { REPLY_FIRST, replyFirst, STEER_MOVE_MS } from "./reply-first.ts";
+import { movesFor, REPLY_FIRST, replyFirst, STEER_MOVE_MS } from "./reply-first.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
@@ -38,7 +38,7 @@ import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFo
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop, stopSays } from "../core/stoppers.ts";
-import { dropCallEnv, moveToBackground, stopReleased } from "../tools/jobs.ts";
+import { dropCallEnv, moveToBackground, steerWaiting, stopReleased } from "../tools/jobs.ts";
 import { runningData } from "./running.ts";
 import { StepOrder } from "./step-order.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
@@ -677,6 +677,9 @@ export class Engine {
   private resumedBusy = new Map<string, { model: string; since: number }>();
   // The turn_start event of each running turn, from its first event to its end.
   private turns = new Map<string, string>();
+  // The owner's steer a session's step boundary is waited for, with the timer that moves the commands
+  // in front for it (steerWaits): the oldest such steer, cleared when the steers are taken or the turn ends.
+  private steerTimers = new Map<string, { qid: string; timer: ReturnType<typeof setTimeout> }>();
   // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
   // outlives a daemon restart; only an action that releases it clears it.
   // With who made it (the `by` of the stop: "owner", "parent", ...), when it
@@ -917,6 +920,7 @@ export class Engine {
       const owner = ownersMeta(q.meta);
       if (this.deliver(q.id, "steer", { release: owner })) { this.emitQueue(id); took.push({ text: q.text, owner }); }
     }
+    if (took.some((t) => t.owner)) this.steerDone(id);
     const note = replyFirst(took);
     if (note) this.append(id, "note", { kind: REPLY_FIRST, model: true, system: true, text: note });
   }
@@ -1477,7 +1481,7 @@ export class Engine {
     if (this.running.has(id) || (mode === "queue" && (this.held.has(id) || this.store.queue(id).length)) || this.inputHeld(id, opts.meta)) {
       const q = this.store.enqueue(id, text, mode !== "queue" && this.running.has(id), opts.images, opts.meta);
       this.emitQueue(id);
-      if (q.steer && ownersMeta(opts.meta)) this.steerWaits(id, q.id);
+      if (q.steer && ownersMeta(opts.meta) && movesFor(text)) this.steerWaits(id, q.id);
       return { queued: q, steer: q.steer };
     }
     // Input that is not the owner's (a report, a wake) never releases a held queue.
@@ -1498,13 +1502,27 @@ export class Engine {
 
   // The owner's steer that still waits for the step boundary after STEER_MOVE_MS waits on commands
   // the turn's calls run in front: they go on behind the call (as the owner's Move does), and the
-  // steer joins the step at once (src/engine/reply-first.ts).
+  // steer joins the step at once (src/engine/reply-first.ts). A command put in front after that,
+  // while the steer still waits, goes behind as it starts (steerDue in src/tools/jobs.ts). An
+  // acknowledgment moves nothing (movesFor). The oldest waiting steer keeps the timer.
   private steerWaits(id: string, qid: string) {
-    const t = setTimeout(() => {
-      if (!this.running.has(id) || !this.store.queueItem(qid)) return;
+    if (this.steerTimers.has(id)) return;
+    // Still waiting: this steer, or another of the owner's that would move a command, is in the queue.
+    const still = () => this.running.has(id) && (!!this.store.queueItem(qid) || this.liveSteers(id).some((q) => ownersMeta(q.meta) && movesFor(q.text)));
+    const timer = setTimeout(() => {
+      if (!still()) return this.steerDone(id);
       for (let n = 0; n < 64 && moveToBackground(id, {}, "steer"); n++);
     }, STEER_MOVE_MS);
-    (t as any).unref?.();
+    (timer as any).unref?.();
+    this.steerTimers.set(id, { qid, timer });
+    steerWaiting.set(id, { at: Date.now() + STEER_MOVE_MS, still });
+  }
+
+  private steerDone(id: string) {
+    const t = this.steerTimers.get(id);
+    if (t) clearTimeout(t.timer);
+    this.steerTimers.delete(id);
+    steerWaiting.delete(id);
   }
 
   // Whether a hook keeps this input (another session's message) from starting a turn now: it waits in the queue.
@@ -1971,6 +1989,7 @@ export class Engine {
         if (scope) scope.turn = undefined;
         this.turns.delete(id);
         this.running.delete(id);
+        this.steerDone(id);
         this.unsaved.delete(id);
         this.resumedProviderRetry.delete(id);
         this.resumedBusy.delete(id);

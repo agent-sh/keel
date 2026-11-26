@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
-import { backgrounded, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
+import { backgrounded, moveToBackground, steerDue, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
 import { TRACE_CAP } from "../checks/named.ts";
 import type { ToolContext } from "./types.ts";
@@ -103,10 +103,13 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   // Its limit outlives a restart that lets it run on (releaseFronts): the next daemon kills it then.
   if (o.onTimeout === "kill") job.killAt = Date.now() + o.timeoutMs;
 
-  // The owner can end this wait early and move the command behind the call (moveToBackground).
-  const mover = new AbortController();
+  // The owner can end this wait early and move the command behind the call (moveToBackground), or
+  // the owner's steer that waits on it: only a call whose limit moves it behind too. One whose limit
+  // kills it (the fleet's run_on kept here) has no background to go to: a move would kill it.
+  const mover = o.onTimeout === "kill" ? undefined : new AbortController();
   job.mover = mover;
-  let finished = await waitJob(job, o.timeoutMs, AbortSignal.any([ctx.signal, mover.signal]));
+  if (mover && steerDue(ctx.sessionId)) moveToBackground(ctx.sessionId, { job: job.id }, "steer");
+  let finished = await waitJob(job, o.timeoutMs, mover ? AbortSignal.any([ctx.signal, mover.signal]) : ctx.signal);
   job.mover = undefined;
   // It ended in the moment of the move (or of the timeout): that is its end, not a move.
   if (!finished && job.ended !== undefined && !ctx.signal.aborted) finished = true;

@@ -18,19 +18,36 @@ export const REPLY_FIRST = "reply_first";
 // a read of its output later).
 export const STEER_MOVE_MS = 10_000;
 
-// A question by its words: a question mark, or one of the words a question opens with.
-const OPENERS = /^(?:what|why|how|where|when|which|who|whom|whose|is|are|am|was|were|do|does|did|can|could|should|shall|will|would|may|might|has|have|had|any|isn't|aren't|doesn't|didn't|can't|won't|למה|מה|איך|איפה|מתי|האם|כמה|מי|יש)(?=[\s,]|$)/iu;
+// A question by its words: a sentence that ends with a question mark, or one that opens with a word
+// only a question opens with (what, why, how...). An auxiliary opening is not enough: "can you look",
+// "do the tests first" and "have a look" are requests, and a request is work, not a question.
+const WH = /^(?:what|what's|why|how|how's|where|where's|when|which|who|who's|whom|whose|למה|מה|איך|איפה|מתי|האם|כמה|מי|מדוע)(?=[\s,]|$)/iu;
+const ASKS = /[?？؟](?=[\s"')\]]|$)/u;
 
 export function isQuestion(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  if (/[?？؟]/u.test(t)) return true;
-  return OPENERS.test(t);
+  if (ASKS.test(t)) return true;
+  return WH.test(t);
 }
 
-// The note for the steers one step takes, or undefined when none of them is the owner's.
+// A message that only acknowledges (thanks, ok, good): nothing in it changes the work or asks for a
+// reply, so it waits for the step like any input, moves no command and gets no note.
+const ACK = /^(?:(?:thanks?|thank you|thx|ty|ok(?:ay)?|k|good|great|nice|cool|perfect|fine|sure|yes|yep|yeah|got it|sounds good|lgtm|👍|🙏|תודה|סבבה|אוקיי|אוקי|יופי|מעולה|טוב|כן|אחלה)(?:[\s,.!]+|$))+$/iu;
+
+export function isAck(text: string): boolean {
+  const t = text.trim();
+  return !!t && !isQuestion(t) && ACK.test(t);
+}
+
+// Whether the owner's steer is worth moving a command for: a question, or an instruction (to stop,
+// to change course, anything that is not only an acknowledgment).
+export const movesFor = (text: string): boolean => !!text.trim() && !isAck(text);
+
+// The note for the steers one step takes, or undefined when none of them is the owner's (or the
+// owner's only acknowledge).
 export function replyFirst(steers: readonly { text: string; owner: boolean }[]): string | undefined {
-  const own = steers.filter((s) => s.owner && s.text.trim());
+  const own = steers.filter((s) => s.owner && movesFor(s.text));
   if (!own.length) return undefined;
   const asks = own.some((s) => isQuestion(s.text));
   const which = own.length > 1 ? "messages" : "message";
