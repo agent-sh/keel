@@ -253,7 +253,8 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
         className="k-user-words"
         label={origin === "steer" ? <span className="k-label" data-testid="origin-steer">Steered into the turn</span>
           : e.data.edited_from === "steer" ? <span className="k-label" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>
-          : origin === "queued" ? <span className="k-label" data-testid="origin-queued">From the queue</span> : undefined}
+          : origin === "queued" ? <span className="k-label" data-testid="origin-queued">From the queue</span>
+          : e.data.kind === "plan" && e.data.plan_from ? <span className="k-label" data-testid="origin-plan">The plan approved in <PlanLink id={e.data.plan_from} title={e.data.plan_from_title} testid="plan-from" /></span> : undefined}
         attached={e.data.images?.length > 0 ? <Images blocks={e.data.images} /> : undefined}
       >
         {text && (
@@ -505,6 +506,12 @@ function ImagesNote({ e, sid }: { e: StoredEvent; sid: string }) {
   );
 }
 
+// A link to the other session of a plan started fresh: where it was planned, or which one carries it out.
+function PlanLink({ id, title, testid }: { id: string; title?: string; testid: string }) {
+  const to = useStore((x) => x.sessions[id]);
+  return <button type="button" data-testid={testid} onClick={() => navigate({ name: "session", id })} className="rounded-sm px-1 font-medium text-accent-ink hover:bg-accent-soft">{to?.title || title || "the other session"}</button>;
+}
+
 // Where a fork came from, with a way back (its queued prompts stayed there).
 function ForkNote({ e }: { e: StoredEvent }) {
   const from = useStore((x) => x.sessions[e.data.from_session]);
@@ -679,6 +686,8 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   // The owner's Stop ends the turn, not the agents it started: they go on, and the line says so with a way to stop them too.
   const ownStop = last && e.data.reason === "interrupted" && STOPPERS[e.data.stopped_by]?.owner;
   const goOn = useAgentCount(ownStop ? sid : undefined);
+  // A turn whose work went on elsewhere (a plan started fresh): the line above says where, and nothing is left to resume.
+  const settled = e.data.reason === "interrupted" && !!STOPPERS[e.data.stopped_by]?.settled;
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
       {narrow ? (!(boxed && !reply.length) || reply.length > 0 || partial || (prompt && last && !working)) && <MessageMenu on="assistant" e={e} lead={[
@@ -695,7 +704,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
       </>}
       <TurnNotes notes={notes} working={working} />
       <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
-        {REASONS[e.data.reason] && (waits
+        {REASONS[e.data.reason] && !settled && (waits
           ? <span className="k-turn-reason text-muted" data-testid="turn-reason">{waits}</span>
           : <span className={cn("k-turn-reason", e.data.reason === "error" || e.data.reason === "max_tokens" ? "text-st-fail" : "text-warn")} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>)}
         {goOn > 0 && <span className="text-muted" data-testid="agents-go-on">{goOn === 1 ? "its agent goes on" : `its ${goOn} agents go on`}</span>}
@@ -726,7 +735,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
           <Square className="size-2.5 fill-current" /> {goOn === 1 ? "Stop it too" : "Stop them too"}
         </button>
       )}
-      {last && !working && REASONS[e.data.reason] && !boxed && (
+      {last && !working && REASONS[e.data.reason] && !boxed && !settled && (
         <button type="button" data-testid="resume" onClick={() => actions.resume(sid).catch(reportError)} className="k-turn-resume ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
           <Play className="size-3" /> Resume
         </button>
@@ -856,6 +865,8 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
       return <Divider testid="model-note"><span>{e.data.text} <span className="text-faint">{e.data.by === "cli" ? "From keel run" : "By you"}, {at}</span></span></Divider>;
     }
     case "note": {
+      // The planning session's line once its plan went to a fresh session: which one carries it out.
+      if (e.data.kind === "plan_fresh") return <Divider testid="plan-fresh-note"><span>The plan went to a fresh session, <PlanLink id={e.data.to_session} title={e.data.to_title} testid="plan-fresh-to" /></span></Divider>;
       // What Keel did, in its own words to the owner: a line across the conversation.
       const own = e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : !e.data.model ? e.data.short ?? e.data.text : null;
       if (own !== null) return <Divider testid="note"><span>{own}</span></Divider>;

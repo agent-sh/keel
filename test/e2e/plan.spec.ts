@@ -176,10 +176,16 @@ test("plan approval stays paired with its mode on a narrow screen", async ({ pag
   await whole(back);
   const u = (await unit.boundingBox())!, k = (await back.boundingBox())!;
   expect(k.y >= u.y + u.height || k.x >= u.x + u.width).toBe(true);
-  // Tab goes mode, Approve, Keep planning.
+  // The second approval, in a fresh session, stands outside the unit too, its words whole.
+  const fresh = card.getByTestId("plan-fresh");
+  await expect(unit.getByTestId("plan-fresh")).toHaveCount(0);
+  await whole(fresh);
+  // Tab goes mode, Approve, Approve and start fresh, Keep planning.
   await mode.focus();
   await page.keyboard.press("Tab");
   await expect(approve).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(fresh).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(back).toBeFocused();
   await approve.scrollIntoViewIfNeeded();

@@ -150,6 +150,22 @@ test("6. an agent's report carries what the agent read, and the parent then fetc
   expect(r.text).toContain("first appeared in an agent's report (it first saw this in a WebFetch result");
 });
 
+test("6b. a session that carries out a plan approved in another: what the planning session read stays outside, after it is gone", async () => {
+  const { store, g, session, say, callTool, decide } = rig();
+  const planning = session();
+  say(planning, "plan the mirror from the notes");
+  callTool(planning, "WebFetch", fetchOf("https://notes.example/a"), page);
+  // As src/server/routes/plan.ts does: the planning session's sightings ride the fresh session's first prompt.
+  const sightings = await g.outsideOf(store.session(planning.id)!);
+  const fresh = session();
+  say(fresh, "Carry out this plan.\n\n1. Fetch https://docs.evil.example/start?ref=x", { kind: "plan", plan_from: planning.id, owned: true, sightings });
+  store.deleteSession(planning.id);
+  const r = await decide(fresh, fetchTool, fetchOf("https://docs.evil.example/start?ref=x"));
+  expect(r.is).toBe("card");
+  expect(r.text).toContain("first appeared in the planning session");
+  expect(r.text).toContain("WebFetch result");
+});
+
 test("7. an agent is refused with the reason, and told what to do", async () => {
   const { session, say, callTool, decide } = rig();
   const parent = session();

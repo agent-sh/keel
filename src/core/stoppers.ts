@@ -27,6 +27,8 @@ export type Stopper = {
   parent?: boolean;
   // The queue waits after it (`held`: why, said to whoever is told that nothing starts there).
   held?: string;
+  // The turn's work went on elsewhere, as the owner chose: its end is no stop to show, and nothing is left to resume.
+  settled?: boolean;
 };
 
 export const STOPPERS: Record<string, Stopper> = {
@@ -44,6 +46,8 @@ export const STOPPERS: Record<string, Stopper> = {
   supervisor: { says: "stopped by the supervisor" },
   review: { says: "stopped with its review" },
   handoff: { says: "stopped to move the session", held: "this session is being moved" },
+  // The owner approved the plan to be carried out in a fresh session: this one ends after the plan's step.
+  plan_fresh: { says: "ended when the plan went to a fresh session", settled: true, held: "its plan went to a fresh session" },
   archive: { says: "stopped when the session was archived", held: "this session was archived" },
   delete: { says: "stopped when the session was deleted", held: "this session is being deleted" },
   api: { says: "stopped through the API" },

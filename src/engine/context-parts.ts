@@ -43,7 +43,7 @@ export function originClass(data: { origin?: unknown; kind?: unknown; agent_id?:
   switch (originOf(data).key) {
     // A steer is the owner's words; a parent's message to its agent is stored the same way with the agent named.
     case "steer": return data?.agent_id ? "session" : "owner";
-    case "owner": case "queued": case "continue": case "voice": return "owner";
+    case "owner": case "queued": case "continue": case "voice": case "plan": return "owner";
     case "subagent": return "agent";
     case "parent": case "peer": case "task": case "task_start": case "review": case "review_fix": case "helper_digest": return "session";
     default: return "harness";

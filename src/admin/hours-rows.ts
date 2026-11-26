@@ -127,7 +127,7 @@ export function spanClass(s: Pick<HourSpan, "kind" | "name" | "tool" | "purpose"
 // owner's words, a parent's message, a wait's wake, an agent's report.
 export function openerClass(o: Opener | undefined, agent: boolean): HourClass {
   const key = originOf(o).key;
-  if (["owner", "voice", "continue", "queued"].includes(key)) return "owner";
+  if (["owner", "voice", "continue", "queued", "plan"].includes(key)) return "owner";
   if (["steer", "parent", "task", "review", "review_fix", "peer", "task_start"].includes(key)) return agent ? "review" : "owner";
   if (["wait", "wake", "command", "loop", "goal", "verify_goal", "channel"].includes(key)) return "wait";
   if (key === "provider_wait") return "provider";

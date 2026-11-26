@@ -786,6 +786,9 @@ export const spilledBy = (text: string): string | undefined => SPILLED.exec(text
 
 // ---- the book ----
 
+// The outside sightings a plan carries to the session that carries it out: [key, class, where, page].
+export type Sightings = { keys: [string, "outside" | "listed", string, 1?][]; listed: Record<string, string[]>; unbounded?: string };
+
 export type BookEvent = { seq: number; kind: string; data: any; ts: number };
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((b: any) => (b?.type === "text" ? String(b.text ?? "") : "")).join("\n") : "";
@@ -965,6 +968,19 @@ export class ProvenanceBook {
             await this.noteAll(text.slice(0, m.index) + text.slice(m.index + m[0].length), "inside", "a loop's prompt", e);
             await this.noteAll(m[0], "outside", m[1] === "mcp_event" ? "an MCP server's event" : "a webhook's body", e);
           }
+        }
+        else if (d.kind === "plan" && d.sightings && typeof d.sightings === "object") {
+          // A plan approved in another session (src/server/routes/plan.ts): what outside content named there comes with
+          // it, each target as first seen outside here, before the plan's words that may name it.
+          const c = d.sightings as Sightings;
+          const from = "the planning session";
+          for (const [key, cls, where, page] of Array.isArray(c.keys) ? c.keys : []) {
+            if (typeof key !== "string") continue;
+            this.note(key, { cls: cls === "listed" ? "listed" : "outside", where: `${from} (it first saw this in ${String(where)})`, seq: e.seq, ts: e.ts, ...(page ? { page: true as const } : {}) }, e);
+            if (cls === "listed" && this.first.get(key)?.cls === "listed") for (const at of c.listed?.[key] ?? []) this.listedAt(key, String(at));
+          }
+          if (c.unbounded) this.markUnbounded(`${from} (it read ${String(c.unbounded)})`, e);
+          await this.noteAll(text, "inside", "the approved plan", e);
         }
         else if (d.kind === "subagent") {
           const kid = typeof d.agent_id === "string" ? this.child(d.agent_id) : null;

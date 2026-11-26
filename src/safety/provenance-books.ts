@@ -7,10 +7,12 @@ import { git } from "../core/git.ts";
 import { importOf } from "./imported.ts";
 import {
   ProvenanceBook, extractTargets, hostOfRemote, held, inputTargets, wholeTargets, withOwn,
-  type Hit, type Origin, type Reach, type SourceOf, type Target,
+  type Hit, type Origin, type Reach, type Sightings, type SourceOf, type Target,
 } from "./provenance.ts";
 
 const MAX_BOOKS = 1024;
+// The most sightings a plan carries to a fresh session; past it the fresh session's book is unbounded.
+const MAX_CARRIED = 5000;
 
 export class Provenance {
   private books = new Map<string, ProvenanceBook>();
@@ -50,6 +52,26 @@ export class Provenance {
     const books: ProvenanceBook[] = [];
     for (const id of ids) books.push(await this.bookOf(id));
     return { ids, books };
+  }
+
+  // What outside content a session and the ones above it named, kept with a plan that goes on in a fresh session
+  // (src/server/routes/plan.ts): the fresh session's book takes it from its first prompt, so a page's host stays held
+  // there whatever becomes of the planning session.
+  async outside(session: Session): Promise<Sightings> {
+    const { books } = await this.chain(session);
+    const keys: Sightings["keys"] = [];
+    const listed: Record<string, string[]> = {};
+    let unbounded: string | undefined;
+    for (const b of books) {
+      for (const [key, o] of b.outsideKeys()) {
+        if (keys.length >= MAX_CARRIED) { unbounded ??= "more outside content than a plan carries"; break; }
+        keys.push(o.page ? [key, o.cls === "listed" ? "listed" : "outside", o.where.slice(0, 200), 1] : [key, o.cls === "listed" ? "listed" : "outside", o.where.slice(0, 200)]);
+        const at = o.cls === "listed" ? b.listedAddresses(key) : [];
+        if (at.length) listed[key] = at.slice(0, 64);
+      }
+      if (b.unbounded) unbounded ??= b.unbounded.where;
+    }
+    return { keys, listed, ...(unbounded ? { unbounded } : {}) };
   }
 
   clear(ids: string[], hits: Hit[]) {
@@ -168,3 +190,4 @@ class Repo {
     return (await this.git("grep", "-q", "-I", "-F", "-e", t.shown, "HEAD", "--")) !== null;
   }
 }
+

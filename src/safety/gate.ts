@@ -49,7 +49,7 @@ import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
 import { importOf, inCopy, ownersImported } from "./imported.ts";
 import { headHold } from "./head-trust.ts";
-import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach } from "./provenance.ts";
+import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach, type Sightings } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
 import { helperDenial, ownerDenial } from "../core/stops.ts";
 import { unwritten, writeOutRefusal } from "./written-out.ts";
@@ -697,6 +697,9 @@ export class Gate {
     const p = this.perm(sessionId);
     return p.sandbox !== "off" && this.sandboxed(session, p);
   }
+
+  // What outside content the session (and those above it) named: carried with a plan to a fresh session.
+  outsideOf(session: Session): Promise<Sightings> { return this.provenance.outside(session); }
 
   perm(sessionId: string): SessionPerm {
     const r = this.store.db.query<{ mode: string; sandbox: string; network: number }, [string]>("SELECT mode, sandbox, network FROM perm_sessions WHERE session_id = ?").get(sessionId);

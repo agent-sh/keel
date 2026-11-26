@@ -92,7 +92,7 @@ const WHO: Record<string, string> = {
   voice: "the owner by voice", hook: "a stop hook", momentum: "a momentum message", wait: "a wait wake", wake: "several wakes",
   subagent: "an agent report", loop: "a loop run", goal: "a goal check", task: "its parent's task", parent: "its parent",
   peer: "another session", channel: "an event from a connected source", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
-  review_fix: "review findings", diagnostic: "a diagnostic", helper_digest: "the helper's digest", failures: "a failure notice",
+  review_fix: "review findings", plan: "the plan the owner approved", diagnostic: "a diagnostic", helper_digest: "the helper's digest", failures: "a failure notice",
   command: "the end of a command it waited on", provider_wait: "Keel, after the provider's wait",
 };
 // The same, as the words a turn's row starts with: the column scans by them.
@@ -101,7 +101,7 @@ const LEAD: Record<string, string> = {
   voice: "Owner by voice", hook: "Stop hook", momentum: "Momentum message", wait: "Wait wake", wake: "Several wakes",
   subagent: "Agent report", loop: "Loop run", goal: "Goal check", task: "Parent's task", parent: "Parent's message",
   peer: "Message from another session", channel: "Event from a connected source", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
-  review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
+  review_fix: "Review findings", plan: "Approved plan", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
   command: "Command ended", provider_wait: "Resumed by itself after the provider's wait",
 };
 // `continued`: the harness went on with a failed turn by itself when the wait the provider asked for was over (its round).

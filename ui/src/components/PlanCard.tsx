@@ -1,12 +1,13 @@
 import { ClipboardList, Pencil } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
 import { KEY_MS, paintedReader, readOnSteps, sawLines, SETTLE_MS, unseenLines, type Lines, type PaintedReader } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, noteAnswer, pageFocus, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
 import { wasBrought } from "../lib/shell.ts";
-import { api, onFeature, readAtOpen, reportUnlessGone, failed } from "../lib/store.ts";
+import { api, onFeature, readAtOpen, reportUnlessGone, failed, useStore } from "../lib/store.ts";
+import { navigate } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { trayGauge } from "./Composer.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -218,7 +219,19 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
     const t = window.setTimeout(() => setNudge(""), SETTLE_MS * 2);
     return () => window.clearTimeout(t);
   }, [nudge]);
-  const send = (b: object) => { noteAnswer(c.id); return api(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => setErr(failed(e, { at: "PlanCard" }))); };
+  const send = (b: object) => { noteAnswer(c.id); return api<{ session?: { id: string } }>(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => { setErr(failed(e, { at: "PlanCard" })); return undefined; }); };
+  // An agent's plan goes on in its own session, and one another harness runs in that harness; the owner's may go on in a fresh one.
+  const agent = useStore((x) => !!(x.sessions[c.session_id]?.parent_id || x.sessions[c.session_id]?.outside));
+  // Only a plan that was read is approved, by any press (the card's own rule, first); a key not
+  // as the keyboard arrives, under a dialog or when held. (A key's reading is its own: KEY_MS.)
+  const approveBy = (e: MouseEvent<HTMLButtonElement>, fresh: boolean) => {
+    const unread = e.detail === 0 ? (readKey ? "" : "Read the plan to its end first") : read ? "" : left.out > 0 ? `${share(left)} of the plan not seen yet: scroll through it` : STOOD;
+    const no = unread || (e.detail === 0 ? keyRefused(e.currentTarget) : "");
+    if (no) return setNudge(no);
+    if (!fresh) return void send({ approve: true, mode, plan });
+    // The work goes on in the new session, where the owner follows it; this one keeps the planning.
+    void send({ approve: true, mode, plan, fresh: true }).then((r) => { if (r?.session) navigate({ name: "session", id: r.session.id }); });
+  };
   const hint = nudge ? nudge
     : comes ? "Enter approves the plan in a moment"
     : at === "text" ? (readKey ? "Tab goes to Approve" : "Read to the end, then Tab goes to Approve")
@@ -284,19 +297,20 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
               data-ready={(at === "approve" && hold.keys === "ready" && readKey) || undefined}
               disabled={!plan.trim()}
               title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"}
-              onClick={(e) => {
-                // Only a plan that was read is approved, by any press (the card's own rule, first); a key not
-                // as the keyboard arrives, under a dialog or when held. (A key's reading is its own: KEY_MS.)
-                const unread = e.detail === 0 ? (readKey ? "" : "Read the plan to its end first") : read ? "" : left.out > 0 ? `${share(left)} of the plan not seen yet: scroll through it` : STOOD;
-                const no = unread || (e.detail === 0 ? keyRefused(e.currentTarget) : "");
-                if (no) return setNudge(no);
-                void send({ approve: true, mode, plan });
-              }}
+              onClick={(e) => approveBy(e, false)}
               className="h-7 grow whitespace-nowrap rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50"
             >
               Approve plan
             </button>
           </div>
+          {/* The same approval, carried out in a fresh session that starts from the plan alone. */}
+          {!agent && (
+            <button data-testid="plan-fresh" disabled={!plan.trim()} onClick={(e) => approveBy(e, true)}
+              title="A new session in this folder starts from the approved plan; this one keeps the planning and stops"
+              className="min-h-8 max-w-full rounded-lg px-3 py-1 text-left text-ui text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
+              Approve and start fresh
+            </button>
+          )}
           <button data-testid="plan-back" onClick={() => setBack(true)} className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">Keep planning</button>
           {/* One place for what the card says, as large as the most it can say (every line stacked in it,
               unseen), so the foot keeps its height and nothing moves under the pointer as the words change. */}
