@@ -363,13 +363,28 @@ test("a part that does not load says so and can be asked for again", async ({ pa
     await expect.poll(held).toBeGreaterThan(before);
     await expect(page.getByTestId("later-failed")).toHaveCount(0);
 
-    // The session is deleted while the page is cut off: the next part's read finds it gone.
+    // The session is deleted while the socket is cut off. Hold the side reads until the deletion
+    // so they find the session gone too, instead of racing the deletion.
+    live.down = true;
+    const sideReads = ["secrets", "blocked"].map((name) => `/api/sessions/${id}/${name}`);
+    let release = () => {};
+    const pending = new Promise<void>((r) => (release = r));
+    const sides = new Set<string>();
+    await page.route((url) => sideReads.includes(url.pathname), async (r) => {
+      sides.add(new URL(r.request().url()).pathname);
+      await pending;
+      await r.fallback();
+    });
     await page.goto(`${d.url}/s/${id}`);
     await expect(button).toBeVisible({ timeout: 30_000 });
-    live.down = true;
-    await live.ws!.close({ code: 4000, reason: "cut by the test" });
-    expect((await fetch(`${d.url}/api/sessions/${id}`, { method: "DELETE" })).ok).toBe(true);
-    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
+    await expect.poll(() => sides.size, { timeout: 15_000 }).toBe(sideReads.length);
+    const goneReads = sideReads.map((path) => page.waitForResponse((r) => new URL(r.url()).pathname === path && r.status() === 404));
+    try {
+      expect((await fetch(`${d.url}/api/sessions/${id}`, { method: "DELETE" })).ok).toBe(true);
+    } finally { release(); }
+    await Promise.all(goneReads);
+    // The next part's read finds it gone too.
+    await button.press("Enter");
     await expect(page.getByTestId("session-missing")).toBeVisible({ timeout: 15_000 });
     await page.waitForTimeout(3_500); // a network failure is posted 3 s after it happened
     expect(posted).toEqual([]);
@@ -466,6 +481,9 @@ test("reading up through a run of calls longer than a part keeps the reader at t
   const { state, ids: [id] } = seeded("run", 300, "run", "A run of three hundred calls");
   const d = await daemon(state);
   try {
+    // This is the newest turn. The workbench draws its rail from the start;
+    // Focus would fold it, changing the initial scroll position when opened.
+    await page.addInitScript(() => localStorage.setItem("keel.workbench", "true"));
     await page.goto(`${d.url}/s/${id}`);
     const said = page.locator('[data-testid="work"] .k-said');
     await expect(said.last()).toContainText("Step 300:", { timeout: 30_000 });

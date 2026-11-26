@@ -3,7 +3,7 @@
 // transcript read the same state. Fed by REST once per session, then frames.
 import { useEffect, useSyncExternalStore } from "react";
 import type { Blocked } from "../../../src/safety/gate.ts";
-import { api, onFeature, reportError } from "./store.ts";
+import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
 export type { Blocked };
 
@@ -25,7 +25,7 @@ export function useBlocked(sessionId: string | undefined): Blocked[] {
       const mine = new Set((lists[sessionId] ?? []).map((b) => b.id));
       lists = { ...lists, [sessionId]: [...(lists[sessionId] ?? []), ...r.blocked.filter((b) => !mine.has(b.id))] };
       subs.forEach((f) => f());
-    }).catch((e) => { loaded.delete(sessionId); reportError(e); });
+    }).catch((e) => { loaded.delete(sessionId); reportUnlessGone(e, { at: "refused calls" }); });
   }, [sessionId]);
   return useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => (sessionId ? lists[sessionId] ?? EMPTY : EMPTY));
 }

@@ -42,23 +42,27 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
   const s = seed("work-rail");
   const d = await daemon(s.state);
   try {
-    await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
     await page.goto(`${d.url}/s/${s.main}`);
     // (The day's prompts far from the view are held, not drawn: lib/window.ts. The second one is reached by its place.)
     await expect(page.locator(PROMPTS).nth(1)).toBeAttached({ timeout: 30_000 });
-    const stored = ((await (await fetch(`${d.url}/api/sessions/${s.main}/events`)).json()) as any).events as { kind: string; data: any }[];
-    const calls = stored.filter((e) => e.kind === "assistant").flatMap((e) => (e.data.blocks as any[]).filter((b) => b.type === "tool_use")).length;
-    expect(calls).toBe(40);
+    const stored = ((await (await fetch(`${d.url}/api/sessions/${s.main}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
+    const workReplies = stored.filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use"));
+    expect(workReplies.flatMap((e) => e.data.blocks.filter((b: any) => b.type === "tool_use")).length).toBe(40);
 
     // Forty calls are a handful of lines: steps of one family, plan updates, and no card.
     await toPrompt(page, 1);
+    // Focus folds the clean run before the longer reply. Open its rail before reading the steps.
+    const firstRunId = `w:${workReplies[0]!.id}`;
+    await page.locator(`[data-testid="work-fold"][data-run="${firstRunId}"]`).press("Enter");
+    const firstRun = page.locator(`[data-testid="work"][data-run="${firstRunId}"]`);
+    await expect(firstRun).toBeVisible();
     await shoot(page, "work-01-forty-calls-folded");
     const lines = await page.locator(".k-work .k-line").count();
     expect(lines).toBeLessThanOrEqual(22);
     const tall = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="work"]')].reduce((n, el) => n + el.getBoundingClientRect().height, 0));
     expect(tall).toBeLessThan(700); // the work of the turn, under a screen of the 1040 px window
     // What a line says is read from the calls: what was done, to what, with what result.
-    const explored = page.locator('[data-testid="work-step"][data-family="explore"]').first();
+    const explored = firstRun.locator('[data-testid="work-step"][data-family="explore"]');
     await expect(explored.locator(".k-line").first()).toContainText("Explored");
     await expect(explored.locator(".k-line").first()).toContainText("7 files, 5 searches");
     await expect(explored.locator(".k-line").first()).toContainText("exporter.ts");
@@ -117,7 +121,7 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
     await expect(explored.getByTestId("tool-call")).toHaveCount(0);
     // Shift with the key opens every step of the run, and closes them again.
     await page.keyboard.press("Shift+Enter");
-    await expect(page.locator('[data-testid="work"]').first().locator('[data-testid="work-step"] > .k-line[aria-expanded="true"]')).toHaveCount(await page.locator('[data-testid="work"]').first().getByTestId("work-step").count());
+    await expect(firstRun.locator('[data-testid="work-step"] > .k-line[aria-expanded="true"]')).toHaveCount(await firstRun.getByTestId("work-step").count());
     await page.keyboard.press("Shift+Enter");
     await expect(line).toHaveAttribute("aria-expanded", "false");
 
@@ -253,8 +257,9 @@ test("a reply then two commands that run without asking: the reply stays in view
   // destroying work, but in full auto nothing asks.
   const answer = "The docs build failed because it reads the old checkout. I remove that worktree and build the docs again.";
   const calls = [
-    { name: "Bash", input: { command: "sleep 25; git worktree remove --force old-checkout", description: "Remove the old checkout" }, say: answer },
-    { name: "Bash", input: { command: "sleep 25; echo docs-built", description: "Build the docs" } },
+    // Keep the fixtures running until the test interrupts them, even while taking screenshots.
+    { name: "Bash", input: { command: "sleep 120; git worktree remove --force old-checkout", description: "Remove the old checkout" }, say: answer },
+    { name: "Bash", input: { command: "sleep 120; echo docs-built", description: "Build the docs" } },
   ];
   const marksRead = page.waitForResponse((r) => r.url().includes("/call-marks"), { timeout: 30_000 });
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:batch ${JSON.stringify(calls)}` } });
@@ -266,14 +271,13 @@ test("a reply then two commands that run without asking: the reply stays in view
   const asked = events.filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).at(-1)!;
   const marks = ((await (await request.post(`/api/sessions/${session.id}/call-marks`, { data: { events: [asked.id] } })).json()) as any).marks as Record<string, { short: string }[]>;
   expect(Object.values(marks).flat().map((m) => m.short)).toContain("destroys work or data");
-  await page.waitForTimeout(500);
   await shoot(page, "work-20-reply-then-two-commands");
   // The reply is the thing in view while the commands run.
   await expect(page.getByTestId("assistant-text").filter({ hasText: answer })).toBeInViewport();
   // Each command is one line: what the model says it does, the command's start under it, a live mark and its clock.
   await expect(lines.getByTestId("call-note")).toHaveText(["Remove the old checkout", "Build the docs"]);
-  await expect(lines.nth(0).getByTestId("call-command")).toHaveText("sleep 25; git worktree remove --force old-checkout");
-  await expect(lines.nth(1).getByTestId("call-command")).toHaveText("sleep 25; echo docs-built");
+  await expect(lines.nth(0).getByTestId("call-command")).toHaveText(calls[0]!.input.command);
+  await expect(lines.nth(1).getByTestId("call-command")).toHaveText(calls[1]!.input.command);
   for (const n of [0, 1]) {
     const line = lines.nth(n).locator("> .k-line");
     await expect(line).toHaveAttribute("aria-expanded", "false");
@@ -300,10 +304,12 @@ test("a reply then two commands that run without asking: the reply stays in view
   // Opened, a command is the whole call: the command, its output as it comes, and the way to the background.
   await lines.nth(1).locator("> .k-line").click();
   const opened = lines.nth(1);
-  await expect(opened.getByTestId("terminal-command")).toContainText("sleep 25; echo docs-built");
+  await expect(opened.getByTestId("terminal-command")).toContainText(calls[1]!.input.command);
   await expect(opened.getByTestId("live-output")).toBeVisible();
-  await expect(opened.getByTestId("move-to-background")).toBeVisible();
-  await expect(opened.getByTestId("move-keys")).toBeVisible();
+  const move = opened.getByTestId("move-to-background");
+  await expect(move).toBeVisible();
+  await expect(move).toHaveAttribute("title", /\(Ctrl Alt B\)$/);
+  await expect(opened.getByTestId("move-keys")).toHaveCount(0);
   await shoot(page, "work-20-command-opened");
   await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
   await request.delete(`/api/sessions/${session.id}`);
