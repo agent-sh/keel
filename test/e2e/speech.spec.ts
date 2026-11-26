@@ -87,6 +87,8 @@ test("dictation puts the words in the box, by the button and by the key, and the
   await expect(box).toHaveValue("Please fix the flaky test");
   expect(await live(page)).toBe(0);
   // Editable before it is sent: the caret is at the end of the words, typing goes on from there.
+  await expect(box).toBeFocused();
+  await expect.poll(() => box.evaluate((el: HTMLTextAreaElement) => el.selectionStart === el.value.length && el.selectionEnd === el.value.length)).toBe(true);
   await page.keyboard.type(" now");
   await expect(box).toHaveValue("Please fix the flaky test now");
   await box.fill("");
