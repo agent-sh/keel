@@ -26,9 +26,26 @@ test("the files a command prints whole, and how many lines it prints at most", (
 
 test("the files a command makes with a redirect or tee", () => {
   expect(made("cat > out.txt <<'EOF'\nbody > not a file\nEOF", "/w")).toEqual(["/w/out.txt"]);
-  expect(made("echo hi >> /x/log.txt && ls", "/w")).toEqual(["/x/log.txt"]);
   expect(made("make 2>&1 | tee build.log", "/w")).toEqual(["/w/build.log"]);
   expect(made("echo hi > /dev/null", "/w")).toEqual([]);
+});
+
+test.each(["{ :; cat f; } > /dev/null", "( :; cat f; ) >out", "{ :; echo hi > f; } > out"])("a redirected group is not credited: %s", (command) => {
+  expect([shown(command, "/w"), made(command, "/w")]).toEqual([[], []]);
+});
+
+test.each(["cd \"$DIR\"", "cd sub[12]", "cd -", "cd", "pushd sub", "popd"])("the directory is no longer known after %s", (change) => {
+  expect(shown(`cat before && ${change} && cat f && cd elsewhere && cat g`, "/w")).toEqual([{ path: "/w/before", lines: Infinity }]);
+  expect(made(`echo hi > before && ${change} && echo hi > f`, "/w")).toEqual(["/w/before"]);
+});
+
+test("sed prints a range across files, not a range per file", () => {
+  expect(shown("sed -n 1,20p f g", "/w")).toEqual([{ path: "/w/f", lines: 20 }]);
+  expect(shown("sed -n '1,$p' f g", "/w")).toEqual([{ path: "/w/f", lines: Infinity }, { path: "/w/g", lines: Infinity }]);
+});
+
+test.each(["echo hi >> /x/log.txt", "echo hi | tee -a log.txt", "echo hi | tee --append log.txt", "echo hi | tee -ia log.txt"])("an append does not make the file: %s", (command) => {
+  expect(made(command, "/w")).toEqual([]);
 });
 
 test("a file a command showed whole or made is one a Write may replace at once", async () => {

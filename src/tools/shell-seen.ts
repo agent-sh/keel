@@ -16,8 +16,17 @@ export const uncut = (ctx: Pick<ToolContext, "inline">, output: string) => outpu
 
 const WHOLE = new Set(["cat", "nl", "bat", "batcat", "less", "more"]);
 const words = (s: string) => s.trim().split(/\s+/).map((w) => w.replace(/^['"]|['"]$/g, "")).filter(Boolean);
-const plain = (a: string) => a !== "" && !/[<>$`*?~{}()\\]/.test(a);
+const plain = (a: string) => a !== "" && !/[<>$`*?~{}()[\]\\'"&]/.test(a);
 const at = (dir: string, p: string) => (isAbsolute(p) ? p : resolve(dir, p));
+const groupRedirect = /[})][ \t]*(?:[0-9]+|&)?[<>]/;
+const program = (w: string[]) => {
+  let i = 0;
+  while (i < w.length && /^\w+=/.test(w[i]!)) i++;
+  return { name: (w[i] ?? "").split("/").pop() ?? "", args: w.slice(i + 1) };
+};
+const changesDir = (name: string) => name === "cd" || name === "pushd" || name === "popd";
+const goesTo = (name: string, args: string[], here: string): string | undefined =>
+  name === "cd" && args.length === 1 && plain(args[0]!) && !args[0]!.startsWith("-") ? at(here, args[0]!) : undefined;
 
 // `end`: the lines are the file's last ones (tail), not its first.
 export type Shown = { path: string; lines: number; end?: true };
@@ -29,18 +38,21 @@ export type Shown = { path: string; lines: number; end?: true };
 // `dir`: where the command starts; a `cd` to a plain path moves it.
 export function shown(command: string, dir: string): Shown[] {
   const text = withoutHeredocs(command);
+  // The simple command scan cannot associate a redirect after a group with its body.
+  if (groupRedirect.test(text)) return [];
   const piped = /(^|[^|])\|([^|]|$)/.test(text);
   const out: Shown[] = [];
   let here = dir;
   for (const whole of segments(command)) {
     // (The error stream sent anywhere takes nothing from what the command shows, and its target is no file it prints.)
     const seg = whole.replace(/(^|\s)2>>?\s*(&1|[^\s&|;<>]+)/g, "$1");
-    const w = words(seg);
-    let i = 0;
-    while (i < w.length && /^\w+=/.test(w[i]!)) i++;
-    const name = (w[i] ?? "").split("/").pop() ?? "";
-    const args = w.slice(i + 1);
-    if (name === "cd") { if (args[0] && plain(args[0]) && args[0] !== "-") here = at(here, args[0]); continue; }
+    const { name, args } = program(words(seg));
+    if (changesDir(name)) {
+      const next = goesTo(name, args, here);
+      if (next === undefined) break; // Later paths have no reliable base.
+      here = next;
+      continue;
+    }
     if (piped || (!WHOLE.has(name) && name !== "head" && name !== "tail" && name !== "sed")) continue;
     // Any other redirect (to a file, to /dev/null, `&>`) sends the lines somewhere the model does not read.
     if (seg.includes(">")) continue;
@@ -72,24 +84,34 @@ export function shown(command: string, dir: string): Shown[] {
     if (name === "head" && lines === Infinity) lines = 10;
     if (name === "tail" && lines === Infinity) lines = 10;
     if (!ok) continue;
-    for (const f of files) if (plain(f)) out.push({ path: at(here, f), lines, ...(name === "tail" ? { end: true as const } : {}) });
+    // Sed numbers across its operands unless run with -s, which we do not credit.
+    const read = name === "sed" && Number.isFinite(lines) ? files.slice(0, 1) : files;
+    for (const f of read) if (plain(f)) out.push({ path: at(here, f), lines, ...(name === "tail" ? { end: true as const } : {}) });
   }
   return out;
 }
 
 // The files a command writes with a redirect or tee: its own, whatever they held.
 export function made(command: string, dir: string): string[] {
+  if (groupRedirect.test(withoutHeredocs(command))) return [];
   const out: string[] = [];
   let here = dir;
   for (const seg of segments(command)) {
-    const w = words(seg);
-    if (w[0] === "cd" && w[1] && plain(w[1])) { here = at(here, w[1]); continue; }
-    for (const m of seg.matchAll(/(?:^|[^0-9&>])>{1,2}\s*(?!&)([^\s;&|<>]+)/g)) {
+    const { name, args } = program(words(seg));
+    if (changesDir(name)) {
+      const next = goesTo(name, args, here);
+      if (next === undefined) break;
+      here = next;
+      continue;
+    }
+    // An append does not replace the text that was already there.
+    for (const m of seg.matchAll(/(?:^|[^0-9&<>])>(?![>&])\s*([^\s;&|<>]+)/g)) {
       const p = m[1]!.replace(/^['"]|['"]$/g, "");
       if (plain(p) && !p.startsWith("/dev/")) out.push(at(here, p));
     }
-    const t = w.indexOf("tee");
-    if (t >= 0) for (const a of w.slice(t + 1)) if (!a.startsWith("-") && plain(a) && !a.startsWith("/dev/")) out.push(at(here, a));
+    if (name === "tee" && !args.some((a) => a === "--append" || /^-[^-]*a/.test(a))) {
+      for (const a of args) if (!a.startsWith("-") && plain(a) && !a.startsWith("/dev/")) out.push(at(here, a));
+    }
   }
   return out;
 }
