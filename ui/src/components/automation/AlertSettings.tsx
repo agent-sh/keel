@@ -6,6 +6,7 @@ import { composing } from "../../lib/keys.ts";
 import { navigate } from "../../lib/ui.ts";
 import { clock } from "../../lib/utils.ts";
 import { Card, Segmented, SettingRow } from "../Settings.tsx";
+import { Group } from "../settings/kit.tsx";
 import { Tick, Toggle } from "../surfaces/kit.tsx";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { ALERT_LABEL, ALERT_STATE, CHANNEL_NAME } from "./bits.tsx";
@@ -93,7 +94,7 @@ export default function AlertSettings() {
     }
   };
   return (
-    <div className="flex flex-col gap-4" data-testid="alert-routes">
+    <div className="k-set-page k-set-column" data-testid="alert-routes">
       <Card>
         <SettingRow label="When a turn finishes" hint="Not watching: a finish goes to the inbox, and to the desktop or phone only after a turn of five minutes or more; a session you are watching keeps it in the page. Always: every finish goes out.">
           <Segmented
@@ -119,14 +120,11 @@ export default function AlertSettings() {
           </div>
         </SettingRow>
       </Card>
-      <Card>
-        <div className="py-3">
-          <div className="text-base font-medium">Routes</div>
-          <div className="mt-0.5 text-ui text-muted">Every alert lands in the inbox. Choose where each group also goes.</div>
-        </div>
+      {/* The routes are a group of the page, named as every group is: its name over its box, not a head of another face inside it. */}
+      <Group title="Routes" hint="Every alert lands in the inbox. Choose where each group also goes.">
         <table className="-mx-5 mb-2 w-[calc(100%+2.5rem)] text-ui" data-testid="alert-groups">
           <thead>
-            <tr className="border-t border-line text-left text-caption text-faint">
+            <tr className="text-left text-caption text-faint">
               <th className="px-5 py-2 font-medium max-md:pr-2">Alert</th>
               {channels.map((c) => (
                 <th key={c.id} className="px-3 py-2 text-center font-medium max-md:px-1" title={c.label}>
@@ -218,7 +216,7 @@ export default function AlertSettings() {
             ))}
           </div>
         )}
-      </Card>
+      </Group>
     </div>
   );
 }

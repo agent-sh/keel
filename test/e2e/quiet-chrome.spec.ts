@@ -311,6 +311,12 @@ test("a page of settings is not a column of bold: a setting's name is regular ov
   expect(await page.locator(".k-set-title").first().evaluate((el) => getComputedStyle(el).fontWeight)).toBe("600");
   await page.goto("/settings/alerts");
   await expect(page.locator(".k-setting").first()).toBeVisible();
+  // The routes are a group of the page: named over its box as every group is, the box ending where the one above does.
+  const routes = page.locator(".k-set-group").filter({ has: page.getByTestId("alert-groups") });
+  await expect(routes.locator(".k-set-title h3")).toHaveText("Routes");
+  const ends = await page.locator('[data-testid="alert-routes"] > .k-card, [data-testid="alert-routes"] > .k-set-group > .k-set-box').evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().right)));
+  expect(ends.length).toBe(2);
+  expect(ends[0], `the boxes' right edges ${ends}`).toBe(ends[1]);
   await shoot(page, "quiet-13-settings");
 });
 
