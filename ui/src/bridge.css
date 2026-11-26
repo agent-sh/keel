@@ -1226,6 +1226,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
    request (an agent's) has the keyboard. */
 .k-approval, .k-question[data-state="open"] { border-radius: var(--radius-md); border: 1px solid var(--line-strong); box-shadow: inset 0.1875rem 0 0 var(--st-need); }
 .k-approval[data-risk="high"] { box-shadow: inset 0.1875rem 0 0 var(--st-fail); }
+/* The keyboard on a request is said by the request itself: its own hairline takes the ring's colour. The page's
+   focus ring is not drawn around the whole box (the card and the list both ask for none, and the page's rule
+   outranked them): a ring that size was the strongest stroke in the window, on top of the edge that already
+   says the request waits. An answer inside it keeps its own ring. */
+.k-ask-list:focus-visible, .k-question:focus-visible { outline: none; }
+.k-question[data-state="open"]:focus-visible, .k-ask-list:focus-visible > .k-approval:is(:not([data-many]), [data-hot]) { border-color: var(--ring); }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within, [data-hot]) { box-shadow: none; }
 .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-question[data-state="open"]:not(:focus-within) { box-shadow: none; }
 /* The keyboard on a list itself (brought there, on no answer yet) counts as on its request: the other lists'

@@ -314,6 +314,13 @@ test("a question docks above the message box and is answered from the keyboard",
   // and draws no number while a number does not answer (one typed here goes on to the message box).
   await expect(card).toBeFocused();
   await expect(card).toHaveAttribute("data-keys", "ready");
+  // That the keyboard is on the card is said by the card's own hairline, in the ring's colour: no ring is drawn around the whole box.
+  expect(await card.evaluate((el) => {
+    const probe = document.createElement("i"); probe.style.color = "var(--ring)"; el.append(probe);
+    const ring = getComputedStyle(probe).color; probe.remove();
+    const s = getComputedStyle(el);
+    return [el.matches(":focus-visible"), s.outlineStyle, s.borderTopColor === ring];
+  })).toEqual([true, "none", true]);
   await expect(card.getByTestId("question-hint")).toHaveText("Up and Down choose, Enter sends");
   await expect(card.getByTestId("question-digit")).toHaveCount(0);
   // At rest an answer is its words inside a hairline, not a slab of grey: no option has a ground before one is chosen.
