@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import type { StoredEvent } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { api, onFeature, readAtOpen, reportError } from "../lib/store.ts";
-import { ago, cn, when } from "../lib/utils.ts";
+import { ago, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 
 import { isPeerMessage, PEER_PREFIX as PREFIX } from "../../../src/core/owner.ts";
@@ -94,7 +94,7 @@ export function HeldMessages({ sessionId }: { sessionId: string }) {
               <button type="button" disabled={busy === m.id} onClick={() => decide(m.id, "drop")} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50" data-testid="held-drop">
                 <X className="size-3.5" /> Drop
               </button>
-              <button type="button" disabled={busy === m.id} onClick={() => decide(m.id, "deliver")} className={cn("inline-flex h-7 items-center gap-1 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50")} data-testid="held-deliver">
+              <button type="button" disabled={busy === m.id} aria-busy={busy === m.id || undefined} data-ink="" onClick={() => decide(m.id, "deliver")} className="k-btn" data-testid="held-deliver">
                 <Send className="size-3.5" /> Deliver
               </button>
             </span>

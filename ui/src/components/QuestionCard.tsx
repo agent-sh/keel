@@ -683,9 +683,8 @@ function Docked({ use, sessionId, first, asked, onLater, agent }: { use: ToolUse
                 if (toOpen) void submit({});
               }}
               data-testid="question-open"
-              className={toOpen
-                ? "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover aria-disabled:opacity-40 outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-                : "k-btn k-btn-lg"}
+              data-ink={toOpen ? "" : undefined}
+              className="k-btn k-btn-lg min-w-0"
             >
               <span className="truncate">{toOpen ? `Open ${link.host}` : "Open again"}</span>
               <ExternalLink aria-hidden="true" className="size-3.5 shrink-0" />

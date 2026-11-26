@@ -195,7 +195,8 @@ export function BranchReview({ session }: { session: Session }) {
             data-testid="review-send"
             disabled={busy || (!comments.length && !note.trim())}
             onClick={send}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
+            data-ink=""
+            className="k-btn k-btn-lg"
           >
             <Send className="size-3.5" /> Send {comments.length ? `${comments.length} comment${comments.length === 1 ? "" : "s"}` : "note"} to the model
           </button>

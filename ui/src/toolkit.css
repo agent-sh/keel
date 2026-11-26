@@ -85,7 +85,9 @@
   .k-btn:disabled { opacity: 0.4; pointer-events: none; }
   /* The filled button with nothing to do yet (no answer chosen, nothing changed to save) is an outline whose words still
      read: a slab of grey with bold white words asks as loudly as the live one, for nothing. */
-  .k-btn[data-ink]:disabled { opacity: 1; background: transparent; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); font-weight: 400; }
+  .k-btn[data-ink]:is(:disabled, [aria-disabled="true"]) { opacity: 1; background: transparent; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); font-weight: 400; }
+  /* One at work on the press it was given is still the filled button, dimmed: it is not the outline of one with nothing to do. */
+  .k-btn[data-ink][aria-busy="true"]:disabled { opacity: 0.6; background: var(--fg); color: var(--bg); box-shadow: none; font-weight: 600; }
   .k-btn svg { width: 0.8125rem; height: 0.8125rem; }
   /* The button beside a field: as tall as the field, its words at the interface size. */
   .k-btn-lg { height: var(--spacing-ctl-lg); padding: 0 0.875rem; font-size: var(--text-ui); }

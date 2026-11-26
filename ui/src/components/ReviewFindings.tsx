@@ -90,7 +90,7 @@ export function ReviewFindings({ session }: { session: Session }) {
           data-testid="review-focus"
           className="k-field min-w-0 flex-1"
         />
-        <button data-testid="review-start" disabled={busy} onClick={start} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
+        <button data-testid="review-start" disabled={busy} aria-busy={busy || undefined} data-ink="" onClick={start} className="k-btn k-btn-lg">
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ScanSearch className="size-3.5" />} Review
         </button>
       </div>
@@ -207,7 +207,7 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
       )}
       {open.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-t border-line px-3 py-2">
-          <button data-testid="findings-fix" disabled={!picked.size || pending} onClick={() => act("fix", [...picked])} className="k-findings-fix inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
+          <button data-testid="findings-fix" disabled={!picked.size || pending} onClick={() => act("fix", [...picked])} aria-busy={pending || undefined} data-ink="" className="k-findings-fix k-btn">
             {pending ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send {picked.size} to {recipient}
           </button>
           <button data-testid="findings-dismiss" disabled={!picked.size || pending} onClick={() => act("dismiss", [...picked])} className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40">

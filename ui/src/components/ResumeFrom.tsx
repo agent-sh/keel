@@ -196,7 +196,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   const waitable = seen.in_flight.length > jobList.length; // a turn, a call or a subagent: a job alone is not waited for
   const quiet = "h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg disabled:opacity-40";
   const plain = "k-btn k-btn-lg";
-  const primary = "inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40";
+  const primary = "k-btn k-btn-lg";
 
   // Ended, and the copy did not finish: what happened, and the copy alone to retry.
   if (seen.pending) {
@@ -215,7 +215,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
         <div className="border-t border-line px-4 py-3">
           <div className="flex items-center gap-3">
             <p className="min-w-0 flex-1 break-words text-caption text-danger" data-testid="resume-error">{p.error ?? err}</p>
-            <button type="button" data-testid="resume-copy-go" disabled={busy} onClick={() => void go("copy")} className={primary}><Play className="size-3.5" /> Finish the copy</button>
+            <button type="button" data-testid="resume-copy-go" data-ink="" aria-busy={busy || undefined} disabled={busy} onClick={() => void go("copy")} className={primary}><Play className="size-3.5" /> Finish the copy</button>
           </div>
         </div>
       </section>
@@ -289,7 +289,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
           </div>
         ) : !active ? (
           <div className="flex items-center justify-end gap-2">
-            <button type="button" data-testid="resume-here" disabled={busy} onClick={() => void go("now")} className={primary}><Play className="size-3.5" /> Take over here</button>
+            <button type="button" data-testid="resume-here" data-ink="" aria-busy={busy || undefined} disabled={busy} onClick={() => void go("now")} className={primary}><Play className="size-3.5" /> Take over here</button>
           </div>
         ) : intent === "now" ? null : intent === "wait" ? (
           <div className="flex flex-wrap items-center gap-2" data-testid="resume-wait-form">
@@ -299,7 +299,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
             </Select>
             <span className="min-w-0 flex-1 text-caption text-muted" data-testid="resume-until">until {clock(now + waitMs)}</span>
             <button type="button" onClick={() => onIntent(null)} className={quiet}>Back</button>
-            <button type="button" data-testid="resume-wait-go" disabled={busy} onClick={() => void go("idle")} className={primary}><Hourglass className="size-3.5" /> Wait, then take over</button>
+            <button type="button" data-testid="resume-wait-go" data-ink="" aria-busy={busy || undefined} disabled={busy} onClick={() => void go("idle")} className={primary}><Hourglass className="size-3.5" /> Wait, then take over</button>
           </div>
         ) : (
           <div className="flex items-center justify-end gap-2" data-testid="resume-choices">

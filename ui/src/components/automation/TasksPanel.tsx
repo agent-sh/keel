@@ -43,7 +43,7 @@ function NewGoal({ sid, replace }: { sid: string; replace: boolean }) {
       />
       <div className="flex items-center gap-2">
         <input data-testid="goal-turns" value={turns} onChange={(e) => setTurns(e.target.value.replace(/\D/g, ""))} placeholder="Max turns (optional)" className={cn(field, "w-40")} />
-        <button type="submit" disabled={!objective.trim()} className="ml-auto h-8 rounded-lg bg-accent px-3.5 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+        <button type="submit" disabled={!objective.trim()} data-ink="" className="k-btn k-btn-lg ml-auto">
           {replace ? "Replace goal" : "Start goal"}
         </button>
       </div>

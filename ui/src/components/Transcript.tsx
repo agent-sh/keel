@@ -367,7 +367,7 @@ function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; bac
             {n > 0 && ` The ${n === 1 ? "attachment goes" : `${n} attachments go`} with it as before.`}
           </span>
           <button type="button" onClick={done} className="h-7 rounded-md px-2.5 text-ui text-muted hover:bg-hover">Cancel</button>
-          <button type="button" data-testid="edit-send" disabled={!ok} onClick={send} className="h-7 rounded-md bg-accent px-2.5 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
+          <button type="button" data-testid="edit-send" disabled={!ok} data-ink="" onClick={send} className="k-btn text-ui">
             Send
           </button>
         </div>
@@ -406,7 +406,8 @@ function Refusal({ e, sid, handled, end }: { e: StoredEvent; sid: string; handle
                 await actions.resume(sid);
               })
               .catch(reportError)}
-          className="h-8 rounded-md bg-accent px-3 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40 max-md:min-h-tap max-md:w-full"
+          data-ink=""
+          className="k-btn k-btn-lg max-md:min-h-tap max-md:w-full max-md:justify-center"
         >
           Retry on it
         </button>
@@ -2138,7 +2139,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               <span className="min-w-0 flex-1 text-muted">You are reading another branch. Replies still go to the current one.</span>
               <button type="button" data-testid="preview-continue" disabled={session.phase === "working"} title={session.phase === "working" ? "Possible when the turn ends" : undefined}
                 onClick={() => actions.setHead(sessionId, preview!, true).then(() => setUI({ preview: null })).catch(reportError)}
-                className="h-7 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">Reply from this branch</button>
+                data-ink="" className="k-btn disabled:pointer-events-auto">Reply from this branch</button>
               <button type="button" data-testid="preview-back" onClick={() => setUI({ preview: null })} className="h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">Back to the current one</button>
             </div>
           )}

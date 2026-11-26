@@ -366,7 +366,7 @@ function AddProvider({ edit }: { edit?: string }) {
                   </div>
                 ) : null}
                 {edit && <button type="button" data-testid="provider-remove" onClick={remove} disabled={!!busy} className="h-8 rounded-md px-3 text-ui text-danger hover:bg-hover disabled:opacity-50">Remove</button>}
-                <button type="button" data-testid="provider-save" onClick={save} disabled={!!busy || !form.id || !form.base_url} className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
+                <button type="button" data-testid="provider-save" onClick={save} disabled={!!busy || !form.id || !form.base_url} data-ink="" className="k-btn k-btn-lg ml-auto">
                   {busy === "save" && <Loader2 className="size-3.5 animate-spin" />} {!test || test.ok ? "Save" : "Save anyway"}
                 </button>
               </div>

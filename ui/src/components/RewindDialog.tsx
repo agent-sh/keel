@@ -241,7 +241,7 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
           <div className="k-dialog-foot px-[var(--k-dialog-pad)] pb-[var(--k-dialog-pad)] pt-3">
             <Dialog.Close disabled={busy} className="k-btn k-btn-lg">Cancel</Dialog.Close>
             <button type="button" data-testid="rewind-prompt-go" onClick={go} disabled={busy || !row || !preview}
-              className={cn("h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg enabled:hover:bg-accent-hover disabled:opacity-50", busy && "opacity-60")}>
+              aria-busy={busy || undefined} data-ink="" className="k-btn k-btn-lg">
               {busy ? "Rewinding" : way === "both" ? "Rewind chat and files" : way === "chat" ? "Rewind the chat" : "Put the files back"}
             </button>
           </div>

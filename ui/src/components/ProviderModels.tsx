@@ -78,7 +78,7 @@ function Editor({ m, provider, onDone }: { m: ListedModel; provider: string; onD
       <div className="col-span-6 flex items-center gap-2">
         {err && <span className="text-caption text-danger">{err}</span>}
         <button type="button" onClick={onDone} className="ml-auto h-7 rounded-md px-2.5 text-ui hover:bg-hover">Cancel</button>
-        <button type="button" data-testid="model-editor-save" disabled={busy} onClick={save} className="h-7 rounded-md bg-accent px-2.5 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">Save</button>
+        <button type="button" data-testid="model-editor-save" disabled={busy} aria-busy={busy || undefined} data-ink="" onClick={save} className="k-btn text-ui">Save</button>
       </div>
     </div>
   );

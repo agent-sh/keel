@@ -378,7 +378,9 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
                   data-testid="compact-now"
                   disabled={working || !!busy}
                   onClick={() => run("compact")}
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-caption font-medium text-accent-fg disabled:opacity-40"
+                  aria-busy={busy === "compact" || undefined}
+                  data-ink=""
+                  className="k-btn flex-1 justify-center"
                 >
                   <Layers className="size-3.5" /> {busy === "compact" ? "Compacting" : "Compact now"}
                 </button>

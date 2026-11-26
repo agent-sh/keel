@@ -203,7 +203,7 @@ export function WorktreeChip({ session }: { session: Session }) {
                     <input type="checkbox" checked={form.draft} onChange={(e) => setForm({ ...form, draft: e.target.checked })} className="accent-[var(--accent)]" /> Draft
                   </label>
                   <span className="ml-auto text-micro text-faint">Pushes the branch to origin</span>
-                  <button type="submit" disabled={busy} data-testid="pr-create" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">Create</button>
+                  <button type="submit" disabled={busy} aria-busy={busy || undefined} data-ink="" data-testid="pr-create" className="k-btn k-btn-lg">Create</button>
                 </div>
               </form>
             )}

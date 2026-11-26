@@ -9,7 +9,6 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { stoppingShells } from "../lib/shells.ts";
 import { api, failed } from "../lib/store.ts";
-import { cn } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
 type Ask = { sessionId: string; callId: string; x: number; y: number };
@@ -146,8 +145,7 @@ function CallMenu({ ask, onClose }: { ask: Ask; onClose: () => void }) {
             <Dialog.Close disabled={busy} className="k-btn k-btn-lg">{phase === "done" ? "Close" : "Cancel"}</Dialog.Close>
             {phase === "done"
               ? done?.undo && <button type="button" data-testid="call-revert-undo" onClick={undo} disabled={busy} className="k-btn k-btn-lg">Undo</button>
-              : <button type="button" data-testid="call-revert-go" onClick={go} disabled={busy}
-                  className={cn("h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg enabled:hover:bg-accent-hover disabled:opacity-50", busy && "opacity-60")}>
+              : <button type="button" data-testid="call-revert-go" onClick={go} disabled={busy} aria-busy={busy || undefined} data-ink="" className="k-btn k-btn-lg">
                   {busy ? "Reverting" : "Revert the files"}
                 </button>}
           </div>

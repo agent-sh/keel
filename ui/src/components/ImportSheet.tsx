@@ -171,7 +171,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
             <button type="button" disabled={busy} onClick={() => open(shown?.links[0]?.session_id ?? done.session_id)} data-testid="import-open" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">Open</button>
           </>
         ) : (
-          <button type="button" disabled={busy || !shown || stopped} onClick={() => go()} data-testid="import-go" className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+          <button type="button" disabled={busy || !shown || stopped} onClick={() => go()} aria-busy={busy || undefined} data-ink="" data-testid="import-go" className="k-btn k-btn-lg">
             <ArrowDownToLine className="size-4" /> Import
           </button>
         )}

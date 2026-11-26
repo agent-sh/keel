@@ -256,7 +256,7 @@ export function SearchView({ session, onOpen, under }: { session: string; onOpen
           <Search className="size-3.5 shrink-0 text-faint" />
           <input data-testid="memory-search-input" aria-label="Search the memory store" value={q} maxLength={1000} onChange={(e) => setQ(e.target.value)} placeholder="Search what the store holds" className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
         </label>
-        <button type="submit" disabled={busy || !q.trim()} data-testid="memory-search-go" className="h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">{busy ? "Searching" : "Search"}</button>
+        <button type="submit" disabled={busy || !q.trim()} aria-busy={busy || undefined} data-ink="" data-testid="memory-search-go" className="k-btn k-btn-lg">{busy ? "Searching" : "Search"}</button>
         <label className="flex items-center gap-2 text-caption text-muted">
           <Switch.Root checked={inbox} onCheckedChange={(v) => { setInbox(v); if (r) run(q, v); }} aria-label="Include unreviewed notes" data-testid="memory-search-inbox" className="k-switch"><Switch.Thumb className="k-switch-thumb" /></Switch.Root>
           Unreviewed notes too

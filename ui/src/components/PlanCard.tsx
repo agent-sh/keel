@@ -298,7 +298,8 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
               disabled={!plan.trim()}
               title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"}
               onClick={(e) => approveBy(e, false)}
-              className="h-7 grow whitespace-nowrap rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50"
+              data-ink=""
+              className="k-btn grow justify-center whitespace-nowrap text-ui disabled:pointer-events-auto"
             >
               Approve plan
             </button>

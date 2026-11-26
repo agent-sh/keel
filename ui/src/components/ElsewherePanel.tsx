@@ -271,7 +271,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
           <code className="font-mono text-caption text-faint">/model</code>
           <input autoFocus value={model} onChange={(e) => setModel(e.target.value)} placeholder={s.model || "model name"} data-testid="elsewhere-model"
             className="k-field k-field-sm min-w-0 flex-1 font-mono" />
-          <button disabled={!model.trim() || held || sending} className="h-7 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg disabled:opacity-40">Switch</button>
+          <button disabled={!model.trim() || held || sending} data-ink="" className="k-btn">Switch</button>
         </form>
       )}
       {err && <div className="border-b border-line bg-danger-soft px-4 py-2 text-ui text-danger">{err}</div>}
@@ -342,7 +342,7 @@ function PromptCard({ p, kind, busy, answer }: { p: ReadPrompt; kind: string; bu
           const no = /^(no|nope|deny|reject|cancel|decline|stop)\b/i.test(c.label.trim());
           return (
             <button key={c.value} disabled={busy} onClick={() => answer(c.value)} data-testid="elsewhere-choice"
-              className={cn("h-8 rounded-lg px-3 text-ui font-medium disabled:opacity-40", no ? "border border-line text-muted hover:bg-hover hover:text-fg" : "bg-accent text-accent-fg hover:bg-accent-hover")}>
+              data-ink={no ? undefined : ""} className="k-btn k-btn-lg">
               {c.label}
             </button>
           );
@@ -385,7 +385,7 @@ export function ElsewhereSettings() {
         <div className="flex gap-2">
           <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/path/to/agent-view" data-testid="elsewhere-path"
             className="k-field min-w-0 flex-1 font-mono" />
-          <button onClick={save} disabled={path === saved} data-testid="elsewhere-save" className="h-9 rounded-lg bg-accent px-4 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">Save</button>
+          <button onClick={save} disabled={path === saved} data-ink="" data-testid="elsewhere-save" className="k-btn k-btn-lg">Save</button>
         </div>
       </label>
       {err && <p className="text-ui text-danger">{err}</p>}

@@ -19,7 +19,6 @@ const PCLS = ["bg-danger text-accent-fg", "bg-danger-soft text-danger", "bg-warn
 const WHY: Record<PrReview["why"], string> = { opened: "opened", updated: "new push", asked: "asked" };
 const CRED: Record<string, string> = { keel: "the token saved here", env: "GH_TOKEN or GITHUB_TOKEN of the daemon", gh: "your gh login" };
 const button = "k-btn k-btn-lg";
-const primary = "inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40";
 
 function StateChip({ r }: { r: PrReview }) {
   return (
@@ -42,7 +41,7 @@ function PostButton({ r, onDone, quiet }: { r: PrReview; onDone?: (r: PrReview) 
   };
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <button type="button" data-testid="pr-review-post" disabled={busy} onClick={post} className={quiet ? button : primary}>
+      <button type="button" data-testid="pr-review-post" disabled={busy} aria-busy={busy || undefined} data-ink={quiet ? undefined : ""} onClick={post} className={button}>
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Post to GitHub
       </button>
       {(err || r.post_error) && <span className="text-caption text-danger" data-testid="pr-review-post-error">{err || r.post_error}</span>}
@@ -141,7 +140,7 @@ export default function PrReviewSettings() {
         <SettingRow label="Watch a repository" hint="Keel reads its pull requests and comments at the pace GitHub states, with no public address. A change GitHub reports costs one request; an unchanged list costs none against the hourly limit.">
           <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); add(); }}>
             <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" aria-label="Repository" data-testid="pr-watch-input" className="k-field w-52 font-mono" />
-            <button type="submit" disabled={!repo.trim()} data-testid="pr-watch-add" className={primary}>Watch</button>
+            <button type="submit" disabled={!repo.trim()} data-ink="" data-testid="pr-watch-add" className={button}>Watch</button>
           </form>
         </SettingRow>
         {err && <p className="pb-3 text-caption text-danger" data-testid="pr-watch-add-error">{err}</p>}

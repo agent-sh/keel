@@ -30,7 +30,7 @@ export function SecretCards({ sessionId }: { sessionId: string }) {
 
 const shell = "animate-in overflow-hidden rounded-2xl border border-line bg-raised shadow-2";
 const input = "k-field flex-1 font-mono placeholder:font-sans";
-const primary = "h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50";
+const primary = "k-btn k-btn-lg";
 const quiet = "h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
 
 function Head({ title, sub }: { title: string; sub?: string }) {
@@ -147,7 +147,7 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
           placeholder="Paste the value: it goes to commands only, never to the model"
           className={input}
         />
-        <button type="submit" disabled={busy || !value} data-testid="secret-give" className={`k-secret-give ${primary}`}>{warned ? "Keep it" : "Give"}</button>
+        <button type="submit" disabled={busy || !value} data-ink="" data-testid="secret-give" className={`k-secret-give ${primary}`}>{warned ? "Keep it" : "Give"}</button>
         <button type="button" disabled={busy} data-testid="secret-decline" onClick={() => act(() => secrets.decline(r.session_id, r.id))} className={quiet}>Decline</button>
       </form>
       <p className="px-4 pb-3 -mt-1 text-micro text-faint">
@@ -184,7 +184,7 @@ function FoundCard({ m, sessionId }: { m: SecretMeta; sessionId: string }) {
       </div>
       <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); save(); }}>
         <input data-testid="secret-name" value={name} onChange={(e) => setName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_"))} placeholder="Variable name for commands, e.g. GITHUB_TOKEN" className={input} />
-        <button type="submit" disabled={!name.trim()} data-testid="secret-save-name" className={primary}>Name it</button>
+        <button type="submit" disabled={!name.trim()} data-ink="" data-testid="secret-save-name" className={primary}>Name it</button>
         <button type="button" data-testid="secret-forget" onClick={() => secrets.forget(m.id).then(() => secrets.dismiss(sessionId, m.id)).catch((e) => setErr(failed(e, { at: "SecretCards" })))} className={quiet}>Forget</button>
       </form>
       {err && <p className="px-4 pb-3 -mt-1 text-micro text-danger">{err}</p>}

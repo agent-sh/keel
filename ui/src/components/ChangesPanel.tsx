@@ -306,7 +306,8 @@ export function ChangesPanel({ session }: { session: Session }) {
                 data-testid="rewind-go"
                 onClick={confirm}
                 disabled={!restorePaths.length}
-                className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg enabled:hover:opacity-90 disabled:opacity-50"
+                data-ink=""
+                className="k-btn k-btn-lg"
               >
                 Revert
               </button>

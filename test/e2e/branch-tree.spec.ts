@@ -22,7 +22,14 @@ async function forked(page: Page, request: APIRequestContext, tag: string) {
   // Edit the second prompt, then answer the edit again: three ways after the first prompt.
   await page.getByTestId("user-message").last().hover();
   await page.getByTestId("edit-message").last().click();
+  // With nothing to send, the filled button is an outline in the quiet ink at the regular weight, not a slab of grey; with words it is the ink.
+  const send = () => page.getByTestId("edit-send").evaluate((el) => { const c = getComputedStyle(el); return [c.backgroundColor === "rgba(0, 0, 0, 0)" ? "outline" : "filled", c.fontWeight, c.opacity]; });
+  await page.getByTestId("edit-box").fill("");
+  await expect(page.getByTestId("edit-send")).toBeDisabled();
+  // (The ground changes over a moment.)
+  await expect.poll(send).toEqual(["outline", "400", "1"]);
   await page.getByTestId("edit-box").fill(`Write the tokenizer with a state machine ${tag}`);
+  await expect.poll(send).toEqual(["filled", "600", "1"]);
   await page.getByTestId("edit-send").click();
   await expect(page.getByTestId("branch-pos")).toHaveText("2/2");
   await expect(page.getByTestId("turn-end")).toHaveCount(2);
