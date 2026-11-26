@@ -614,7 +614,8 @@ export function valuesOf(parts: Simple[], runs: Run[], home?: string, hist?: Map
   if (home !== undefined) home = /^\/[A-Za-z0-9_.\/@:+,%^-]*$/.test(home) && home.length > 1 ? home.replace(/\/+$/, "") : undefined;
   const out: Values = new Map();
   // A value is only ever read into a word an expansion makes: a line with none has none to read.
-  if (!hist && !parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
+  // (Not when the names it sets are asked for: a script it hands a shell in quotes reads them with no expansion here.)
+  if (!hist && !sets && !parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
   const count = new Map<string, number>();
   const bare = new Set<string>();
   let unseen = false;

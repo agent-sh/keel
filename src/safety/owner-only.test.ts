@@ -124,6 +124,20 @@ test("a protected file named through a name the line sets is a path the command 
   }
 });
 
+test("a name the line sets is followed into a script it hands a shell in quotes, where the line itself expands nothing", () => {
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  for (const command of [
+    "export D=/home/u; bash -c 'cat $D/.ssh/id_rsa'", "D=/home/u bash -c 'cat $D/.ssh/id_rsa'", "declare -x D=/home/u; bash -c 'cat $D/.ssh/id_rsa'", "D=/home/u; eval 'cat $D/.ssh/id_rsa'",
+    "D=/home/u; echo 'cat $D/.ssh/id_rsa' | bash", "export D=/home/u; bash -lc 'cat $D/.ssh/id_rsa'", "D=/home/u env bash -c 'cat $D/.ssh/id_rsa'", "D=/home/u; export D; bash -c 'cat $D/.ssh/id_rsa'",
+    "export D=/home/u/own; sh -c 'printf x > $D/.git/config'", "export D=/home/u\nbash -c 'echo x >> $D/.bashrc'",
+  ]) for (const mode of ["ask", "full-auto"] as Mode[]) expect([command, mode, shell(command, mode)]).toEqual([command, mode, "ask-high"]);
+  // With nothing protected in sight the script runs as it did.
+  for (const command of ["export D=/w/repo; bash -c 'cat $D/README.md'", "export N=3; bash -c 'echo $N > out.txt'", "X=1 bash -c 'echo $X'"]) {
+    expect([command, shell(command)]).toEqual([command, "ask-low"]);
+    expect([command, shell(command, "full-auto")]).toEqual([command, "allow"]);
+  }
+});
+
 test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
   const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
   // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)
