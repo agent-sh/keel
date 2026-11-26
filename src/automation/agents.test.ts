@@ -351,6 +351,8 @@ test("a context that declines while its own agent works hands the task and the a
   expect([own(a.session_id), own(now.session_id)]).toEqual([1, 0]);
   // The loss is recorded and a successor started, though its agent still works.
   expect([now.status, now.lost?.map((l) => l.kind), now.session_id === a.session_id]).toEqual(["running", ["refusal"], false]);
+  // The lost context is known as one, with the session that holds its task: the end of a command it started goes there.
+  expect([agents.heirOf(a.session_id), agents.heirOf(now.session_id)]).toEqual([now.session_id, undefined]);
   // What the lost context was owed of its agents' failures is the successor's: a start never wakes the lost one for it.
   const owed = (sid: string) => store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM session_failures WHERE session_id = ? AND owed > 0 AND wake = 1").get(sid)!.n;
   expect([owed(a.session_id), owed(now.session_id)]).toEqual([0, 1]);

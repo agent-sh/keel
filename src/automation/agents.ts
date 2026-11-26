@@ -2589,6 +2589,17 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   return "started";
 }
 
+// The session that holds the task now of an agent whose context `sid` was lost (a successor took it up), or
+// undefined when `sid` is no lost context. A lost context starts no turn again: what would have woken it (the
+// end of a command it started) goes to this one.
+export function heirOf(sid: string): string | undefined {
+  const { store } = D();
+  const parent = store.session(sid)?.parent_id;
+  if (!parent) return undefined;
+  return store.db.query<{ session_id: string }, [string, string]>(
+    "SELECT session_id FROM agents WHERE parent_id = ?1 AND lost IS NOT NULL AND session_id != ?2 AND EXISTS (SELECT 1 FROM json_each(agents.lost) j WHERE j.value ->> '$.session' = ?2) LIMIT 1").get(parent, sid)?.session_id;
+}
+
 // A session someone may still work in: there, not archived, and not an agent that ended.
 const liveSession = (sid: string) => { const s = D().store.session(sid); if (!s || s.archived) return false; const x = byChild(sid); return !x || !isEnded(x); };
 

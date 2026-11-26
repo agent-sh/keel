@@ -15,6 +15,7 @@ import { promptExpansion } from "./hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
 import { newestTurn } from "../../admin/marks.ts";
+import { heirOf } from "../../automation/agents.ts";
 import { deliver, withdraw } from "../../automation/core.ts";
 import { onJob as waitsOnJob } from "../../automation/waits.ts";
 import { cutCommandLine, sayAt } from "../../admin/daemon-log.ts";
@@ -51,6 +52,14 @@ export const toolRoutes: RouteModule = (deps) => {
         // Its session is gone or archived: nobody to tell, and nothing left to owe.
         const s = deps.store.session(job.sessionId);
         if (!s || s.archived) return riding ? note() : sent();
+        // A context an agent lost (a successor took its task up) is never started again: it ran on beside its
+        // successor, at the price of its whole context a step. The successor holds the task and its worktree, and
+        // hears of the command with its next input.
+        const heir = heirOf(job.sessionId);
+        if (heir) {
+          deliver(heir, `[harness] A command an earlier context of your task started has ended: ${text.replace(/^\[harness\] /, "")}`, { kind: "harness", job: job.id }, { ride: true });
+          return riding ? note() : sent();
+        }
         // An agent that has ended (it reported, or it was a goal's check or a review that answered at its
         // turn's end) is not started again for a command it left running: nobody reads that turn.
         const agent = deps.store.db.query<{ status: string }, [string]>("SELECT status FROM agents WHERE session_id = ?").get(job.sessionId);
