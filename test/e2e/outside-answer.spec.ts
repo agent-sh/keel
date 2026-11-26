@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
-import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { choose, shoot } from "./shots.ts";
 
@@ -376,5 +376,122 @@ test("an Antigravity session is followed read-only: no box and no holder in its 
     await shoot(page, "outside-answer-agy-read-only-phone");
   } finally {
     await request.delete(`/api/sessions/${sid}`).catch(() => {});
+  }
+});
+
+// A Claude Code session a terminal has open is answered through that terminal: the owner's agent view (a
+// stand-in, test/e2e/fixtures/agent-view.ts) types the text there, the session keeps its id and its transcript,
+// the terminal stays its holder, and the reply comes into the same row from the transcript. A send while the
+// owner's unsent draft is in the terminal's box is held, the draft in Keel's box kept; the words sent are kept as
+// the drive's, so a copy of the session does not mark them typed by the owner.
+test("a Claude Code session a terminal holds is answered through that terminal", async ({ page, request }) => {
+  const listed = await (await request.get("/api/import/sessions?limit=1")).json();
+  const root = listed.harnesses?.find((h: any) => h.harness === "claude")?.store as string | undefined;
+  test.skip(!root || !root.includes("import/claude"), "needs a scratch Claude Code store (KEEL_IMPORT_CLAUDE_DIR)");
+  const tag = String(Date.now());
+  const id = `0c1a7e2e-0000-4000-8000-${tag.slice(-12).padStart(12, "0")}`;
+  const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `outside-terminal-${tag}`);
+  const scratch = join(cwd, ".agent-view");
+  mkdirSync(scratch, { recursive: true });
+  const dir = join(root!, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  const path = join(dir, `${id}.jsonl`);
+  let parent: string | null = null;
+  const write = (r: object) => {
+    const uuid = crypto.randomUUID();
+    appendFileSync(path, JSON.stringify({ parentUuid: parent, isSidechain: false, userType: "external", cwd, sessionId: id, version: "2.1.332", entrypoint: "cli", timestamp: new Date().toISOString(), uuid, ...r }) + "\n");
+    parent = uuid;
+  };
+  const sessionOf = async () => ((await (await request.get("/api/sessions")).json()).sessions as any[]).find((s) => s.outside?.source_id === id);
+  // The terminal: a process that lives while the test runs, with the record an interactive Claude Code keeps.
+  const running = join(dirname(root!), "sessions");
+  const hadRunning = existsSync(running);
+  const term = spawn("sleep", ["600"], { stdio: "ignore" });
+  const pid = term.pid!;
+  const record = join(running, `${pid}.json`);
+  // The agent view's state: the session live in that terminal, its screen's box empty or holding a draft.
+  const stateFile = join(scratch, "state.json");
+  const rule = "─".repeat(40);
+  const screen = (box: string) => ["⏺ The script is in place.", "", rule, box, rule, "  ? for shortcuts"];
+  const agentView = (box: string) => writeFileSync(stateFile, JSON.stringify({
+    agents: [{ tool: "claude", name: "release", host: "", session: id, job: "", thread: "", pane: "", live: true, state: "idle", label: "idle", source: "claude", detail: "", hold: "", hold_until: 0, model: "claude-opus-5-5", cwd, transcript: path, answers: true, t: Date.now() / 1000, last: Date.now() / 1000 }],
+    prompts: {}, screens: { [id]: screen(box) }, queue: [], answers: [],
+  }));
+  const queued = () => JSON.parse(readFileSync(stateFile, "utf8")).queue as { body: string }[];
+  const view = join(scratch, "agent-view");
+  writeFileSync(view, `#!/bin/sh\nexec bun ${join(import.meta.dirname, "fixtures/agent-view.ts")} ${stateFile} "$@"\n`);
+  chmodSync(view, 0o755);
+  const before = (await (await request.get("/api/fleet/outside/settings")).json()).agent_view ?? "";
+  let sid: string | undefined;
+  let copy: string | undefined;
+  const watches = async () => (await (await request.get("/api/outside")).json()).watches as number;
+  try {
+    const was = await watches();
+    mkdirSync(dir, { recursive: true });
+    await expect.poll(watches, { timeout: 10_000 }).toBeGreaterThan(was);
+    write({ type: "user", message: { role: "user", content: `Set up the release script ${tag}` }, permissionMode: "default", promptSource: "typed", turnOrigin: "human", origin: { kind: "human" } });
+    write({ type: "assistant", message: { id: "m0", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "The script is in place." }], stop_reason: "end_turn" } });
+    const t = new Date(Date.now() - 60_000);
+    utimesSync(path, t, t);
+    await expect.poll(async () => (await sessionOf())?.outside?.state, { timeout: 15_000 }).toBe("done");
+    sid = (await sessionOf()).id as string;
+    mkdirSync(running, { recursive: true });
+    const procStart = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ")[19];
+    writeFileSync(record, JSON.stringify({ pid, sessionId: id, cwd, startedAt: Date.now(), procStart, kind: "interactive", entrypoint: "cli", status: "idle" }));
+
+    // Held by the terminal and no agent view to type with: the bar says who holds it and offers no box.
+    await page.goto(`/s/${sid}`);
+    const bar = page.getByTestId("outside-bar");
+    await expect(bar.getByTestId("outside-holder")).toHaveText(`Open in a terminal (pid ${pid})`, { timeout: 15_000 });
+    await expect(bar).toHaveAttribute("data-route", "held");
+    await expect(bar.getByTestId("outside-compose")).toHaveCount(0);
+
+    // With the agent view, the box sends through that terminal, and says so.
+    agentView(`> half a thought ${tag}`);
+    await request.put("/api/fleet/outside/settings", { data: { agent_view: view } });
+    await page.reload();
+    await expect(bar).toHaveAttribute("data-route", "terminal", { timeout: 15_000 });
+    const input = bar.getByTestId("outside-input");
+    await expect(input).toHaveAttribute("placeholder", "Answer here: Keel types it into the terminal that has it open");
+    await expect(bar.getByTestId("outside-send")).toHaveAttribute("aria-label", "Type into the terminal");
+    await expect(bar.getByTestId("outside-note")).toContainText("Held while your unsent draft is in its box");
+
+    // The owner's unsent draft is in the terminal's box: nothing is typed, and Keel's box keeps the words.
+    await input.fill(`Ship it ${tag}`);
+    await bar.getByTestId("outside-send").click();
+    await expect(bar.getByTestId("outside-note")).toContainText("Your unsent draft is in its terminal's box", { timeout: 15_000 });
+    await expect(input).toHaveValue(`Ship it ${tag}`);
+    expect(queued()).toEqual([]);
+    await shoot(page, "outside-terminal-draft");
+
+    // The box there is empty now: the words are typed into the terminal (a double press sends once), and the reply
+    // comes into the same row.
+    agentView(">");
+    await bar.getByTestId("outside-send").dblclick();
+    await expect(bar.getByTestId("outside-typed")).toHaveText("Typed into its terminal.", { timeout: 15_000 });
+    await expect(page.getByTestId("transcript").getByText(`Answered in the terminal: Ship it ${tag}`).first()).toBeVisible({ timeout: 15_000 });
+    expect(queued().map((q) => q.body)).toEqual([`Ship it ${tag}`]);
+    await expect(input).toHaveValue("");
+    await expect(bar.getByTestId("outside-holder")).toHaveText(`Open in a terminal (pid ${pid})`);
+    expect((await sessionOf())?.id).toBe(sid);
+    expect(readFileSync(path, "utf8").split(`"content":"Ship it ${tag}"`).length - 1).toBe(1);
+    await page.evaluate(() => getSelection()?.removeAllRanges());
+    await shoot(page, "outside-terminal-reply");
+
+    // A copy of it keeps the owner's own prompt typed, and not the words Keel typed for him.
+    const made = await (await request.post(`/api/sessions/${sid}/outside/copy`)).json();
+    copy = made.session?.id;
+    const users = ((await (await request.get(`/api/sessions/${copy}`)).json()).events as any[]).filter((e) => e.kind === "user");
+    const mark = (w: string) => users.find((e) => String(e.data?.text ?? "").includes(w))?.data?.typed === true;
+    expect(mark(`Set up the release script ${tag}`)).toBe(true);
+    expect(mark(`Ship it ${tag}`)).toBe(false);
+  } finally {
+    await request.put("/api/fleet/outside/settings", { data: { agent_view: before } });
+    term.kill();
+    rmSync(record, { force: true });
+    if (!hadRunning) rmSync(running, { recursive: true, force: true });
+    if (copy) await request.delete(`/api/sessions/${copy}`);
+    if (sid) await request.delete(`/api/sessions/${sid}`);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });

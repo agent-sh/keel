@@ -9,7 +9,9 @@
 // POST /api/sessions/:id/outside/send        -> { text, client_id, again? }: the text sent to that session
 //                                               in its own harness (Codex: codex-app.ts, Claude Code:
 //                                               claude-code.ts), stored first
-//                                               and delivered once; refused while another process holds it
+//                                               and delivered once; refused while another process holds it,
+//                                               except a terminal the agent view lists: typed into it there
+//                                               (terminal.ts)
 // DELETE /api/sessions/:id/outside/sends/:send -> a send that was lost or refused, put away
 // POST /api/sessions/:id/outside/interrupt   -> the turn Keel runs in it, stopped
 import { statSync } from "node:fs";
@@ -20,6 +22,8 @@ import { ClaudeCode } from "../../integrations/outside/claude-code.ts";
 import { codexHome } from "../../integrations/import/codex.ts";
 import { claudeRoot } from "../../integrations/import/claude.ts";
 import { waitPlan } from "./plan.ts";
+import { Through } from "../../integrations/outside/terminal.ts";
+import { sharedDrive } from "../../drive/drive.ts";
 import { allHooks } from "../../engine/hooks.ts";
 import { ownerEnv, ownerLookup } from "../../core/paths.ts";
 import { gate } from "./permissions.ts";
@@ -107,12 +111,18 @@ export const outsideRoutes: RouteModule = (deps) => {
   const o = outside;
   // The driver that answers a session in place: its harness's. Antigravity has none: Keel only reads its sessions.
   const driver = (id: string) => { const h = o.row(id)?.harness; return h === "claude" ? claude : h === "agy" ? READ_ONLY : app; };
+  // A session a terminal holds is typed into that terminal by the agent view, when it lists the session.
+  const through = new Through({ store, drive: sharedDrive(), source: (id) => o.row(id) });
+  const terminal = (id: string, holder: { kind: string } | undefined, route: string) =>
+    route === "held" && holder?.kind === "terminal" && (o.row(id)?.harness === "claude" || o.row(id)?.harness === "codex");
   // What the bar shows besides the transcript's facts: who holds it, what a send does now, the sends not yet delivered.
   const inPlace = (id: string, base = o.holderNow(id)) => {
     const d = driver(id);
     // (Claude Code takes no lock: its driver says who holds it as a send decides, a write no record explains too.)
     const holder = d instanceof ClaudeCode ? d.holder(id, base) : base;
-    return { holder, route: o.row(id) ? d.route(id, holder) : "none", turn: d.running(id), sends: d.sends(id), notes: d.notes(id), answers: d.answers(id) };
+    const way = o.row(id) ? d.route(id, holder) : "none";
+    const route = terminal(id, holder, way) && through.listed(id) ? "terminal" : way;
+    return { holder, route, turn: d.running(id), sends: d.sends(id), notes: d.notes(id), answers: d.answers(id) };
   };
   return {
     // (The owner's alone, as the sessions are: peer-scope.ts blindTo.)
@@ -120,6 +130,7 @@ export const outsideRoutes: RouteModule = (deps) => {
     "/api/sessions/:id/outside": {
       GET: async (req: Request & { params: { id: string } }) => {
         const d = await o.details(req.params.id);
+        if (d?.holder?.kind === "terminal") await through.fresh();
         return d ? json({ ...d, ...inPlace(req.params.id, d.holder) }) : bad("not a session of another harness", 404);
       },
     },
@@ -128,6 +139,11 @@ export const outsideRoutes: RouteModule = (deps) => {
         const b = (await req.json().catch(() => null)) as { text?: unknown; client_id?: unknown; again?: unknown } | null;
         if (typeof b?.text !== "string") return bad("text is the message to send");
         const key = typeof b.client_id === "string" && b.client_id ? b.client_id.slice(0, 200) : crypto.randomUUID();
+        const now = inPlace(req.params.id);
+        if (through.on() && terminal(req.params.id, now.holder, now.route === "terminal" ? "held" : now.route)) {
+          const t = await through.send(req.params.id, b.text, key);
+          return "error" in t ? json({ error: t.error, holder: now.holder }, t.status) : json({ sent: t.sent, ...inPlace(req.params.id) }, 202);
+        }
         const r = driver(req.params.id).send(req.params.id, b.text, key, typeof b.again === "string" ? b.again : undefined);
         return "error" in r ? json({ error: r.error, ...(r.holder ? { holder: r.holder } : {}) }, r.status) : json({ send: r.send, ...inPlace(req.params.id) }, 202);
       },

@@ -4,6 +4,9 @@
 //   agent-view.ts <state.json> list -a --json
 //   agent-view.ts <state.json> rpc            (request on stdin)
 // State: { agents: Row[], prompts: { key: card }, screens: { key: lines }, queue: [], answers: [], last?: { key: records }, no_stop?: true }
+// A Claude Code row with `answers: true` and a transcript stands for the terminal that has it open: a text
+// queued for it is written to its transcript as the prompt typed there, and a reply follows, as Claude Code
+// in that terminal would write them.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const [file, verb] = [process.argv[2]!, process.argv[3]];
@@ -49,6 +52,18 @@ else if (req.op === "answer") {
     const id = `r${state.queue.length + 1}`;
     state.queue.push({ id, key: req.key, body: req.body });
     save();
+    if (a.answers && a.transcript) {
+      const lines = readFileSync(a.transcript, "utf8").trim().split("\n");
+      let parent = (() => { try { return JSON.parse(lines[lines.length - 1]!).uuid ?? null; } catch { return null; } })();
+      const write = (r: object) => {
+        const uuid = crypto.randomUUID();
+        appendFileSync(a.transcript, JSON.stringify({ parentUuid: parent, isSidechain: false, userType: "external", cwd: a.cwd, sessionId: a.session, version: "2.1.332", entrypoint: "cli", timestamp: new Date().toISOString(), uuid, ...r }) + "\n");
+        parent = uuid;
+      };
+      // (Claude Code records what is pasted at its prompt as typed there.)
+      write({ type: "user", message: { role: "user", content: req.body }, promptSource: "typed", turnOrigin: "human", origin: { kind: "human" } });
+      write({ type: "assistant", message: { id: `m-${id}`, role: "assistant", model: a.model || "claude-opus-5-5", content: [{ type: "text", text: `Answered in the terminal: ${req.body}` }], stop_reason: "end_turn" } });
+    }
     reply({ id, state: "submitted", detail: a.live ? "pasted into its terminal" : "resumed with the text" });
   }
 } else if (req.op === "stop" && !state.no_stop && !a.no_stop) {

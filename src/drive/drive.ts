@@ -143,6 +143,11 @@ export class Drive {
     this.cache = null;
   }
 
+  // The rows of the last list as the agent view printed them (no call).
+  cachedRaws(): av.Raw[] {
+    return this.cache?.raws ?? [];
+  }
+
   cached(): { at: number; rows: Row[] } | null {
     return this.cache ? { at: this.cache.at, rows: this.cache.raws.filter((r) => (av.KINDS as readonly string[]).includes(r.tool)).map((r) => toRow(r)) } : null;
   }
@@ -264,6 +269,12 @@ export class Drive {
   }
 
   private async enqueue(f: Found, body: OutsideText): Promise<string> {
+    return (await this.queued(f, body)).line;
+  }
+
+  // The agent view's queue of a session, and what became of the text there: typed in at once (submitted) or held
+  // until the session is ready for it (waiting).
+  private async queued(f: Found, body: OutsideText): Promise<{ state: string; line: string }> {
     let identity: unknown;
     try {
       identity = await this.identity(f);
@@ -285,7 +296,7 @@ export class Drive {
       : state === "failed" ? null
       : `Agent view reply ${id} is ${state}${detail ? `: ${detail}` : ""}.`;
     if (line === null) throw err("NOT_SENT", `the agent view could not deliver it: ${detail}`);
-    return line + changedNote(body);
+    return { state, line: line + changedNote(body) };
   }
 
   async read(id: string, opts: { lines?: number; budget: number }): Promise<{ session: Row; turns?: Turn[]; lines?: string[]; prompt: ReadPrompt | null; text: string }> {
@@ -350,6 +361,15 @@ export class Drive {
     const why = await this.held(f);
     if (why) throw err("NOT_SENT", `${why}. Nothing was sent.`);
     return this.enqueue(f, body);
+  }
+
+  // The same send, with what the agent view did with it (the composer of a session a terminal holds says it).
+  async deliver(f: Found, text: string): Promise<{ state: string; line: string }> {
+    if (!f.row.drive.send) throw err("NOT_AVAILABLE", `that session is ${f.row.state} and takes no message`);
+    const { body } = this.judgeText(f, text);
+    const why = await this.held(f);
+    if (why) throw err("NOT_SENT", `${why}. Nothing was sent.`);
+    return this.queued(f, body);
   }
 
   async model(id: string, model: string, judged?: Found): Promise<string> {

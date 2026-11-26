@@ -251,7 +251,8 @@ export class Outside {
   private copies = new Map<string, { running: Promise<void> | null; again: boolean; due: number; timer?: ReturnType<typeof setTimeout>; quiet?: ReturnType<typeof setTimeout> }>();
   private own = new Map<string, OwnWord>();   // Claude Code's word on a session, by its id
   private since = 0;
-  // Claude Code here keeps a record of each session it runs (seen one): a session with none has ended.
+  // Claude Code here keeps a record of each session it runs (seen one, and its folder is still there): a session
+  // with none has ended.
   private keeps = false;
   private stopped = false;
   private on = false;
@@ -854,7 +855,8 @@ export class Outside {
   // What a source's records say now, with the staleness the settings give.
   private factsOf(t: Tracked, locks?: Lock[]) {
     const holder = this.holderOf(t, locks);
-    const keeps = t.harness === "codex" ? codexKeepsLocks(this.roots().codexHome) : this.keeps;
+    // (A records folder that went holds no record: like Codex's locks folder, its being there is the word.)
+    const keeps = t.harness === "codex" ? codexKeepsLocks(this.roots().codexHome) : this.keeps && isDir(this.roots().claudeRunning);
     const { facts: said, vouched } = withOwn(t, this.own, keeps, holder);
     const staleMs = this.cfg.stale_minutes * 60_000;
     const seen = Math.max(said.last_ts || 0, t.mtime || 0);

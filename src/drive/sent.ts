@@ -2,7 +2,8 @@
 // records them as typed at its prompt, the way it records the owner's own, so a copy of that session made later
 // must not count them as the owner's words (Imports.import asks ownerTexts before a copy keeps a prompt's `typed` mark).
 // Only keys of the words are kept, never the words (src/drive/sent-read.ts): of each run of a few words.
-// What the owner sends from the page is theirs and is not kept here.
+// What the owner sends from the Elsewhere panel is theirs and is not kept here. What the composer of a session a
+// terminal holds types into that terminal is (src/integrations/outside/terminal.ts): Keel typed it, not a person there.
 //
 // The sends made before this record began are read once from the stored history, on the read thread
 // (backfillSent); until that read is done no prompt of a copy counts as typed. A send to a session on another
