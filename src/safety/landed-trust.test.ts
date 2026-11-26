@@ -161,6 +161,20 @@ test("the owner's own queueing of the head they were shown vouches for it; a bra
   expect([...u.moved, ...v.moved, ...w.moved]).toEqual([]);
 });
 
+test("with new files set to ask, a vouched landing moves no pin: the owner sees the change", async () => {
+  const t = setup();
+  t.trust.setNewFiles("ask");
+  const builder = t.session("builder", t.coord);
+  const tip = t.branch("keel/a", "AGENTS.md", NEW, builder);
+  const reviewer = t.session("Review of a", t.coord, { "keel/a": tip });
+  t.verdict(reviewer, tip, "yes", ["keel/a"]);
+  await t.land(["keel/a"]);
+  expect(t.main()).toBe(tip);
+  expect(t.moved).toEqual([]);
+  expect(t.file().state).toBe("changed");
+  expect(t.loads()).toBe(RULES);
+});
+
 test("the queue lands a session's branch with no review: the file asks as before", async () => {
   const t = setup();
   const tip = t.branch("keel/a", "AGENTS.md", NEW, t.session("builder", t.coord));

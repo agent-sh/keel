@@ -76,6 +76,8 @@ export function coverOf(store: Store, e: Pick<LandedEntry, "branch" | "tip" | "h
 // Moves the pins a landing may move (the rule at the top of this file), and says which moved.
 export async function trustLanded(store: Store, trust: Trust, l: Landing): Promise<Moved[]> {
   const moved: Moved[] = [];
+  // The owner who asked to see every new file sees every changed one too: nothing moves by itself then.
+  if (trust.newFiles() === "ask") return moved;
   for (const pin of trust.instructionPins(l.checkout)) {
     const rel = relative(pin.root, pin.path);
     if (!rel || rel.startsWith("..")) continue;
