@@ -8,7 +8,8 @@ import { shoot } from "./shots.ts";
 // press to the frame after the conversation's first rows were laid out (`keel:open-text`, ui/src/lib/open-mark.ts),
 // and this spec holds it to its bounds at 1920x1040: under 400 ms for a session the daemon has not read since
 // it started, under 150 ms for one it holds. The spec runs its own daemon on a seeded store: a long chat
-// (the full stream) and a coordinator of 300 messages of the owner's with agents (the Conversation lens).
+// (the full stream) and a coordinator of 300 messages of the owner's with agents (the Conversation lens), whose
+// lens is read for its newest turns first and whole after its text shows.
 
 const COLD_MS = 400, WARM_MS = 150;
 
@@ -41,9 +42,16 @@ test("a session's text shows within the bounds, cold and in memory, stream and l
     await expect(page.getByTestId("transcript")).toContainText(/Reply \d+ ends here\./);
     await shoot(page, "open-speed-01-chat");
     await home(page);
+    // A long coordinator's lens is read first for its newest turns, then whole: the older items come in above.
+    const whole = page.waitForResponse((r) => { const u = new URL(r.url()); return u.pathname === `/api/sessions/${coord}/lens` && !u.search; });
+    const lensReads: string[] = [];
+    page.on("request", (r) => { const u = new URL(r.url()); if (u.pathname === `/api/sessions/${coord}/lens`) lensReads.push(u.search); });
     took.coordCold = await press(page, coord!);
     const lens = page.getByTestId("lens");
     await expect(lens.locator('[data-lens-item="you"]').last()).toContainText("Message 300:");
+    await whole;
+    await expect(lens.locator('[data-lens-item="you"]')).toHaveCount(300);
+    expect(lensReads.slice(0, 2)).toEqual(["?turns=200", ""]);
     await shoot(page, "open-speed-02-lens");
 
     // In memory: opened again.

@@ -19,7 +19,7 @@ import { useFindAsk } from "../lib/find-ask.ts";
 import type { Place } from "../lib/find.ts";
 import { keptJournal } from "../lib/kept.ts";
 import { setLensView } from "../lib/lens-view.ts";
-import { keepLens, keptLens, lensOnItsWay, readLens, type LensPage } from "../lib/lens-data.ts";
+import { keepLens, keptLens, lensOnItsWay, readFirst, readLens, type LensPage } from "../lib/lens-data.ts";
 import { shown as textShown } from "../lib/open-mark.ts";
 import { placeOf, putPlace } from "../lib/place.ts";
 import { api, failed, useStore } from "../lib/store.ts";
@@ -166,11 +166,19 @@ export function Lens({ sessionId }: { sessionId: string }) {
     if (busy.current) { again.current = true; return; }
     busy.current = true;
     const was = now.current;
-    // (A first read the page started ahead of the press is the one taken.)
-    const read = (!was && lensOnItsWay(sessionId)) || readLens(sessionId, was ?? undefined);
+    // The first read is of the newest turns (a first read the page started ahead of the press is the one taken);
+    // when there are more, the whole lens is read next and takes its place, the older items drawn in above.
+    const read = !was ? lensOnItsWay(sessionId) ?? readFirst(sessionId) : was.part ? readLens(sessionId) : readLens(sessionId, was);
+    let more = false;
     read
-      .then((r) => { setError(null); setData((d) => merged(d, r)); }, (e) => setError(failed(e, { at: "lens", session_id: sessionId })))
-      .finally(() => { busy.current = false; if (again.current) { again.current = false; pull(); } });
+      .then((r) => {
+        setError(null);
+        const next = was?.part ? r : merged(was, r);
+        more = !!next.part;
+        now.current = next;
+        setData(next);
+      }, (e) => setError(failed(e, { at: "lens", session_id: sessionId })))
+      .finally(() => { busy.current = false; if (again.current || more) { again.current = false; pull(); } });
   };
   const head = session?.head;
   useEffect(() => {
@@ -187,14 +195,14 @@ export function Lens({ sessionId }: { sessionId: string }) {
 
   const items = useMemo(() => (data ? joinRuns(data.items) : []), [data]);
   // The newest screen first: a long lens draws its last TAIL items with its first frame and the older ones in
-  // parts of STEP after it, a frame apart, so its text shows before the rest of the lens is made.
-  const [cut, setCut] = useState<number | null>(null);
-  const hidden = Math.min(cut ?? (data ? Math.max(0, items.length - TAIL) : 0), items.length);
-  useEffect(() => { if (data && cut === null) setCut(Math.max(0, items.length - TAIL)); }, [data]);
+  // parts of STEP after it, a frame apart, so its text shows before the rest of the lens is made. `drawn` counts
+  // from the end: older items that come later (the rest after a first part) are drawn in above the same way.
+  const [drawn, setDrawn] = useState(TAIL);
+  const hidden = Math.max(0, items.length - drawn);
   useEffect(() => {
     if (!hidden) return;
     let t = 0;
-    const r = requestAnimationFrame(() => { t = window.setTimeout(() => setCut(Math.max(0, hidden - STEP)), 0); });
+    const r = requestAnimationFrame(() => { t = window.setTimeout(() => setDrawn(items.length - Math.max(0, hidden - STEP)), 0); });
     return () => { cancelAnimationFrame(r); clearTimeout(t); };
   }, [hidden]);
   const working = session?.phase === "working";
@@ -216,7 +224,8 @@ export function Lens({ sessionId }: { sessionId: string }) {
   const endFresh = () => { clearTimeout(going.current); going.current = 0; saw.current = false; setFresh(null); markRead(); };
   useEffect(() => {
     // (Where what is new starts is read from the lens as the daemon has it now, not as the page kept it.)
-    if (!data || arrived.current || data === fromKept.current) return;
+    // (Nor from a first part: the first new item may be older than it.)
+    if (!data || data.part || arrived.current || data === fromKept.current) return;
     arrived.current = true;
     const p = placeOf(sessionId);
     if (p?.readSeq === undefined) return markRead(); // the first sight of it on this device: nothing is new
@@ -242,7 +251,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
   useEffect(() => () => clearTimeout(going.current), []);
   const toFresh = () => {
     const el = scroller.current, on = freshEl();
-    if (el && !on && hidden) { setCut(0); requestAnimationFrame(() => requestAnimationFrame(toFresh)); return; }
+    if (el && !on && hidden) { setDrawn(Infinity); requestAnimationFrame(() => requestAnimationFrame(toFresh)); return; }
     if (!el || !on) return;
     stick.current = false;
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -257,7 +266,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
   const before = useRef<{ top: number; stick: boolean; back: () => void } | null>(null);
   const finding = find.ask > 0;
   // A find seeks through every item: the older ones not drawn yet are drawn at once.
-  useLayoutEffect(() => { if (finding) setCut(0); }, [finding]);
+  useLayoutEffect(() => { if (finding) setDrawn(Infinity); }, [finding]);
   // (Before the bar's own effects: what its first place opens is in the journal.)
   useLayoutEffect(() => {
     if (!finding || before.current) return;

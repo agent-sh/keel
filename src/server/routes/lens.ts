@@ -2,7 +2,7 @@
 // to them, and one folded run for each stretch between, told by what came of it.
 //
 // GET /api/sessions/:id/has-agents -> { agents }: it ever started one.
-// GET /api/sessions/:id/lens?after=<seq>&at=<id>
+// GET /api/sessions/:id/lens?after=<seq>&at=<id>&turns=<n>
 //   -> { items, events, stable, stable_id, last, earlier?, whole? }
 //   items: the lens, oldest first (an item past the last turn's end is `open`).
 //   events: the bodies of the items shown, by id: nothing of a folded run.
@@ -13,6 +13,8 @@
 //   last: the branch's last event (where "read" moves to).
 //   earlier: the part read starts after the branch's first event (the full
 //   stream has the rest).
+//   turns: a first read reaches back this many turns (at most LENS_TURNS, the
+//   default): a page opening a session reads its newest screen with a few, then the rest.
 // The branch is walked from the index of its events (no body); only the inputs
 // and turn ends are asked for named fields, and the shown events for their
 // bodies, on the read thread.
@@ -44,6 +46,8 @@ export const lensRoutes: RouteModule = ({ store }) => ({
       const q = new URL(req.url).searchParams;
       let after = Number(q.get("after") ?? 0);
       if (!Number.isInteger(after) || after < 0) return json({ error: "after is a seq" }, 400);
+      const reach = q.has("turns") ? Number(q.get("turns")) : LENS_TURNS;
+      if (!Number.isInteger(reach) || reach < 1) return json({ error: "turns is a count" }, 400);
       // The rows alone: a session that is not in memory is read off the loop, without its bodies.
       await store.warm(s.id, false);
       const line = store.lineage(s.id);
@@ -51,11 +55,11 @@ export const lensRoutes: RouteModule = ({ store }) => ({
       while (a < b) { const m = (a + b) >> 1; if (line[m]!.seq <= after) a = m + 1; else b = m; }
       const whole = after > 0 && line[a - 1]?.id !== q.get("at");
       if (whole) { after = 0; a = 0; }
-      // A first read reaches back LENS_TURNS turns, from a turn's end.
+      // A first read reaches back LENS_TURNS turns (or the fewer asked for), from a turn's end.
       let earlier = false;
       if (!after) {
         let turns = 0, i = line.length - 1;
-        for (; i >= 0; i--) if (line[i]!.kind === "turn_start" && ++turns > LENS_TURNS) break;
+        for (; i >= 0; i--) if (line[i]!.kind === "turn_start" && ++turns > Math.min(reach, LENS_TURNS)) break;
         if (i > 0) {
           while (i < line.length && line[i]!.kind !== "turn_end") i++;
           a = Math.min(line.length, i + 1);
