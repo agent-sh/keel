@@ -552,6 +552,9 @@ const SessionComposer = memo(function SessionComposer({
       // A tap beside a menu the box opened (the model list's sheet) closes that menu: it is not a
       // tap away from the box. The tools stay, with the control the menu hangs from.
       if (boxEl.current?.querySelector('[aria-expanded="true"]')) return;
+      // The tray and box share their pane's height. Keep the box still while its neighboring
+      // card takes a press, so closing the box's tools does not move the target before click.
+      if (boxEl.current && t?.closest(".k-tray") && t.closest(".k-compose-in")?.contains(boxEl.current)) return;
       // (The start box's own pickers are part of it: the folder's list opens from them while the box is open.)
       if (t && !boxEl.current?.contains(t) && !t.closest?.('[role="listbox"], [role="menu"], [role="dialog"], [data-base-ui-portal], [data-keeps-box]')) setTapped(false);
     };
