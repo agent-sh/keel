@@ -520,6 +520,8 @@ export const actions = {
   // `here`: a prompt queued on another branch goes on the one shown now.
   queueEdit: (id: string, qid: string, body: { text?: string; steer?: boolean; position?: number }) =>
     api(`/api/sessions/${id}/queue/${qid}`, { method: "PATCH", body: JSON.stringify(body) }),
+  // Next: first among the queued prompts, the running turn left alone.
+  queueNext: (id: string, qid: string) => api(`/api/sessions/${id}/queue/${qid}/next`, { method: "POST" }),
   queueRemove: (id: string, qid: string) => api(`/api/sessions/${id}/queue/${qid}`, { method: "DELETE" }),
   queueSendNow: (id: string, qid: string, here = false) => api(`/api/sessions/${id}/queue/${qid}/send`, { method: "POST", body: JSON.stringify({ here }) }),
   remove: async (id: string) => {

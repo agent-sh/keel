@@ -136,7 +136,8 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
 
   // Move up is one place: charlie goes above bravo, nothing runs.
   await page.getByTestId("queue-item").filter({ hasText: "charlie" }).hover();
-  await page.getByTestId("queue-item").filter({ hasText: "charlie" }).getByTestId("queue-move-up").click();
+  await page.getByTestId("queue-item").filter({ hasText: "charlie" }).getByTestId("queue-order").click();
+  await page.getByTestId("queue-move-up").click();
   await expect.poll(async () => (await queue()).queue.map((x) => x.text)).toEqual(["", "", "alpha", "charlie", "bravo"]);
   expect((await queue()).held).toBe(true);
   await shoot(page, "turn-05-queue-held-screenshots");

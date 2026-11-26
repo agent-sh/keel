@@ -86,6 +86,7 @@ import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 import { homeDir, withheldHome } from "../core/paths";
 import { outsideRefusal } from "../core/watch.ts";
+import { firstPos } from "./queue-first.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -1633,6 +1634,22 @@ export class Engine {
     const first = this.store.queue(q.session_id).filter((x) => x.id !== q.id).reduce((min, x) => Math.min(min, x.pos), q.pos);
     this.store.updateQueueItem(q.id, { steer: false, pos: first - 1, ...(here ? { anchor: this.store.session(q.session_id)?.head ?? null } : {}) });
     this.release(q.session_id);
+  }
+
+  // Next: a queued prompt goes first among the queued prompts (src/engine/queue-first.ts),
+  // in one write, without stopping the running turn. The queue's hold stays (only the
+  // owner's resume or send ends it), steers and decisions others wait on stay ahead,
+  // and a prompt queued on another branch is not moved: it waits for the owner to say where.
+  queueFirst(id: string, qid: string): void {
+    const gone = () => Object.assign(new Error("no such queued prompt (it may have been sent)"), { status: 404 });
+    if (this.sending.has(qid)) throw Object.assign(new Error("this queued prompt is already sending"), { status: 409 });
+    const q = this.store.queueItem(qid);
+    if (!q || q.session_id !== id) throw gone();
+    if (this.offBranch(q)) throw this.offBranchError();
+    const pos = firstPos(this.store.queue(id), qid);
+    if (pos === null) return;
+    if (!this.store.updateQueueItem(qid, { pos })) throw gone();
+    this.emitQueue(id);
   }
 
   // `here`: the next prompt goes on the branch shown now even when it was

@@ -101,6 +101,16 @@ export const turnRoutes: RouteModule = (deps) => {
         return json({ ok: true });
       },
     },
+    // Next: first among the queued prompts, the running turn left alone (Engine.queueFirst).
+    "/api/sessions/:id/queue/:qid/next": {
+      POST: (req: any) => {
+        const s = sessionOr404(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (s.archived) return bad("the session is archived", 409);
+        engine.queueFirst(s.id, req.params.qid);
+        return json(queueBody(s.id));
+      },
+    },
     "/api/sessions/:id/resume": {
       POST: (req: any) => {
         const s = sessionOr404(req.params.id);

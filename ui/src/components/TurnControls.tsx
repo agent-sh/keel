@@ -2,7 +2,7 @@
 // prompts), the context meter with compaction, and the effort picker.
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { ArrowUp, ArrowUpCircle, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
+import { ArrowUp, ArrowUpCircle, ArrowUpToLine, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { branchLine } from "../lib/rows.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
@@ -84,10 +84,31 @@ function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId:
       {!editing && off && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-warn" data-testid="queue-off-branch" title="Written while the chat showed another branch"><GitBranch className="size-3.5 shrink-0" />On another branch</span>}
       {!editing && !!q.images?.length && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-faint" data-testid="queue-images"><ImageIcon className="size-3.5 shrink-0" />{q.images.length === 1 ? "1 image" : `${q.images.length} images`}</span>}
       <span className="ml-auto flex flex-wrap items-center justify-end opacity-60 group-hover/q:opacity-100 group-focus-within/q:opacity-100 touch:opacity-100 @md/queue:shrink-0 @md/queue:flex-nowrap">
+        {/* Where it goes in the queue: up one place, or Next (first of the queued prompts,
+            the running turn left alone; the daemon keeps steers and decisions others wait on ahead). */}
         {!q.steer && place > 0 && (
-          <button type="button" className={chipBtn} data-testid="queue-move-up" title="Move up one place" aria-label="Move up one place" onClick={() => act(actions.queueEdit(sessionId, q.id, { position: place - 1 }), "queue move")}>
-            <ArrowUp className="size-3.5" />
-          </button>
+          <Menu.Root>
+            <Menu.Trigger className={cn(chipBtn, "data-popup-open:bg-hover data-popup-open:text-fg")} data-testid="queue-order" title="Move in the queue" aria-label="Move in the queue">
+              <ArrowUp className="size-3.5" />
+            </Menu.Trigger>
+            <Menu.Portal>
+              <Menu.Positioner side="top" align="end" sideOffset={6} className="z-50 outline-none">
+                <Menu.Popup className={cn(popupClass, "min-w-48")} data-testid="queue-order-menu">
+                  {!off && (
+                    <Menu.Item className={itemClass} data-testid="queue-next" onClick={() => act(actions.queueNext(sessionId, q.id), "queue next")}>
+                      <ArrowUpToLine />
+                      <span className="flex-1">Next</span>
+                      <span className="text-caption text-faint">{held ? "when resumed" : "after this turn"}</span>
+                    </Menu.Item>
+                  )}
+                  <Menu.Item className={itemClass} data-testid="queue-move-up" onClick={() => act(actions.queueEdit(sessionId, q.id, { position: place - 1 }), "queue move")}>
+                    <ArrowUp />
+                    <span className="flex-1">Up one place</span>
+                  </Menu.Item>
+                </Menu.Popup>
+              </Menu.Positioner>
+            </Menu.Portal>
+          </Menu.Root>
         )}
         <button type="button" className={chipBtn} title="Edit" aria-label="Edit" onClick={() => { setText(q.text); setEditing(true); }}>
           <Pencil className="size-3.5" />
