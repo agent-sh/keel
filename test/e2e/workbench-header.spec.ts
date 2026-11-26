@@ -123,7 +123,7 @@ test("a small window keeps the message box on screen under a full stack", async 
     await expect(pane.getByTestId("saved-draft")).toHaveCount(2);
     // The keyboard came to the list of requests (the box is empty). At this text size the oldest
     // request is taller than the region that shows it: it takes no answer for lines that were never
-    // in view, so the keyboard stays on the list, and the card says how much is left to read.
+    // in view, so the keyboard stays on the list and Allow once is not available.
     const tray = pane.getByTestId("composer-tray");
     const focusShown = () => page.evaluate(() => {
       const a = document.activeElement as HTMLElement | null;
@@ -136,14 +136,7 @@ test("a small window keeps the message box on screen under a full stack", async 
     await expect(pane.getByTestId("approvals")).toBeFocused();
     expect(await tray.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
     await expect(oldest).toHaveAttribute("data-must-open", "true");
-    const left = oldest.getByTestId("approval-left");
-    const openFirst = oldest.getByTestId("approval-open-first");
-    await expect(left.or(openFirst)).toBeVisible();
-    if (await openFirst.isVisible()) {
-      await page.keyboard.press("Enter");
-      await expect(openFirst).toBeHidden();
-    }
-    await expect(left).toHaveText(/^\d+ (?:lines?|rows?) not seen yet/);
+    await expect(oldest.getByTestId("allow-once")).toBeDisabled();
     // Read through by the owner (the region scrolls under the pointer until the card's last row has
     // been in view), its Allow once takes the keyboard, and the region brings it into view: the
     // control Enter would press is in the part of the region that shows, not above or below it.
@@ -155,6 +148,9 @@ test("a small window keeps the message box on screen under a full stack", async 
     const unread = async () => (await oldest.getAttribute("data-must-open")) === "true";
     const scrolled = () => tray.evaluate((el) => el.scrollTop);
     for (let i = 0; i < 100 && (await unread()) && (await scrolled()) > 0; i++) { await page.mouse.wheel(0, -12); await frame(); }
+    // The card can need opening once its preview enters the tray. Before it enters,
+    // the unread gate is live but there need not be a count to show yet.
+    if (await oldest.getByTestId("approval-open-first").isVisible()) await page.keyboard.press("Enter");
     for (let i = 0; i < 300 && (await unread()); i++) { await page.mouse.wheel(0, 12); await frame(); }
     await expect(oldest).not.toHaveAttribute("data-must-open", "true");
     await expect(oldest.getByTestId("allow-once")).toBeFocused();
