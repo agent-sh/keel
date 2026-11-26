@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { PressReport } from "../../src/admin/presses.ts";
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page } from "./isolate.ts";
 import { ask, calls, colors, create, folder, pending, settle } from "./answering.ts";
 import { SHOTS, inHead, leaveHead, shoot } from "./shots.ts";
@@ -154,9 +155,10 @@ for (const size of SIZES) {
       // Two controls whose names are alike to the 14th character and long, as the menu's actions are.
       const names = ["header-action-export-to-another-machine", "header-action-voice-dictation-and-reading", "snooze-button"];
       const now = Date.now();
-      const report = {
+      const report: PressReport & { record: boolean } = {
         record: true, since_ms: now - 30 * 864e5, days: 30, presses: 9, first_ms: now - 864e5, rows: 9, row_cap: 50_000, kept_days: 90,
-        views: [{ view: "session", presses: 9, controls: names.map((control, i) => ({ control, presses: 5 - i * 2 + 1, last_ms: now - i * 6e4, surfaces: "phone" })) }],
+        surfaces: [{ surface: "phone", presses: 9 }],
+        views: [{ view: "session", presses: 9, controls: names.map((control, i) => ({ control, presses: 5 - i * 2, last_ms: now - i * 6e4, surfaces: "phone" })) }],
         never: names.map((control) => ({ control, views: "session,project,settings/acp,settings/telemetry,settings/safety,settings/models", seen_since_ms: now - 864e5 })),
       };
       await page.route("**/api/presses?*", (route) => route.fulfill({ json: report }));
