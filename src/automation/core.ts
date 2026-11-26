@@ -24,6 +24,7 @@ export const setDeps = (d: AutomationDeps) => {
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
   settling.clear();
+  paceGate.reset?.();
   partsGone();
   deps = d;
   rider.get = undefined;
@@ -85,7 +86,9 @@ type Input = { text: string; meta: Record<string, unknown> };
 type Parts = Record<string, unknown>[];
 // `settle`: the input waits until no other input came for `quietMs`, and at most `maxMs` after
 // the first that waited, so a burst is one input (a turn per input rereads the whole context).
-type Delivery = { coalesceMs?: number; settle?: { quietMs: number; maxMs: number }; hold?: boolean; ride?: boolean; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
+// `pace`: the input may wait for the session's pace (src/automation/pace.ts), at most until `by`.
+// An input without it goes at once, and takes what waits for the pace with it.
+type Delivery = { coalesceMs?: number; settle?: { quietMs: number; maxMs: number }; hold?: boolean; ride?: boolean; pace?: { by?: number }; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
 export type Pending = Input & Omit<Delivery, "coalesceMs" | "settle" | "ride">;
 // A part that never starts a turn of its own and goes with whatever is sent
 // next (the failure notice). `parts`: the meta of what is being sent.
@@ -106,7 +109,7 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
   if (!s || s.archived) return false;
   const lists = opts.ride ? riding : pending;
   const list = lists.get(sessionId) ?? [];
-  list.push({ text, meta, onSent: opts.onSent, refresh: opts.refresh });
+  list.push({ text, meta, onSent: opts.onSent, refresh: opts.refresh, ...(opts.pace ? { pace: opts.pace } : {}) });
   lists.set(sessionId, list);
   // A session the owner is archiving or deleting right now: kept back, and sent only if it stays (closingOver).
   if (D().engine.isClosing?.(sessionId)) return true;
@@ -139,12 +142,13 @@ export function movePending(from: string, to: string) {
     lists.set(to, [...(lists.get(to) ?? []), ...list]);
     if (lists === pending) any = true;
   }
-  if (any) flush(to);
+  if (any) { paceGate.dropped?.(from); flush(to); }
 }
 
 export function dropPending(sessionId: string) {
   pending.delete(sessionId);
   riding.delete(sessionId);
+  paceGate.dropped?.(sessionId);
 }
 
 // Takes back inputs not sent yet (a report a wait already returned, the prompt
@@ -192,6 +196,14 @@ function inputRoom(model: string): number {
 // `inLine`: the agent of this session waits in line for a slot of its parent.
 // Whether a reached dollar cap holds what is not the owner's own words (src/automation/caps.ts).
 export const capGate: { held?: (sessionId: string) => boolean } = {};
+// Whether what is lined up waits for the session's pace (src/automation/pace.ts): `held` decides and keeps the
+// wait's timer, `sent` hears a turn of n inputs started, `dropped` that nothing waits any more.
+export const paceGate: {
+  held?: (sessionId: string, parts: { paced: boolean; by?: number }[]) => boolean;
+  sent?: (sessionId: string, n: number) => void;
+  dropped?: (sessionId: string) => void;
+  reset?: () => void;
+} = {};
 export const slotGate: { admit?: (sessionId: string) => boolean; inLine?: (sessionId: string) => boolean } = {};
 
 export function flush(sessionId: string) {
@@ -207,6 +219,8 @@ export function flush(sessionId: string) {
   if (slotGate.admit && !slotGate.admit(sessionId)) return;
   // Nor does a session whose dollar cap is reached: what waits here goes when the owner raises it.
   if (capGate.held?.(sessionId)) return;
+  // Nor does one whose unattended turns keep a pace: what came within it waits for it, as one input.
+  if (paceGate.held?.(sessionId, list.map((p) => ({ paced: !!p.pace, ...(p.pace?.by !== undefined ? { by: p.pace.by } : {}) })))) return;
   pending.delete(sessionId);
   // What waited to settle goes now, with the rest.
   if (settling.delete(sessionId)) { clearTimeout(timers.get(sessionId)); timers.delete(sessionId); }
@@ -263,6 +277,7 @@ export function flush(sessionId: string) {
       D().store.atomic(sessionId, () => {
         const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });
         if (!r.event) return;
+        paceGate.sent?.(sessionId, cut);
         for (const p of current) try { p.onSent?.(r.event); } catch (e) { capture(e, { at: "deliver", session: sessionId, settling: p.meta.kind }); }
       });
     }

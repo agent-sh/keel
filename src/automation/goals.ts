@@ -146,7 +146,8 @@ export async function set(sessionId: string, input: { objective: string; token_b
 function prompt(g: Goal, text: string, goal: "start" | "continue" | "resume") {
   const mine = instance(g);
   const part = { text, meta: { kind: "goal", goal } };
-  return deliver(g.session_id, text, part.meta, { refresh: () => { const now = get(g.session_id); return active(now) && instance(now) === mine ? part : undefined; } });
+  // A goal's next turn may wait for the session's pace; its start and a resume are the owner's.
+  return deliver(g.session_id, text, part.meta, { ...(goal === "continue" ? { pace: {} } : {}), refresh: () => { const now = get(g.session_id); return active(now) && instance(now) === mine ? part : undefined; } });
 }
 const bullets = (items?: string[] | null) => (items?.length ? `\n${items.map((e) => `- ${e}`).join("\n")}` : "");
 // What the last check found, when it was not met: the worker goes on from that, not from the objective alone.

@@ -63,7 +63,7 @@ import { clearedFile, clearedText, clearingOf, pickCleared, stubOf } from "./col
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, keptTexts, fixedContext } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention, switchWarning } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
-import { CachePlans, marginOf } from "./cache-plans.ts";
+import { CachePlans, cacheOf, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, freshStartText, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
 import { cachePlanOn, compactLimit, readThrough, readerTierModel } from "./agent-defaults.ts";
@@ -1266,6 +1266,15 @@ export class Engine {
       signal.removeEventListener("abort", off);
       if (running) running.atBoundary = false;
     }
+  }
+
+  // How long the session's cache surely lives from its last request, on its model's route (0: none to count on).
+  // Read when a turn has just ended (src/automation/pace.ts), while the session is in memory.
+  async cacheSure(id: string): Promise<number> {
+    const s = this.store.session(id);
+    if (!s) return 0;
+    const r = await this.providers.resolve(s.model).catch(() => undefined);
+    return r ? cacheOf({ provider: r.provider, info: r.info }, this.lineage(id)).life : 0;
   }
 
   // The turn that runs was started, or steered into, by the owner's own words (not a loop, a wake,

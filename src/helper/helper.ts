@@ -419,7 +419,7 @@ ${TOLD_SCHEMA}`);
     const list = this.unfed();
     if (!list.some((e) => e.level === "wake")) return false;
     const text = `[helper digest] What happened since you last heard (${digestZone()}):\n${digestLines(list, DIGEST_LINES, this.title)}\n\nDecide whether the owner must act or would want to know now; if so, notify them in one line. Otherwise reply with one short line.`;
-    if (!deliver(s.id, text, { kind: "helper_digest", events: list.length })) return false;
+    if (!deliver(s.id, text, { kind: "helper_digest", events: list.length }, { pace: {} })) return false;
     this.markFed(list);
     this.save({ last_wake: Date.now() });
     this.emit();

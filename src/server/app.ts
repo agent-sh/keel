@@ -1,3 +1,4 @@
+import { badPace } from "../automation/pace-rules.ts";
 import { crossing, crossingIn, routeOfFolder } from "../safety/content-routes.ts";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { asAsker } from "../core/asker.ts";
@@ -495,6 +496,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             if (settings.cache_plan !== undefined && typeof settings.cache_plan !== "boolean") return bad("cache_plan is true or false");
             if (settings.read_through !== undefined && typeof settings.read_through !== "boolean") return bad("read_through is true or false");
             if (settings.cold_clear !== undefined && typeof settings.cold_clear !== "boolean") return bad("cold_clear is true or false");
+            if (settings.pace_min !== undefined) { const why = badPace(settings.pace_min); if (why) return bad(`pace_min: ${why}`); }
             if (settings.read_runs !== undefined && !["batch", "reader", "code"].includes(settings.read_runs as string)) return bad("read_runs is batch, reader or code");
           }
           const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));

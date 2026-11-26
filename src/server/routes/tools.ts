@@ -98,6 +98,8 @@ export const toolRoutes: RouteModule = (deps) => {
     const meta = { kind: "harness", job: job.id };
     deliver(job.sessionId, text, meta, {
       coalesceMs: 300,
+      // A background command the model left running may wait for the session's pace (a call waiting on it does not).
+      pace: {},
       // Read with a request of a turn at work meanwhile (src/tools/jobs.ts calls jobEnded.read): nothing left to tell.
       refresh: () => hasNotice(job.sessionId, key) ? {
         text, meta,

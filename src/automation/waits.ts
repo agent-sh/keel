@@ -846,7 +846,10 @@ function sendWake(w: WaitRecord, boot = false) {
   // wake never lands inside one. A session whose cut turn the engine is about
   // to continue gets the wake when that turn ends, not ahead of it.
   const when = !boot ? {} : cutTurn(w.session_id) ? { hold: true } : { coalesceMs: BOOT_COALESCE };
-  if (!deliver(w.session_id, text, { kind: "wait", wait_id: w.id, outcome: w.status }, { ...when, onSent: () => wakeSent(w.id) })) wakeSent(w.id);
+  // A condition that came true before its timeout may wait for the session's pace, never past that timeout;
+  // a timer the model set and a wait that timed out are due now.
+  const pace = w.kind !== "timer" && w.status === "fired" ? { pace: { by: w.deadline } } : {};
+  if (!deliver(w.session_id, text, { kind: "wait", wait_id: w.id, outcome: w.status }, { ...when, ...pace, onSent: () => wakeSent(w.id) })) wakeSent(w.id);
 }
 
 // Whether the wake already reached the session: stored as a prompt (alone or
@@ -1250,7 +1253,8 @@ function sendEvents(w: WaitRecord, boot = false) {
   if (!first) return;
   const when = !boot ? { coalesceMs: 100 } : cutTurn(w.session_id) ? { hold: true } : { coalesceMs: BOOT_COALESCE };
   // An archived session runs no monitors: nothing is owed to it.
-  if (!deliver(w.session_id, first.text, first.meta, { ...when, refresh: () => eventsOwed(w.id) })) D().store.db.query("DELETE FROM wait_events WHERE wait_id = ?").run(w.id);
+  // A monitor's batch may wait for the session's pace, never past the monitor's own end.
+  if (!deliver(w.session_id, first.text, first.meta, { ...when, pace: { by: w.deadline }, refresh: () => eventsOwed(w.id) })) D().store.db.query("DELETE FROM wait_events WHERE wait_id = ?").run(w.id);
 }
 
 const timedOut = (w: WaitRecord, last?: string | null) => `Timed out after ${Math.round((w.deadline - w.created) / 1000)} s.${last ? ` Last probe: ${last}` : ""}`;

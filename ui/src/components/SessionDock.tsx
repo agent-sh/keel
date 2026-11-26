@@ -3,7 +3,8 @@
 // branch is ready).
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Popover } from "@base-ui/react/popover";
-import { ChevronRight, FileDiff, ListChecks, ListTodo, Plug, Square, SquareTerminal } from "lucide-react";
+import { ChevronRight, FileDiff, Hourglass, ListChecks, ListTodo, Plug, Square, SquareTerminal } from "lucide-react";
+import { clockOf, usePace } from "../lib/pace.ts";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { readyToLand, toLand } from "../../../src/board/rules.ts";
@@ -296,10 +297,20 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
       <span>Your asks</span>
     </button>
   ) : null;
+  // Inputs nobody sent that wait for the session's pace (src/automation/pace.ts): one quiet line while they wait,
+  // which opens the pace's dialog.
+  const paced = usePace(sessionId);
+  const paceEl = paced && paced.waiting > 0 && paced.at ? (
+    <button type="button" className="k-docket-line k-docket-asks" onClick={() => void import("./PaceDialog.tsx").then((m) => m.openPace(sessionId), reportError)} data-testid="dock-pace" title="Inputs nobody sent wait for the session's pace and go as one">
+      <Hourglass className="k-docket-glyph" />
+      <span>{paced.waiting === 1 ? "One input waits" : `${paced.waiting} inputs wait`} until {clockOf(paced.at)}</span>
+    </button>
+  ) : null;
   const elsewhere = useNeedElsewhere(sessionId);
-  const row = (planLineEl || agents || elsewhere || jobs.length > 0 || calls.length > 0) ? (
+  const row = (planLineEl || paceEl || agents || elsewhere || jobs.length > 0 || calls.length > 0) ? (
     <div className="k-docket-row">
       {planLineEl}
+      {paceEl}
       {asksEl}
       {elsewhere && <NeedElsewhere ids={elsewhere} />}
       {agents && <AgentsDock sessionId={sessionId} />}

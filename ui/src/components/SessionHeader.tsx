@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, ListTodo, Smartphone, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Shrink, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Hourglass, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, ListTodo, Smartphone, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Shrink, Square, Trash2, X } from "lucide-react";
 import { setLensView, useLensView } from "../lib/lens-view.ts";
 import { askFind } from "../lib/find-ask.ts";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
@@ -427,6 +427,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
     ...(!session.parent_id && !session.machine ? [{ id: "menu-unread", label: "Mark unread", icon: <MailOpen />, run: () => void auto.unreadSession(session.id).catch(reportError) }] : []),
     // The owner's own session compacts by price when he says so, with its numbers before and since (PriceCompaction.tsx).
     ...(!session.parent_id && !session.machine && !session.outside ? [{ id: "menu-price-compaction", label: session.settings.owner_compact_by_price ? "Compacting by price" : "Compact by price", icon: <Shrink />, run: () => void import("./PriceCompaction.tsx").then((m) => m.openPriceCompaction(session.id), reportError) }] : []),
+    // The pace of its unattended turns: what comes close together waits and goes as one input (PaceDialog.tsx).
+    ...(!session.machine && !session.outside ? [{ id: "menu-pace", label: session.settings.pace_min === undefined ? "Unattended pace" : `Unattended pace: ${session.settings.pace_min > 0 ? `${session.settings.pace_min} min` : "off"}`, icon: <Hourglass />, run: () => void import("./PaceDialog.tsx").then((m) => m.openPace(session.id), reportError) }] : []),
     { id: "menu-fork", label: "Fork", icon: <GitBranch />, gap: true, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head).then((f) => openPlaced(f.id, session.id), reportError); } },
     { id: "menu-fork-worktree", label: "Fork into a new worktree", icon: <GitFork />, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head, { worktree: true }).then((f) => openPlaced(f.id, session.id), reportError); } },
     ...(fleet.paused

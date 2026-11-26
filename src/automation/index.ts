@@ -32,6 +32,7 @@ import * as caps from "./caps.ts";
 import * as windowCap from "./window-cap.ts";
 import * as fleetPause from "./fleet-pause.ts";
 import * as loadHold from "./load-hold.ts";
+import * as pace from "./pace.ts";
 import { jobAttended } from "../tools/jobs.ts";
 import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
@@ -230,6 +231,9 @@ function init(deps: Deps) {
     turnEnd: (s, reason) => {
       // Named now: by the time the row is written the turn is over.
       const turn = deps.engine.turnOf(s.id);
+      // The pace of unattended turns counts from this end, unless the turn carried the owner's word
+      // (read without its own end, which closes the search).
+      pace.turnEnded(s.id);
       afterTurn(s.id, () => {
         // First: an incident this failure makes or is part of takes the alerts the rest would raise.
         incidents.onTurnEnd(s.id, reason);
@@ -264,6 +268,12 @@ function init(deps: Deps) {
     if (f.t !== "session" || !f.deleted) return;
     taskRenames.told(f.session.id);
     agents.onSessionDeleted(f.session.id);
+    pace.forget(f.session.id);
+  });
+  // A session's own pace moved (its menu): what waits for it is decided again.
+  deps.bus.on((f) => {
+    if (f.t !== "session" || f.deleted) return;
+    try { pace.onSession(f.session); } catch (e) { capture(e, { at: "pace", session: f.session.id }); }
   });
 
   // An archived session reads nothing more: what others sent it is told to them as not delivered.

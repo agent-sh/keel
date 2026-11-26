@@ -196,6 +196,10 @@ export type SessionSettings = {
   cold_clear?: boolean;
   // A new model tried in a role by this session's whole tree: set at the top (a trial's arm, src/engine/model-trial.ts).
   trial?: { role: "reader" | "small" | "builder"; model: string };
+  // Minutes an unattended input (a wake, a report, a loop's run) that comes within them of the last unattended
+  // turn's end waits, to go as one input with the rest (src/automation/pace.ts); 0 is off; absent = the owner's
+  // `pace.unattended_min` for a session he talks to, off for an agent.
+  pace_min?: number;
   speed?: string;      // a speed offer id of the model's listing; absent = standard
   // Marks, daemon state every client shares (src/server/routes/marks.ts).
   pinned_ms?: number;  // pinned at; absent = not pinned

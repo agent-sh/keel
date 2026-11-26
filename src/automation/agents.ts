@@ -1891,6 +1891,8 @@ function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status" | 
     const meta = reportMeta(o, ride ? "held" : was ?? (boot ? "restart" : settles ? "settle" : undefined));
     return deliver(parentId, text, meta, {
       ride, ...(hold ? { hold: true } : settles ? { settle: REPORT_SETTLE } : { coalesceMs: 300 }),
+      // A finished task's report may wait for the parent's pace; a failure, a stop or a task left undone goes at once.
+      ...(o.status === "completed" ? { pace: {} } : {}),
       refresh: (parts) => {
         // Lined up to start a turn, and the owner stopped the parent since: it rides instead.
         if (!ride && D().engine.isHeld(parentId)) return void go(true);
