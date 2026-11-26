@@ -32,6 +32,8 @@ test("a running command moves behind its call from the card, the key and the ter
   test.setTimeout(150_000);
   await page.setViewportSize({ width: 1920, height: 1040 });
   const { session, events, jobs, say } = await start(request, "Move to background");
+  // Test the command handoff and its end, independently of the unattended-turn pace.
+  expect((await request.patch(`/api/sessions/${session.id}`, { data: { settings: { pace_min: 0 } } })).ok()).toBe(true);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const tail = (cmd: string) => `${cmd}; echo finished-${cmd.length}`;
   const cmds = [tail("sleep 30"), tail("sleep 30 "), tail("sleep 30  ")];
