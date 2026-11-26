@@ -817,8 +817,9 @@ function Live({ sessionId, working, asking, since, elsewhere, onTail, onDraft }:
   }
   return (
     <>
-      {/* (No lower than the working line it takes the place of: the first words of a reply drop no line above them.) */}
-      {hasDraft && <div className="flex min-h-[1.875rem] flex-col gap-3" data-testid="draft"><Draft draft={draft} /></div>}
+      {/* Only a reply that replaces a working line needs to keep that line's height. A short draft
+          over the dock can become a single tool step; imposing a taller minimum makes it shrink. */}
+      {hasDraft && <div className={`flex flex-col gap-3${docked ? "" : " min-h-[1.875rem]"}`} data-testid="draft"><Draft draft={draft} /></div>}
       <Status sessionId={sessionId} />
       {working && !hasDraft && !asking && !docked && <Working since={since} sessionId={sessionId} />}
       <Announcer sessionId={sessionId} working={working} asking={asking} />
@@ -1545,6 +1546,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   tailChanged.current = () => {
     if (!events || events !== drawn.current || !stick.current || short.current) return;
     keepHeight(foot.current);
+    if (scroller.current) pin(scroller.current);
     if (content.current) standing(content.current);
   };
   const onTail = useRef(() => tailChanged.current()).current;
