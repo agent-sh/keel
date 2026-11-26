@@ -7,7 +7,9 @@
 // time away and the totals; the alerts below are not said twice. Opened, it
 // has been seen: the daemon lets it go, and the next absence starts a new one
 // (it stays on screen until the Inbox closes). The words are the daemon's
-// (src/admin/away.ts), the same as its text form.
+// (src/admin/away.ts), the same as its text form. It is the panel's first
+// line, on the panel's own ground with no frame: news of what is over, not a
+// card; opened, a hairline parts its rows from the alerts below.
 import { ChevronRight, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { digestBrief, digestTotals, type Digest, type DigestRow } from "../../../../src/admin/away.ts";
@@ -59,7 +61,7 @@ export function AwayDigest({ onClose }: { onClose: () => void }) {
   };
   const dismiss = () => { setD(null); forget(); };
   return (
-    <section data-testid="away-digest" aria-label="While you were away" className="mx-2 mt-2 shrink-0 rounded-lg border border-line bg-sunken">
+    <section data-testid="away-digest" aria-label="While you were away" data-open={open || undefined} className={cn("shrink-0 px-2 pt-1", open && "border-b border-line pb-1")}>
       <div className="flex items-center gap-1 pr-1">
         <button
           type="button"
@@ -86,7 +88,7 @@ export function AwayDigest({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       {open && (
-        <div className="border-t border-line pt-1.5">
+        <div className="pt-0.5">
           {d.daemon.length > 0 && (
             <ul className="k-quote mx-3 mb-1.5 flex flex-col gap-1" data-tone="warn" data-testid="away-daemon" aria-label="What the daemon went through">
               {d.daemon.map((line, i) => <li key={i} className="text-caption leading-snug text-fg">{line}</li>)}

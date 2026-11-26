@@ -353,6 +353,8 @@ test("while the owner is away, one digest tells what each session did, what wait
     await expect(block.getByTestId("away-row")).toHaveCount(0);
     // The line leads by its place, not by a heavier face: it tells of what is over.
     expect(await block.getByTestId("away-lead").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
+    // It is the panel's first line, not a card in it: no ground and no frame of its own.
+    expect(await block.evaluate((el) => { const s = getComputedStyle(el); return [s.backgroundColor, s.borderTopWidth, s.borderLeftWidth, s.borderBottomWidth]; })).toEqual(["rgba(0, 0, 0, 0)", "0px", "0px", "0px"]);
     await page.mouse.move(1200, 600);
     await shoot(page, "overview-02-away-line");
     await page.keyboard.press("Escape");
