@@ -1065,13 +1065,16 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // loop or a conditional is not read: `printf x > $D/.git/config` and `cat $D/../.ssh/id_rsa` named no file to
 // them, and ran. Nothing is placed by such a name here either (a reading that placed by them gave lower verdicts
 // than the rules above). A word that stands where a protected path is looked for (the target of a redirect, a file a
-// writer or a reader the rules know is given, the file or the repository `git config` sets something in, a relative
-// one of those after a `cd` spelled so) and holds a name the line sets is tried as each path the words of the line
-// let it be: the values they show the name given, each with the names in it tried the same way, and, for a value
-// they do not show, the folders a line usually means (the folder it runs in, the session's, the home), with and
-// without its steps back up. When one of those is a file that is the owner's alone to change, or a credential, the
-// word is a path the command does not spell out: high risk, with the path to write into the command, as a delete
-// through such a name is. A name with nothing protected in sight asks nobody.
+// writer or a reader the rules know is given, the folder a copy is told to land in, the file or the repository
+// `git config` sets something in, a relative one of those after a `cd` spelled so and the relative steps after it,
+// in the line or in a script it hands a shell) and holds a name the line sets is tried as each path the words of
+// the line let it be: the values they show the name given, each with the names in it tried the same way, and, for a
+// value they do not show, the folders a line usually means (the folder it runs in, the session's, the home), with
+// and without its steps back up, or one name after words that are shown. When one of those is a file that is the
+// owner's alone to change, or a credential: a path whose every part the words show is the one the written-out line
+// names, and is answered as that line is; any other is a path the command does not spell out, high risk, with the
+// path to write into the command, as a delete through such a name is. A name with nothing protected in sight asks
+// nobody.
 // The reading is bounded for the whole line, the scripts it hands a shell included: each candidate path is a look
 // at the disk, so at most `PATHS` different ones are looked at (and ten times as many spelled), and a word or a
 // candidate longer than a path can be (`WORD`) is not read. Nothing is cut short within the bound: a name stands

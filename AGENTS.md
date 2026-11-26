@@ -536,13 +536,21 @@ under `~/.cache/keel-work/bun/research/`.
   `src/safety/policy.ts`). The rules read a name as its value one step back, where the line sets it once, written out,
   in a command that always runs; a name set in steps (`q=$p/own; D=$q`), by a substitution, a loop or a `read`, or
   used in a loop, a group or a `${D%/}` is not read, and nothing is placed by one. A word that holds such a name where
-  a protected path is looked for (a redirect's target, a file a writer or reader the rules know is given, the file
-  `git config -f` sets something in, a relative one of those after a `cd` spelled so) is tried as the paths the words
-  of the line let it be: the values they show the name given, and for a value they do not show the folder the line
-  runs in, the session's and the home, with its steps back up and without. When one is a file that is the owner's
-  alone to change or a credential, the line asks as high risk and says the path to write into the command. It only
-  raises: it is asked of a line every other rule lets run or asks about as low risk, and a name with nothing
-  protected in sight asks nobody. A name the line does not set is an unknown variable, as before.
+  a protected path is looked for (a redirect's target, a file a writer or reader the rules know is given, the folder a
+  copy or a move is told with `-t`, the file `git config -f` sets something in, a relative one of those after a `cd`
+  spelled so and the relative steps written out after it, in the line or in a script it hands a shell) is tried as the
+  paths the words of the line let it be: every value they show the name given, and for a value they do not show the
+  folder the line runs in, the session's and the home, with its steps back up and without, or one name after a folder
+  that is spelled out. When one is a file that is the owner's alone to change or a credential, a path whose every
+  part is in the line's words is answered as the written-out line is: a credential read is refused to an agent and
+  the owner's elsewhere, an owner-only write is his (one the sandbox is what stops asks as high risk), over a line
+  that is high risk for another reason too, and when the line runs the credentials go to the vault first
+  (`unspeltCredentials`). A name with no value in sight inside a store of credentials counts as shown, as a wildcard
+  there does. A path that is only possible asks as high risk and says the path to write into the command. The reading
+  is bounded for the line and its scripts: 2,000 different paths looked at, ten times as many candidates, no word or
+  candidate longer than a path can be, names set from names 256 deep; a line past a bound asks as high risk. It only
+  raises: its answer stands where it is stricter than every other rule's, and a name with nothing protected in sight
+  asks nobody. A name the line does not set is an unknown variable, as before.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
