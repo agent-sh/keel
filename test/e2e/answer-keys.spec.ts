@@ -1635,27 +1635,33 @@ test("a key that went down as the keyboard arrived answers nothing, however late
   await expect(list).toBeFocused();
   await page.waitForTimeout(1500);
   // When the list's keys last began to wait (the page's own clock, the one a key is stamped by).
-  await page.evaluate(() => {
+  await list.evaluate((el) => {
     const w = window as unknown as { waitFrom: number };
-    new MutationObserver(() => { if (document.querySelector('[data-testid="approvals"]')?.getAttribute("data-keys") === "wait") w.waitFrom = Date.now(); })
-      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ["data-keys"] });
+    w.waitFrom = 0;
+    new MutationObserver(() => { if (el.getAttribute("data-keys") === "wait") w.waitFrom = Date.now(); })
+      .observe(el, { attributeFilter: ["data-keys"] });
   });
+  const waitFrom = () => page.evaluate(() => (window as unknown as { waitFrom: number }).waitFrom);
+  const arriveAgain = async () => {
+    const before = await waitFrom();
+    await page.keyboard.press("Alt+a");
+    await expect.poll(waitFrom).toBeGreaterThan(before);
+  };
   const keys = { "1": { key: "1", code: "Digit1", text: "1", windowsVirtualKeyCode: 49 }, Enter: { key: "Enter", code: "Enter", text: "\r", windowsVirtualKeyCode: 13 } };
   for (const key of ["1", "Enter"] as const) {
-    await page.keyboard.press("Alt+a");
-    await expect(list).toHaveAttribute("data-keys", "wait");
+    await arriveAgain();
     if (key === "Enter") { await page.keyboard.press("ArrowDown"); await expect(list.getByTestId("allow-once")).toBeFocused(); }
     await expect(list).toHaveAttribute("data-keys", "ready");
     // Down 100 ms into the wait, taken now.
-    const at = (await page.evaluate(() => (window as unknown as { waitFrom: number }).waitFrom)) + 100;
+    const at = (await waitFrom()) + 100;
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...keys[key], timestamp: at / 1000 });
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: keys[key].key, code: keys[key].code, windowsVirtualKeyCode: keys[key].windowsVirtualKeyCode, timestamp: at / 1000 + 0.05 });
     await page.waitForTimeout(400);
     expect((await approvals(request, id))[0], `${key} that went down as the keyboard arrived`).toMatchObject({ state: "pending" });
     await page.waitForTimeout(1200);
   }
-  // Pressed once the card says it is ready, it allows.
-  await page.keyboard.press("Alt+a");
+  // Wait for the new arrival before reading the caps: those of the previous hold can still be drawn.
+  await arriveAgain();
   await expect.poll(() => numbers(list.getByTestId("approval-digit")), { timeout: 5000 }).toEqual(["1", "2", "3"]);
   await page.keyboard.press("1");
   await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
