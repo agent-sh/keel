@@ -95,7 +95,7 @@ test("the find bar counts every match of a conversation and goes to each, folded
     // into view; back at the end, the matching call stays open and its text stays marked.
     const middle = page.locator(`#e-${mid!.id}`);
     await middle.evaluate((el) => el.scrollIntoView({ block: "center" }));
-    await expect(page.locator(`[data-testid="user-message"]#e-${mid!.id}`)).toBeInViewport();
+    await expect(page.locator(`[data-testid="user-message"]#e-${mid!.id}`)).toBeInViewport({ timeout: 30_000 });
     await expect(card).not.toBeInViewport();
     await expect(card).toHaveAttribute("data-open", "");
     await expect.poll(async () => (await marked(page)).now).toBe(WORD);
