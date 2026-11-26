@@ -49,6 +49,7 @@ test("a server's notification runs a loop once, and the owner's Stop keeps it fr
     const id = session.id as string;
     await call(`/api/sessions/${id}/permissions`, { mode: "full-auto" }, "PUT");
     await page.goto(`${d.url}/s/${id}`);
+    await page.getByTestId("focus-leave").click({ timeout: 15_000 });
 
     // 1. /loop on SERVER METHOD: no run at once; a server's own method, sent with the protocol's prefix, matches.
     const made = await call(`/api/sessions/${id}/command`, { text: "/loop on events acme/order_placed Check the new order" });
@@ -66,7 +67,7 @@ test("a server's notification runs a loop once, and the owner's Stop keeps it fr
     await expect.poll(async () => (await runs())[0]?.outcome, { timeout: 30_000 }).toBe("ok");
 
     // 2. The card says what it waits for.
-    await page.getByTestId("loops-button").click();
+    await page.getByTestId("loops-button").click({ timeout: 15_000 });
     const item = page.getByTestId("loop-item").filter({ hasText: "Check the new order" }).first();
     await expect(item).toContainText("when events sends acme/order_placed");
     await expect(item).toContainText("on event");
@@ -79,18 +80,21 @@ test("a server's notification runs a loop once, and the owner's Stop keeps it fr
     const watch = await call("/api/loops", { session_id: id, prompt: "Read the page again", schedule: "on events resources/updated file:///page" });
     expect(watch.status).toBe(201);
     await expect.poll(() => logged().filter((l) => l === "subscribe file:///page").length, { timeout: 30_000 }).toBe(1);
-    emit("notifications/resources/updated", { uri: "file:///elsewhere" });
-    await expect.poll(() => logged().includes("sent notifications/resources/updated"), { timeout: 10_000 }).toBe(true);
-    await new Promise((r) => setTimeout(r, 1_500));
     const watchRuns = async () => ((await call(`/api/loops/${watch.id}/runs`)).runs as any[]);
-    expect((await watchRuns()).filter((r) => r.started_ms)).toHaveLength(0);
+    // The server sends the wrong address first on the same stream. Only the
+    // second notification can start a run; its prompt must carry that address.
+    emit("notifications/resources/updated", { uri: "file:///elsewhere" });
+    emit("notifications/resources/updated", { uri: "file:///page" });
+    await expect.poll(async () => (await watchRuns()).map((r) => r.outcome), { timeout: 30_000 }).toEqual(["ok"]);
+    const received = (await events()).filter((e) => e.kind === "user" && JSON.stringify(e.data).includes("Read the page again"));
+    expect(received).toHaveLength(1);
+    expect(JSON.stringify(received[0].data)).toContain('{\\"server\\":\\"events\\",\\"method\\":\\"resources/updated\\",\\"params\\":{\\"uri\\":\\"file:///page\\"}}');
 
     // 4. The owner's Stop: the session is held, and a notification is not run (nor kept for later).
-    await call(`/api/sessions/${id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 60" } }])}` });
+    await call(`/api/sessions/${id}/messages`, { text: `script:hold ${join(state, "held-reply")}` });
+    await expect(page.getByTestId("draft")).toContainText("before the hold", { timeout: 15_000 });
+    await page.getByTestId("stop").click({ timeout: 15_000 });
     const count = async (kind: string) => (await events()).filter((e) => e.kind === kind).length;
-    await expect.poll(async () => (await count("turn_start")) - (await count("turn_end")), { timeout: 30_000 }).toBe(1);
-    await new Promise((r) => setTimeout(r, 1_000)); // (the command is under way)
-    await call(`/api/sessions/${id}/interrupt`, { by: "owner" });
     await expect.poll(async () => (await count("turn_start")) - (await count("turn_end")), { timeout: 30_000 }).toBe(0);
     const before = (await runs()).filter((r) => r.started_ms).length;
     emit("notifications/acme/order_placed", { id: 8 });
