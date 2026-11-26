@@ -656,8 +656,8 @@ function Docked({ use, sessionId, first, asked, onLater, agent }: { use: ToolUse
               disabled={!ready || sending}
               // A key on the button answers as Enter does: not as the keyboard arrives, not under a dialog.
               onClick={(e) => send(picked, e.detail === 0 ? keyRefused(e.currentTarget) : "")}
-              data-testid="question-submit"
-              className="h-8 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover disabled:opacity-40"
+              data-testid="question-submit" data-ink=""
+              className="k-btn k-btn-lg"
             >
               {sending ? "Sending" : link ? "I finished" : asked && !qs.length ? "Confirm" : "Answer"}
             </button>

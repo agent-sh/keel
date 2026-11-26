@@ -26,6 +26,8 @@ test("skip the rest sends what is picked and names what was skipped", async ({ p
   await card.getByRole("checkbox", { name: "Lint" }).click();
   await card.getByRole("radio", { name: "release" }).click();
   await expect(card.getByTestId("question-submit")).toBeDisabled();
+  // With nothing to send yet the filled button is an outline in the quiet ink at the regular weight, not a slab of grey.
+  expect(await card.getByTestId("question-submit").evaluate((el) => { const s = getComputedStyle(el); return [s.backgroundColor, s.fontWeight, s.opacity]; })).toEqual(["rgba(0, 0, 0, 0)", "400", "1"]);
   await expect(skip).toBeVisible();
   await shoot(page, "question-skip-01-two-of-three");
   await skip.click();
