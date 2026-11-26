@@ -7,7 +7,8 @@ import { join } from "node:path";
 const script = join(import.meta.dir, "remote-verify.sh");
 
 function run(args: string[], path = process.env.PATH ?? "") {
-  const env: Record<string, string> = { PATH: path, HOME: process.env.HOME ?? tmpdir(), TMPDIR: tmpdir() };
+  // (The clone's own keel.verifyHost is set to nothing: a committed tree would otherwise start a real run there.)
+  const env: Record<string, string> = { PATH: path, HOME: process.env.HOME ?? tmpdir(), TMPDIR: tmpdir(), GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "keel.verifyhost", GIT_CONFIG_VALUE_0: "" };
   const p = Bun.spawnSync(["bash", script, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const out = p.stdout.toString().trimEnd().split("\n");
   return { code: p.exitCode, last: out.at(-1) ?? "" };
