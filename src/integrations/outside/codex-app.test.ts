@@ -39,7 +39,7 @@ const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> =
 };
 
 let k = 0;
-function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; locks?: false; bin?: string } = {}) {
+function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; locks?: false; bin?: string; retold?: (id: string) => void } = {}) {
   const dir = join(top, String(k++));
   const codex = join(dir, "codex");
   const cwd = join(dir, "work");
@@ -65,7 +65,7 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; lock
   const stub = { askOnce: async (_s, call, name, why, _held, shown, notice) => { cards.push({ name, input: call.input, why, shown, ...(notice ? { notice } : {}) }); return decide(name); }, approvals: () => [], settled: () => {}, harnessAnswers: () => [] } as CardGate;
   let real = opts.realGate ? new Gate(store, bus) : undefined;
   let gate: CardGate = real ?? stub;
-  const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
+  const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => { o.retell(id); opts.retold?.(id); } };
   const make = (more: { cutAsks?: () => void } = {}) => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => opts.bin ?? STANDIN, home: () => codex, trouble: (e) => { throw e; }, ...more }));
   make();
   const thread = `019a0000-0000-7000-8000-${String(k).padStart(12, "0")}`;
@@ -358,6 +358,49 @@ describe("a Codex session answered in place", () => {
       await until(() => r.store.db.query<{ state: string }, []>("SELECT state FROM outside_sends").get()?.state === "delivered", 15_000);
       await until(() => !r.app().ours(s.id), 15_000);
     } finally { r.done(); }
+  }, 30_000);
+
+  for (const method of ["initialize", "resume"]) {
+    test(`a drain while Codex waits to answer ${method} keeps the send for the next daemon`, async () => {
+      const r = rig();
+      try {
+        const s = await r.session();
+        const marker = join(r.codex, `hold-${method}`);
+        writeFileSync(marker, "");
+        expect("send" in r.app().send(s.id, "please go on", "k1")).toBe(true);
+        await until(() => existsSync(`${marker}.seen`));
+        const run = (r.app() as any).runs.get(s.id);
+        r.app().stop();
+        await run.killing;
+        await run.ready;
+        expect(r.app().sends(s.id).map((x) => x.state)).toEqual(["stored"]);
+        r.make().start();
+        await until(() => r.store.db.query<{ state: string }, []>("SELECT state FROM outside_sends").get()?.state === "delivered");
+        await until(() => !r.app().ours(s.id));
+      } finally { r.done(); }
+    }, 30_000);
+  }
+
+  test.skipIf(!PROC)("a drain after resume but before the turn leaves the unrelated app-server helper alone", async () => {
+    const resumed = Promise.withResolvers<{ killing: Promise<void> }>();
+    const r = rig({ bin: LAUNCHER, retold: (id) => {
+      const run = (r.app() as any).runs.get(id);
+      r.app().stop();
+      resumed.resolve(run);
+    } });
+    const file = join(r.codex, "standin-helpers");
+    let helper: number | undefined;
+    try {
+      const s = await r.session();
+      writeFileSync(file, "");
+      expect("send" in r.app().send(s.id, "please go on", "k1")).toBe(true);
+      await (await resumed.promise).killing;
+      helper = Number(/^helper (\d+)/m.exec(readFileSync(file, "utf8"))?.[1]);
+      expect(helper).toBeGreaterThan(0);
+      expect(statFields(readFileSync(`/proc/${helper}/stat`, "utf8"))?.state).not.toBe("Z");
+      expect(lockHolder(join(r.codex, "thread-writer-locks", `${r.thread}.lock`), readLocks())).toBeUndefined();
+      expect(readFileSync(`${r.rollout}.standin.log`, "utf8")).not.toContain("turn/start");
+    } finally { if (helper) try { process.kill(helper, "SIGKILL"); } catch {} r.done(); }
   }, 30_000);
 
   test("a delivered send is kept a day (its key stores a resend once), then let go", async () => {

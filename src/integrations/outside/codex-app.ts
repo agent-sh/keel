@@ -299,8 +299,8 @@ type Run = {
   // the native holds the lock. Nothing else under it (Codex's MCP servers, a job of the owner's turn, whatever its
   // arguments) is Keel's to end.
   under: Proc[];
-  // A turn was asked of this child: from then on what runs under it may be the turn's, and is never looked for again.
-  turned?: boolean;
+  // Once resumed, only the writer lock identifies Keel's processes under the child.
+  resumed?: boolean;
   exited: boolean;
   // The child is ending or ended: a send waits for `over` (it is gone, and so is the native under it) and goes
   // with the next one.
@@ -495,7 +495,6 @@ export class CodexApp {
       if (steered) return;
     }
     try {
-      run.turned = true;
       const res = await run.conn.request("turn/start", { threadId: run.threadId, input, clientUserMessageId: id });
       if (typeof res?.turn?.id === "string" && res.turn.status === "inProgress") run.turn = res.turn.id;
       this.d.outside.retell(sessionId);
@@ -538,12 +537,15 @@ export class CodexApp {
     run.ready = (async () => {
       try {
         await bounded(conn.request("initialize", { clientInfo: { name: "keel", title: "Keel", version: "1" }, capabilities: { experimentalApi: false, requestAttestation: false } }), "initialize");
+        if (this.closed) return false;
         conn.notify("initialized", undefined);
         await conn.request("thread/resume", {
           threadId: run.threadId, excludeTurns: true,
           ...(f.provider ? { modelProvider: f.provider } : {}), ...(f.cwd ? { cwd: f.cwd } : {}),
           ...(f.approval ? { approvalPolicy: f.approval } : {}), ...(f.sandbox ? { sandbox: f.sandbox } : {}),
         });
+        run.resumed = true;
+        if (this.closed) return false;
         // What serves under the child now (a launcher's native codex, which holds the lock): kept, so a next
         // daemon ends it too when this one could not.
         run.under = this.writers(run);
@@ -551,6 +553,8 @@ export class CodexApp {
         this.d.outside.retell(sessionId);
         return true;
       } catch (e) {
+        // The next daemon sends what was stored but never given to Codex.
+        if (this.closed) return false;
         const msg = (e as Error).message;
         // Another process became its writer between the look and the resume: Codex refuses, and says so.
         const holder = /active writer/i.test(msg) ? this.d.outside.holderNow(sessionId) : undefined;
@@ -708,9 +712,12 @@ export class CodexApp {
     run.closing = true;
     run.killing ??= (async () => {
       run.stopped.abort();
-      // (Before any turn nothing under it is a turn's: what serves the protocol there is Keel's too, a native
-      // that has not taken the lock yet.)
-      if (!run.exited && !run.turned) run.under = merged(run.under, merged(this.writers(run), servers(run.conn.pid)));
+      // Before resume answers, a launcher may have started the native without its lock yet.
+      // After that, an unrelated helper can have the same arguments even before the first turn.
+      if (!run.exited) {
+        const writers = this.writers(run);
+        run.under = merged(run.under, run.resumed ? writers : merged(writers, servers(run.conn.pid)));
+      }
       run.conn.close();
       const end = Date.now() + END_MS;
       while (Date.now() < end && (!run.exited || run.under.some((p) => alive(p.pid, p.start)))) await Bun.sleep(25);
@@ -823,7 +830,7 @@ export class CodexApp {
 
 // Whether a process serves the app-server protocol by its arguments: they hold `app-server` (Keel's child, and the
 // native codex a launcher starts with the same arguments). A check of a kept row and of what runs under a child
-// before any turn; once a turn ran, a job of it can hold the same word, and only the lock tells Keel's own.
+// before resume answers; after that, only the lock tells Keel's own.
 function serves(pid: number): boolean {
   try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes("app-server"); } catch { return false; }
 }

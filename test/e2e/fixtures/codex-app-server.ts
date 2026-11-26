@@ -24,7 +24,7 @@
 // the turn puts in the background), each in a session of its own; their pids are appended to that file.
 //   bun codex-app-server.ts app-server
 import { spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, openSync, readdirSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 const home = process.env.CODEX_HOME ?? "";
@@ -50,6 +50,14 @@ const note = (method: string, params: object) => out({ method, params });
 const ask = (method: string, params: object) => new Promise<any>((ok) => { const id = nextId++; waits.set(id, ok); out({ id, method, params }); });
 const record = (type: string, payload: object) => appendFileSync(rollout, JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + "\n");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// A one-shot hold: the marker moves when the request arrives, and the next child can answer normally.
+function holdReply(method: string): boolean {
+  const marker = join(home, `hold-${method}`);
+  if (!existsSync(marker)) return false;
+  renameSync(marker, `${marker}.seen`);
+  return true;
+}
 
 // flock(2) on $CODEX_HOME/thread-writer-locks/<thread>.lock, where that folder is (a Codex that keeps locks).
 // The descriptor stays open: the lock goes when this process does.
@@ -155,7 +163,9 @@ async function handle(m: any) {
   const fail = (code: number, message: string) => out({ id: m.id, error: { code, message } });
   const p = m.params ?? {};
   switch (m.method) {
-    case "initialize": return ok({ userAgent: "codex-standin/0.0.0", codexHome: home, platformFamily: "unix", platformOs: "linux" });
+    case "initialize":
+      if (!holdReply("initialize")) return ok({ userAgent: "codex-standin/0.0.0", codexHome: home, platformFamily: "unix", platformOs: "linux" });
+      return;
     case "thread/resume": {
       const f = find(join(home, "sessions"), String(p.threadId));
       if (!f) return fail(-32600, `no rollout found for thread id ${p.threadId}`);
@@ -164,6 +174,7 @@ async function handle(m: any) {
       rollout = f;
       thread = String(p.threadId);
       appendFileSync(`${rollout}.standin.log`, JSON.stringify({ method: m.method, params: p }) + "\n");
+      if (holdReply("resume")) return;
       return ok({ thread: { id: thread, path: f }, model: "standin", modelProvider: p.modelProvider ?? "openai", cwd: p.cwd ?? process.cwd(), approvalPolicy: p.approvalPolicy ?? "on-request", sandbox: { type: p.sandbox ?? "workspace-write" }, reasoningEffort: null });
     }
     case "turn/start": {
