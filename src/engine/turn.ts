@@ -453,22 +453,59 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
 }
 // The chain and what it is made from (`data`: each file's path and the text read from it), which is
 // what says the block changed (src/engine/prompt-store.ts): a change of how it is rendered alone (a
-// new way of leaving out what repeats) waits for the session's cold point.
-export function instructionsMade(cwd: string, window?: number, marks?: Marks): { text: string; data: string } {
+// new way of leaving out what repeats) waits for the session's cold point. `files`: what became of
+// each file (InstructionFact), for the views that say what a session was given.
+export function instructionsMade(cwd: string, window?: number, marks?: Marks): ChainMade {
+  return madeChain(cwd, window, marks, {});
+}
+
+// What the chain did with one file. `state`: whole, cut at the window's bound (`at` of `chars`), not
+// loaded (the room was full), the same as or only importing another file of the chain (`of`), every
+// section of it said before (`repeats`), unreadable, held back by its trust pin (`held`), or already
+// in the prompt the session holds (`had`, for a move: src/server/routes/places.ts). `trust`: the
+// trust pin's decision (`as_trusted`: the version last trusted, not the file as it is now).
+// `chars`: the text the chain reads (imports brought in, the trust filter applied), `carried`: what of
+// it is in the prompt, `left_out`: the runs of sections a file above already says.
+export type InstructionFact = {
+  path: string; scope: InstructionEntry["scope"]; of?: InstructionEntry["of"];
+  state: "whole" | "cut" | "out" | "same" | "repeats" | "unread" | "held" | "had";
+  trust: "trusted" | "as_trusted" | "held" | null; chars: number; carried: number; left_out: number;
+  at?: number; same_of?: string; imports?: boolean; text?: string;
+};
+export type ChainMade = { text: string; data: string; files: InstructionFact[]; window?: number; limit: number; room: number };
+
+// `once`: the chain's set, shared with a render before (a move's: what the session holds); `used`: filled
+// with the room each file took, by its real path; `held`: files already in the prompt, by real path, with
+// the room they took there: they take it again and are not carried.
+function madeChain(cwd: string, window: number | undefined, marks: Marks | undefined, o: { once?: OnceSet; used?: Map<string, number>; held?: Map<string, number> }): ChainMade {
   const whole = instructionLimit(window);
-  let room = chainLimit(window);
+  const bound = chainLimit(window);
+  let room = bound;
   const parts: string[] = [];
   const made: string[] = [];
-  const once = new OnceSet();
+  const facts: InstructionFact[] = [];
+  const once = o.once ?? new OnceSet();
   const files = instructionPaths(cwd, marks, { covered: true, once });
   const seen = new Set(files.filter((f) => f.same === undefined).map((f) => real(f.path)));
   // A harness's user file that is read has no use for the copy Keel's import made of it in the owner's file.
   const own = join(configDir(), "AGENTS.md");
   const ported = { claude: files.some((f) => f.of === "claude" && f.same === undefined), codex: files.some((f) => f.of === "codex" && f.same === undefined) };
-  for (const { path: p, same } of files) {
+  for (const { path: p, scope, of, same } of files) {
+    // (Each file's room is noted for a render that follows, a move's: src/server/routes/places.ts.)
+    const fact = (f: Omit<InstructionFact, "path" | "scope" | "of">, took = 0) => {
+      facts.push({ path: p, scope, ...(of && { of }), ...f });
+      if (f.state !== "had") o.used?.set(real(p), took);
+    };
+    const had = o.held?.get(real(p));
+    if (had !== undefined) {
+      room -= had;
+      fact({ state: "had", trust: null, chars: 0, carried: had, left_out: 0 });
+      continue;
+    }
     if (same !== undefined) {
       made.push(`${p}\0same ${same.imports ? "imports" : "as"} ${same.of}`);
       parts.push(`# ${p}\n\n(${same.imports ? "It only imports" : "The same as"} ${same.of}, above.)`);
+      fact({ state: "same", trust: null, chars: 0, carried: 0, left_out: 0, same_of: same.of, imports: same.imports });
       continue;
     }
     let read: string;
@@ -479,13 +516,16 @@ export function instructionsMade(cwd: string, window?: number, marks?: Marks): {
       if (p === own) read = withoutPorted(read, ported);
     } catch (e) {
       // Not left out silently: the model knows a source is missing, not removed.
-      made.push(`${p}\0unread ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
-      parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
+      const why = (e as NodeJS.ErrnoException).code ?? (e as Error).message;
+      made.push(`${p}\0unread ${why}`);
+      parts.push(`# ${p}\n\n(This file could not be read: ${why}. Its instructions are not loaded.)`);
+      fact({ state: "unread", trust: null, chars: 0, carried: 0, left_out: 0 });
       continue;
     }
     made.push(`${p}\0${read}`);
     if (room <= 0) {
       parts.push(`# ${p}\n\n(Not loaded: the instruction files above fill the room this model's window gives them. Read ${p} with the Read tool before you work on what it may cover.)`);
+      fact({ state: "out", trust: null, chars: read.length, carried: 0, left_out: 0 });
       continue;
     }
     const mapped = rootOf(dirname(p)) ? undefined : expandMapped(read, p, 0, seen, marks);
@@ -494,20 +534,44 @@ export function instructionsMade(cwd: string, window?: number, marks?: Marks): {
     if (raw !== read) made.push(`${p}\0with its imports\0${raw}`);
     const filtered = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
     // What the trust pins let through is part of what the block is made from.
-    if (filtered === null) { made.push(`${p}\0held`); continue; }
+    if (filtered === null) {
+      made.push(`${p}\0held`);
+      fact({ state: "held", trust: "held", chars: 0, carried: 0, left_out: 0, imports: raw !== read });
+      continue;
+    }
     const trusted = filtered === raw;
     if (!trusted) made.push(`${p}\0as trusted\0${filtered}`);
+    const trust = scope === "owner" ? null : trusted ? "trusted" : "as_trusted";
     // Carried as far as the cut keeps it: a rule past the cut is in no file the model holds, so a later
     // file that says it again keeps it.
     const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined, { record: false });
-    if (!fresh.text.trim()) continue;
+    if (!fresh.text.trim()) {
+      fact({ state: "repeats", trust, chars: filtered.length, carried: 0, left_out: fresh.left, imports: raw !== read });
+      continue;
+    }
     const limit = Math.min(whole, room);
-    fresh.commit(cutPoint(fresh.text, limit));
+    const at = cutPoint(fresh.text, limit);
+    fresh.commit(at);
     const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
-    room -= Math.min(fresh.text.length, limit);
+    const took = Math.min(fresh.text.length, limit);
+    room -= took;
     parts.push(`# ${p}\n\n${body}`);
+    fact({ state: at < fresh.text.length ? "cut" : "whole", trust, chars: filtered.length, carried: at, left_out: fresh.left, imports: raw !== read, text: body, ...(at < fresh.text.length && { at }) }, took);
   }
-  return { text: parts.join("\n\n"), data: made.join("\0\0") };
+  return { text: parts.join("\n\n"), data: made.join("\0\0"), files: facts, ...(window && window > 0 && { window }), limit: whole, room: bound };
+}
+
+// The instruction files a session moved (or cloned) from `from` to `to` gets, as a fresh start in `to`
+// would load them on the same window (the trust pins applied, each file and the chain bounded the same
+// way), less what the prompt it holds already carries: the files of the chain both folders share, a
+// file the same as one of `from`'s (a sibling checkout's), and the sections a file of `from` says. The
+// shared files take their room again, so what is left is the room a fresh start leaves; a file past it
+// is cut with the line that says where its rest is, never silently.
+export function instructionsMoved(to: string, from: string, window?: number, marks?: Marks): ChainMade {
+  const once = new OnceSet();
+  const used = new Map<string, number>();
+  madeChain(from, window, marks, { once, used });
+  return madeChain(to, window, marks, { once: new OnceSet(once), held: used });
 }
 
 // Frozen per session: nothing in it changes between turns (no clock), so the

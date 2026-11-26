@@ -13,7 +13,7 @@ import { ProviderError } from "../../providers/http.ts";
 import type { RouteModule } from "../app.ts";
 import { Worktrees } from "../../worktree/manager.ts";
 import { join } from "node:path";
-import { newInstructions } from "./places.ts";
+import { newInstructions, windowOf } from "./places.ts";
 import { resolveSwitchModel, switchCompactionBlock } from "../switch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -328,8 +328,8 @@ export const turnRoutes: RouteModule = (deps) => {
         store.append(f.id, "note", { kind: "fork", from_session: s.id, from_title: s.title, queue_left: left || undefined, text: `Forked from ${s.title || "a session"}.${left ? ` ${left === 1 ? "One queued message stays" : `${left} queued messages stay`} there.` : ""}` });
         if (b.worktree) {
           const now = store.session(f.id)!;
-          const inst = newInstructions(now.workspace, s.workspace);
-          bus.emit({ t: "event", event: store.append(f.id, "note", { kind: "folder", model: true, short: `Forked into ${now.workspace}`, text: `[harness] This session was forked into ${now.workspace} (the conversation so far ran in ${s.workspace}). Work there now.${inst ? `\n\nInstructions from the owner's files there:\n\n${inst}` : ""}` }) });
+          const inst = newInstructions(now.workspace, s.workspace, await windowOf(providers, now.model));
+          bus.emit({ t: "event", event: store.append(f.id, "note", { kind: "folder", model: true, system: true, short: `Forked into ${now.workspace}`, instructions: inst.facts, text: `[harness] This session was forked into ${now.workspace} (the conversation so far ran in ${s.workspace}). Work there now.${inst.text ? `\n\nInstructions from the owner's files there:\n\n${inst.text}` : ""}` }) });
         }
         const session = store.session(f.id)!;
         bus.emit({ t: "session", session });

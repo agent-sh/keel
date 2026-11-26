@@ -129,8 +129,14 @@ export function folderFiles(dir: string, fallback: readonly string[] = [], marks
 // section another file says again is left out of it where it stands (src/engine/sections.ts).
 export class OnceSet {
   private ids = new Map<string, string>();
-  private texts = new Map<string, string>();
-  readonly carried = new Carried();
+  private texts: Map<string, string>;
+  readonly carried: Carried;
+  // `held`: a chain the model holds already (a moved session's prompt): its texts and sections count as
+  // said, its paths do not (the chain lists them, as the files it shares).
+  constructor(held?: OnceSet) {
+    this.texts = new Map(held?.texts);
+    this.carried = held?.carried ?? new Carried();
+  }
   static id(p: string): string { try { const s = statSync(p); return `${s.dev}:${s.ino}`; } catch { return real(p); } }
   static norm = norm;
   // The file it is one with (a path held, or the files it only imports), null for an empty file,
@@ -143,7 +149,8 @@ export class OnceSet {
     const n = OnceSet.norm(text);
     if (!n) return null;
     const byText = this.texts.get(n);
-    if (byText !== undefined) return { of: byText, imports: false };
+    // (A held chain's text under the same path is that file again: it is listed, as the chain shares it.)
+    if (byText !== undefined && byText !== p) return { of: byText, imports: false };
     // Only imports, each of a file held (or taken with it, and not itself).
     const near = new Map(beside.filter((b) => b !== p).map((b) => [OnceSet.id(b), b] as const));
     const lines = n.split("\n").filter((l) => l.trim());
