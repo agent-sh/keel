@@ -14,6 +14,7 @@ import { runShell } from "../tools/shell.ts";
 import { resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import { messageLine, sayAt } from "../admin/daemon-log.ts";
+import { hostGroups } from "./sshconfig.ts";
 
 let fleet: Fleet | undefined;
 let messages: Messages | undefined;
@@ -31,7 +32,7 @@ const machinesList: Tool = {
   async run() {
     if (!fleet) return fail("The fleet is not running.");
     const lines: string[] = [];
-    const me = await fleet.localView();
+    const [me, groups] = await Promise.all([fleet.localView(), hostGroups()]);
     const f = me.facts;
     lines.push(`${me.name} (this machine): ready; ${f.cpus} cores, load ${f.load1}, ${gb(f.mem_available_mb)} free of ${gb(f.mem_total_mb)}${f.gpu ? `, GPU ${f.gpu}` : ""}; tools ${f.tools.join(" ")}`);
     for (const m of fleet.rows()) {
@@ -42,7 +43,7 @@ const machinesList: Tool = {
       const root = v.workspace_root ? `; granted ${v.workspace_root}` : "; no directory granted (no commands run there)";
       lines.push(`${m.name}: ${state}${what}${root}; jobs ${v.queue.running} running, ${v.queue.waiting} waiting${v.queue.limit ? ` of ${v.queue.limit}` : ""}`);
     }
-    const off = fleet.offered();
+    const off = fleet.offered(groups);
     if (off.length) lines.push(`Not enabled (ssh hosts): ${off.join(", ")}`);
     return ok(lines.join("\n"));
   },

@@ -97,7 +97,7 @@ export class SshLink {
   probe?: Probe;
   installed?: Installed;
 
-  constructor(readonly id: string, readonly routes: () => string[], private sockDir: string, private log: (msg: string) => void = () => {}) {}
+  constructor(readonly id: string, readonly routes: () => Promise<string[]>, private sockDir: string, private log: (msg: string) => void = () => {}) {}
 
   private ctl() { return join(this.sockDir, `${this.id}.ctl`); }
 
@@ -107,7 +107,7 @@ export class SshLink {
     this.close();
     mkdirSync(this.sockDir, { recursive: true, mode: 0o700 });
     const errs: string[] = [];
-    for (const alias of this.routes()) {
+    for (const alias of await this.routes()) {
       rmSync(this.ctl(), { force: true });
       const proc = Bun.spawn([sshProgram(), "-N", "-M", "-S", this.ctl(), "-o", "ControlPersist=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ForwardAgent=no", "-o", "StreamLocalBindUnlink=yes", "-o", "ExitOnForwardFailure=no", alias],
@@ -229,7 +229,7 @@ export class SshLink {
         if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
         sent = true;
         // (Over ssh to the machine: the outward ledger names the ssh host it goes to, src/safety/egress.ts.)
-        const r = await outward({ via: "fleet over ssh", host: this.route ?? this.routes()[0] ?? this.id, port: 22 }, () => fetch(`http://keel${path}`, { ...init, headers, unix: sock, signal } as RequestInit));
+        const r = await outward({ via: "fleet over ssh", host: this.route ?? (await this.routes())[0] ?? this.id, port: 22 }, () => fetch(`http://keel${path}`, { ...init, headers, unix: sock, signal } as RequestInit));
         // Read here: a body cut by a dropped link is a failed attempt, not a short answer.
         const buf = await r.arrayBuffer();
         return new Response(buf, { status: r.status, headers: r.headers });

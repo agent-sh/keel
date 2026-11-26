@@ -1,33 +1,61 @@
-// The machines of the ssh configuration are grouped from one `ssh -G` an alias. A change of the configuration
-// is read again off the loop: the groups made before it answer meanwhile, and the new ones replace them.
-import { expect, test } from "bun:test";
-import { chmodSync, utimesSync, writeFileSync } from "node:fs";
+// A group read waits for the current ssh configuration without blocking the loop on `ssh -G`.
+import { expect, spyOn, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv, tempTree } from "../../test/env.ts";
 
 const dir = tempTree("sshconfig-");
 const config = join(dir, "config");
 const ssh = join(dir, "ssh");
-// A stand-in for ssh that takes its time for each alias, as ssh does on a busy machine.
-writeFileSync(ssh, `#!/bin/sh\nsleep 0.2\nprintf 'user me\\nhostname %s.example\\n' "$2"\n`);
-chmodSync(ssh, 0o755);
+writeFileSync(ssh, `#!/bin/sh
+printf 'user me\\n'
+if [ "$2" = routed ]; then
+  sed -n 's/^  HostName /hostname /p' "\${0%/*}/routes"
+else
+  printf 'hostname %s.example\\n' "$2"
+fi
+`, { mode: 0o755 });
 ownEnv({ KEEL_SSH: ssh, KEEL_SSH_CONFIG: config });
 const hosts = (names: string[]) => writeFileSync(config, names.map((n) => `Host ${n}\n  User me\n`).join(""));
 
-test("a changed configuration is grouped again off the loop, the earlier groups answering meanwhile", async () => {
+test("a cold group read joins warmup without resolving any alias synchronously", async () => {
   const { hostGroups, warmHostGroups } = await import("./sshconfig.ts");
-  hosts(["one", "two", "three", "four", "five"]);
-  await warmHostGroups(dir);
-  expect(hostGroups(dir).map((g) => g.alias)).toEqual(["one", "two", "three", "four", "five"]);
+  hosts(["cold"]);
+  const sync = spyOn(Bun, "spawnSync");
+  const spawn = spyOn(Bun, "spawn");
+  const warming = warmHostGroups(dir);
+  try {
+    const groups = await hostGroups(dir);
+    expect(sync.mock.calls.filter(([cmd]) => Array.isArray(cmd) && cmd[0] === ssh)).toHaveLength(0);
+    expect(spawn.mock.calls.filter(([cmd]) => Array.isArray(cmd) && cmd[0] === ssh)).toHaveLength(1);
+    expect(groups).toMatchObject([{ alias: "cold", hostname: "cold.example" }]);
+  } finally {
+    await warming;
+    spawn.mockRestore();
+    sync.mockRestore();
+  }
+});
 
-  hosts(["one", "two", "three", "four", "five", "six"]);
-  utimesSync(config, new Date(), new Date(Date.now() + 5_000));
-  const t0 = performance.now();
-  const meanwhile = hostGroups(dir);
-  // Five aliases at 0.2 s each would hold the loop for a second.
-  expect(performance.now() - t0).toBeLessThan(150);
-  expect(meanwhile.map((g) => g.alias)).toHaveLength(5);
+test("the first read after an edit sees the current aliases", async () => {
+  const { hostGroups, warmHostGroups } = await import("./sshconfig.ts");
+  hosts(["one", "removed"]);
   await warmHostGroups(dir);
-  expect(hostGroups(dir).map((g) => g.alias)).toContain("six");
-  expect(hostGroups(dir).find((g) => g.alias === "six")?.hostname).toBe("six.example");
+  expect((await hostGroups(dir)).map((g) => g.alias)).toEqual(["one", "removed"]);
+
+  hosts(["one", "added"]);
+  const first = await hostGroups(dir);
+  await warmHostGroups(dir); // Let any background refresh finish before changing the fixture again.
+  expect(first).toMatchObject([{ alias: "one" }, { alias: "added", hostname: "added.example" }]);
+});
+
+test("editing an Include refreshes groups even when the aliases stay the same", async () => {
+  const { hostGroups, warmHostGroups } = await import("./sshconfig.ts");
+  const routes = join(dir, "routes");
+  writeFileSync(config, `Include "${routes}"\n`);
+  writeFileSync(routes, "Host routed\n  HostName before.example\n");
+  await warmHostGroups(dir);
+  expect(await hostGroups(dir)).toMatchObject([{ alias: "routed", hostname: "before.example" }]);
+
+  writeFileSync(routes, "Host routed\n  HostName after.example\n");
+  expect(await hostGroups(dir)).toMatchObject([{ alias: "routed", hostname: "after.example" }]);
 });

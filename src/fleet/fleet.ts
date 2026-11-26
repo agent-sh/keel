@@ -11,7 +11,7 @@ import { type Facts, type MachineRow, meta, migrate } from "./db.ts";
 import { freeCores, localFacts, VERSION } from "./facts.ts";
 import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, whyUnreached, type Peer } from "./link.ts";
 import { place, type Place, type Rule, type Want } from "./placement.ts";
-import { groupOf, hostGroups, plainAlias, SSH_BASE, SSH_ONE_SHOT, sshProgram } from "./sshconfig.ts";
+import { groupOf, hostGroups, plainAlias, SSH_BASE, SSH_ONE_SHOT, sshProgram, type HostGroup } from "./sshconfig.ts";
 import { loginCommand, parseProbe, PROBE_SCRIPT, SshLink } from "./sshlink.ts";
 import { join } from "node:path";
 import { chunks, readText } from "../core/proc.ts";
@@ -106,7 +106,7 @@ export class Fleet {
     let l = this.ssh.get(m.id);
     if (!l) {
       const alias = m.ssh_host!;
-      l = new SshLink(m.id, () => groupOf(alias)?.routes ?? [alias], this.sockDir, (msg) => console.error(`keel fleet: ${msg}`));
+      l = new SshLink(m.id, async () => groupOf(await hostGroups(), alias)?.routes ?? [alias], this.sockDir, (msg) => console.error(`keel fleet: ${msg}`));
       this.ssh.set(m.id, l);
     }
     return l;
@@ -257,14 +257,14 @@ export class Fleet {
   // Hosts of the ssh configuration not enabled yet, offered as `ssh:<alias>`.
   // One per box: aliases of one host are its routes, and a host that answered
   // with the machine id of an enabled one is that machine.
-  offered(): string[] {
-    return this.offeredGroups().map((g) => g.alias);
+  offered(groups: HostGroup[]): string[] {
+    return this.offeredGroups(groups).map((g) => g.alias);
   }
-  offeredGroups() {
-    const enabled = new Set(this.rows().flatMap((m) => (m.ssh_host ? groupOf(m.ssh_host)?.routes ?? [m.ssh_host] : [])));
+  offeredGroups(groups: HostGroup[]) {
+    const enabled = new Set(this.rows().flatMap((m) => (m.ssh_host ? groupOf(groups, m.ssh_host)?.routes ?? [m.ssh_host] : [])));
     const ids = new Set(this.rows().map((m) => this.facts(m.id) as (Facts & { machine_id?: string }) | undefined).map((f) => f?.machine_id).filter(Boolean));
     const seen = new Set<string>();
-    return hostGroups().filter((g) => {
+    return groups.filter((g) => {
       if (g.routes.some((r) => enabled.has(r))) return false;
       const mid = this.reached.get(g.alias)?.machine_id;
       if (mid && (ids.has(mid) || seen.has(mid))) return false;
@@ -272,15 +272,16 @@ export class Fleet {
       return true;
     });
   }
-  offeredView() {
-    return this.offeredGroups().map((g) => {
+  offeredView(groups: HostGroup[]) {
+    return this.offeredGroups(groups).map((g) => {
       const r = this.reached.get(g.alias);
       return { id: `ssh:${g.alias}`, name: g.alias, source: "ssh", enabled: false, state: r?.state ?? "unknown", reason: r?.reason, facts: r?.facts, checked_ms: r?.checked_ms, ssh_host: g.alias, routes: g.routes, route: r?.route, detail: r?.facts ? `${r.facts.os} ${r.facts.arch}, ${r.facts.cpus} cores` : undefined };
     });
   }
 
-  // The public shape of a machine: never the link key.
-  view(m: MachineRow) {
+  // The public shape of a machine: never the link key. Readers that show
+  // routes pass one fresh snapshot for the whole view.
+  view(m: MachineRow, groups: HostGroup[] = []) {
     const q = this.queues.get(m.id);
     const facts = m.facts ? (JSON.parse(m.facts) as Facts) : undefined;
     const link = this.links.get(m.id) ?? { state: m.link_key ? "offline" : "none", reason: m.link_key ? "not checked since the daemon started" : undefined };
@@ -291,7 +292,7 @@ export class Fleet {
       daemon: { ...link, daemon_id: m.link_daemon_id ?? link.daemon_id },
       ssh_host: m.ssh_host ?? undefined, workspace_root: m.workspace_root ?? undefined, colour: m.colour ?? undefined,
       daemon_url: m.daemon_url ?? undefined, daemon_port: m.daemon_port ?? undefined, max_jobs: m.max_jobs ?? undefined,
-      ...(this.isSsh(m) ? { transport: "ssh", routes: groupOf(m.ssh_host!)?.routes ?? [m.ssh_host!], route: this.ssh.get(m.id)?.route, helper: this.ssh.get(m.id)?.installed } : { transport: "daemon" }),
+      ...(this.isSsh(m) ? { transport: "ssh", routes: groupOf(groups, m.ssh_host!)?.routes ?? [m.ssh_host!], route: this.ssh.get(m.id)?.route, helper: this.ssh.get(m.id)?.installed } : { transport: "daemon" }),
     };
   }
 
@@ -503,24 +504,26 @@ export class Fleet {
   // An ssh host not enabled: one connection per route in order, no master
   // kept, nothing installed; the facts when it answers.
   async checkSsh(alias: string) {
-    const g = groupOf(alias);
+    if (!plainAlias(alias)) return;
+    const groups = await hostGroups();
+    const g = groupOf(groups, alias);
+    if (!g) return;
     const errs: string[] = [];
-    for (const route of g?.routes ?? [alias]) {
-      if (!plainAlias(route)) continue;
+    for (const route of g.routes) {
       const p = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, route, loginCommand(PROBE_SCRIPT)], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
       const timer = setTimeout(() => p.kill(), 15_000);
       const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
       clearTimeout(timer);
       if (code === 0 && /^os=/m.test(out)) {
         const { platform: _p, ...facts } = parseProbe(out);
-        this.reached.set(g?.alias ?? alias, { state: "ready", facts: { ...facts, measured_ms: Date.now() }, route, machine_id: facts.machine_id, checked_ms: Date.now() });
-        return { ...this.offeredView().find((o) => o.name === (g?.alias ?? alias)), id: `ssh:${alias}`, state: "ready", route, facts };
+        this.reached.set(g.alias, { state: "ready", facts: { ...facts, measured_ms: Date.now() }, route, machine_id: facts.machine_id, checked_ms: Date.now() });
+        return { ...this.offeredView(groups).find((o) => o.name === g.alias), id: `ssh:${alias}`, state: "ready", route, facts };
       }
       errs.push(`${route}: ${(err.trim().split("\n").pop() || (code === null || p.killed ? "no answer within 15 s" : `ssh exited ${code}`)).slice(0, 200)}`);
     }
     const reason = errs.join("; ");
-    this.reached.set(g?.alias ?? alias, { state: "offline", reason, checked_ms: Date.now() });
-    return { id: `ssh:${alias}`, name: alias, source: "ssh", enabled: false, state: "offline", reason, routes: g?.routes };
+    this.reached.set(g.alias, { state: "offline", reason, checked_ms: Date.now() });
+    return { id: `ssh:${alias}`, name: alias, source: "ssh", enabled: false, state: "offline", reason, routes: g.routes };
   }
 
   facts(id: string): Facts | undefined {

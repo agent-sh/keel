@@ -2,7 +2,8 @@
 // order, following `Include` (at most 16 levels, OpenSSH's own bound). Patterns
 // (`*`, `?`, `!`) configure other hosts and are not machines. Only names are
 // read; what a host resolves to is left to ssh.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { readText } from "../core/proc.ts";
 import { ownerHome } from "../core/paths";
@@ -14,33 +15,32 @@ export const plainAlias = (a: string) => /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(a)
 // The configuration read: the owner's, or the file KEEL_SSH_CONFIG names (a
 // scratch daemon's, which includes the owner's and adds its stand-in host).
 const configFile = (home: string) => process.env.KEEL_SSH_CONFIG || join(home, ".ssh", "config");
+const includePath = (home: string, p: string) => p.startsWith("~/") ? join(home, p.slice(2)) : isAbsolute(p) ? p : join(home, ".ssh", p);
 
 export function sshHosts(home = ownerHome()): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const sshDir = join(home, ".ssh");
+  const hosts = new Set<string>();
   const read = (file: string, depth: number) => {
-    if (depth > MAX_DEPTH || !existsSync(file)) return;
+    if (depth > MAX_DEPTH) return;
     let text: string;
     try { if (!statSync(file).isFile()) return; text = readFileSync(file, "utf8"); } catch { return; }
-    parse(text, (alias) => { if (!seen.has(alias)) { seen.add(alias); out.push(alias); } }, (pattern) => {
-      const p = pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern);
-      for (const f of expand(p)) read(f, depth + 1);
-    });
+    for (const [key, word] of directives(text)) {
+      if (key === "host") hosts.add(word);
+      else for (const f of expand(includePath(home, word))) read(f, depth + 1);
+    }
   };
   read(configFile(home), 0);
-  return out;
+  return [...hosts];
 }
 
-export function parse(text: string, host: (alias: string) => void, include: (pattern: string) => void) {
+function* directives(text: string): Generator<["host" | "include", string]> {
   for (const raw of text.split("\n")) {
     const line = raw.replace(/#.*/, "").trim();
     const m = line.match(/^(\w+)\s*(?:=\s*|\s)\s*(.*)$/);
     if (!m) continue;
     const key = m[1]!.toLowerCase();
     const words = (m[2]!.match(/"[^"]*"|\S+/g) ?? []).map((w) => w.replace(/^"|"$/g, ""));
-    if (key === "host") for (const w of words) { if (!/[*?!]/.test(w) && plainAlias(w)) host(w); }
-    else if (key === "include") words.forEach(include);
+    if (key === "host") for (const w of words) { if (plainAlias(w)) yield [key, w]; }
+    else if (key === "include") for (const w of words) yield [key, w];
   }
 }
 
@@ -86,12 +86,8 @@ const fieldsOf = (text: string) => {
 };
 type Resolved = ReturnType<typeof fieldsOf>;
 
-export function resolveAlias(alias: string): Resolved {
-  const r = Bun.spawnSync([sshProgram(), "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
-  return r.exitCode === 0 ? fieldsOf(r.stdout.toString()) : fieldsOf("");
-}
-async function resolveOff(alias: string): Promise<Resolved> {
-  const p = Bun.spawn([sshProgram(), "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 10_000, killSignal: "SIGKILL" });
+async function resolveAlias(program: string, alias: string): Promise<Resolved> {
+  const p = Bun.spawn([program, "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 10_000, killSignal: "SIGKILL" });
   const [out, code] = await Promise.all([readText(p.stdout), p.exited]);
   return code === 0 ? fieldsOf(out) : fieldsOf("");
 }
@@ -111,37 +107,55 @@ function grouped(hosts: string[], resolved: Resolved[]): HostGroup[] {
     return { ...g, alias, routes: [alias, ...g.routes.filter((r) => r !== alias)] };
   });
 }
-function stampOf(home: string): { hosts: string[]; stamp: string } {
-  const hosts = sshHosts(home);
-  let stamp = hosts.join(",");
-  try { stamp += statSync(configFile(home)).mtimeMs; } catch {}
-  return { hosts, stamp };
+async function stampOf(home: string, file: string, program: string) {
+  const hosts = new Set<string>();
+  const inputs = [home, file, program];
+  const read = async (path: string, depth: number): Promise<void> => {
+    if (depth > MAX_DEPTH) return;
+    let text: string;
+    try { if (!(await stat(path)).isFile()) return; text = await readFile(path, "utf8"); } catch { return; }
+    // An Include can change the destination even when the alias list and main file did not change.
+    inputs.push(path, Bun.hash(text).toString());
+    for (const [key, word] of directives(text)) {
+      if (key === "host") { hosts.add(word); continue; }
+      const p = includePath(home, word);
+      if (!/[*?[]/.test(p)) { await read(p, depth + 1); continue; }
+      const files: string[] = [];
+      try {
+        for await (const f of new Bun.Glob(p.slice(dirname(p).length + 1)).scan({ cwd: dirname(p), absolute: true })) files.push(f);
+      } catch { continue; }
+      for (const f of files.sort()) await read(f, depth + 1);
+    }
+  };
+  await read(file, 0);
+  return { hosts: [...hosts], stamp: JSON.stringify(inputs) };
 }
 
-// The groups are made with one `ssh -G` an alias. Made on the loop, a configuration of a few dozen hosts held it
-// for seconds on a busy machine (each a process to start and wait for). So they are made off the loop: at the
-// daemon's start (warmHostGroups), and again when the configuration changed, the groups made before it answering
-// meanwhile. Only a first call before any were made waits for them on the loop.
-let refreshing: { stamp: string; done: Promise<void> } | undefined;
-export function warmHostGroups(home = ownerHome()): Promise<void> {
-  const { hosts, stamp } = stampOf(home);
-  if (groupsCache?.stamp === stamp) return Promise.resolve();
-  if (refreshing?.stamp === stamp) return refreshing.done;
-  const done = Promise.all(hosts.map((a) => resolveOff(a).catch(() => fieldsOf(""))))
-    .then((resolved) => { if (stampOf(home).stamp === stamp) groupsCache = { stamp, groups: grouped(hosts, resolved) }; })
-    .catch(() => {})
-    .finally(() => { if (refreshing?.done === done) refreshing = undefined; });
-  refreshing = { stamp, done };
-  return done;
+// Cold reads join startup warmup, and changed configs wait for their own groups.
+// Do not publish groups built while the files changed under `ssh -G`.
+const refreshing = new Map<string, Promise<HostGroup[] | undefined>>();
+export async function hostGroups(home = ownerHome()): Promise<HostGroup[]> {
+  const file = configFile(home), program = sshProgram();
+  for (;;) {
+    const { hosts, stamp } = await stampOf(home, file, program);
+    if (groupsCache?.stamp === stamp) return groupsCache.groups;
+    let done = refreshing.get(stamp);
+    if (!done) {
+      done = Promise.all(hosts.map((a) => resolveAlias(program, a).catch(() => fieldsOf(""))))
+        .then(async (resolved) => {
+          if ((await stampOf(home, file, program)).stamp !== stamp) return;
+          const groups = grouped(hosts, resolved);
+          groupsCache = { stamp, groups };
+          return groups;
+        })
+        .finally(() => refreshing.delete(stamp));
+      refreshing.set(stamp, done);
+    }
+    const groups = await done;
+    if (groups) return groups;
+  }
 }
 
-export function hostGroups(home = ownerHome()): HostGroup[] {
-  const { hosts, stamp } = stampOf(home);
-  if (groupsCache?.stamp === stamp) return groupsCache.groups;
-  if (groupsCache) { void warmHostGroups(home); return groupsCache.groups; }
-  const groups = grouped(hosts, hosts.map(resolveAlias));
-  groupsCache = { stamp, groups };
-  return groups;
-}
+export async function warmHostGroups(home = ownerHome()): Promise<void> { await hostGroups(home); }
 
-export const groupOf = (alias: string) => hostGroups().find((g) => g.routes.includes(alias));
+export const groupOf = (groups: HostGroup[], alias: string) => groups.find((g) => g.routes.includes(alias));

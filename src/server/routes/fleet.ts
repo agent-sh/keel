@@ -71,7 +71,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   g.__keelFleet?.stop();
   const f = (fleet = g.__keelFleet = new Fleet(store, bus, errors));
   // The ssh configuration's machines are read off the loop now, before a page or a link asks for them.
-  if (!runMode.client) void warmHostGroups();
+  if (!runMode.client) void warmHostGroups().catch((e) => errors.capture("server", e, { at: "ssh host groups" }));
   // What Claude Code and Codex run now on the machines reached over ssh: rows of the list, read-only (src/fleet/far-outside.ts).
   const gfo = globalThis as { __keelFarOutside?: FarOutside };
   gfo.__keelFarOutside?.stop();
@@ -312,12 +312,13 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     return other ? `a machine is already named ${other.name}` : null;
   };
 
-  const machineView = (id: string) => {
+  const machineView = async (id: string) => {
     const m = f.row(id);
-    return m ? f.view(m) : undefined;
+    return m ? f.view(m, f.isSsh(m) ? await hostGroups() : []) : undefined;
   };
   const machinesList = async () => {
-    return [await f.localView(), ...f.rows().map((m) => f.view(m)), ...f.offeredView()];
+    const [local, groups] = await Promise.all([f.localView(), hostGroups()]);
+    return [local, ...f.rows().map((m) => f.view(m, groups)), ...f.offeredView(groups)];
   };
 
   // Every session across machines, from the relays: never waits on a link.
@@ -458,8 +459,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         let m;
         if (b.ssh_host !== undefined) {
           const host = String(b.ssh_host);
-          const group = groupOf(host);
-          if (!plainAlias(host) || !group) return bad(`${host} is not a concrete host of the ssh configuration`);
+          const group = plainAlias(host) && groupOf(await hostGroups(), host);
+          if (!group) return bad(`${host} is not a concrete host of the ssh configuration`);
           const same = f.rows().find((r) => r.ssh_host && group.routes.includes(r.ssh_host));
           if (same) return bad(`${host} reaches ${same.name}, which is already enabled`);
           // With a daemon port: a Keel daemon runs there, reached through ssh -L.
@@ -497,7 +498,10 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     },
 
     "/api/fleet/machines/:id": {
-      GET: (req: any) => (machineView(req.params.id) ? json(machineView(req.params.id)) : bad("no such machine", 404)),
+      GET: async (req: any) => {
+        const view = await machineView(req.params.id);
+        return view ? json(view) : bad("no such machine", 404);
+      },
       PATCH: async (req: any) => {
         const id = req.params.id;
         if (id.startsWith("ssh:")) return bad("enable the ssh host first");
@@ -526,7 +530,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (b.workspace_root !== undefined) { if (b.workspace_root !== null && !isAbsolute(String(b.workspace_root))) return bad("workspace_root must be absolute"); patch.workspace_root = b.workspace_root; }
         f.update(id, patch);
         f.emitMachines();
-        return json(machineView(id));
+        return json(await machineView(id));
       },
       DELETE: async (req: any) => {
         const id = req.params.id;
@@ -545,13 +549,12 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const id: string = req.params.id;
         if (id === "local") return json(await f.localView());
         if (id.startsWith("ssh:")) {
-          const alias = id.slice(4);
-          if (!hostGroups().some((g) => g.routes.includes(alias))) return bad("no such machine", 404);
-          return json(await f.checkSsh(alias));
+          const checked = await f.checkSsh(id.slice(4));
+          return checked ? json(checked) : bad("no such machine", 404);
         }
         if (!f.row(id)) return bad("no such machine", 404);
         await f.check(id, { owner: true });
-        return json(machineView(id));
+        return json(await machineView(id));
       },
     },
 
@@ -895,7 +898,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
 
     // The Rust Keel's peer records: in keel-bun every machine with a granted directory.
     "/api/peers": {
-      GET: () => json({ peers: f.rows().filter((m) => m.workspace_root).map((m) => ({ ...f.view(m), healthy: m.state === "ready" || m.state === "busy", detail: m.reason ?? undefined })) }),
+      GET: async () => {
+        const peers = f.rows().filter((m) => m.workspace_root);
+        const groups = peers.some((m) => f.isSsh(m)) ? await hostGroups() : [];
+        return json({ peers: peers.map((m) => ({ ...f.view(m, groups), healthy: m.state === "ready" || m.state === "busy", detail: m.reason ?? undefined })) });
+      },
     },
   } satisfies Record<string, any>;
 };
