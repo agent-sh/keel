@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { closureOf, holds, pageGraph, sizeOf, wideStart, withPreloads } from "./page-graph.ts";
+import { requireBuildBun } from "./build-bun.ts";
 
 // Feature: the page's start loads what every view needs and no more. The start is the entry chunk
 // and the chunks of the bridge and of the session list, each with what it imports statically (a
@@ -16,6 +17,7 @@ const ENTRY = 760_000;
 const NOT_AT_START = [
   "ui/src/components/ApprovalCard.tsx",
   "ui/src/components/AsksPanel.tsx",
+  "ui/src/components/ConfirmDialog.tsx",
   "ui/src/components/FindBar.tsx",
   "ui/src/components/IncidentBand.tsx",
   "ui/src/components/Switcher.tsx",
@@ -29,10 +31,13 @@ const NOT_AT_START = [
 const NOT_IN_ENTRY = ["ui/src/components/Sidebar.tsx", "ui/src/components/SidePanel.tsx"];
 
 test("the page's start stays within its size budget and leaves out what is drawn on demand", async () => {
+  requireBuildBun();
   const g = await pageGraph(join(import.meta.dir, ".."));
   const start = new Set<string>([g.entry, ...g.chunks[g.entry]!.static, ...closureOf(g, "ui/src/components/Bridge.tsx"), ...closureOf(g, "ui/src/components/Sidebar.tsx")]);
-  expect(g.chunks[g.entry]!.bytes).toBeLessThan(ENTRY);
-  expect(sizeOf(g, start)).toBeLessThan(START);
+  const entry = g.chunks[g.entry]!.bytes, wide = sizeOf(g, start);
+  console.log(`Bun ${Bun.version}: page entry ${entry} / ${ENTRY} bytes; wide start ${wide} / ${START} bytes.`);
+  expect(entry).toBeLessThan(ENTRY);
+  expect(wide).toBeLessThan(START);
   for (const f of NOT_AT_START) expect(holds(g, start, f), f).toBe(false);
   for (const f of NOT_IN_ENTRY) expect(holds(g, [g.entry], f)).toBe(false);
   // The page names every chunk of the start but the entry, once each, for a window that is not a phone's.

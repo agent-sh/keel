@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { requireBuildBun } from "../scripts/build-bun.ts";
 
 const ROOT = join(import.meta.dir, "..");
 function files(dir: string, ext: RegExp): string[] {
@@ -23,6 +24,8 @@ function textOf(file: string): string {
   return text;
 }
 const offenders = (list: string[], bad: RegExp) => list.filter((f) => bad.test(textOf(f))).map((f) => relative(ROOT, f));
+
+test("checks use a Bun release at least as new as the one pinned for bun.lock", requireBuildBun);
 
 test("specs take test from isolate.ts, which restores daemon-wide settings", () => {
   expect(offenders(files(join(ROOT, "test/e2e"), /\.spec\.ts$/), /from "@playwright\/test"/)).toEqual([]);

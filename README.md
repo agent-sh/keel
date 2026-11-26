@@ -3,6 +3,9 @@
 A coding agent harness in one binary: its own agent loop and tools, every model
 your providers list, and a web UI.
 
+Use the Bun release pinned in `package.json` to update `bun.lock`. Checks
+require that release or newer.
+
 ```bash
 bun install
 bun scripts/build.ts
