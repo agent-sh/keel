@@ -108,29 +108,54 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
   return { ok: false, error: "invalid command json" };
 }
 
+// A reply is often larger than the socket takes at once (the session list): what the socket did not
+// take waits, in order, and goes when it drains. A client that reads none of it past OUT_MAX is let go.
+export const OUT_MAX = 64 * 1024 * 1024;
+type Conn = { buf: string; text: TextDecoder; out: Uint8Array[]; closing?: boolean };
+type Sock = { data: Conn; write(b: Uint8Array): number; end(): void };
+function flush(sock: Sock) {
+  const q = sock.data.out;
+  while (q.length) {
+    const head = q[0]!;
+    const n = sock.write(head);
+    if (n < head.length) { q[0] = head.subarray(Math.max(0, n)); return; }
+    q.shift();
+  }
+  if (sock.data.closing) sock.end();
+}
+function send(sock: Sock, text: string) {
+  const q = sock.data.out;
+  q.push(new TextEncoder().encode(text));
+  if (q.reduce((n, b) => n + b.length, 0) > OUT_MAX) { q.length = 0; sock.end(); return; }
+  if (q.length === 1) flush(sock);
+}
+
 export function startMomentumSocket(path: string, c: Ctx) {
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) rmSync(path);
   const old = process.umask(0o177); // the socket is born 0600: no window for another user
   let server: ReturnType<typeof Bun.listen>;
   try {
-    server = Bun.listen<{ buf: string }>({
+    server = Bun.listen<Conn>({
       unix: path,
       socket: {
-        open(sock) { sock.data = { buf: "" }; },
+        open(sock) { sock.data = { buf: "", text: new TextDecoder(), out: [] }; },
         data(sock, chunk) {
-          sock.data.buf += new TextDecoder().decode(chunk);
+          // A character split across two reads is decoded once both are in.
+          sock.data.buf += sock.data.text.decode(chunk, { stream: true });
           let i: number;
           while ((i = sock.data.buf.indexOf("\n")) >= 0) {
             const line = sock.data.buf.slice(0, i);
             sock.data.buf = sock.data.buf.slice(i + 1);
-            if (line.trim()) sock.write(JSON.stringify(handleLine(line, c)) + "\n");
+            if (line.trim()) send(sock, JSON.stringify(handleLine(line, c)) + "\n");
           }
           if (sock.data.buf.length > MAX_LINE) {
-            sock.write(JSON.stringify({ ok: false, code: "line_too_long", error: "command line too long" }) + "\n");
-            sock.end();
+            send(sock, JSON.stringify({ ok: false, code: "line_too_long", error: "command line too long" }) + "\n");
+            sock.data.closing = true;
+            if (!sock.data.out.length) sock.end();
           }
         },
+        drain(sock) { flush(sock); },
       },
     });
   } finally {

@@ -42,3 +42,34 @@ test("a supervisor's act is stored before the message or stop it makes", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The session list is larger than a socket takes at once: the whole line arrives, as one JSON reply.
+test("a reply larger than the socket takes at once arrives whole", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "momentum-large-"));
+  const { startMomentumSocket } = await import("./momentum.ts");
+  const store = new Store(dir);
+  const sock = join(dir, "m.sock");
+  try {
+    const title = "x".repeat(1000);
+    for (let i = 0; i < 1500; i++) store.createSession({ title: `${i} ${title}`, model: "p:m", workspace: dir });
+    const engine = { isRunning: () => false } as any;
+    const server = startMomentumSocket(sock, { store, engine, transcript: () => "t" });
+    try {
+      const got = await new Promise<string>((resolve, reject) => {
+        let buf = "";
+        const t = setTimeout(() => reject(new Error(`no whole line, ${buf.length} bytes`)), 10_000);
+        void Bun.connect({ unix: sock, socket: {
+          open(s) { s.write('{"cmd":"list_sessions"}\n'); },
+          data(s, chunk) { buf += new TextDecoder().decode(chunk); if (buf.endsWith("\n")) { clearTimeout(t); s.end(); resolve(buf); } },
+        } });
+      });
+      const reply = JSON.parse(got);
+      expect(reply.ok).toBe(true);
+      expect(reply.sessions.length).toBe(1500);
+    } finally {
+      server.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
