@@ -286,7 +286,9 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     ].join("\n");
     if (key) store.db.query("INSERT INTO debug_fixes (key, session_id, ts) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET session_id = excluded.session_id, ts = excluded.ts").run(key, s.id, Date.now());
     // Keel's words, written for the owner's press: `via` keeps them from being marked as his typing (personTyped).
-    engine.send(s.id, text, { meta: { via: "debug_fix" } });
+    // The first line quotes a captured failure, which can carry a page's words: `quoted` names it, and the
+    // provenance book reads it as outside content.
+    engine.send(s.id, text, { meta: { via: "debug_fix", quoted: text.split("\n")[0] } });
     return { session: store.session(s.id)!, path };
   }
 

@@ -956,7 +956,18 @@ export class ProvenanceBook {
       }
       if (e.kind === "user") {
         const text = String(d.text ?? "");
-        if (ownerPrompt(d) && !text.startsWith("[harness]")) await this.noteAll(text, "owner", "the owner's message", e);
+        if (d.via === "debug_fix") {
+          // A fix session's brief: the owner pressed Fix, but its first line quotes a captured failure, whose words
+          // can come from a page (an error a fetch or a server returned). That line is outside content; the rest is
+          // the press's own words. A brief that does not hold the line it names is outside whole.
+          const q = typeof d.quoted === "string" ? d.quoted : "";
+          const at = q ? text.indexOf(q) : -1;
+          if (at < 0) await this.noteAll(text, "outside", "a captured failure quoted in a fix session's brief", e);
+          else {
+            await this.noteAll(text.slice(0, at) + text.slice(at + q.length), "owner", "the owner's message", e);
+            await this.noteAll(q, "outside", "a captured failure quoted in a fix session's brief", e);
+          }
+        } else if (ownerPrompt(d) && !text.startsWith("[harness]")) await this.noteAll(text, "owner", "the owner's message", e);
         else if (d.kind === "channel") await this.noteAll(text, "outside", `a channel event${d.source ? ` (${String(d.source).slice(0, 60)})` : ""}`, e);
         // PR Steward's words carry what a check printed and what people wrote on the pull request: a stranger's text,
         // whoever the harness wrapped it for (src/steward/rules.ts). Outside, as a channel event is. Its turn's report

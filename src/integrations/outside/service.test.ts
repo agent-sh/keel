@@ -383,6 +383,10 @@ describe("outside sessions", () => {
       const s = await until(() => sessionOf(r.store, id));
       await r.o.sync(s.id);
       const copies = (r.o as any).stats.full_copies;
+      // Parallel calls' results come seconds apart: a file quiet for a while, its turn still working, keeps the gap.
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(join(logs, "transcript_full.jsonl"), old, old);
+      await r.o.sync(s.id);
       step({ step_index: 1, type: "PLANNER_RESPONSE", model: "agy-model", tool_calls: [{ name: "view_file", args: { AbsolutePath: "notes.md" } }] });
       step({ step_index: 3, type: "PLANNER_RESPONSE", model: "agy-model", content: "A pear." });
       listed("CASCADE_RUN_STATUS_IDLE");

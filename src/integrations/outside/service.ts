@@ -1013,9 +1013,10 @@ export class Outside {
     const working = (t ? this.factsOf(t).said.state : store.session(sessionId)?.outside?.state) === "working";
     const quiet = Date.now() - st.mtimeMs >= QUIET_MS;
     if (l.conv instanceof AgyConvert) {
-      // Steps behind a gap wait for it to fill (a result is written before the step that made its call); a turn
-      // that ended passes it over. Looked at again once the file is quiet.
-      l.conv.settle(quiet || !working);
+      // Steps behind a gap wait for it to fill (a result is written before the step that made its call): only a turn
+      // that ended passes it over, or the cap on held steps. A quiet file does not: parallel calls' results come
+      // seconds apart. Looked at again once the file is quiet, when the turn's state may have moved.
+      l.conv.settle(!working);
       if (l.conv.held) this.whenQuiet(sessionId, st.mtimeMs);
     }
     const events = l.conv.b.events;
