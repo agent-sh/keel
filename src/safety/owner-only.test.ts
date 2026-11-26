@@ -138,6 +138,21 @@ test("a name the line sets is followed into a script it hands a shell in quotes,
   }
 });
 
+test("a name with no value in sight, after a protected folder that is spelled out, is one of that folder's files", () => {
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  for (const command of [
+    "read y; cat ~/.ssh/$y", "for y in $(ls ~/.ssh); do cat ~/.ssh/$y; done", "read t; cat ~/.ssh/id_$t", 'read y; cat "$HOME/.ssh/$y"', "y=$(ls ~/.ssh | head -1); cat ~/.ssh/${y}",
+    "read h; echo x > .git/hooks/$h", "read y; cp k ~/.ssh/$y", "D=/home/u/.ssh; read y; cat $D/$y", "A=$(pwd); read y; cat $A/.ssh/$y",
+  ]) for (const mode of ["ask", "full-auto"] as Mode[]) expect([command, mode, shell(command, mode)]).toEqual([command, mode, "ask-high"]);
+  // The same name after a folder that holds nothing protected runs as it did.
+  for (const [command, ask] of [
+    ["read y; cat notes/$y", "allow"], ["for f in $(ls logs); do cat logs/$f; done", "allow"], ["read y; echo x > out/$y.txt", "ask-low"], ["N=$(date +%s); cp a.log logs/run-$N.log", "ask-low"],
+  ] as const) {
+    expect([command, shell(command)]).toEqual([command, ask]);
+    expect([command, shell(command, "full-auto")]).toEqual([command, "allow"]);
+  }
+});
+
 test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
   const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
   // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)

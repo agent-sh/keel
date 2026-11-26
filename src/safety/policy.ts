@@ -1141,7 +1141,9 @@ function wordStands(word: string, i: number, s: Line, home: string): string[] {
     // (`${D%/}`, `${D:-x}`: its value, or something else.)
     const plain = m[4] !== undefined || (m[1] === "" && m[3] === "");
     const vs = n === undefined ? [SOMEWHERE] : plain ? nameStands(n, i, s, home) : [...nameStands(n, i, s, home), SOMEWHERE];
-    outs = few(vs.flatMap((v) => (v.startsWith(SOMEWHERE) ? [v] : outs.map((o) => o + lit + v))));
+    // (A value the words do not show stands in some folder when the word starts with it. After words that are
+    // shown it is also one name there, as a wildcard is: `~/.ssh/$y` is a file of that folder.)
+    outs = few(vs.flatMap((v) => (v.startsWith(SOMEWHERE) ? [v, ...outs.filter((o) => o + lit !== "" && o + lit !== SOMEWHERE).map((o) => o + lit + "_" + v.slice(1))] : outs.map((o) => o + lit + v))));
   }
   return outs.map((o) => o + word.slice(at));
 }
