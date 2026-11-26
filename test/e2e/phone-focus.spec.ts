@@ -42,6 +42,12 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         await expect(page.getByTestId("dock-agent")).toHaveCount(0);
         expect(await page.getByTestId("dock-agents").locator(".k-agents-label").evaluate((e) => getComputedStyle(e).fontWeight)).toBe("400");
 
+        // A run's line in the conversation is a finger's height, its words in its middle with the dot.
+        const run = pane.getByTestId("lens-run-toggle").first();
+        await expect(run).toBeVisible({ timeout: 30_000 });
+        const mid = async (l: ReturnType<Page["locator"]>) => { const r = (await l.boundingBox())!; return r.y + r.height / 2; };
+        expect(Math.abs((await mid(run.locator(".k-lens-dot"))) - (await mid(run.getByTestId("lens-run-came"))))).toBeLessThanOrEqual(2);
+
         // The box is one line while the turn runs: Stop and Send stand on the field's line, each drawn a line's icon.
         const box = pane.getByTestId("composer-box"), field = pane.getByTestId("composer");
         const stop = pane.getByTestId("stop"), send = pane.getByTestId("send");

@@ -472,7 +472,6 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 @container reading (max-width: 28rem) {
   .k-lens-took { display: none; }
   .k-lens-run[data-open] .k-lens-took { display: block; flex-basis: 100%; margin-left: 0.875rem; white-space: normal; }
-  /* (A phone's line is a finger's height: its words stand in its middle with the dot and the chevron, not at its top.) */
-  .k-lens-line { flex-wrap: wrap; row-gap: 0; align-items: center; align-content: center; }
+  .k-lens-line { flex-wrap: wrap; row-gap: 0; }
   .k-lens-stream { margin-left: 0.1875rem; padding-left: 0.625rem; }
 }
