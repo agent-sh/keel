@@ -4,10 +4,12 @@ import { shoot, setPanes, WORKBENCH } from "./shots.ts";
 // Feature: the rail always says which session is which. With room it is the
 // list (title, state, time, by folder), with one pane, two or three open at
 // this width. With less room beside the panes it is still a list of titles,
-// one line a session. It folds to marks only by choice (the toggle or Ctrl B,
-// remembered) or when the panes leave no room for a title (three in a narrow window); a
-// mark is the state's shape and a short code of the title, no two alike, and
-// the card beside the entry under the pointer or the focus gives the title,
+// one line a session. It folds only by choice (the toggle or Ctrl B,
+// remembered) or when the panes leave no room for a title (three in a narrow window). Folded
+// it is the way back to what needs the owner and what works, not the list: a row for a session
+// that calls, works, holds news or is on screen (a word of its title, no two alike, and a dot
+// only where the state asks for the eye), and one quiet count of every session at rest, which
+// opens the list. The card beside the entry under the pointer or the focus gives the title,
 // the state, the folder and the last activity. Without room the toggle lays
 // the list over the panes until a session is picked. A failed session is
 // marked failed on a fresh page, before any of its events are loaded (the
@@ -85,29 +87,41 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await expect(entry(done)).toBeFocused();
   await shoot(page, "rail-03-two-stations-list");
 
-  // Folded by choice (Ctrl B): marks, banded by state, each with its own code; the choice holds over a reload.
+  // Folded by choice (Ctrl B): the choice holds over a reload.
   await page.keyboard.press("Control+b");
   await expect(side).not.toHaveAttribute("data-open", "true");
   expect(await stored("keel.list")).toBe("false");
+  // (The third session is read and off screen: at rest and seen.)
+  await request.post(`/api/sessions/${twin}/marks`, { data: { unread: false } });
   await page.reload();
   await expect(side).not.toHaveAttribute("data-open", "true");
   await expect(entry(failed)).toHaveAttribute("data-watch", "fail");
-  const failBand = rail.getByTestId("rail-band").filter({ has: page.locator(`[data-session="${failed}"]`) });
-  await expect(failBand).toHaveAttribute("data-watch", "fail");
-  // A band is headed by its state's mark and how many; its name and tooltip say in words what it holds.
-  await expect(failBand.locator(".k-marks-head")).toHaveText(/^\d+$/);
-  await expect(failBand.locator(".k-marks-head .k-mark")).toHaveAttribute("data-watch", "fail");
-  await expect(failBand).toHaveAttribute("title", /^Failed: \d+$/);
-  await expect(failBand).toHaveAccessibleName(/^Failed: \d+$/);
-  const codes = await rail.getByTestId("rail-code").allTextContents();
-  expect(codes.length).toBeGreaterThanOrEqual(3);
-  expect(codes.every((c) => c.length >= 2)).toBe(true);
-  expect(new Set(codes).size).toBe(codes.length);
-  // Same initials (Charge the card, Check the cache), told apart.
-  const [c1, c2] = [await entry(failed).getByTestId("rail-code").textContent(), await entry(twin).getByTestId("rail-code").textContent()];
-  expect(c1![0]).toBe("C");
-  expect(c2![0]).toBe("C");
-  expect(c1).not.toBe(c2);
+  // A row is a word of its session's title in the text face, at one weight, and no two rows read alike.
+  await expect(entry(failed).getByTestId("rail-word")).toHaveText("Charge");
+  await expect(entry(done).getByTestId("rail-word")).toHaveText("Why");
+  const words = await rail.getByTestId("rail-word").allTextContents();
+  expect(new Set(words.map((w) => w.toLowerCase())).size).toBe(words.length);
+  const face = (el: Element) => { const s = getComputedStyle(el); return `${s.fontFamily.split(",")[0]} ${s.fontWeight} ${s.textTransform}`; };
+  expect(await entry(failed).getByTestId("rail-word").evaluate(face)).toBe(`${await page.locator("body").evaluate((el) => getComputedStyle(el).fontFamily.split(",")[0])} 400 none`);
+  // The dot is there only where the state asks for the eye: the failed session has the failure's, the
+  // finished one on screen has none, and both keep the dot's place so the words stand in one column.
+  await expect(entry(failed).getByTestId("rail-dot").locator(".k-mark")).toHaveAttribute("data-watch", "fail");
+  await expect(entry(done).getByTestId("rail-dot").locator("*")).toHaveCount(0);
+  const left = (id: string) => entry(id).getByTestId("rail-word").evaluate((el) => Math.round(el.getBoundingClientRect().left));
+  expect(await left(failed)).toBe(await left(done));
+  // A session at rest that the owner has seen is no row: it is counted in the one line under the rows,
+  // with no band, no head and no count but that one. The line opens the list.
+  await expect(entry(twin)).toHaveCount(0);
+  await expect(rail.locator('[data-testid="session-row"]:not([aria-current], [data-shown], [data-unread], [data-watch="need"], [data-watch="fail"], [data-watch="declined"], [data-watch="wait"], [data-watch="work"], [data-watch="resume"])')).toHaveCount(0);
+  const more = rail.getByTestId("rail-rest");
+  await expect(more).toHaveText(/^\+\d+$/);
+  await expect(more).toHaveAccessibleName(/^\d+ more sessions?( at rest)?\. Show the session list$/);
+  await expect(rail.locator(".k-marks, .k-marks-head, h3")).toHaveCount(0);
+  await more.click();
+  await expect(side).toHaveAttribute("data-open", "true");
+  await expect(entry(twin).locator(".k-row-title")).toBeVisible();
+  await page.keyboard.press("Control+b");
+  await expect(side).not.toHaveAttribute("data-open", "true");
   await entry(done).hover();
   await expect(card).toContainText(`batch size ${tag}`);
   await expect(card).toContainText("Done");
@@ -143,13 +157,13 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await page.setViewportSize({ width: 1500, height: 980 });
   await expect(side).toHaveAttribute("data-narrow", "true");
   await expect(entry(twin).locator(".k-row-title")).toBeVisible();
-  await expect(entry(twin).getByTestId("rail-code")).toHaveCount(0);
+  await expect(entry(twin).getByTestId("rail-word")).toHaveCount(0);
   await expect(stations).toHaveCount(3);
-  // Narrower still there is no room for a title: marks, though the list is the choice.
+  // Narrower still there is no room for a title: the folded rows, though the list is the choice.
   await page.setViewportSize({ width: 1400, height: 980 });
   await expect(side).not.toHaveAttribute("data-open", "true");
   await expect(stations).toHaveCount(3);
-  await expect(entry(twin).getByTestId("rail-code")).toBeVisible();
+  await expect(entry(twin).getByTestId("rail-word")).toBeVisible();
   // The toggle lays the list over the panes; Escape puts it away; picking a session does too.
   await page.getByTestId("rail-toggle").click();
   await expect(side).toHaveAttribute("data-over", "true");

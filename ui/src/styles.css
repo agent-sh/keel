@@ -396,10 +396,9 @@
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
 
-/* The instrument face (Martian Mono, narrow) has two jobs and no other: a call sign of the folded
-   rail and a key. Everything else is set in the text face, code in the code face. A rule joins a
-   role by being listed here; no other rule and no component names the face
-   (src/ui-conventions.test.ts).
+/* The instrument face (Martian Mono, narrow) has one job and no other: a key of the keyboard.
+   Everything else is set in the text face, code in the code face. A rule joins the role by being
+   listed here; no other rule and no component names the face (src/ui-conventions.test.ts).
    The chrome (the session list, the top bar, the lines over the box, the home, the panels) is one
    block of the text face: titles, actions, state words, clocks and counts alike, in two sizes (a
    name or a control at --text-ui, a time or a key at --text-micro) and two weights (regular, and
@@ -408,9 +407,7 @@
    tabular so a clock does not jitter: a narrow mono beside the text face was a third face for small labels. */
 .k-face-figure, .k-pane-empty-time, .k-dock-need, .k-tally b { font-variant-numeric: tabular-nums; }
 /* (The list's and the top bar's figures, in the text face: tabular, so a clock does not jitter.) */
-.k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-n, .k-stuck-chip, .k-tick-more, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
-/* 1. A session's call sign on the folded rail. */
-.k-tick .k-tick-code { font-family: var(--font-inst); font-stretch: 75%; }
+.k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-n, .k-stuck-chip, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
 .k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
 /* The name of a surface (the product, a page, a panel, a dialog) is set in the text face, as a heading: the one
    face the page reads in, tightened a little at a title's size. */
@@ -420,7 +417,7 @@
 /* At a page's size a title is drawn at a medium weight. A surface's head (.k-surface-title) keeps the one weight
    every surface shares. */
 :is(.text-display, .text-title, .k-page h1):not(.k-surface-title) { font-weight: 400; }
-/* 2. A key of the keyboard. */
+/* A key of the keyboard. */
 kbd { font-family: var(--font-inst); font-stretch: 75%; }
 /* A shortcut is one chord, not a row of keycaps: its keys sit in one hairline outline, a
    thin space apart, in the quietest ink. It is a hint beside a name, never louder than it. */

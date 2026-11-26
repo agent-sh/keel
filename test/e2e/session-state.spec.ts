@@ -1048,29 +1048,27 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
     await shoot(page, "session-state-12-list");
     await page.screenshot({ path: `${SHOTS}/session-state-12-list-rail-dark.png`, clip: { x: 0, y: 0, width: 640, height: 1040 } });
 
-    // Folded: the same sessions as marks, banded by state.
+    // Folded: a row for each session that calls, works or waits, in that order, and for the one on screen.
     await page.getByTestId("rail-toggle").click();
-    await expect(page.getByTestId("rail-band").first()).toBeVisible();
-    // Every band is on the rail without a scroll: need, fail, wait, work, stop, done.
-    const bands = page.getByTestId("rail-band");
-    await expect(bands).toHaveCount(6);
-    expect(await bands.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).toEqual(["need", "fail", "wait", "work", "resume", "done"]);
-    // With room for all, every one of the twelve has its mark. (On a daemon crowded by other specs' sessions
-    // a band holds some back behind a count, and what needs the owner still has its marks.)
-    const crowded = (await page.getByTestId("rail-more").count()) > 0;
-    for (const [id, w] of want) if (!crowded || w === "need") await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`), id).toBeVisible();
-    const railBox = (await page.getByTestId("session-list").boundingBox())!;
-    for (const b of await bands.all()) {
-      const box = (await b.boundingBox())!;
-      expect(box.y + box.height).toBeLessThanOrEqual(railBox.y + railBox.height + 1);
+    const foldedList = page.getByTestId("session-list");
+    const railRow = (id: string) => foldedList.locator(`[data-testid="session-row"][data-session="${id}"]`);
+    await expect(railRow(done1)).toBeVisible();
+    // With room for all, every one that is not at rest has its row and its state's dot. (On a daemon crowded by
+    // other specs' sessions the count under the rows holds some back, and what needs the owner still has its rows.)
+    const crowded = (await page.getByTestId("rail-rest").locator(".k-mark").count()) > 0;
+    const live = want.filter(([, w]) => w !== "stop" && w !== "done");
+    for (const [id, w] of live) if (!crowded || w === "need") {
+      await expect(railRow(id), id).toBeVisible();
+      await expect(railRow(id).getByTestId("rail-dot").locator(".k-mark"), id).toHaveAttribute("data-watch", w);
     }
-    // A finished session's mark is the quiet grey, in its band's head too: the folded rail's column of them is not a column of green.
-    {
-      const ink = (v: string) => page.evaluate((v) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = `var(${v})`; const c = getComputedStyle(p).color; p.remove(); return c; }, v);
-      const done = page.locator('[data-testid="rail-band"][data-watch="done"] .k-mark[data-watch="done"]');
-      expect(await done.count()).toBeGreaterThan(1);
-      expect(await done.evaluateAll((els) => [...new Set(els.map((el) => getComputedStyle(el).backgroundColor))])).toEqual([await ink("--st-idle")]);
-    }
+    const drawn = await foldedList.locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")!));
+    const ranks = drawn.map((w) => { const i = ["need", "fail", "declined", "wait", "work", "resume"].indexOf(w); return i < 0 ? 9 : i; });
+    expect(ranks, "what calls first, then what works, then what rests").toEqual([...ranks].sort((x, y) => x - y));
+    // Every row and the count are on the rail without a scroll.
+    expect(await foldedList.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+    // A session at rest draws no dot of its state (the open one here), and none is a row unless it is on screen or new.
+    await expect(railRow(done1).getByTestId("rail-dot").locator(".k-mark")).toHaveCount(0);
+    await expect(foldedList.locator('.k-mark:is([data-watch="done"], [data-watch="idle"], [data-watch="stop"])')).toHaveCount(0);
     await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${approval}"]`).hover();
     await expect(page.getByTestId("rail-card")).toBeVisible();
     await shoot(page, "session-state-12-rail");

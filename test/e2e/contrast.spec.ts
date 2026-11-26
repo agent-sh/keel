@@ -339,10 +339,10 @@ test("the light theme steps from steel to paper to white", async ({ page, reques
   await shoot(page, "contrast-card-on-panel");
 });
 
-// Two words that were under the ratio on their own ground: the bridge's Need tally,
-// violet on its violet tint over the rail, and the name of a switch that is off
+// Words that must not go under the ratio on their own ground: the folded rail's quietest
+// (its count of the sessions at rest, a row at rest), and the name of a switch that is off
 // with its group (Network in the sandbox), which was dimmed with its switch.
-test("the Need tally and a switched-off setting's name read in both themes", async ({ page, request }) => {
+test("the folded rail's quiet words and a switched-off setting's name read in both themes", async ({ page, request }) => {
   const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
   const { session } = await (await request.post("/api/sessions", { data: { model, title: "Words on their own ground" } })).json();
   await page.setViewportSize({ width: 1920, height: 1040 });
@@ -372,17 +372,17 @@ test("the Need tally and a switched-off setting's name read in both themes", asy
   for (const theme of ["light", "dark"]) {
     await page.evaluate((t) => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.toggle("dark", t === "dark"); }, theme);
     const network = await name.evaluate(contrast);
-    // The tally as the folded rail draws it.
+    // The folded rail's quietest words: the count of the sessions at rest, and a row at rest.
     const tally = await page.evaluate((fn) => {
       const rail = document.createElement("div");
       rail.className = "k-rail";
-      rail.innerHTML = '<div class="k-marks" data-watch="need"><div class="k-marks-head"><span>Need</span><span>1</span></div></div>';
+      rail.innerHTML = '<button class="k-tick k-tick-rest"><span class="k-tick-word">+27</span></button><button class="k-tick" data-watch="done"><span class="k-tick-word">Notes</span></button>';
       document.body.append(rail);
-      const r = new Function(`return (${fn})`)()(rail.querySelector("span")!);
+      const r = Math.min(...[...rail.querySelectorAll("span")].map((el) => new Function(`return (${fn})`)()(el) as number));
       rail.remove();
-      return r as number;
+      return r;
     }, contrast.toString());
-    got.push(`${theme}: network ${network}, need tally ${tally}`);
+    got.push(`${theme}: network ${network}, folded rail's count ${tally}`);
     expect(network, `${theme} network`).toBeGreaterThanOrEqual(4.5);
     expect(tally, `${theme} tally`).toBeGreaterThanOrEqual(4.5);
   }

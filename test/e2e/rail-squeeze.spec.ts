@@ -4,7 +4,7 @@ import { shoot } from "./shots.ts";
 
 // Feature: the session list squeezed. Its edge drags from the default width
 // down to the narrowest (14.5rem), and at every width on the way, at every
-// text size, nothing leaves the bar, nothing is cut without an ellipsis, no
+// text size, nothing leaves the bar, nothing is cut without an ellipsis (or a fade), no
 // word runs under another or onto a second line, and rows of a kind are
 // equally high. What says least gives way first: the shortcut hints, the
 // brand's name, the Settings word, a row's tag. The rows are real ones: a
@@ -41,7 +41,9 @@ function audit() {
   for (const el of [rail, ...rail.querySelectorAll<HTMLElement>("*")].filter(shown)) {
     const cs = getComputedStyle(el);
     const over = el.scrollWidth - el.clientWidth;
-    if (over > 1 && cs.overflowX !== "visible" && cs.textOverflow !== "ellipsis") issues.push(`cut without an ellipsis: ${name(el)}${where(el)} holds ${over}px more than it shows`);
+    // (A word of the folded rail runs out under a fade: in six letters of room three dots would take one of them.)
+    const fades = (cs.maskImage || cs.webkitMaskImage || "none") !== "none";
+    if (over > 1 && cs.overflowX !== "visible" && cs.textOverflow !== "ellipsis" && !fades) issues.push(`cut without an ellipsis: ${name(el)}${where(el)} holds ${over}px more than it shows`);
     const p = painted(el);
     if (p.right - p.left > 0.5 && (p.right > R.right + 0.75 || p.left < R.left - 0.75)) issues.push(`leaves the bar: ${name(el)}${where(el)} by ${Math.max(p.right - R.right, R.left - p.left).toFixed(1)}px`);
   }
@@ -56,7 +58,7 @@ function audit() {
     if (tops.size > 1) issues.push(`wraps onto ${tops.size} lines: ${name(el)}${where(el)} "${n.textContent.trim().slice(0, 30)}"`);
   }
   // Parts over each other, inside each row and each bar.
-  const groups = [...rail.querySelectorAll<HTMLElement>('.k-row, .k-rail-brand, .k-rail-foot, .k-rail-acts .k-act, .k-find, .k-group-head, .k-machine-sep, .k-session-children > button, .k-child-session, [data-testid="tag-filter"], .k-tick, .k-marks-head, .k-more, [role="tablist"]')].filter(shown);
+  const groups = [...rail.querySelectorAll<HTMLElement>('.k-row, .k-rail-brand, .k-rail-foot, .k-rail-acts .k-act, .k-find, .k-group-head, .k-machine-sep, .k-session-children > button, .k-child-session, [data-testid="tag-filter"], .k-tick, .k-more, [role="tablist"]')].filter(shown);
   for (const g of groups) {
     const atoms = [...g.querySelectorAll<HTMLElement>("*")].filter((el) => shown(el) && (el.tagName.toLowerCase() === "svg" ? !el.parentElement!.closest("svg") : !el.closest("svg") && (el.classList.contains("k-mark") || [...el.childNodes].some((c) => c.nodeType === 3 && c.textContent!.trim()))));
     const boxes = atoms.map((el) => ({ el, b: painted(el) })).filter((x) => x.b.right - x.b.left > 0.5 && x.b.bottom - x.b.top > 0.5);

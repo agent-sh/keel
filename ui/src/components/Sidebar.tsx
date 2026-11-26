@@ -29,9 +29,9 @@ import { useNeedUnderLooks } from "../lib/looks.ts";
 import { useQueued } from "../lib/queued.ts";
 import { useCap } from "../lib/caps.ts";
 import { capTip, dollars } from "../../../src/automation/cap-rules.ts";
-import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
+import { listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { opened, openFocus } from "../lib/self-focus.ts";
-import { fitBands } from "../lib/rail-fit.ts";
+import { railShown, railWords } from "../lib/rail-words.ts";
 import { navigate, phone, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
@@ -850,129 +850,111 @@ const NEW_UNSENT = {
 // The tab the index opens on (the folded rail's archive button asks for "archived").
 let openOn: "active" | "archived" = "active";
 
-// Folded: one mark per session, banded by what each needs from you, each band
-// headed by its word and count, in the list's order: what needs you, what
-// failed, what waits, what works, then what is at rest. Within a band the
-// newest session is on top, and a mark keeps that place while its session
-// works. Under the hand the marks stay in the band they were in: the mark
-// itself shows the state as it is. Every band is on screen: one with more marks than
-// the rail has room for ends in a count that opens the list. A finished
-// session you have not looked at keeps a full mark; one you have seen goes
-// quiet. Hovering or focusing a mark shows its card.
-const BANDS: { w: Watch[] }[] = [{ w: ["need"] }, { w: ["fail", "declined"] }, { w: ["wait"] }, { w: ["work"] }, { w: ["resume", "stop"] }, { w: ["done", "idle"] }];
-// The folded rail keeps every band on screen. When the marks do not fit at
-// their usual size the rail sets them tighter (smaller marks, slimmer heads);
-// only when they do not fit even so does a band hold some back behind a count.
-// Returns how many marks there is room for (null: all of them), measured on the rail itself.
-function useRailRoom(bands: number, marks: number) {
+// Folded, the rail is the way back to what needs you and what works, not the list. A session is a
+// row while it calls for you (it asks, failed, was declined), works or waits, holds news you have not
+// seen, or is on screen. Every other session is at rest and seen: it is counted in one quiet line
+// under the rows, which opens the list. A row is a word of the session's title (lib/rail-words.ts)
+// and, only where its state asks for the eye, the list's own dot before it: none for a session at
+// rest, the small news dot for one that finished unseen. The rows are in the order of attention: what
+// needs you, what failed, what waits, what works, then what is on screen and what is new. Under the
+// hand a row keeps the place it had, and none leaves. Hovering or focusing a row shows its card, with the title whole.
+const ATTENTION: Watch[] = ["need", "fail", "declined", "wait", "work", "resume"];
+// How many rows the folded rail has room for (null: all of them), measured on the rail itself.
+function useRailRoom(any: boolean) {
   const probe = useRef<HTMLSpanElement>(null);
-  const [tight, setTight] = useState(false);
   const [rows, setRows] = useState<number | null>(null);
-  const loose = useRef({ tick: 0, over: 0 }); // the usual sizes, kept to know when they fit again
   useLayoutEffect(() => {
     const nav = probe.current?.parentElement;
     if (!nav) return;
-    nav.toggleAttribute("data-tight", tight);
     const measure = () => {
-      const tick = nav.querySelector<HTMLElement>(".k-tick");
-      const band = nav.querySelector<HTMLElement>(".k-marks");
-      if (!tick || !band) return setRows(null);
-      const cs = getComputedStyle(nav), bs = getComputedStyle(band), gap = parseFloat(getComputedStyle(band.querySelector("ol")!).rowGap) || 0;
-      const over = (band.querySelector<HTMLElement>(".k-marks-head")?.offsetHeight ?? 0) + parseFloat(bs.paddingTop) + parseFloat(bs.paddingBottom) + 1;
+      const tick = nav.querySelector<HTMLElement>(".k-tick"), ol = nav.querySelector<HTMLElement>(".k-ticks");
+      if (!tick || !ol) return setRows(null);
+      const cs = getComputedStyle(nav), gap = parseFloat(getComputedStyle(ol).rowGap) || 0;
       const room = nav.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-      const need = (t: number, o: number, g: number) => marks * (t + g) + bands * o;
-      if (!tight) {
-        loose.current = { tick: tick.offsetHeight + gap, over };
-        setRows(null);
-        if (need(tick.offsetHeight, over, gap) > room) setTight(true);
-        return;
-      }
-      if (loose.current.tick && marks * loose.current.tick + bands * loose.current.over <= room) return setTight(false);
-      setRows(need(tick.offsetHeight, over, gap) <= room ? null : Math.max(bands, Math.floor((room - bands * over) / (tick.offsetHeight + gap))));
+      setRows(Math.max(2, Math.floor((room + gap) / (tick.offsetHeight + gap))));
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(nav);
     return () => ro.disconnect();
-  }, [bands, marks, tight]);
+  }, [any]);
   return { probe, rows };
 }
 function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.created - a.created || b.id.localeCompare(a.id)), [sessions]);
-  const codes = useMemo(() => callsigns(live), [live]);
+  const words = useMemo(() => railWords(live), [live]);
   const states = useSettledStates(useSessionStates(live));
-  const now = useMemo(() => Object.fromEntries(live.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>, [live, states]);
-  // Held: each mark in the band it was in, one whose session left still there (dimmed), and what came since in a band of its own at the end.
-  const { list: ordered, watches: banded, gone, late } = useHeld(useContext(HandCtx).held, "marks", live, now);
-  const list = ordered.map((s) => sessions[s.id] ?? s);
-  const watches = now;
+  const watches = useMemo(() => Object.fromEntries(live.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>, [live, states]);
+  // Held: each row where it was, one whose session left still there (dimmed), and what came since at the end.
+  const held = useContext(HandCtx).held;
+  const { list: ordered, watches: banded, gone, late } = useHeld(held, "marks", live, watches);
   const shown = useStations((x) => x.shown);
+  // What calls first, then what works, then the sessions on screen, then the rest, newest first.
+  const rank = (s: Session) => { const w = banded[s.id] ?? "idle"; return AT_REST.includes(w) ? (s.id === current || shown.includes(s.id) ? ATTENTION.length : ATTENTION.length + 1) : ATTENTION.indexOf(w); };
+  const sorted = ordered.map((s) => sessions[s.id] ?? s).sort((a, b) => rank(a) - rank(b));
+  // Under the hand the order is the one it found: a row pressed there is opened where it is.
+  const place = useRef(new Map<string, number>());
+  if (!held || !place.current.size) place.current = new Map(sorted.map((s, i) => [s.id, i]));
+  else sorted.sort((a, b) => (place.current.get(a.id) ?? sorted.length) - (place.current.get(b.id) ?? sorted.length));
+  const list = [...sorted, ...late];
   const unread = useAuto((s) => s.unread.sessions);
   const bind = useContext(CardCtx);
-  const bands = [
-    // A band's words are the states of the sessions in it (src/core/state-words.ts): "Failed or declined", "Done or not started".
-    ...BANDS.map((b) => { const items = list.filter((s) => b.w.includes(banded[s.id] ?? "idle")); return { ...b, key: b.w[0]!, label: holdsWords(items.map((s) => banded[s.id] ?? "idle")), items, late: false }; }),
-    { w: ["idle"] as Watch[], key: "late", label: JUST_ARRIVED, items: late, late: true },
-  ].filter((b) => b.items.length);
-  const { probe, rows } = useRailRoom(bands.length, list.length + late.length);
-  const fit = fitBands(bands.map((b) => b.items.length), rows);
+  const resting = (id: string) => AT_REST.includes(watches[id] ?? "idle");
+  // A row the hand is near does not leave when its session comes to rest or is read.
+  const stay = useRef(new Set<string>());
+  if (!held) stay.current = new Set();
+  const { probe, rows } = useRailRoom(list.length > 0);
+  const { shown: items, rest } = railShown(list, (s) => !resting(s.id) || !AT_REST.includes(banded[s.id] ?? "idle") || s.id === current || shown.includes(s.id) || !!unread[s.id] || stay.current.has(s.id), (s) => calls(watches[s.id] ?? "idle"), current, rows);
+  if (held) for (const s of items) stay.current.add(s.id);
+  // What the count holds back when the rows did not all fit: the first of them that calls, else that something is new.
+  const cut = rest.find((s) => !resting(s.id)), news = rest.some((s) => unread[s.id]);
+  const restWords = `${rest.length} more ${rest.length === 1 ? "session" : "sessions"}${cut || news ? "" : " at rest"}`;
   return (
     <>
       <span ref={probe} hidden />
-      {bands.map((b, bi) => {
-        const all = b.items;
-        // A band cut to its room keeps the session on screen among its marks and ends in a count of the rest.
-        const room = fit[bi]! < all.length ? Math.max(0, fit[bi]! - 1) : all.length;
-        const at = all.findIndex((s) => s.id === current);
-        const items = (at >= room ? [all[at]!, ...all.filter((s) => s.id !== current)] : all).slice(0, room);
-        const rest = all.length - items.length;
-        return (
-          <section key={b.key} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${all.length}`} title={`${b.label}: ${all.length}`} data-testid="rail-band">
-            {/* The band's mark and how many: the rail has no room for the word, which is the band's name and tooltip. */}
-            <h3 className="k-marks-head" aria-hidden="true">{b.late ? <Plus aria-hidden="true" /> : <Mark w={b.w.find((w) => all.some((x) => (banded[x.id] ?? "idle") === w)) ?? b.w[0]!} />}<span className="tabular-nums">{all.length}</span></h3>
-            <ol>
-              {items.map((s) => {
-                const card = bind(s, 0);
-                return (
-                  <li key={s.id}>
-                    <button
-                      type="button"
-                      className="k-tick"
-                      data-testid="session-row"
-                      data-session={s.id}
-                      data-watch={watches[s.id]}
-                      data-shown={shown.includes(s.id) || undefined}
-                      data-unread={unread[s.id] ? true : undefined}
-                      data-gone={gone.has(s.id) || undefined}
-                      aria-current={current === s.id ? "page" : undefined}
-                      aria-label={`${s.title || "New session"}, ${stateAlone(states[s.id] ?? { watch: watches[s.id] ?? "idle" })}${states[s.id]?.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}${unread[s.id] && AT_REST.includes(watches[s.id] ?? "idle") ? `, ${NEW.toLowerCase()}` : ""}`}
-                      {...card}
-                      draggable
-                      onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
-                      onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
-                    >
-                      <Mark w={watches[s.id] ?? "idle"} />
-                      <span className="k-tick-code" data-testid="rail-code" aria-hidden="true">{codes[s.id]}</span>
-                      <WherePip s={s} />
-                      <span className="sr-only">{s.title || "New session"}</span>
-                      <span className="k-tick-badges"><SessionBadges sessionId={s.id} /></span>
-                    </button>
-                    <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
-                  </li>
-                );
-              })}
-              {rest > 0 && (
-                <li>
-                  <button type="button" className="k-tick k-tick-more" data-testid="rail-more" aria-label={`${rest} more ${b.label.toLowerCase()}. Show the list`} title={`${rest} more: ${all.filter((s) => !items.includes(s)).map((s) => s.title || "New session").join(", ")}`} onClick={() => toggleList(true)}>
-                    +{rest}
-                  </button>
-                </li>
-              )}
-            </ol>
-          </section>
-        );
-      })}
+      <ol className="k-ticks" data-testid="rail-marks">
+        {items.map((s) => {
+          const card = bind(s, 0);
+          const w = watches[s.id] ?? "idle";
+          return (
+            <li key={s.id}>
+              <button
+                type="button"
+                className="k-tick"
+                data-testid="session-row"
+                data-session={s.id}
+                data-watch={w}
+                data-shown={shown.includes(s.id) || undefined}
+                data-unread={unread[s.id] ? true : undefined}
+                data-gone={gone.has(s.id) || undefined}
+                aria-current={current === s.id ? "page" : undefined}
+                aria-label={`${s.title || "New session"}, ${stateAlone(states[s.id] ?? { watch: w })}${states[s.id]?.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}${unread[s.id] && resting(s.id) ? `, ${NEW.toLowerCase()}` : ""}`}
+                {...card}
+                draggable
+                onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
+                onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
+              >
+                {/* The dot's place is kept on every row, so the words stand in one column. */}
+                <span className="k-tick-dot" data-testid="rail-dot" aria-hidden="true">{!resting(s.id) ? <Mark w={w} st={states[s.id]} /> : unread[s.id] ? <span className="k-tick-new" /> : null}</span>
+                <span className="k-tick-word" data-testid="rail-word" aria-hidden="true">{words[s.id]}</span>
+                <WherePip s={s} />
+                <span className="sr-only">{s.title || "New session"}</span>
+                <span className="k-tick-badges"><SessionBadges sessionId={s.id} /></span>
+              </button>
+              <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
+            </li>
+          );
+        })}
+        {rest.length > 0 && (
+          <li>
+            <button type="button" className="k-tick k-tick-rest" data-testid="rail-rest" aria-label={`${restWords}. Show the session list`} title={`${restWords}. Show the session list (Ctrl B)`} onClick={() => toggleList(true)}>
+              <span className="k-tick-dot" aria-hidden="true">{cut ? <Mark w={watches[cut.id]!} /> : news ? <span className="k-tick-new" /> : null}</span>
+              <span className="k-tick-word">+{rest.length}</span>
+            </button>
+          </li>
+        )}
+      </ol>
     </>
   );
 }

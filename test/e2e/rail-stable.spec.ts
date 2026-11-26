@@ -455,7 +455,7 @@ test("with four panes the list is still titles, one line a session, and folds to
     await page.reload();
     await expect(page.locator("section.k-station")).toHaveCount(4);
     await expect(side).toHaveAttribute("data-narrow", "true");
-    await expect(list.getByTestId("rail-code")).toHaveCount(0);
+    await expect(list.getByTestId("rail-word")).toHaveCount(0);
     const mine = Object.values(ids);
     const rows = await list.locator('[data-testid="session-row"]').evaluateAll((els, own) => els.filter((e) => own.includes(e.getAttribute("data-session")!)).map((e) => {
       const t = e.querySelector<HTMLElement>(".k-row-title")!;
@@ -491,12 +491,14 @@ test("with four panes the list is still titles, one line a session, and folds to
     await page.mouse.move(1200, 500);
     await shoot(page, "rail-stable-04-four-panes");
 
-    // A little narrower there is no room for a title: the marks with their codes, no two alike.
+    // A little narrower there is no room for a title: the folded rows, each a word of its title, no two alike,
+    // for the four on screen and every other that calls, works or is new.
     await page.setViewportSize({ width: 1840, height: 1040 });
     await expect(side).not.toHaveAttribute("data-open", "true");
-    const codes = await list.getByTestId("rail-code").allTextContents();
-    expect(codes.length).toBeGreaterThanOrEqual(12);
-    expect(new Set(codes).size).toBe(codes.length);
+    const codes = await list.getByTestId("rail-word").allTextContents();
+    expect(codes.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(codes.map((c) => c.toLowerCase())).size).toBe(codes.length);
+    for (const id of [ids.reader!, ids.work!, ids.need!, ids.wait!]) await expect(row(id).getByTestId("rail-word")).toBeVisible();
     expect(await fits()).toBe(true);
     await page.setViewportSize({ width: 1920, height: 1040 });
     await expect(side).toHaveAttribute("data-narrow", "true");
