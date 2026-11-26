@@ -1200,7 +1200,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @media (min-width: 768px) {
   .k-composer-box { border-color: var(--line); }
   .k-composer-box:focus-within { border-color: var(--line-strong); box-shadow: none; }
-  .k-compose-tools :is(.k-attach, .k-dictate, .k-box-more, .k-queue) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); }
+  .k-compose-tools :is(.k-attach, .k-dictate, .k-talk, .k-box-more, .k-queue) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); }
   .k-send { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); }
   .k-stop { width: auto; min-width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); border-color: transparent; color: var(--muted); }
   :is(.k-send, .k-stop) svg { width: 0.875rem; height: 0.875rem; }

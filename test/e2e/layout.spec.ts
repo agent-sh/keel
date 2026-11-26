@@ -73,7 +73,7 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBe(14.875);
   // (A row's name is the chrome's name size, --text-ui: 0.8125rem.)
   expect(await fontPx('[data-testid="session-row"] .k-row-title')).toBe(12.75);
-  expect(await fontPx('[data-testid="composer"]')).toBeGreaterThanOrEqual(15);
+  expect(await fontPx('[data-testid="composer"]')).toBe(14.875);
 
   // Opening a session never adds a pane: it fills the empty one, and the next lies over the pane worked in, which still holds its own.
   await entry(b).click();

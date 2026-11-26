@@ -49,7 +49,7 @@ export function SpeechButtons({ sid }: { sid: string | undefined }) {
           onPointerEnter={warmConversation}
           onFocus={warmConversation}
           onClick={() => toggleConversation(sid)}
-          className={cn(button, "disabled:opacity-40")}
+          className={cn(button, "k-talk disabled:opacity-40")}
         >
           <AudioLines className="size-4" />
         </button>
