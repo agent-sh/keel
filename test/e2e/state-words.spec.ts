@@ -415,6 +415,9 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await expect(stoppedAsk).toHaveCount(1);
   await expect(stoppedAsk).not.toHaveAttribute("data-unread", "true");
   await expect(stoppedAsk.getByTestId("inbox-opens")).toHaveCount(0);
+  // It keeps its word, not the yellow of what waits: the mark is the quiet one.
+  await expect(stoppedAsk.getByTestId("alert-icon")).toHaveAttribute("data-watch", "idle");
+  expect(await needs.getByTestId("alert-icon").evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).toEqual(["need", "need"]);
   await page.keyboard.press("Escape");
 
   // A session that ended and was never opened here: the card beside its row says what it ended with.
@@ -480,6 +483,13 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await expect(row(page, webhooks)).toHaveAttribute("data-unread", "true", { timeout: 15_000 });
   await bell.click();
   await page.getByTestId("mark-all-read").click();
+  // Read is not answered: with nothing unread, the requests that still wait are one step away.
+  await page.getByTestId("inbox-unread-filter").check();
+  await expect(page.getByTestId("inbox-item")).toHaveCount(0);
+  await expect(page.getByTestId("inbox-still-open")).toHaveText("2 requests still wait");
+  await shoot(page, "state-words-05c-inbox-still-open");
+  await page.getByTestId("inbox-still-open").click();
+  await expect(page.locator('[data-testid="inbox-item"][data-part="need"]')).toHaveCount(2);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("session-list").locator('[data-testid="session-row"][data-unread="true"]')).toHaveCount(0);
   // (The two approvals are read and still wait: the bell still counts them, and has no dot.)

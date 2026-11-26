@@ -83,7 +83,8 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true");
   await page.getByTestId("inbox-button").click();
   const icons = page.getByTestId("inbox-item").getByTestId("alert-icon");
-  await expect(icons.nth(0)).toHaveAttribute("data-watch", "need");
+  // (The approval is the test route's, with no card behind it: it waits on nobody, so its mark is the quiet one.)
+  await expect(icons.nth(0)).toHaveAttribute("data-watch", "idle");
   await expect(icons.nth(1)).toHaveAttribute("data-watch", "fail");
   await expect(icons.nth(2)).toHaveAttribute("data-watch", "work");
   await expect(icons.nth(3)).toHaveAttribute("data-watch", "done");

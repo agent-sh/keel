@@ -78,6 +78,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
     return n ? { ...rest, [id]: n } : rest;
   });
   const shown = onlyUnread ? alerts.filter((a) => !a.read) : alerts;
+  const stillOpen = onlyUnread ? alerts.filter((a) => a.open).length : 0;
   // A phone's drawer is too narrow for a title and its alert on one line.
   const wide = useSyncExternalStore((f) => (WIDE.addEventListener("change", f), () => WIDE.removeEventListener("change", f)), () => WIDE.matches);
   // Three parts, in this order: what waits on the owner, what else is new since they looked, and
@@ -208,13 +209,16 @@ function Inbox({ onClose }: { onClose: () => void }) {
         onFocus={() => { if (!held) hold(true); }}
         onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(":hover")) hold(false); }}
       >
-        {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
+        {/* Read is not answered: with nothing unread, the requests that still wait are one step away. */}
+        {shown.length === 0 && <li><Empty>{onlyUnread ? <>Nothing unread.{stillOpen > 0 && <>{" "}<button type="button" data-testid="inbox-still-open" onClick={() => setOnlyUnread(false)} className="rounded-sm text-accent-ink outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{stillOpen === 1 ? "1 request still waits" : `${stillOpen} requests still wait`}</button></>}</> : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
         {/* What could land is its own part, after what waits on the owner and counted in neither it nor the unread. */}
         {!parts.some((p) => p.part === "need") && <ReadyToLand inbox />}
         {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined, ...more }) => {
           // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
           // A row offers the card that answers it only while that card waits: an ask whose card is gone (answered, or its turn stopped) has nothing to answer.
           const offers = !!a.open;
+          // An ask whose card is gone waits on nobody: it keeps its word and what became of it, not the state's yellow.
+          const closed = ASK_KINDS.includes(a.kind) && !a.open;
           const tight = !wide && offers;
           const n = notes[a.id];
           // On a shared line the width goes to what waits on the owner: the title gives way first there.
@@ -226,7 +230,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
               data-alert={a.id}
               data-unread={!a.read || undefined}
               data-part={part}
-              data-watch={declined ? "declined" : alertState(a)}
+              data-watch={declined ? "declined" : closed ? "idle" : alertState(a)}
               data-open={a.open || undefined}
               // A session's group ends with a hairline, so the one-line row after it is not read as its member.
               className={cn("group", first && !alone && "mt-1.5 first:mt-0", last && !alone && wide && "mb-1.5 border-b border-line pb-1.5 last:mb-0 last:border-0 last:pb-0")}
@@ -242,7 +246,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
                   {first && !alone ? title : !first ? <span className="sr-only">{place}, </span> : null}
                   <span className="flex min-h-ctl-sm items-center gap-2 text-caption">
                     {/* The mark is the state, in its color while unread: a glyph, no box around it. */}
-                    <AlertIcon kind={a.kind} read={a.read && !a.open} declined={declined} live={!!a.data?.live} />
+                    <AlertIcon kind={a.kind} read={a.read && !a.open} declined={declined} live={!!a.data?.live} closed={closed} />
                     {/* The kind stands second in both row forms, so the eye finds it in one place. */}
                     {/* (A column of its own, as wide as the usual words, so the titles after it start at one place.) */}
                     <span className={cn("shrink-0 text-muted", !tight && "min-w-[4.75rem]")} data-testid="inbox-state" title={routeOf(a)}>

@@ -76,9 +76,11 @@ export const ALERT_STATE: Record<Alert["kind"], Watch> = {
 // One alert's state: a turn that ended while a command of its session still runs is work, not done.
 export const alertState = (a: { kind: Alert["kind"]; data?: { live?: unknown } | null }): Watch =>
   a.kind === "finished" && a.data?.live ? "work" : (ALERT_STATE as Record<string, Watch>)[a.kind] ?? "idle";
-export function AlertIcon({ kind, read, declined, live }: { kind: Alert["kind"]; read?: boolean; declined?: boolean; live?: boolean }) {
+// `closed`: an ask whose card is gone (answered, expired, its turn stopped). It waits on nobody: its mark is the
+// quiet one, read or not, and the yellow stays with what still waits.
+export function AlertIcon({ kind, read, declined, live, closed }: { kind: Alert["kind"]; read?: boolean; declined?: boolean; live?: boolean; closed?: boolean }) {
   // (A turn the model declined is filed as a finish until it has a kind of its own: it is drawn as declined.)
-  const w: Watch = declined ? "declined" : alertState({ kind, data: live ? { live } : null });
+  const w: Watch = declined ? "declined" : closed ? "idle" : alertState({ kind, data: live ? { live } : null });
   return <span className="k-alert-icon" data-watch={w} data-read={read || undefined} data-testid="alert-icon"><Mark w={w} /></span>;
 }
 
