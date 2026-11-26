@@ -2,7 +2,7 @@ import type { APIRequestContext, Page } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { openPanel, setTheme, shoot, tabInto, setPanes, WORKBENCH } from "./shots.ts";
+import { setTheme, shoot, tabInto, setPanes, WORKBENCH } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
@@ -739,21 +739,25 @@ test("a pane off screen is shown without a glide under reduced motion", async ({
     await expect.poll(async () => (await (await request.get(`/api/sessions/${changed}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
     await page.setViewportSize({ width: 1700, height: 980 });
     await page.goto(`/s/${changed}`);
-    await openPanel(page, "changes");
-    const file = page.getByTestId("diff-file").first();
-    await expect(file.locator('tr[data-new="200"]')).toBeAttached();
+    // The kept pane's own view remains mounted under the look, including its inert Panels button.
+    const shown = page.getByTestId("station").and(page.locator(`[data-station="${changed}"]`)).locator(":scope > [data-view]:not([inert])");
+    await shown.getByTestId("panel-menu").click();
+    await page.getByTestId("panel-pick-changes").click();
+    const file = shown.getByTestId("diff-file");
+    const target = file.locator('tr[data-new="200"]');
+    await expect(target).toBeAttached();
     const path = (await file.getAttribute("data-path"))!;
-    const jump = async () => {
+    const jump = async (behavior: "instant" | "smooth") => {
       await clear();
       await page.evaluate((path) => { window.dispatchEvent(new CustomEvent("keel:diff-jump", { detail: { path, line: 200 } })); }, path);
-      await expect(file.locator('tr[data-new="200"]')).toBeInViewport();
-      return page.evaluate(() => ((window as any).scrolls as { station?: string; behavior?: string }[]).filter((s) => s.station === "TR").map((s) => s.behavior));
+      await expect.poll(() => page.evaluate(() => ((window as any).scrolls as { station?: string; behavior?: string }[]).filter((s) => s.station === "TR").map((s) => s.behavior))).toEqual([behavior]);
+      await expect(target).toBeInViewport();
     };
     await page.emulateMedia({ reducedMotion: "reduce" });
-    expect(await jump()).toEqual(["instant"]);
+    await jump("instant");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await file.evaluate((el) => el.scrollIntoView({ block: "start" }));
-    expect(await jump()).toEqual(["smooth"]);
+    await jump("smooth");
   } finally { for (const id of ids) await request.delete(`/api/sessions/${id}`); }
 });
 
