@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
-import { showArchived } from "./shots.ts";
+import { LIST_ORDER, showArchived } from "./shots.ts";
 
 // Feature: what focuses by itself never takes the keyboard from the owner.
 // The message box takes the keyboard as its page or its session opens, and it
@@ -252,6 +252,8 @@ test("the keyboard goes to the message box when what held it goes away", async (
     // 7. A pane closed with its button: the box of the pane now worked in takes the keyboard.
     const two = await browser.newContext({ viewport: { width: 1920, height: 1040 }, storageState: { cookies: [], origins: [{ origin: new URL(baseURL!).origin, localStorage: [
       { name: "keel.focus", value: "false" },
+      { name: "keel.workbench", value: "true" },
+      { name: "keel.listArrange", value: LIST_ORDER },
       { name: "keel.panes", value: JSON.stringify({ count: 2, slots: [a, b], sizes: {}, active: 0 }) },
     ] }] } });
     const p2 = await two.newPage();

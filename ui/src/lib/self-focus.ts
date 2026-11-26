@@ -26,6 +26,7 @@
 // drawn after it does not take it back.
 
 import { DESK_QUERY } from "./phone.ts";
+import { modalOpen, popupShown } from "./overlay.ts";
 
 // How long after a key or a press a focus is still that key's or press's own.
 const ACT_MS = 100;
@@ -64,6 +65,17 @@ const take = (el: HTMLElement) => {
   return document.activeElement === el;
 };
 
+// The fallback when a popup closes with no control to return to.
+export function boxAfterClose(): HTMLElement | undefined {
+  if (performance.now() - blank < BLANK_MS || !matchMedia(DESK).matches) return;
+  const pane = document.querySelector(".k-station[data-helm]");
+  const box = pane?.querySelector<HTMLElement>('[data-testid="composer"]:not([inert] *)');
+  if (!pane || !box) return;
+  const cards = pane.querySelector<HTMLElement>(CARDS);
+  if ((cards && cards.childElementCount > 0 && cards.offsetHeight > 0) || keptOut(pane)) return;
+  return box;
+}
+
 // The keyboard fell from `el` to nothing. Two frames later (whatever takes it by its own
 // rule has done so by then), and once a closing dialog or menu is gone, the message box
 // of the pane worked in takes it, if `el` went away and nothing above forbids it.
@@ -76,14 +88,12 @@ function fell(el: Element, card: boolean) {
     // It is still there and can be used: the owner left it (a press on blank space), and it is not watched any more.
     if (el.isConnected && el.getClientRects().length > 0 && !(el as HTMLButtonElement).disabled) { watch(null); return; }
     if (card || performance.now() - blank < BLANK_MS || !matchMedia(DESK).matches) return;
-    if (document.querySelector(POPUP)) { if (++frames < CLOSE_FRAMES) check = requestAnimationFrame(look); return; }
-    const pane = document.querySelector(".k-station[data-helm]");
-    const box = pane?.querySelector<HTMLElement>('[data-testid="composer"]');
-    if (!pane || !box || box.closest("[inert]")) return;
-    // A card of the pane waits on the owner, or they answer in sequence: the cards' rule has the keyboard.
-    const cards = pane.querySelector<HTMLElement>(CARDS);
-    if ((cards && cards.childElementCount > 0 && cards.offsetHeight > 0) || keptOut(pane)) return;
-    take(box);
+    if ([...document.querySelectorAll(POPUP)].some(popupShown)) {
+      if (++frames < CLOSE_FRAMES) check = requestAnimationFrame(look);
+      return;
+    }
+    const box = boxAfterClose();
+    if (box) take(box);
   };
   check = requestAnimationFrame(() => { check = requestAnimationFrame(look); });
 }
@@ -92,6 +102,19 @@ function fell(el: Element, card: boolean) {
 const gone = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => {
   if (at && !at.el.isConnected) fell(at.el, at.card);
 });
+
+// The panel and its focused control can be removed in the same render that makes
+// the pane's composer interactive again. Use the closing control, not a transient
+// focus event from the browser while the DOM is being changed.
+export function panelClosing() {
+  const el = document.activeElement;
+  if (!el?.closest('[data-testid="side-panel"]')) return;
+  requestAnimationFrame(() => {
+    if (el.isConnected || !body(document.activeElement) || modalOpen()) return;
+    const box = boxAfterClose();
+    if (box) take(box);
+  });
+}
 function watch(el: Element | null) {
   gone?.disconnect();
   for (let n = el?.parentNode; n && n !== document; n = n.parentNode) gone?.observe(n, { childList: true });

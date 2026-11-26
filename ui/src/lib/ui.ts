@@ -3,7 +3,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { opening } from "./open-mark.ts";
 import type { PromptBlock } from "../../../src/core/types.ts";
-import { opened } from "./self-focus.ts";
+import { opened, panelClosing } from "./self-focus.ts";
 import { isCustomize } from "./customize-ids.ts";
 import { soloWindow } from "./shell.ts";
 import { PHONE_QUERY } from "./phone.ts";
@@ -174,6 +174,7 @@ export const keepPanels = (m: Record<string, string>) => panelStore().setItem("k
 export function rememberPanel(session: string, panel: string) { keepPanels({ ...stationPanels(), [session]: panel }); }
 
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW" | "workbench", v: unknown) {
+  if (k === "panel" && v === null) panelClosing();
   if (!(k === "sidebar" && isPhone()) && k !== "panel") localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);
 }

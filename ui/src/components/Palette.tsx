@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactN
 import { allCommands, commandsVersion, composing, fuzzy, onCommands } from "../lib/keys.ts";
 import { actions, reportError, useStore, useModels } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
+import { boxAfterClose } from "../lib/self-focus.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
 import { openWaiting } from "./HomeWatch.tsx";
 import { modalOpen } from "../lib/overlay.ts";
@@ -268,7 +269,9 @@ export function Palette() {
             // (the message box, a button) keeps it there.
             const now = document.activeElement;
             const moved = now instanceof HTMLElement && now !== document.body && !now.closest('[data-testid="palette"]');
-            return !picked.current && !moved && el instanceof HTMLElement && el !== document.body && el.isConnected && el.getClientRects().length > 0 ? el : false;
+            if (picked.current || moved) return false;
+            if (el instanceof HTMLElement && el !== document.body && el.isConnected && el.getClientRects().length > 0) return el;
+            return boxAfterClose() ?? false;
           }}
           aria-label="Search and commands"
           className={cn(
