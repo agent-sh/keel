@@ -227,6 +227,32 @@ test.skipIf(process.platform !== "linux")("a job's record that does not match it
   }
 });
 
+// A run_code program that went to the background runs in a session program's scope, named by its kind and
+// not by the job's id. Its record, once the program ended and its end was told, is history at the next
+// start like a command's; a record that names some other scope is still refused.
+test.skipIf(process.platform !== "linux")("an ended run_code job's record is taken back with its own scope, another scope is refused", () => {
+  const root = mkdtempSync(join(RUN, "jobs-code-"));
+  const dir = join(root, "spill", "s-ended-code-record", "jobs");
+  mkdirSync(dir, { recursive: true });
+  // A pid no process has: the program ended.
+  const pid = 987654500;
+  const rec = (id: string, more: Record<string, unknown>) => {
+    writeFileSync(join(dir, `${id}.log`), "printed\n");
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 970, sessionId: "s-ended-code-record", command: "run_code: 1", cwd: root, started: Date.now() - 60_000, background: true, pid, boot: "100", reported: true, ended: Date.now() - 50_000, exit_code: 0, signal: null, contain: "cgroup", ...more }));
+  };
+  const slice = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice";
+  rec("bcode1", { kind: "code", cgroup: `${slice}/keel-code-weryg4xb.scope` });
+  rec("bcode2", { kind: "code", cgroup: `${slice}/session-2.scope` });
+  rec("bcmd1", { cgroup: `${slice}/keel-code-weryg4xb.scope` });
+  const refused: Record<string, string> = {};
+  adoptJobs(join(root, "spill"), (file, why) => void (refused[file.slice(dir.length + 1)] = why));
+  expect(refused).toEqual({
+    "bcode2.json": "the cgroup it names is not that job's scope",
+    "bcmd1.json": "the cgroup it names is not that job's scope",
+  });
+  expect(jobsOf("s-ended-code-record").map((j) => j.id)).toEqual(["bcode1"]);
+});
+
 test("a command reaches the shell as written: its own braced variables and exit code survive the job scope", async () => {
   const root = mkdtempSync(join(RUN, "jobs-"));
   const j = startJob({ sessionId: "s-expand", command: 'x=5; a=(p q); echo "[${x}][${a[1]}][${#x}][$$]" | grep -c "\\[5\\]\\[q\\]\\[1\\]\\[[0-9]"; exit 7', cwd: root, logDir: join(root, "spill/s-expand/jobs") });

@@ -772,6 +772,15 @@ async function pidsOf(j: Job): Promise<number[]> {
   return out;
 }
 
+// Whether `cgroup` is the scope the job's kind runs in: a command's names its id (startJob); a run_code
+// program's is a session program's scope (sessionScope, kind "code") whose name carries no job id. A
+// program's process carries its own mark, not the job's, so while one lives notOurs still refuses it:
+// only an ended program's record is taken, as history.
+function scopeOfJob(m: Meta, cgroup: string): boolean {
+  if (new RegExp(`^/sys/fs/cgroup/[^\\0]*/keel-job-${m.id}-[a-z0-9]{1,8}\\.scope$`).test(cgroup)) return true;
+  return m.kind === "code" && /^\/sys\/fs\/cgroup\/[^\0]*\/keel-code-[a-z0-9]{1,8}\.scope$/.test(cgroup);
+}
+
 // After a restart: take back the jobs a previous daemon started under
 // `spillRoot/<session>/jobs/`. One still running is watched until it ends; one
 // that ended unreported is reported now. Ended ones come back as history, so
@@ -786,7 +795,7 @@ async function pidsOf(j: Job): Promise<number[]> {
 // could still be signalled: its process alive, or its scope running. Else it is history like any other.
 function notOurs(m: Meta, stateId: string | undefined): string | undefined {
   if (typeof m.id !== "string" || !/^[\w-]+$/.test(m.id) || !Number.isInteger(m.pid) || m.pid <= 1 || typeof m.started !== "number") return "it names no job and process a daemon could have started";
-  if (m.cgroup !== undefined && !new RegExp(`^/sys/fs/cgroup/[^\\0]*/keel-job-${m.id}-[a-z0-9]{1,8}\\.scope$`).test(m.cgroup)) return "the cgroup it names is not that job's scope";
+  if (m.cgroup !== undefined && !scopeOfJob(m, m.cgroup)) return "the cgroup it names is not that job's scope";
   if (m.cgroup?.split("/").includes("..")) return "the cgroup it names is not that job's scope";
   const other = folderOf(m) !== undefined && folderOf(m) !== stateId;
   const scopeRuns = () => !!m.cgroup && existsSync(m.cgroup);
