@@ -1483,6 +1483,13 @@ Keel never restarts the daemon for a UI install. Idle pages reload, and a page
 with a draft offers a reload and keeps the draft. `keel ui rollback` switches
 back to the previous bundle, or to the embedded page.
 
+A binary restart is different. The daemon stops taking new work and gives
+running steps time to finish. It then parks the remaining turns and exits.
+The page reconnects and the next daemon continues parked turns from the
+ledger. Resuming a turn does not resume a provider connection: a model reply
+still streaming when its process exited cannot continue on that connection.
+If a tool was cut, check its recorded outcome before repeating its work.
+
 ## Package and check a release
 
 ```bash
