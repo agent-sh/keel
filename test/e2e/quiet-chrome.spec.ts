@@ -106,6 +106,8 @@ test("an agent's line names its type only when the call picked one", async ({ pa
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([agent("Plain look"), agent("Default look", "general-purpose"), agent("Search look", "Explore")])}` } });
   await page.goto(`/s/${session.id}`);
   const line = (t: string) => page.getByTestId("agent-call").filter({ hasText: t });
+  // (A session with agents opens on the conversation: the call rows are in the full stream.)
+  await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
   // A finished turn's agents fold into one line: opened, it lists each.
   await page.getByRole("button", { name: /^Started 3 agents/ }).click({ timeout: 60_000 });
   await expect(line("Search look").getByTestId("agent-call-status")).toBeAttached();
@@ -143,6 +145,8 @@ test("agents' branch chips end in one column, live or done", async ({ page, requ
     const calls = [agent("Fix", "script:say Done."), agent("Rework the parser and its tests", `script:hold ${gate}`), agent("Check the release checklist again", "script:say Done.")];
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
     await page.goto(`/s/${session.id}`);
+    // (A session with agents opens on the conversation: the call rows are in the full stream.)
+    await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
     await page.getByRole("button", { name: /^Started 3 agents/ }).click({ timeout: 60_000 });
     const chips = page.getByTestId("agent-call-branch");
     await expect(chips).toHaveCount(3, { timeout: 60_000 });
