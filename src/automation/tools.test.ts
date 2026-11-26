@@ -205,38 +205,74 @@ test("an http wait waits for a server the session just started to bind its port,
 
 // The ways a server is started that left the wait refused at once: behind a gate that takes a while, after a build,
 // and detached from the command's own group and session (setsid nohup, which the shell's end leaves behind).
-const freePort = () => { const l = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } }); const p = l.port; l.stop(true); return p; };
-const SERVER = (port: number) => `bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)'`;
-async function startedLike(name: string, command: (port: number) => string, gap = 0) {
+// Reserve an OS-assigned port in the process that will serve it. Picking a free
+// port and releasing it before the gate let another process take it; then
+// the wait could stay for the whole minute on another fixture's live job.
+const SERVER = `
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+from socketserver import TCPServer
+from sys import argv
+from time import monotonic, sleep
+
+class OK(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+with TCPServer(("127.0.0.1", 0), OK, bind_and_activate=False) as server:
+    server.server_bind()
+    Path("port.new").write_text(str(server.server_address[1]))
+    Path("port.new").rename("port")
+    until = monotonic() + 20
+    while not Path("go").exists():
+        if monotonic() >= until:
+            raise TimeoutError("the test did not ask the server to listen")
+        sleep(0.025)
+    sleep(float(argv[1]))
+    server.server_activate()
+    server.timeout = 0.25
+    until = monotonic() + 60
+    while monotonic() < until:
+        server.handle_request()
+`;
+async function startedLike(name: string, command: string, gap = 0) {
   const { startJob, stopJob } = await import("../tools/jobs.ts");
   const dir = mkdtempSync(join(tmpdir(), "keel-form-"));
-  const port = freePort();
-  const job = startJob({ sessionId: s.id, command: command(port), cwd: dir, logDir: join(dir, "jobs"), background: true });
+  writeFileSync(join(dir, "server.py"), SERVER);
+  const { id } = store.createSession({ model: "m", workspace: dir, title: name });
+  const job = startJob({ sessionId: id, command, cwd: dir, logDir: join(dir, "jobs"), background: true });
   try {
+    let port = "";
+    for (const until = performance.now() + 10_000; !port && performance.now() < until;) {
+      port = await Bun.file(join(dir, "port")).text().catch(() => "");
+      if (!port) await Bun.sleep(25);
+    }
+    if (!port) throw new Error(`${name}: the server did not reserve a port: ${await Bun.file(job.log).text().catch(() => "")}`);
     if (gap) await Bun.sleep(gap);
-    const r = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port}/health` }, ctx);
-    return { name, refused: !!r.is_error, said: text(r) };
+    const waiting = tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port}/health` }, { ...ctx, sessionId: id });
+    writeFileSync(join(dir, "go"), "");
+    expect(text(await waiting), name).toContain("Scheduled http wait");
   } finally {
     await stopJob(job);
-    for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
-    // (A detached server is not the job's to stop here.)
-    Bun.spawnSync(["pkill", "-f", `port: ${port},`]);
+    for (const w of waits.list(id)) waits.cancel(w.id, id);
   }
 }
-test("an http wait waits while a command the session started in the last minute still runs, whatever its start form", async () => {
+const waitFixture = process.platform === "linux" && Bun.which("python3") && Bun.which("setsid") && Bun.which("nohup");
+test.skipIf(!waitFixture)(`an http wait waits while a command the session started in the last minute still runs, whatever its start form${waitFixture ? "" : " (needs Linux /proc, python3, setsid and nohup)"}`, async () => {
   // Side by side: each form waits on its own port for its own server to bind, so the test takes as long as the
   // slowest form (the gate), not the sum of them, and a loaded machine stretches one wait, not four in a row.
-  const forms = await Promise.all([
+  const forms = await Promise.allSettled([
     // A gate (waitfor --capacity) or a build that holds the server back for longer than the old ten seconds.
-    startedLike("gated", (port) => `sleep 13 && exec ${SERVER(port)}`),
+    startedLike("gated", "exec python3 server.py 13"),
     // Asked for after a while, with the server still to come.
-    startedLike("later", (port) => `sleep 3 && exec ${SERVER(port)}`, 1500),
+    startedLike("later", "exec python3 server.py 1.5", 1500),
     // Detached: the shell ends at once and the server, in a session of its own, keeps running.
-    startedLike("setsid", (port) => `setsid nohup ${SERVER(port)} > /dev/null 2>&1 &`),
-    startedLike("gated setsid", (port) => `(sleep 2; exec setsid nohup ${SERVER(port)} > /dev/null 2>&1) &`),
+    startedLike("setsid", "setsid nohup python3 server.py 0 &"),
+    startedLike("gated setsid", "setsid nohup python3 server.py 2 &"),
   ]);
-
-  expect(forms.map((f) => [f.name, f.refused])).toEqual([["gated", false], ["later", false], ["setsid", false], ["gated setsid", false]]);
+  const failed = forms.flatMap((f) => f.status === "rejected" ? [f.reason] : []);
+  if (failed.length) throw new AggregateError(failed, "HTTP wait fixtures failed");
 }, 60_000);
 
 test("CronDelete deletes the model's own scheduled tasks, not the owner's", async () => {
