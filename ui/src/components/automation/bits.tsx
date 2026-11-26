@@ -8,7 +8,7 @@ import { ALERT_WORD, agentState, agentWhy, STATE_WORD, stateWords, type AgentLik
 import { cn } from "../../lib/utils.ts";
 import { useToldState, type SessionState, type Watch } from "../../lib/watch.ts";
 import { confirmAction } from "../Confirm.tsx";
-import { elapsed, Mark, span, useNow } from "../Mark.tsx";
+import { briefText, elapsed, Mark, rowClock, span, timed, useNow } from "../Mark.tsx";
 import { beatOf } from "../../lib/clock.ts";
 
 export { agentWhy };
@@ -29,6 +29,15 @@ export function agentSaid(a: AgentLike, told: SessionState | undefined): AgentSa
 export function useAgentSaid(a: AgentRecord | undefined): AgentSaid | undefined {
   const told = useToldState(a?.session_id);
   return useMemo(() => (a ? agentSaid(a, told) : undefined), [a, told]);
+}
+
+// What an agent is on, where a row has a line for it: the step it works on, what it waits for or asks, or why
+// it failed, in its session's own words, and for how long (to the minute, as a session's row says it).
+// A list whose rows all say "Working" tells no agent from the next.
+const ON = new Set<Watch>(["work", "wait", "resume", "need", "fail", "declined"]);
+export function agentOn(st: SessionState, live: boolean, now: number): { text: string; time: string } | null {
+  const text = ON.has(st.watch) ? briefText(st, now) : "";
+  return text ? { text, time: live && timed(st) ? rowClock(st, now) : "" } : null;
 }
 
 // The mark of an agent's state: the session mark (a shape and a color a state), as its row in the list has it.

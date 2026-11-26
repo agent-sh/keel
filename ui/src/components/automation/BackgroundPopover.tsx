@@ -11,7 +11,7 @@ import { listedOnItsOwn, useFold, useNow } from "../../lib/agent-fold.ts";
 import { useAgentsSeen } from "../../lib/agent-seen.ts";
 import { ceilingWords } from "../../../../src/automation/mcp-call-words.ts";
 import { EarlierRow } from "./Earlier.tsx";
-import { AgentMark, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
+import { AgentMark, agentOn, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
 
 export function waitLabel(w: WaitRecord): string {
   const s: any = w.spec;
@@ -137,6 +137,8 @@ export function BackgroundPopup({ sessionId, agents: listed, waits, loops, side 
               // The agent's state in the word its tree row and its card use (src/core/state-words.ts).
               const st = agentSaid(a, told[a.session_id]);
               const title = sessions[a.session_id]?.title || a.title;
+              // What it is on and for how long, where its state has words for it; else its type and its age.
+              const on = agentOn(st.state, isLive(a), now);
               return (
                 // The row opens the agent; Stop is a control of its own beside it. Every row keeps Stop's place, so the words line up.
                 <div key={a.id} className="k-bg-agent flex items-center gap-1 rounded-lg pr-2 hover:bg-hover" data-testid="bg-agent" data-watch={st.watch} data-depth={a.depth} style={a.depth > 1 ? { paddingInlineStart: `${(a.depth - 1) * 1}rem` } : undefined}>
@@ -152,7 +154,7 @@ export function BackgroundPopup({ sessionId, agents: listed, waits, loops, side 
                     <AgentMark w={st.watch} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate max-md:whitespace-normal max-md:break-words" data-testid="bg-agent-title">{title}</div>
-                      <div className="truncate text-micro text-faint max-md:whitespace-normal max-md:break-words" title={st.title}><span data-testid="bg-agent-state">{st.phrase}</span> · {a.type} · {ago(a.created)}</div>
+                      <div className="truncate text-micro text-faint max-md:whitespace-normal max-md:break-words" title={st.title}><span data-testid="bg-agent-state">{st.phrase}</span> · {on ? <span data-testid="bg-agent-on">{[on.text, on.time].filter(Boolean).join(" · ")}</span> : `${a.type} · ${ago(a.created)}`}</div>
                     </div>
                     <ExternalLink className="size-3.5 shrink-0 text-faint" />
                   </div>

@@ -258,11 +258,13 @@ test("the sidebar counts no agents: the row's chevron opens their tree, and the 
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(wrap.getByTestId("child-row")).toHaveCount(3);
     expect(await wrap.innerText()).not.toMatch(/\b\d+ agents?\b/);
-    // An agent's row is one line: what it does now, with its steps, time and cost, is its tooltip.
+    // An agent's row is its name and state, and under them one line of what it is on while it has words for it (a step,
+    // a question, a failure): never more. Its steps, time and cost are its tooltip.
     await expect(wrap.getByTestId("agent-now")).toHaveCount(0);
     const working = wrap.getByTestId("child-session").filter({ hasText: "Hold lane one" });
     await expect(working).toHaveAttribute("title", /^Hold lane one: Working.*\bstep\b/, { timeout: 30_000 });
-    for (const r of await wrap.getByTestId("child-row").all()) expect((await r.boundingBox())!.height, "an agent's row is one line").toBeLessThan(34);
+    await expect(working.getByTestId("child-why")).toBeVisible();
+    for (const r of await wrap.getByTestId("child-row").all()) expect((await r.boundingBox())!.height, "an agent's row is two lines at most").toBeLessThan((await r.getByTestId("child-why").count()) ? 50 : 34);
     await shootList(page, "state-dots-02-tree", lead, () => expect(row(page, lead).locator(".k-mark")).toHaveAttribute("data-bg", "agents", { timeout: 15_000 }));
     await toggle.click();
     await expect(wrap.getByTestId("child-row")).toHaveCount(0);

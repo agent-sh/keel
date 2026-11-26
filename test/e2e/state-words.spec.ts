@@ -151,7 +151,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(card("Fetch the release notes").getByTestId("agent-call-state")).toHaveText("Failed: billing");
     // No surface says the words the vocabulary retired.
     // (What an agent is doing now, "Running <command>", is its tool's own line, not a state word.)
-    const worded = (l: Locator) => l.evaluateAll((els) => els.map((el) => { const c = el.cloneNode(true) as HTMLElement; c.querySelectorAll('[data-testid="agent-now-text"]').forEach((n) => n.remove()); return c.textContent ?? ""; }));
+    const worded = (l: Locator) => l.evaluateAll((els) => els.map((el) => { const c = el.cloneNode(true) as HTMLElement; c.querySelectorAll('[data-testid="agent-now-text"], [data-testid="child-why"], [data-testid="bg-agent-on"]').forEach((n) => n.remove()); return c.textContent ?? ""; }));
     const said = [...(await worded(kids)), ...(await worded(page.getByTestId("background-popup"))), ...(await worded(station(page, coord).getByTestId("agent-call")))];
     for (const text of said) expect(flat(text)).not.toMatch(/\b(Running|running|Asks you|asks you|Finished)\b/);
     await shoot(page, "state-words-01-coordinator");

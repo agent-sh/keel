@@ -9,12 +9,12 @@ import { isLive, openSession, snoozeText, useAuto, type AgentRecord } from "../.
 import { COUNTERS, countWord, wentWrongWord } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentMark, agentSaid, IconButton, nowMeta, StopAgent } from "./bits.tsx";
-import { useNow as useSecond } from "../Mark.tsx";
+import { AgentMark, agentOn, agentSaid, IconButton, nowMeta, StopAgent } from "./bits.tsx";
+import { ROW_BEAT, timed, useNow as useSecond } from "../Mark.tsx";
 import { beatOf } from "../../lib/clock.ts";
 import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
-import { useAskCount, useNeedCount, useToldStates } from "../../lib/watch.ts";
+import { useAskCount, useNeedCount, useToldState, useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
 import type { Watch } from "../../../../src/core/watch.ts";
@@ -126,6 +126,7 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
                   <span className="sr-only">{unread[a.session_id] ? `${unread[a.session_id]} unread` : "ended since you looked"}</span>
                 </span>
               ) : null}
+              <ChildWhy a={a} />
             </div>
             )}</WithNow>
             <span className="k-child-acts">
@@ -139,6 +140,23 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
         );
       })}
     </div>
+  );
+}
+
+// Under the name of an agent that works, waits or asks, or that failed: what it is on now, in its session's own
+// words (the step, the question, the failure's class), and for how long, as a session's own row says them. A tree
+// whose rows all say "Working" tells no agent from the next, and its steps were a tooltip away, a row at a time.
+// Each row reads its own state: a step of one agent draws that row.
+function ChildWhy({ a }: { a: AgentRecord }) {
+  const st = agentSaid(a, useToldState(a.session_id)).state;
+  const now = useSecond(isLive(a) && timed(st), ROW_BEAT);
+  const on = agentOn(st, isLive(a), now);
+  if (!on) return null;
+  return (
+    <span className="k-child-why" data-testid="child-why" data-watch={st.watch}>
+      <span className="k-child-why-text">{on.text}</span>
+      {on.time && <span className="k-child-why-time tabular-nums" data-testid="child-why-time">{on.time}</span>}
+    </span>
   );
 }
 
