@@ -3,14 +3,10 @@
 // move when the board does. Nothing is read while the panel is closed.
 import { useEffect, useRef, useState } from "react";
 import type { Ask } from "../../../src/board/asks.ts";
-import type { Session } from "../../../src/core/types.ts";
 import { useTreeMark } from "./board.ts";
 import { api, reportUnlessGone, useStore } from "./store.ts";
 
 export type { Ask };
-
-// A top-level session of this daemon: an agent's session holds no words of the owner's, and another harness's none Keel ties.
-export const hasAsks = (s: Pick<Session, "parent_id" | "outside" | "machine"> | undefined) => !!s && !s.parent_id && !s.outside && !s.machine;
 
 export function useAsks(id: string): { asks: Ask[] | undefined; err: string } {
   const [got, setGot] = useState<{ id: string; asks: Ask[] } | null>(null);

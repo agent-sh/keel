@@ -21,7 +21,7 @@ import { openOnPhone } from "../lib/open-on-phone.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton, usePanelRows } from "./SidePanel.tsx";
-import { hasAsks } from "../lib/asks-list.ts";
+import { hasAsks } from "../lib/asks-eligible.ts";
 import { MachineChip } from "./Fleet.tsx";
 import { putAwayCount, stateLabel } from "../../../src/core/state-words.ts";
 import { whyText } from "../../../src/core/watch.ts";

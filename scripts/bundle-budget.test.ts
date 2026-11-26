@@ -15,8 +15,11 @@ const START = 1_320_000;
 const ENTRY = 760_000;
 const NOT_AT_START = [
   "ui/src/components/ApprovalCard.tsx",
+  "ui/src/components/AsksPanel.tsx",
   "ui/src/components/FindBar.tsx",
   "ui/src/components/IncidentBand.tsx",
+  "ui/src/components/Switcher.tsx",
+  "ui/src/lib/asks-list.ts",
   "ui/src/lib/speech.ts",
   "ui/src/lib/dictation-run.ts",
   "ui/src/lib/talk-run.ts",

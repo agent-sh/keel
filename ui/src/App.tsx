@@ -21,8 +21,7 @@ import "./lib/surfaces-ui.ts";
 import "./lib/rulings.ts";
 import "./lib/lessons.ts";
 import { installKeymap } from "./lib/keys.ts";
-import { installSwitcher } from "./lib/switcher.ts";
-import { Switcher } from "./components/Switcher.tsx";
+import { installSwitcher, useSwitcher } from "./lib/switcher.ts";
 import "./lib/recent.ts";
 import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
@@ -38,6 +37,10 @@ const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((
 import { UpdateNotice } from "./components/UpdateNotice.tsx";
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
 const InboxPanel = lazy(() => import("./components/automation/InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
+// The keyboard handler is ready at startup. Fetch the switcher's view after first paint or when opened.
+const switcherChunk = chunked(() => import("./components/Switcher.tsx").then((m) => m.Switcher));
+const Switcher = switcherChunk.View;
+preloadSettled(switcherChunk.start);
 // The page's own Find is the desktop app's only (a tab has the browser's): its chunk loads there alone.
 const PageFind = lazy(() => import("./components/FindBar.tsx").then((m) => ({ default: m.PageFind })));
 // The incident band is drawn only while an incident is open: its code comes with the first one.
@@ -243,6 +246,11 @@ function IncidentSlot() {
   return seen.current ? <Suspense fallback={null}><IncidentBand /></Suspense> : null;
 }
 
+function SwitcherSlot() {
+  const open = !!useSwitcher();
+  return open ? <Suspense fallback={null}><Switcher /></Suspense> : null;
+}
+
 function Overlays() {
   const palette = useUI((s) => s.palette);
   const shortcuts = useUI((s) => s.shortcuts);
@@ -266,7 +274,7 @@ function Overlays() {
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
       <OnFirstOpen open={inbox}><InboxPanel open={inbox} onOpenChange={(o) => setUI({ inbox: o })} /></OnFirstOpen>
-      <Switcher />
+      <SwitcherSlot />
       <UpdateNotice />
     </>
   );

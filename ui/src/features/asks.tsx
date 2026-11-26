@@ -6,7 +6,7 @@ import { panels } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { getState } from "../lib/store.ts";
 import { getUI, savePref } from "../lib/ui.ts";
-import { hasAsks } from "../lib/asks-list.ts";
+import { hasAsks } from "../lib/asks-eligible.ts";
 
 
 panels.add({

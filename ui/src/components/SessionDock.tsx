@@ -18,7 +18,7 @@ import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { planLine, planState, turnsSince, useMinute } from "../lib/plan-age.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { useUI } from "../lib/ui.ts";
-import { hasAsks } from "../lib/asks-list.ts";
+import { hasAsks } from "../lib/asks-eligible.ts";
 import { PlanCard } from "./ToolCall.tsx";
 import { openPanel } from "./SidePanel.tsx";
 import { DockNow } from "./DockNow.tsx";
