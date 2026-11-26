@@ -27,6 +27,20 @@ export function jobSlice(o: { byOwner?: boolean; attended?: boolean }): JobSlice
   return o.byOwner || o.attended !== false ? "owner" : "unattended";
 }
 
+// Whether this daemon changes the shared slices' properties (weights, the memory cap), else why not. Every daemon
+// of a user manager puts its jobs in the same two slices, and a property set last wins, so only the owner's daemon
+// sets them: the one of the default state folder, or the main process of his installed keel-bun.service (which
+// names a state folder of its own). A scratch daemon (dev.sh, smoke.sh, the command line e2e, a test) still puts its
+// unattended jobs in the slice, under what the owner's daemon set. `unitPid`: keel-bun.service's MainPID, 0 or
+// undefined when it does not run.
+export const SHARED_SLICE = "a daemon with a state folder of its own does not change the shared slice";
+export function sliceKeeper(f: { stateDir?: string; defaultDir: string; pid: number; unitPid?: number }): string | undefined {
+  if (f.stateDir === undefined) return "no daemon named its state folder in this process: the shared slice is left as it is";
+  if (f.stateDir === f.defaultDir) return undefined;
+  if (f.unitPid && f.unitPid === f.pid) return undefined;
+  return SHARED_SLICE;
+}
+
 // The properties the unattended slice is given (systemctl set-property): its CPU and IO weight.
 export function unattendedProps(env: Record<string, string | undefined> = process.env): string[] {
   const w = (v: string | undefined, d: number) => { const n = Math.floor(Number(v)); return n >= 1 && n <= 10_000 ? n : d; };

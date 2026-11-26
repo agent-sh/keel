@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { inSlice, jobSlice, memoryCap, memoryProps, memoryWords, MEMORY_DEFAULT, sizeText, SLICES, unattendedProps } from "./job-slice.ts";
+import { inSlice, jobSlice, memoryCap, memoryProps, memoryWords, MEMORY_DEFAULT, sizeText, SHARED_SLICE, sliceKeeper, SLICES, unattendedProps } from "./job-slice.ts";
 
 test("a job is the owner's when he typed it or attends its turn, else unattended; unknown stays the owner's", () => {
   expect(jobSlice({ byOwner: true, attended: false })).toBe("owner");
@@ -43,4 +43,15 @@ test("a cap is MemoryMax with MemoryHigh a little under it and no swap; no cap s
   expect(memoryWords(1, 24 * G)).toStartWith("Killed for memory: the kernel ended a process of this command");
   expect(memoryWords(2, 24 * G)).toContain("a memory cap of 24 GB");
   expect(memoryWords(3)).not.toContain("cap");
+});
+
+test("only the owner's daemon changes the shared slice: the default state folder, or keel-bun.service's main process", () => {
+  const d = "/home/u/.local/state/keel-bun";
+  expect(sliceKeeper({ stateDir: d, defaultDir: d, pid: 10 })).toBeUndefined();
+  expect(sliceKeeper({ stateDir: "/home/u/.local/share/keel-bun/state", defaultDir: d, pid: 10, unitPid: 10 })).toBeUndefined();
+  // dev.sh, smoke.sh and the command line e2e: a folder of their own, not the unit's process
+  expect(sliceKeeper({ stateDir: "/home/u/.cache/keel-work/bun/dev-4100/state", defaultDir: d, pid: 11, unitPid: 10 })).toBe(SHARED_SLICE);
+  expect(sliceKeeper({ stateDir: "/x/state", defaultDir: d, pid: 11, unitPid: 0 })).toBe(SHARED_SLICE);
+  expect(sliceKeeper({ stateDir: "/x/state", defaultDir: d, pid: 11 })).toBe(SHARED_SLICE);
+  expect(sliceKeeper({ defaultDir: d, pid: 10, unitPid: 10 })).toContain("no daemon named its state folder");
 });

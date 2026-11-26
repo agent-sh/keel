@@ -190,7 +190,8 @@ function memoryFacts(): MemoryCapFacts {
   const live = at.slice ? (() => { try { return readFileSync(`/sys/fs/cgroup${sliceDir(at.slice!, "unattended")}/memory.max`, "utf8").trim(); } catch { return undefined; } })() : undefined;
   const m = at.memory;
   const cap = m?.bytes ?? unattendedCap();
-  return { cap, ...(at.slice ? {} : { noSlice: at.why ?? "no systemd user manager" }), ...(m?.pending ? { pending: true } : {}), ...(m?.refused ? { refused: m.refused } : {}),
+  return { cap, ...(at.slice ? {} : { noSlice: at.why ?? "no systemd user manager" }), ...(m?.pending ? { pending: true } : {}),
+    ...(at.shared ? { shared: at.shared } : m?.refused ? { refused: m.refused } : {}),
     ...(at.alone !== undefined ? { alone: at.alone } : {}), ...(at.aloneWhy ? { aloneWhy: at.aloneWhy } : {}), ...(live !== undefined && !m?.pending ? { live } : {}) };
 }
 

@@ -96,8 +96,10 @@ export const ownerEnv = (name: string): string | undefined => (mayReadHome() ? p
 // The daemon's state folder: --state-dir, else KEEL_STATE_DIR, else the XDG state home.
 export const defaultStateDir = () => {
   if (!process.env.KEEL_STATE_DIR) ownersFolder("state folder", "KEEL_STATE_DIR");
-  return resolve(process.env.KEEL_STATE_DIR || join(process.env.XDG_STATE_HOME ?? join(homeDir(), ".local/state"), "keel-bun"));
+  return resolve(process.env.KEEL_STATE_DIR || xdgStateDir());
 };
+// The state folder a daemon uses when nothing names one (no --state-dir, no KEEL_STATE_DIR).
+export const xdgStateDir = () => resolve(join(process.env.XDG_STATE_HOME ?? join(homeDir(), ".local/state"), "keel-bun"));
 
 // Where a session puts files made for the owner to look at (its artifacts):
 // harness scratch beside the state, so edits there run where workspace edits do.

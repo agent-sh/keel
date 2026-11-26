@@ -89,12 +89,20 @@ export type SandboxFacts = {
 // none. `noSlice`: why jobs get no scopes here, so nothing is under the cap. `pending`: set-property has not answered.
 // `refused`: why the cap is not in force. `alone`: the user manager takes OOMPolicy=continue on a scope (undefined:
 // not asked yet). `live`: the slice's memory.max as the kernel has it, when the slice runs now.
-export type MemoryCapFacts = { cap: number | null; noSlice?: string; pending?: boolean; refused?: string; alone?: boolean; aloneWhy?: string; live?: string };
+// `shared`: why this daemon leaves the slice to the owner's daemon (src/tools/job-slice.ts sliceKeeper).
+export type MemoryCapFacts = { cap: number | null; noSlice?: string; pending?: boolean; refused?: string; shared?: string; alone?: boolean; aloneWhy?: string; live?: string };
 
 export function memoryCapRow(f: MemoryCapFacts): Row {
   const link = { section: "resources" };
   const base = { id: "sandbox:memory", group: "sandbox" as const, link, how: "read the setting job_slice.unattended_memory_max and what systemctl set-property on app-keelunattended.slice answered" };
-  if (f.cap === null) return { ...base, level: "ok", title: "unattended commands have no memory cap", detail: "job_slice.unattended_memory_max is 0: unattended commands together may use all the machine's memory" };
+  const liveText = f.live === undefined ? "" : f.live === "max" ? " Its memory.max is max now." : ` Its memory.max is ${gb(Number(f.live))} now.`;
+  if (f.shared) return { ...base, level: "ok", title: "this daemon leaves the unattended slice's memory cap to the owner's daemon",
+    detail: `${f.shared}: only the daemon of the default state folder or of keel-bun.service sets it. Its unattended commands still go in app-keelunattended.slice, under what that daemon set.${liveText}` };
+  if (f.cap === null) {
+    if (f.refused) return { ...base, level: "warning", title: "the unattended slice's memory cap could not be taken off", detail: `systemctl set-property refused it: ${f.refused}.${liveText}`, fix: "run systemctl --user set-property --runtime app-keelunattended.slice MemoryMax=infinity MemoryHigh=infinity MemorySwapMax=infinity and see what it says" };
+    if (f.live !== undefined && f.live !== "max" && !f.pending) return { ...base, level: "warning", title: "unattended commands are under a memory cap the setting does not name", detail: `job_slice.unattended_memory_max is 0, but the slice's memory.max is ${gb(Number(f.live))}: something else set it`, fix: "save the setting again, or look at what else sets properties on app-keelunattended.slice" };
+    return { ...base, level: "ok", title: "unattended commands have no memory cap", detail: "job_slice.unattended_memory_max is 0: unattended commands together may use all the machine's memory" };
+  }
   const size = gb(f.cap);
   const off = (why: string, fix = SET_CAP): Row => ({ ...base, level: "warning", title: `the unattended memory cap of ${size} is not in force`, detail: `${why}. Unattended commands run without it; nothing else changes`, fix });
   if (f.noSlice) return off(`commands get no scope of their own here: ${f.noSlice}`, "run Keel under a systemd user manager on cgroup v2 (loginctl enable-linger)");

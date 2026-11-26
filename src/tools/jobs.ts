@@ -14,7 +14,7 @@ import * as fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
-import { contains, realOf } from "../core/paths.ts";
+import { contains, realOf, xdgStateDir } from "../core/paths.ts";
 import { tempEnv } from "../core/temp.ts";
 import { readStat } from "../core/pid.ts";
 import { outputOf } from "../core/proc.ts";
@@ -22,7 +22,7 @@ import { timed } from "../admin/stall.ts";
 import { RESTART_RAN } from "../core/stops.ts";
 import { lastDown, whileDown } from "../core/late.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
-import { jobSlice, MEMORY_DEFAULT, memoryCap, memoryProps, memoryWhy, SLICES, unattendedProps, type JobSlice } from "./job-slice.ts";
+import { jobSlice, sliceKeeper, MEMORY_DEFAULT, memoryCap, memoryProps, memoryWhy, SLICES, unattendedProps, type JobSlice } from "./job-slice.ts";
 import { onSettings, registerSettings, settings } from "../admin/settings.ts";
 
 export type Job = {
@@ -475,7 +475,7 @@ export function placeOf(sessionId: string, byOwner = false): { unit: string; dir
 // weighs what any slice does, still one share for all its jobs). `memory`: the unattended slice's memory cap
 // and whether it is in force. `alone`: the user manager takes OOMPolicy=continue on a scope (probed once).
 export type MemoryFacts = { bytes: number | null; pending?: true; refused?: string };
-export type ScopeAt = { slice?: string; why?: string; weights?: string; memory?: MemoryFacts; alone?: boolean; aloneWhy?: string };
+export type ScopeAt = { slice?: string; why?: string; weights?: string; memory?: MemoryFacts; alone?: boolean; aloneWhy?: string; keeps?: true; shared?: string };
 let scopeAt: ScopeAt | undefined;
 export function jobScope(): ScopeAt {
   if (scopeAt) return scopeAt;
@@ -485,11 +485,34 @@ export function jobScope(): ScopeAt {
   const r = Bun.spawnSync(["systemctl", "--user", "show", "-p", "ControlGroup", "--value", "app.slice"], { stdout: "pipe", stderr: "ignore" });
   const slice = r.success ? r.stdout.toString().trim() : "";
   if (!slice.startsWith("/")) return (scopeAt = { why: "the user manager names no cgroup for app.slice" });
-  scopeAt = { slice };
-  weighUnattended(scopeAt);
-  capUnattended(scopeAt);
-  probeAlone(scopeAt);
-  return scopeAt;
+  const at: ScopeAt = (scopeAt = { slice, memory: { bytes: unattendedCap(), pending: true } });
+  // Only the owner's daemon sets the shared slice's properties (sliceKeeper); `keeps` once that is known,
+  // `shared` why not.
+  void keeperWhy().then((why) => {
+    if (why) { at.shared = why; at.memory = { bytes: unattendedCap(), refused: why }; return; }
+    at.keeps = true;
+    weighUnattended(at);
+    capUnattended(at);
+  });
+  probeAlone(at);
+  return at;
+}
+
+// The state folder of the daemon this process runs (keepSliceFor, from startDaemon); none in a test or a client.
+let daemonState: string | undefined;
+export function keepSliceFor(stateDir: string) { daemonState = stateDir; }
+async function keeperWhy(): Promise<string | undefined> {
+  // A test shares the user manager of the machine it runs on: it never changes that manager's slices.
+  if (process.env.NODE_ENV === "test") return "a test does not change the user manager's slices";
+  let unitPid: number | undefined;
+  if (daemonState !== undefined && daemonState !== xdgStateDir()) {
+    try {
+      const p = Bun.spawn(["systemctl", "--user", "show", "-p", "MainPID", "--value", "keel-bun.service"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const r = await outputOf(p, { where: "keel-bun.service pid", timeoutMs: 10_000 });
+      if (r.code === 0) unitPid = Number(r.out.trim()) || undefined;
+    } catch {}
+  }
+  return sliceKeeper({ stateDir: daemonState, defaultDir: xdgStateDir(), pid: process.pid, unitPid });
 }
 
 // The unattended slice's weights, set once a daemon, off the loop: a runtime drop-in, which holds while the
@@ -521,11 +544,9 @@ registerSettings("job_slice", { unattended_memory_max: MEMORY_DEFAULT }, (v) => 
 export const unattendedCap = (): number | null => { const c = memoryCap(settings().job_slice?.unattended_memory_max); return "error" in c ? null : c.bytes; };
 function capUnattended(at: ScopeAt) {
   const bytes = unattendedCap();
-  if (at.memory && at.memory.bytes === bytes && !at.memory.refused) return;
+  if (at.memory && at.memory.bytes === bytes && !at.memory.refused && !at.memory.pending) return;
   const facts: MemoryFacts = { bytes, pending: true };
   at.memory = facts;
-  // A test shares the user manager of the machine it runs on: it never changes that manager's slices.
-  if (process.env.NODE_ENV === "test") { delete facts.pending; facts.refused = "a test does not change the user manager's slices"; return; }
   let controllers = "";
   try { controllers = readFileSync(`/sys/fs/cgroup${at.slice}/cgroup.controllers`, "utf8"); } catch {}
   if (bytes !== null && !/\bmemory\b/.test(controllers)) {
@@ -539,7 +560,13 @@ function capUnattended(at: ScopeAt) {
     if (why) facts.refused = why;
   });
 }
-onSettings(() => { if (scopeAt?.slice) capUnattended(scopeAt); });
+onSettings(() => {
+  const at = scopeAt;
+  if (!at?.slice) return;
+  if (at.keeps) capUnattended(at);
+  else if (at.shared) at.memory = { bytes: unattendedCap(), refused: at.shared };
+  else if (at.memory) at.memory.bytes = unattendedCap(); // the keeper's answer takes the setting as it is then
+});
 
 // Whether a scope takes OOMPolicy=continue (systemd 253 and later read it on scopes), asked once off the loop with a
 // scope that runs true. Until it answers, unattended jobs start without it.

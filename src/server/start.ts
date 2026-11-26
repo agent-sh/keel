@@ -39,6 +39,7 @@ import { newestTurn } from "../admin/marks.ts";
 import { originOf } from "../admin/timeline-rows.ts";
 import { startMark, startTraceBegin } from "../core/start-trace.ts";
 import { tendSandboxes } from "../safety/sandbox-view.ts";
+import { keepSliceFor } from "../tools/jobs.ts";
 
 export { defaultStateDir };
 
@@ -65,6 +66,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   runMode.client = !!opts.client;
   startTraceBegin();
   const stateDir = resolve(opts.stateDir ?? defaultStateDir());
+  keepSliceFor(stateDir);
   const bind = parseBind(opts.bind);
   if ("error" in bind) throw new Error(bind.error);
   const { hostname, port } = bind;

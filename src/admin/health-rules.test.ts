@@ -157,4 +157,10 @@ test("the unattended memory cap says its size and whether it is in force; nothin
   expect(memoryCapRow({ cap: 24 * G, live: "max" }).title).toBe("the unattended memory cap of 24 GB is not in force");
   expect(memoryCapRow({ cap: 24 * G, pending: true }).title).toBe("the unattended memory cap of 24 GB is being set");
   expect(memoryCapRow({ cap: null })).toMatchObject({ level: "ok", title: "unattended commands have no memory cap" });
+  expect(memoryCapRow({ cap: null, live: "max" })).toMatchObject({ level: "ok", title: "unattended commands have no memory cap" });
+  expect(memoryCapRow({ cap: null, live: String(24 * G) })).toMatchObject({ level: "warning", title: "unattended commands are under a memory cap the setting does not name" });
+  expect(memoryCapRow({ cap: null, refused: "Access denied" }).level).toBe("warning");
+  const shared = memoryCapRow({ cap: 24 * G, shared: "a daemon with a state folder of its own does not change the shared slice", live: "max" });
+  expect(shared).toMatchObject({ level: "ok", title: "this daemon leaves the unattended slice's memory cap to the owner's daemon" });
+  expect(shared.detail).toContain("state folder of its own");
 });
