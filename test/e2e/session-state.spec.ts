@@ -534,6 +534,8 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
     await expect(asking.getByTestId("child-state")).toHaveText("Needs you");
     await expect(kids.getByTestId("child-session")).toHaveCount(2);
     // Its card in the parent's transcript: the two agents started together are one line, which opens to each.
+    // (A session with agents opens on the conversation: the call rows are in the full stream.)
+    await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
     await page.locator('[data-testid="work-step"][data-family="agents"] button.k-line').first().click();
     const card = page.getByTestId("agent-call").filter({ hasText: "Ask about scope" });
     await expect(card.getByTestId("agent-call-status")).toHaveText("Needs you: a question");
