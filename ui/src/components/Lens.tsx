@@ -262,14 +262,14 @@ export function Lens({ sessionId }: { sessionId: string }) {
   useLayoutEffect(() => {
     if (!finding || before.current) return;
     const el = scroller.current;
-    before.current = { top: el?.scrollTop ?? 0, stick: stick.current, back: keptJournal(() => getUI().focusCall !== null) };
+    before.current = { top: el?.scrollTop ?? 0, stick: stick.current, back: keptJournal() };
   }, [finding]);
   const runAt = (seq: number) => items.find((x): x is Run => x.t === "run" && x.from <= seq && seq <= x.to);
   const reach = (p: Place) => {
     const run = runAt(p.seq);
     stick.current = false; // (Find moves the view: the end is not followed under it)
     setReveal(run ? { key: keyOf(run), seq: p.seq } : null);
-    setUI({ focusCall: p.call ?? null });
+    setUI({ focusCall: p.call ? { id: p.call, byFind: true } : null });
   };
   const stands = (p: Place) => {
     const run = runAt(p.seq);
@@ -288,7 +288,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
     const was = before.current;
     before.current = null;
     setReveal(null);
-    if (getUI().focusCall !== null) setUI({ focusCall: null });
+    if (getUI().focusCall?.byFind) setUI({ focusCall: null });
     was?.back();
     find.close();
     if (!was) return;

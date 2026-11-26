@@ -194,7 +194,7 @@ export function FindBar({ sessionId, events, head, before, after, whole, content
       const held = events.some((e) => e.id === p.ev);
       // (A call whose step is drawn needs only its card opened; anything else is reached as a hit is.)
       const step = held && p.call && [...c.querySelectorAll(`[data-events~="${CSS.escape(p.ev)}"]`)].some(drawn);
-      setUI({ ...(step ? {} : { focusEvent: p.ev, focusStay: p.ev }), focusCall: p.call ?? null });
+      setUI({ ...(step ? {} : { focusEvent: p.ev, focusStay: p.ev }), focusCall: p.call ? { id: p.call } : null });
     }
     const until = performance.now() + REACH_MS;
     let quiet = 0;

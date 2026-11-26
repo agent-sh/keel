@@ -47,7 +47,7 @@ type UIState = {
   shellAway: string | null; // what the desktop app's title bar says of the daemon while it is away (the page then leaves that to it, and says it in those words)
   shellNote: string | null; // a line the desktop app has for the owner about this window (its page was loaded again)
   focusStay: string | null; // that message, when the jump leaves the keyboard where it is (asked from a list beside the transcript)
-  focusCall: string | null; // a tool call whose card opens there (a search hit on a command or its output)
+  focusCall: { id: string; byFind?: true } | null; // a tool call that opens for a search hit; the lens's Find opens it temporarily
   // A message opened from search on another branch: shown without moving the
   // session's branch until the owner chooses to continue from it.
   preview: { session: string; event: string } | null;

@@ -27,7 +27,7 @@ test("find in the lens opens only the stretch and the call that hold the match, 
     const all = ((await (await fetch(`${d.url}/api/sessions/${id}/events`)).json()) as any).events as { id: string; seq: number; kind: string; data: any }[];
     const results = all.filter((e) => e.kind === "tool_result" && JSON.stringify(e.data).includes(WORD));
     expect(results).toHaveLength(2);
-    const [deep, early] = results.map((e) => ({ seq: e.seq, call: e.data.results[0].tool_use_id as string }));
+    const [deep, early] = results.map((e) => ({ seq: e.seq, call: e.data.results[0].tool_use_id as string, reply: all.find((a) => a.seq === e.seq - 1)!.id }));
     // (A store written before its daemon started is indexed once the start's own work is over.)
     await expect.poll(async () => ((await (await fetch(`${d.url}/api/search?q=${WORD}`)).json()) as any).hits.length, { timeout: 60_000 }).toBe(2);
 
@@ -91,8 +91,15 @@ test("find in the lens opens only the stretch and the call that hold the match, 
     await expect.poll(async () => (await marked(page)).now).toBe(WORD);
     await shoot(page, "lens-find-02-next-stretch");
 
+    // The owner takes over a call Find had opened, by closing and reopening it by hand.
+    await earlyCard.locator("button.k-line").click();
+    await expect(earlyCard).not.toHaveAttribute("data-open", /.*/);
+    await earlyCard.locator("button.k-line").click();
+    await expect(earlyCard).toHaveAttribute("data-open", "");
+
     // Escape: the bar closes, its marks go, what it opened folds back, the owner's stretch stays
     // open, and the view is where it stood.
+    await page.getByTestId("find-input").focus();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("find-bar")).toHaveCount(0);
     await expect(earlyRun).not.toHaveAttribute("data-open", /.*/);
@@ -102,11 +109,14 @@ test("find in the lens opens only the stretch and the call that hold the match, 
     expect(await marked(page)).toEqual({ now: "", all: 0 });
     await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeCloseTo(top, -1);
     await expect(page.getByTestId("composer")).toBeFocused();
-    // Opened by hand again, the work Find opened is folded as it was, and no call is open.
+    // Opened by hand again, only the call the owner chose to keep is still open.
     await earlyRun.getByTestId("lens-run-toggle").click();
     await expect(earlyRun.getByTestId("lens-run-stream")).toBeVisible();
-    await expect(earlyRun.getByTestId("work-fold").first()).toBeVisible();
     await expect(earlyRun.locator('[data-testid="tool-call"][data-open]')).toHaveCount(0);
+    await earlyRun.locator(`[data-testid="work-fold"][data-run="w:${early!.reply}"]`).click();
+    await expect(earlyCard).toHaveAttribute("data-open", "");
+    await expect(earlyRun.locator('[data-testid="tool-call"][data-open]')).toHaveCount(1);
+    await shoot(page, "lens-find-03-manual-choice");
   } finally {
     d.proc.kill("SIGTERM");
     await exited(d.proc);

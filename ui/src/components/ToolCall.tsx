@@ -240,12 +240,12 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const files = useMemo(() => (open ? callFiles(kind, use, cwd, (result as { shown?: { line?: number } } | undefined)?.shown?.line) : null), [open, kind, use, cwd, result]);
   const change = useMemo(() => (kind === "edit" || kind === "write" || kind === "patch" ? changeOf(use) : null), [kind, use]);
   // A search hit on this call or its output opens this card (not a sibling call of the same reply).
-  const focused = useUI((s) => !peek && s.focusCall === use.id);
+  const focused = useUI((s) => !peek && s.focusCall?.id === use.id ? s.focusCall : null);
   const root = useRef<HTMLDivElement>(null);
   useLetGoUnseen(root, callKey(use.id), held);
   useEffect(() => {
     if (!focused) return;
-    setPicked(true);
+    pick(true, focused.byFind);
     setUI({ focusCall: null });
     // After the transcript has scrolled to the reply that holds it (its frame comes first).
     requestAnimationFrame(() => requestAnimationFrame(() => { root.current?.scrollIntoView({ block: "center" }); root.current?.classList.add("flash"); setTimeout(() => root.current?.classList.remove("flash"), 1600); }));

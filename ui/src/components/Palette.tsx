@@ -167,7 +167,7 @@ export function Palette() {
         detail: `${clock(h.ts, { date: true })} · ${h.missing?.length ? `missing ${h.missing.map((w) => `"${w}"`).join(", ")} · ` : ""}${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
         label: <><Snippet text={h.snippet} />{h.archived && <Archived />}</>, icon: tool ? <SquareTerminal className="size-4" /> : <TextSearch className="size-4" />, score: 50 - i,
         // Read it where it is: another branch is previewed, the session's own branch stays; a tool hit opens its card.
-        run: () => { setUI({ focusEvent: h.event_id!, focusCall: tool ? h.ref ?? null : null, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
+        run: () => { setUI({ focusEvent: h.event_id!, focusCall: tool && h.ref ? { id: h.ref } : null, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
       });
     }
     return out;

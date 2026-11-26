@@ -165,8 +165,8 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
   useHeld();
   const held = new Set(calls.filter((c) => callHeld(c.id, !c.result && live.working && !live.waiting?.has(c.id))).map((c) => c.id));
   // A search hit inside a folded step opens it; the call's own line takes it from there.
-  const hit = useUI((u) => !!u.focusCall && calls.some((c) => c.id === u.focusCall));
-  useEffect(() => { if (hit) setOpen(true); }, [hit]);
+  const hit = useUI((u) => calls.some((c) => c.id === u.focusCall?.id) ? u.focusCall : null);
+  useEffect(() => { if (hit) setOpen(true, hit.byFind); }, [hit]);
   const events = [...new Set(step.items.map((i) => i.event))].join(" ");
   // What the model said on the way is on the page: a few words beside the line, more above it.
   const beside = table ? besideOf(step) : undefined;
@@ -209,7 +209,7 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
       {said}
       <div className="k-did">
         {leadHeld}
-        <Collapsible.Root open={open} onOpenChange={setOpen} data-testid="work-step" data-family={step.family} data-state={edge} data-calls={calls.length}>
+        <Collapsible.Root open={open} onOpenChange={(to) => setOpen(to)} data-testid="work-step" data-family={step.family} data-state={edge} data-calls={calls.length}>
           <Collapsible.Trigger className="k-line" data-all="" data-step="" aria-label={sentence(s, words)}>
             <StepLine s={s} words={words} />
             <span className="k-line-end">
@@ -256,8 +256,8 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
   const [kept, setOpen] = useKept(`step:${sid}:${step.key}`);
   const open = kept ?? false;
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
-  const hit = useUI((u) => !!u.focusCall && calls.some((c) => c.id === u.focusCall));
-  useEffect(() => { if (hit) setOpen(true); }, [hit]);
+  const hit = useUI((u) => calls.some((c) => c.id === u.focusCall?.id) ? u.focusCall : null);
+  useEffect(() => { if (hit) setOpen(true, hit.byFind); }, [hit]);
   const agents = useAuto((x) => x.agents);
   const told = useToldStates();
   // Each call's agent: the one recorded with the call's id (never a guess by title).
@@ -283,7 +283,7 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
   return (
     <div className="k-step" data-events={events} data-state={edge}>
       <div className="k-did">
-        <Collapsible.Root open={open} onOpenChange={setOpen} data-testid="work-step" data-family="agents" data-state={edge} data-calls={calls.length}>
+        <Collapsible.Root open={open} onOpenChange={(to) => setOpen(to)} data-testid="work-step" data-family="agents" data-state={edge} data-calls={calls.length}>
           <Collapsible.Trigger className="k-line" data-all="" data-step="" aria-label={sentence(s, words)}>
             <StepLine s={s} words={words} />
             <span className="k-line-end">{running && <span className="k-line-run" aria-hidden="true" />}</span>
@@ -328,8 +328,8 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
   const calm = useCalm();
   const [kept, setOpened] = useKept(`work:${sid}:${row.id}`);
   const opened = kept ?? false;
-  const hit = useUI((u) => !!u.focusCall && row.steps!.some((st) => callsOf(st).some((c) => c.id === u.focusCall)));
-  useEffect(() => { if (hit && calm && !opened) setOpened(true); }, [hit]);
+  const hit = useUI((u) => u.focusCall && row.steps!.some((st) => callsOf(st).some((c) => c.id === u.focusCall?.id)) ? u.focusCall : null);
+  useEffect(() => { if (hit && calm && !opened) setOpened(true, hit.byFind); }, [hit]);
   const table = isTable(row.steps!);
   if (calm && !opened && settled(row.steps!)) {
     return (
