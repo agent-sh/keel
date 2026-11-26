@@ -132,23 +132,23 @@ function hearBrowser(o: HearOpts): Hear {
   r.lang = o.lang;
   r.continuous = true;
   r.interimResults = true;
-  let final = "", interim = "", asked: "stopped" | null = null, over = false, failedOnce = false;
+  let final = "", interim = "", asked: "stopped" | null = null, over = false;
   const finish = (why: "stopped" | "ended") => { if (over) return; over = true; o.onDone(`${final} ${interim}`.replace(/\s+/g, " ").trim(), why); };
   r.onresult = (e: any) => {
+    if (over) return;
     let f = "", i = "";
     for (let k = 0; k < e.results.length; k++) (e.results[k].isFinal ? (f += e.results[k][0].transcript) : (i += e.results[k][0].transcript));
     final = f.trim(); interim = i.trim();
     o.onWords?.(final, interim);
   };
   r.onerror = (e: any) => {
-    // Quiet for a while is not a failure: the recognizer ends and listening goes on.
-    if (e.error === "no-speech" || e.error === "aborted") return;
-    failedOnce = true;
+    // Quiet is not a failure. A cancellation of our own already set `over`.
+    if (over || e.error === "no-speech") return;
     over = true;
     const s = said(String(e.error));
     o.onFail(s.text, s.retry);
   };
-  r.onend = () => { if (!failedOnce) finish(asked ? "stopped" : "ended"); };
+  r.onend = () => finish(asked ? "stopped" : "ended");
   try { r.start(); } catch (e) { over = true; o.onFail(`The browser's recognizer would not start: ${(e as Error).message}`, true); }
   return {
     stop: () => { asked = "stopped"; try { r.stop(); } catch { finish("stopped"); } },
@@ -163,7 +163,7 @@ function recorderType(): string | undefined {
 function hearRecording(o: HearOpts): Hear {
   let over = false, stream: MediaStream | undefined, rec: MediaRecorder | undefined, ctx: AudioContext | undefined, stopBeat: (() => void) | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let why: "stopped" | "silence" = "stopped";
-  let discard = false;
+  let discard = false, stopAsked = false;
   const release = () => { stopBeat?.(); clearTimeout(timer); stream?.getTracks().forEach((t) => t.stop()); void ctx?.close().catch(() => {}); };
   const end = (w: "stopped" | "silence") => { if (rec && rec.state !== "inactive") { why = w; rec.stop(); } };
   // In the desktop app the microphone is the app's to give, once, at the owner's press (desktop/README.md).
@@ -174,6 +174,12 @@ function hearRecording(o: HearOpts): Hear {
     rec = new MediaRecorder(s, type ? { mimeType: type } : undefined);
     const chunks: Blob[] = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onerror = () => {
+      if (over) return;
+      over = true;
+      release();
+      o.onFail("The microphone recording failed.");
+    };
     rec.onstop = async () => {
       release();
       if (discard || over) return;
@@ -192,6 +198,7 @@ function hearRecording(o: HearOpts): Hear {
       }
     };
     rec.start(250);
+    if (stopAsked) return end("stopped");
     o.onState?.("recording");
     timer = setTimeout(() => end("stopped"), RECORD_MAX_MS);
     if (o.silenceMs !== undefined) {
@@ -223,7 +230,7 @@ function hearRecording(o: HearOpts): Hear {
     o.onFail(e?.name === "NotAllowedError" ? "The microphone is blocked for this page. Allow it in the browser's address bar." : e?.name === "NotFoundError" ? "No microphone was found." : `The microphone did not open: ${e?.message ?? e}`);
   });
   return {
-    stop: () => end("stopped"),
+    stop: () => { stopAsked = true; end("stopped"); },
     cancel: () => { over = true; discard = true; if (rec && rec.state !== "inactive") rec.stop(); else release(); },
   };
 }

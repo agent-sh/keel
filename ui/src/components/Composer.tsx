@@ -19,14 +19,14 @@ import { api, getState, onFeature, readAtOpen, reportError, reportUnlessGone, us
 import { openFocus } from "../lib/self-focus.ts";
 import { menuClosed, stopHeld } from "../lib/looks.ts";
 import { overBox } from "../lib/escape.ts";
-import { savePref, setUI, useCrowded, useUI } from "../lib/ui.ts";
+import { getUI, onUI, savePref, setUI, useCrowded, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
 import { pointFrom, pointNote, pointSize, withPoints, type Point } from "../lib/point-note.ts";
 import { registerBox, withQuote } from "../lib/quote.ts";
-import { registerDictation } from "../lib/dictation.ts";
+import { hasDictationBox, registerDictation, stopDictation, useDictation } from "../lib/dictation.ts";
 import { dictated, type Base } from "../lib/dictated.ts";
 import { SpeechBand, SpeechButtons } from "./Speech.tsx";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
@@ -135,6 +135,7 @@ type Menu =
 type Option = { key: string; label: ReactNode; detail?: string; disabled?: boolean; icon: ReactNode; apply: () => void };
 
 const draftKey = (id?: string) => `keel.draft.${id ?? "new"}`;
+const draftView = () => { const r = getUI().route; return r.name === "session" ? r.id : r.name === "new" ? "start" : r.name; };
 // The key that queues a message for after the running turn, as this platform names it.
 const queueKeys = keyLabel(QUEUE_KEYS).join(" ");
 // Said once in a page's life, the first time Tab goes from a draft to the queue button.
@@ -243,13 +244,26 @@ const SessionComposer = memo(function SessionComposer({
   const sid = session?.id;
   const key = draftKey(sid);
   const shelf = shelfKey(sid);
+  const dictationBox = sid ?? "start";
   const saved = useSendDrafts(shelf);
   const [text, commitText] = useState(() => localStorage.getItem(key) ?? "");
   const [images, commitImages] = useState<Attachment[]>([]);
   // Resolve changes immediately so a late response reads the whole current
   // draft, including edits or attachments React has not painted yet.
   const draft = useRef({ text, images });
-  const setText = (next: SetStateAction<string>) => commitText(draft.current.text = typeof next === "function" ? next(draft.current.text) : next);
+  const dictating = useRef<{
+    base: Base;
+    original: string;
+    heard: string;
+    edited?: boolean;
+    send?: { queue: boolean; background: boolean; images: Attachment[]; points: Point[]; left: boolean; unwatch: () => void };
+  } | null>(null);
+  const writeText = (next: string) => commitText(draft.current.text = next);
+  const setText = (next: SetStateAction<string>) => {
+    const value = typeof next === "function" ? next(draft.current.text) : next;
+    if (dictating.current && value !== draft.current.text) dictating.current.edited = true;
+    writeText(value);
+  };
   const setImages = (next: SetStateAction<Attachment[]>) => commitImages(draft.current.images = typeof next === "function" ? next(draft.current.images) : next);
   // What the owner pointed at on the page (lib/point.ts): each a chip in the box, with its picture among the
   // images. They are part of the draft, kept with it across a reload, and go with the message as their notes.
@@ -1002,8 +1016,7 @@ const SessionComposer = memo(function SessionComposer({
     setSendDraft(shelf, id);
   };
 
-  const submit = (queue = false, background = false) => {
-    sentHere.current = Date.now();
+  const submitDraft = (queue: boolean, background: boolean) => {
     const { text, images } = draft.current;
     const pts = pointed.current;
     const t = text.trim();
@@ -1024,6 +1037,27 @@ const SessionComposer = memo(function SessionComposer({
     ref.current?.focus();
     // (What was pointed at goes as its notes under the words, each naming its picture among the message's images.)
     void attempt({ id: crypto.randomUUID(), text: withPoints(text, pts, images.filter((a) => !a.file).map((a) => a.id)), images, queue, ...(background && { background }), state: "sending" }, true);
+  };
+  const latestSubmit = useRef(submitDraft);
+  useLayoutEffect(() => { latestSubmit.current = submitDraft; });
+  const submit = (queue = false, background = false) => {
+    sentHere.current = Date.now();
+    const take = dictating.current;
+    if (take) {
+      if (!take.send) {
+        const from = draftView();
+        const unwatch = onUI(() => {
+          if (draftView() === from) return;
+          send.left = true;
+          unwatch();
+        });
+        const send = { queue, background, images: draft.current.images, points: pointed.current, left: false, unwatch };
+        take.send = send;
+      }
+      stopDictation(true);
+      return;
+    }
+    submitDraft(queue, background);
   };
 
   // What the selection bar hands this box (lib/quote.ts): a comment goes at once as the owner's own message,
@@ -1054,31 +1088,64 @@ const SessionComposer = memo(function SessionComposer({
 
   // Dictation (lib/dictation.ts) puts words at the caret as they are heard: what stood before and after the
   // caret when it began is kept, and each update is made from that, so the words replace each other.
-  const dictating = useRef<Base | null>(null);
-  useEffect(() => registerDictation(sid ?? "start", {
+  // Register once for this box's life; re-rendering or switching boxes cannot retarget a recording.
+  useLayoutEffect(() => registerDictation(dictationBox, {
     holds: (el) => !!el && el === ref.current,
     begin: () => {
       const el = ref.current;
       const t = draft.current.text;
-      dictating.current = el ? { before: t.slice(0, el.selectionStart), after: t.slice(el.selectionEnd) } : { before: t, after: "" };
+      const base = el ? { before: t.slice(0, el.selectionStart), after: t.slice(el.selectionEnd) } : { before: t, after: "" };
+      dictating.current = { base, original: t, heard: "" };
       el?.focus();
     },
-    show: (words) => { if (dictating.current) setText(dictated(dictating.current, words).text); },
+    show: (words) => {
+      const take = dictating.current;
+      if (!take) return;
+      take.heard = words;
+      if (mounted.current && !take.edited) writeText(words ? dictated(take.base, words).text : take.original);
+    },
     end: (words) => {
-      const base = dictating.current;
+      const take = dictating.current;
       dictating.current = null;
-      if (!base) return;
-      const r = dictated(base, words);
-      setText(r.text);
+      if (!take) return;
+      const send = take.send;
+      send?.unwatch();
+      if (!mounted.current || take.edited) {
+        const spoken = words || take.heard;
+        if (!spoken) return;
+        const text = dictated(take.base, spoken).text;
+        // A remounted box has its own draft now. Only update a draft no one reopened or changed.
+        if (!mounted.current && !take.edited && draftView() !== dictationBox && !hasDictationBox(dictationBox)) {
+          try {
+            if ((localStorage.getItem(key) ?? "") === draft.current.text) {
+              localStorage.setItem(key, text);
+              keepText(key, text);
+              return;
+            }
+          } catch { /* keep the words on the shelf instead */ }
+        }
+        // Keep only text here. The original attachments still belong to the box.
+        const id = crypto.randomUUID();
+        setSendDraft(shelf, id, { id, text, images: [], queue: false, state: "parked" });
+        return;
+      }
+      if (words === null) return;
+      const r = dictated(take.base, words);
+      if (words.trim()) writeText(r.text);
       setMenu(null);
+      if (send?.left) return;
+      if (send && send.images === draft.current.images && send.points === pointed.current) {
+        latestSubmit.current(send.queue, send.background);
+        return;
+      }
       requestAnimationFrame(() => {
         const el = ref.current;
-        if (!el) return;
+        if (!el || !words.trim()) return;
         el.focus();
         el.setSelectionRange(r.caret, r.caret);
       });
     },
-  }));
+  }), [dictationBox]);
 
   const retry = (id: string) => {
     const entry = sendDrafts(shelf).find((d) => d.id === id);
@@ -1117,7 +1184,8 @@ const SessionComposer = memo(function SessionComposer({
 
   const mentionName = workspace ? `Files in ${workspace.split("/").pop()} and sessions` : "Sessions";
   const open = menu && options.length > 0;
-  const canSend = !!text.trim() || images.length > 0 || points.length > 0;
+  const dictation = useDictation();
+  const canSend = !!text.trim() || images.length > 0 || points.length > 0 || (dictation.phase !== "idle" && dictation.box === dictationBox);
   // What the box says about itself: among the tools, or on a line of its own
   // above a one-row toolbar. Cut where the room ends, whole in its tip.
   const status = notice

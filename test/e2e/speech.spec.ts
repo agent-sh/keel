@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "./isolate.ts";
 import { HEARD, SPEECH_ID, startSpeechEndpoint, STT, TTS } from "./fixtures/speech-endpoint.ts";
-import { shoot } from "./shots.ts";
+import { endsAre, setPanes, shoot } from "./shots.ts";
 
 // Feature: dictation into the message box and conversation mode, each with a key. The speech comes from a stand-in
 // (a recognizer and a voice the page finds where a browser's own are, or a provider that lists speech models), so no
@@ -18,12 +18,14 @@ const BROWSER = () => {
   w.__spoken = [];
   // `__hold`: a voice that keeps reading until it is cancelled (a long reply); `__cancelled` counts the cancels.
   w.__hold = false; w.__cancelled = 0; w.__held = null;
+  w.__holdStop = false;
   class Rec {
     lang = ""; continuous = false; interimResults = false; onresult: any; onend: any; onerror: any; on = false;
     constructor() { w.__recs.push(this); }
     start() { this.on = true; }
-    stop() { this.on = false; setTimeout(() => this.onend?.(), 0); }
+    stop() { this.on = false; if (!w.__holdStop) setTimeout(() => this.end(), 0); }
     abort() { this.on = false; }
+    end() { this.on = false; this.onend?.(); }
     // What the recognizer holds: what it is sure of, and what it is still hearing.
     hear(final: string, interim = "") {
       const one = (t: string, isFinal: boolean) => Object.assign([{ transcript: t }], { isFinal });
@@ -106,6 +108,100 @@ test("dictation puts the words in the box, by the button and by the key, and the
   await expect(band).toBeHidden();
   await expect(box).toHaveValue("second try and a third");
   expect(await live(page)).toBe(0);
+});
+
+test("send waits for the final dictation and still belongs to the same draft", async ({ page, request }) => {
+  await page.addInitScript(BROWSER);
+  const id = await session(page, request);
+  await setPanes(page, 1);
+  const other = (await (await request.post("/api/sessions", { data: { model: SCRIPTED, title: "Another box" } })).json()).session.id as string;
+  const box = page.getByTestId("composer");
+  const send = page.getByTestId("send");
+  const messages = page.getByTestId("user-message");
+  const state = page.getByTestId("speech-state");
+  await page.evaluate(() => { (window as any).__holdStop = true; });
+  const start = async (draft: string) => {
+    await box.fill(draft);
+    await page.getByTestId("dictate").click();
+    await expect(state).toHaveText("Listening");
+  };
+  const finish = () => page.evaluate(() => (window as any).__recs.at(-1).end());
+  const sendKey = () => box.press("Enter");
+
+  await start("Please");
+  await hear(page, "", "check");
+  await expect(box).toHaveValue("Please check");
+  await send.click();
+  await expect(state).toHaveText("Transcribing");
+  expect(await live(page)).toBe(0);
+  await expect(messages).toHaveCount(0);
+  await sendKey();
+  await shoot(page, "speech-send-pending");
+  await hear(page, "check the final words");
+  await finish();
+  await endsAre(page, 1);
+  await expect(messages).toHaveText(["Please check the final words"]);
+  await expect(box).toHaveValue("");
+
+  // A failed finalization keeps the text that was already in the box, including the words heard so far.
+  await start("Keep");
+  await hear(page, "", "this draft");
+  await sendKey();
+  await expect(state).toHaveText("Transcribing");
+  await page.evaluate(() => (window as any).__recs.at(-1).onerror?.({ error: "audio-capture" }));
+  await finish();
+  await expect(page.getByTestId("speech-error")).toContainText("No microphone was found");
+  await expect(box).toHaveValue("Keep this draft");
+  await expect(messages).toHaveCount(1);
+  await shoot(page, "speech-send-retry");
+  await send.click();
+  await endsAre(page, 2);
+  await expect(messages).toHaveText(["Please check the final words", "Keep this draft"]);
+
+  // Switching boxes leaves late words with the original draft, without sending to either session.
+  await start("Original box");
+  await send.click();
+  await expect(state).toHaveText("Transcribing");
+  const open = async (sid: string) => {
+    await page.locator(`[data-testid="session-row"][data-session="${sid}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${sid}$`));
+    await expect(box).toBeVisible();
+  };
+  await open(other);
+  await box.fill("Another draft");
+  await hear(page, "not for this box");
+  await finish();
+  await expect(box).toHaveValue("Another draft");
+  await expect(messages).toHaveCount(0);
+  await open(id);
+  await expect(box).toHaveValue("Original box not for this box");
+  await expect(messages).toHaveCount(2);
+
+  // Returning before the final words can arrive must not overwrite a new edit in the original box.
+  await start("One more draft");
+  await send.click();
+  await expect(state).toHaveText("Transcribing");
+  await open(other);
+  await open(id);
+  await box.fill("Changed after returning");
+  await hear(page, "with more words");
+  await finish();
+  await expect(box).toHaveValue("Changed after returning");
+  await expect(page.getByTestId("saved-draft").filter({ hasText: "One more draft with more words" })).toBeVisible();
+  await expect(messages).toHaveCount(2);
+  await shoot(page, "speech-send-parked");
+
+  // An edit made while waiting is not the draft that Send authorized, even when the box was empty.
+  await start("");
+  await send.click();
+  await expect(state).toHaveText("Transcribing");
+  await box.fill("New draft");
+  await hear(page, "late words");
+  await finish();
+  await expect(state).toBeHidden();
+  await expect(box).toHaveValue("New draft");
+  await expect(page.getByTestId("saved-draft").filter({ hasText: "late words" })).toBeVisible();
+  await expect(messages).toHaveCount(2);
 });
 
 test("a browser with no recognizer and no speech model says so instead of failing in silence", async ({ page, request }) => {

@@ -10,8 +10,8 @@ export type DictTarget = {
   begin: () => void;
   // The words heard so far (final and interim, replaced each time).
   show: (words: string) => void;
-  // The recording ended: the last words, put at the caret with the caret after them.
-  end: (words: string) => void;
+  // The last words, or null if transcription failed and the visible draft should stay.
+  end: (words: string | null) => void;
   // Whether the keyboard is in this box.
   holds: (el: Element | null) => boolean;
 };
@@ -28,7 +28,10 @@ let current: string | undefined;
 // The route's own box is the default; the box with the keyboard in it wins.
 export function registerDictation(key: string, t: DictTarget): () => void {
   targets.set(key, t);
-  return () => { if (targets.get(key) === t) targets.delete(key); };
+  return () => {
+    if (targets.get(key) === t) targets.delete(key);
+    run?.abandon(t);
+  };
 }
 export const setDictationHome = (key: string | undefined) => { current = key; };
 export const pick = (): string | undefined => {
@@ -38,21 +41,19 @@ export const pick = (): string | undefined => {
 };
 // Whether a message box is here to dictate into.
 export const canDictate = () => targets.size > 0;
+export const hasDictationBox = (key: string) => targets.has(key);
 
 // The recording itself loads on first use: the pointer over a speech button, or the first press.
 let run: typeof import("./dictation-run.ts") | null = null;
 const engine = () => import("./dictation-run.ts").then((m) => (run = m));
 export const warmDictation = () => void engine().catch(() => {});
 
-export async function startDictation(): Promise<void> {
-  const key = pick();
-  if (!key || !targets.get(key)) return;
-  await (run ?? (await engine())).startDictation();
+export async function startDictation(key = pick()): Promise<void> {
+  const target = key ? targets.get(key) : undefined;
+  if (key && target) await (run ?? (await engine())).startDictation(key, target);
 }
 
 // Ends the recording and puts what was heard in the box.
-export function stopDictation() { run?.stopDictation(); }
-// Ends it and drops what was heard (the box is as it was).
-export function cancelDictation() { run?.cancelDictation(); }
-export const toggleDictation = () => (run ? run.toggleDictation() : void startDictation());
+export function stopDictation(keepDraft = false) { run?.stopDictation(keepDraft); }
+export const toggleDictation = (key?: string) => (now.phase !== "idle" ? stopDictation() : void startDictation(key));
 export const dismissDictationError = () => set({ error: null });

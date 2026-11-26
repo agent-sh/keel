@@ -32,7 +32,7 @@ export function SpeechButtons({ sid }: { sid: string | undefined }) {
         disabled={talking}
         onPointerEnter={warmDictation}
         onFocus={warmDictation}
-        onClick={() => toggleDictation()}
+        onClick={() => toggleDictation(sid ?? "start")}
         className={cn(button, "k-dictate relative disabled:opacity-40")}
       >
         <Mic className="size-4" />
