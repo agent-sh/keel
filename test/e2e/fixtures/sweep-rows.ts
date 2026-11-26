@@ -47,4 +47,6 @@ const sess = (text: string, call?: string) => {
 };
 sess("The owner runs the company, as the role note says.");
 sess("Saving my work first.", "git stash");
+// Kept out of the session list: they are records of a day, not sessions to open.
+store.db.query("UPDATE sessions SET archived = 1 WHERE title = 'sweep fixture'").run();
 store.db.close();

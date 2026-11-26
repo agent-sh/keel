@@ -26,7 +26,7 @@ export function said(s: System): { gave: string; used: string } {
 }
 
 // A card made before the four figures were kept has none: its rows show nothing there.
-const repeats = (s: System) => (s.measure ? (s.measure.mistakes ? plural(s.measure.mistakes, "repeat") : "none") : undefined);
+const repeats = (s: System) => (s.measure && (s.measure.given || s.measure.mistakes) ? (s.measure.mistakes ? plural(s.measure.mistakes, "repeat") : "none") : undefined);
 const cost = (s: System) => (s.measure && s.measure.tokens ? `${fmtTokens(s.measure.tokens)} tokens` : undefined);
 
 // The helper's panel: one quiet line of the latest card, its details in Settings.

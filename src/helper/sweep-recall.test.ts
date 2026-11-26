@@ -54,7 +54,7 @@ test("the improvement: a repeated mistake first, then facts never used, then wha
   expect(idle!.text).toContain("about 400 tokens in the day");
   expect(nextOf({ ...base, days: 14, facts: [{ name: "A", given: 4, used: 0, tokens: 90 }] })!.text).toContain("about 90 tokens in 14 days");
   const ban = nextOf({ ...base, facts: [{ name: "A", given: 4, used: 0 }], broken: [{ ban: "git stash", sessions: 2 }] });
-  expect(ban!.text).toContain("`git stash` ran after a note forbade it in 2 sessions");
+  expect(ban!.text).toContain('"git stash" ran after a note forbade it in 2 sessions');
   expect(nextOf({ ...base, extra: [{ text: "own", score: 5 }] })!.text).toBe("own");
 });
 

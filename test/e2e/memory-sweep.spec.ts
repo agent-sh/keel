@@ -47,7 +47,7 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     await expect(by("claude")).toContainText("2 of 3 facts used");
     await expect(by("claude").getByTestId("sweep-repeats")).toHaveText("1 repeat");
     await expect(by("claude").getByTestId("sweep-helped")).toHaveText("67%");
-    await expect(next("claude")).toContainText("`git stash` ran after a note forbade it in 1 session");
+    await expect(next("claude")).toContainText('"git stash" ran after a note forbade it in 1 session');
     await expect(by("tacit").getByTestId("sweep-repeats")).toHaveText("none");
     await expect(by("codex")).toContainText("no session has loaded it yet");
     await expect(by("codex").getByTestId("sweep-helped")).toHaveCount(0);

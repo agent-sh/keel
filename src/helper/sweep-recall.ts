@@ -121,7 +121,7 @@ export function nextOf(i: {
 }): Next | null {
   const found: Next[] = [...(i.extra ?? [])];
   const top = i.broken?.[0];
-  if (top) found.push({ text: `\`${top.ban}\` ran after a note forbade it in ${plural(top.sessions, "session")}: make it a deny rule so the call is stopped, not just told.`, score: 1000 + top.sessions });
+  if (top) found.push({ text: `"${top.ban}" ran after a note forbade it in ${plural(top.sessions, "session")}: make it a deny rule so the call is stopped, not just told.`, score: 1000 + top.sessions });
   const per = i.given > 0 ? i.tokens / i.given : 0;
   const idle = (i.facts ?? []).filter((f) => f.used === 0 && f.given >= 2).sort((a, b) => b.given - a.given);
   if (idle.length) {

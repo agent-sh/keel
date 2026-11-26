@@ -148,7 +148,7 @@ test("a native memory's day: the facts a loading session's next steps used, a co
   const claude = card.systems.find((s) => s.id === "claude")!;
   expect(claude.measure).toEqual({ given: 4, used: 1, mistakes: 1, tokens: 2000 });
   expect(claude.helped).toBe(0.25);
-  expect(claude.next!.text).toContain("`git stash` ran after a note forbade it in 1 session");
+  expect(claude.next!.text).toContain('"git stash" ran after a note forbade it in 1 session');
   expect(card.systems.find((s) => s.id === "momentum")!.next!.text).toContain("no command");
 });
 
