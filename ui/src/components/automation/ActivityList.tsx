@@ -32,6 +32,8 @@ const CAP = 3;
 const SINCE: { value: string; label: string }[] = [{ value: "", label: "Any time" }, { value: "1h", label: "Last hour" }, { value: "1d", label: "Last day" }, { value: "7d", label: "Last week" }];
 const SINCE_MS: Record<string, number> = { "1h": 3_600_000, "1d": 86_400_000, "7d": 7 * 86_400_000 };
 
+const chip = "flex h-6 items-center gap-1 rounded-md px-1.5 text-micro outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 const bad = (a: Activity) => /fail|error|refused|refusal|declined/.test(a.sub) || a.sub === "denied" || (a.kind === "daemon" && (a.sub === "killed" || a.sub === "crash"));
 
 // Everything that happened, across sessions, newest first, one row a turn:
@@ -158,18 +160,19 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             {options.map((p) => <option key={p.session_id} value={p.session_id}>{(sessions[p.session_id]?.title || `Session ${p.session_id.slice(-6)}`).slice(0, 40)}</option>)}
           </Select>
         </div>
-        <div className="flex flex-wrap gap-1">
+        {/* The kinds are words to press, not a dozen boxes: a filter at rest is quiet ink with its row's mark
+            (the mark is the legend of the rows below), and one that is on stands on a soft ground. */}
+        <div className="-mx-1 flex flex-wrap gap-x-0.5 gap-y-0.5" data-testid="activity-filters">
           <button
             type="button"
             data-testid="activity-failures"
             aria-pressed={failures}
             onClick={() => setFailures(!failures)}
             title="Only what went wrong: failed and declined turns, failed agents, loops and waits, refused calls, a daemon that went down"
-            className={cn("flex h-6 items-center gap-1 rounded-md border px-2 text-micro", failures ? "border-st-fail/50 bg-danger-soft text-fg" : "border-line text-muted hover:bg-hover")}
+            className={cn(chip, failures ? "bg-danger-soft text-fg" : "text-muted hover:bg-hover hover:text-fg")}
           >
-            <TriangleAlert className="size-3" /> Failures
+            <TriangleAlert className={cn("size-3", failures ? "text-st-fail" : "text-faint")} /> Failures
           </button>
-          <span className="mx-0.5 w-px self-stretch bg-line" aria-hidden />
           {KINDS.map((k) => {
             const Icon = KIND[k].icon;
             const on = kinds.includes(k);
@@ -180,9 +183,9 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                 data-testid={`activity-kind-${k}`}
                 aria-pressed={on}
                 onClick={() => toggle(k)}
-                className={cn("flex h-6 items-center gap-1 rounded-md border px-2 text-micro", on ? "border-accent/50 bg-accent-soft text-fg" : "border-line text-muted hover:bg-hover")}
+                className={cn(chip, on ? "bg-sunken text-fg" : "text-muted hover:bg-hover hover:text-fg")}
               >
-                <Icon className="size-3" /> {KIND[k].label}
+                <Icon className={cn("size-3", !on && "text-faint")} /> {KIND[k].label}
               </button>
             );
           })}

@@ -58,7 +58,16 @@ test("alerts: snooze per session and global, activity list", async ({ page, requ
   // Activity: everything above, filtered.
   await page.getByTestId("tab-activity").click();
   await expect(page.getByTestId("activity-item").first()).toBeVisible();
+  // The filters are words to press, not a dozen boxes: at rest none has an edge or a ground, and one that is on stands on a ground.
+  const chips = page.getByTestId("activity-filters").getByRole("button");
+  await expect(chips).toHaveCount(12);
+  const drawn = () => chips.evaluateAll((els) => els.filter((el) => { const c = getComputedStyle(el); return parseFloat(c.borderTopWidth) > 0 || c.boxShadow !== "none" || c.backgroundColor !== "rgba(0, 0, 0, 0)"; }).map((el) => el.getAttribute("data-testid")));
+  await page.mouse.move(1200, 600);
+  expect(await drawn()).toEqual([]);
   await page.getByTestId("activity-kind-snooze").click();
+  await expect(page.getByTestId("activity-kind-snooze")).toHaveAttribute("aria-pressed", "true");
+  await page.mouse.move(1200, 600);
+  await expect.poll(drawn).toEqual(["activity-kind-snooze"]);
   await expect(page.getByTestId("activity-item").filter({ hasText: "Snoozed" }).first()).toBeVisible();
   await expect(page.locator('[data-testid="activity-item"]:not([data-kind="snooze"])')).toHaveCount(0);
   await choose(page.getByTestId("activity-session"), session.id);
