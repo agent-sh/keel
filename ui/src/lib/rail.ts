@@ -128,7 +128,8 @@ export function railForm(width = innerWidth): RailForm {
   const ui = getUI();
   const fit = phone() ? { width: listWidth(), narrow: false } : beside(width);
   const tight = !fit;
-  const over = tight && ui.peek;
+  // Laid over the panes: where there is no room for it, and where the owner folded it and asked for a look (the folded rail's count).
+  const over = ui.peek && (tight || !ui.sidebar);
   const list = phone() || (ui.sidebar && !tight) || over;
   return { list, tight, over, narrow: list && !over && !!fit?.narrow, width: list && !over ? fit!.width : railWidth() };
 }
@@ -140,8 +141,9 @@ export function useRail(): RailForm {
   useStations((s) => s.count);
   useStations((s) => s.focus);
   const form = railForm(width);
-  // The laid-over list does not outlive the squeeze that called for it.
-  useEffect(() => { if (!form.tight && getUI().peek) setUI({ peek: false }); }, [form.tight]);
+  // The laid-over list does not outlive the squeeze, or the fold, that called for it.
+  const beside = !form.tight && getUI().sidebar;
+  useEffect(() => { if (beside && getUI().peek) setUI({ peek: false }); }, [beside]);
   return form;
 }
 
@@ -179,7 +181,12 @@ export function toggleList(show?: boolean) {
     if (next && !ui.sidebar && !settingsFold()) savePref("sidebar", true);
     return setUI({ peek: next });
   }
+  // Folded by choice and laid over the panes for a look: put away, and the fold stays.
+  if (ui.peek && !ui.sidebar && show !== true) return setUI({ peek: false });
   savePref("sidebar", show ?? !ui.sidebar);
 }
+// The whole list for a look, laid over the panes: the fold is the owner's choice and stays. Picking a
+// session, Escape or a press beside it puts it away.
+export const lookAtList = () => setUI({ peek: true });
 
 export { callsigns } from "./callsigns.ts";

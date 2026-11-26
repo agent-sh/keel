@@ -29,7 +29,7 @@ import { useNeedUnderLooks } from "../lib/looks.ts";
 import { useQueued } from "../lib/queued.ts";
 import { useCap } from "../lib/caps.ts";
 import { capTip, dollars } from "../../../src/automation/cap-rules.ts";
-import { listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
+import { listBounds, listWidth, lookAtList, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { opened, openFocus } from "../lib/self-focus.ts";
 import { railShown, railWords } from "../lib/rail-words.ts";
 import { navigate, phone, savePref, setUI, useUI } from "../lib/ui.ts";
@@ -853,11 +853,12 @@ let openOn: "active" | "archived" = "active";
 // Folded, the rail is the way back to what needs you and what works, not the list. A session is a
 // row while it calls for you (it asks, failed, was declined), works or waits, holds news you have not
 // seen, or is on screen. Every other session is at rest and seen: it is counted in one quiet line
-// under the rows, which opens the list. A row is a word of the session's title (lib/rail-words.ts)
-// and, only where its state asks for the eye, the list's own dot before it: none for a session at
-// rest, the small news dot for one that finished unseen. The rows are in the order of attention: what
-// needs you, what failed, what waits, what works, then what is on screen and what is new. Under the
-// hand a row keeps the place it had, and none leaves. Hovering or focusing a row shows its card, with the title whole.
+// under the rows, which lays the list over the panes for a look (the fold stays). A row is a word of
+// the session's title (lib/rail-words.ts) and, only where its state asks for the eye, the list's own
+// dot before it: none for a session at rest, the small news dot for one that finished unseen. The
+// rows are in the order of attention: what needs you, what failed, what waits, what works, then what
+// is on screen and what is new. Under the hand a row keeps the place it had, and none leaves.
+// Hovering or focusing a row shows its card, with the title whole.
 const ATTENTION: Watch[] = ["need", "fail", "declined", "wait", "work", "resume"];
 // How many rows the folded rail has room for (null: all of them), measured on the rail itself.
 function useRailRoom(any: boolean) {
@@ -948,7 +949,7 @@ function Marks({ current }: { current: string | null }) {
         })}
         {rest.length > 0 && (
           <li>
-            <button type="button" className="k-tick k-tick-rest" data-testid="rail-rest" aria-label={`${restWords}. Show the session list`} title={`${restWords}. Show the session list (Ctrl B)`} onClick={() => toggleList(true)}>
+            <button type="button" className="k-tick k-tick-rest" data-testid="rail-rest" aria-label={`${restWords}. Show the session list`} title={`${restWords}. Show the list`} aria-haspopup="true" onClick={lookAtList}>
               <span className="k-tick-dot" aria-hidden="true">{cut ? <Mark w={watches[cut.id]!} /> : news ? <span className="k-tick-new" /> : null}</span>
               <span className="k-tick-word">+{rest.length}</span>
             </button>

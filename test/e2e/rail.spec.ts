@@ -9,7 +9,7 @@ import { shoot, setPanes, WORKBENCH } from "./shots.ts";
 // it is the way back to what needs the owner and what works, not the list: a row for a session
 // that calls, works, holds news or is on screen (a word of its title, no two alike, and a dot
 // only where the state asks for the eye), and one quiet count of every session at rest, which
-// opens the list. The card beside the entry under the pointer or the focus gives the title,
+// lays the list over the panes for a look. The card beside the entry under the pointer or the focus gives the title,
 // the state, the folder and the last activity. Without room the toggle lays
 // the list over the panes until a session is picked. A failed session is
 // marked failed on a fresh page, before any of its events are loaded (the
@@ -110,18 +110,23 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   const left = (id: string) => entry(id).getByTestId("rail-word").evaluate((el) => Math.round(el.getBoundingClientRect().left));
   expect(await left(failed)).toBe(await left(done));
   // A session at rest that the owner has seen is no row: it is counted in the one line under the rows,
-  // with no band, no head and no count but that one. The line opens the list.
+  // with no band, no head and no count but that one.
   await expect(entry(twin)).toHaveCount(0);
   await expect(rail.locator('[data-testid="session-row"]:not([aria-current], [data-shown], [data-unread], [data-watch="need"], [data-watch="fail"], [data-watch="declined"], [data-watch="wait"], [data-watch="work"], [data-watch="resume"])')).toHaveCount(0);
   const more = rail.getByTestId("rail-rest");
   await expect(more).toHaveText(/^\+\d+$/);
   await expect(more).toHaveAccessibleName(/^\d+ more sessions?( at rest)?\. Show the session list$/);
   await expect(rail.locator(".k-marks, .k-marks-head, h3")).toHaveCount(0);
+  // It lays the whole list over the panes for a look: the fold is the owner's choice and stays. Escape puts it away.
   await more.click();
-  await expect(side).toHaveAttribute("data-open", "true");
+  await expect(side).toHaveAttribute("data-over", "true");
   await expect(entry(twin).locator(".k-row-title")).toBeVisible();
-  await page.keyboard.press("Control+b");
+  await expect(stations).toHaveCount(2);
+  expect(await stored("keel.list")).toBe("false");
+  await shoot(page, "rail-04a-folded-list-for-a-look");
+  await page.keyboard.press("Escape");
   await expect(side).not.toHaveAttribute("data-open", "true");
+  expect(await stored("keel.list")).toBe("false");
   await entry(done).hover();
   await expect(card).toContainText(`batch size ${tag}`);
   await expect(card).toContainText("Done");
