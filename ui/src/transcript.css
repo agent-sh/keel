@@ -456,6 +456,10 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
   transition: background-color var(--dur-quick) var(--ease-out);
 }
 .k-lens-line:hover { background: var(--hover); }
+/* On a touch screen the line is a finger's height: its words stand in its middle with the dot, not at its top. */
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
+  .k-lens-line { align-items: center; }
+}
 .k-lens-dot { flex: none; align-self: center; width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--line-strong); }
 .k-lens-run[data-state="needs"] .k-lens-dot { background: var(--st-need-fill); box-shadow: 0 0 0 1px var(--st-need); }
 .k-lens-run[data-state="failed"] .k-lens-dot { background: var(--st-fail); }

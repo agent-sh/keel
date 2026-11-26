@@ -2078,7 +2078,3 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-shell[data-mode="phone-focus"] .k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }
 /* The plan's figure over the box is quiet ink too: the step's words beside it say what runs. */
 .k-shell[data-mode="phone-focus"] .k-docket-n { font-weight: 400; color: var(--muted); }
-/* A run's line in the lens on a touch screen is a finger's height: its words stand in its middle with the dot. */
-@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
-  .k-lens-line { align-items: center; }
-}
