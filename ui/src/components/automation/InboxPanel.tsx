@@ -222,7 +222,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
           const tight = !wide && offers;
           const n = notes[a.id];
           // On a shared line the width goes to what waits on the owner: the title gives way first there.
-          const title = <span dir="auto" className={cn("truncate text-left text-ui", asks || fresh ? "text-fg" : "text-muted", !alone ? "mb-0.5 block" : asks ? "min-w-0 max-w-[30%] shrink" : "min-w-0 max-w-[46%] shrink")} data-testid="inbox-place">{place}</span>;
+          const title = <span dir="auto" className={cn("truncate text-left text-ui", part === "need" && !alone && "max-md:whitespace-normal max-md:[overflow-wrap:anywhere]", asks || fresh ? "text-fg" : "text-muted", !alone ? "mb-0.5 block" : asks ? "min-w-0 max-w-[30%] shrink" : "min-w-0 max-w-[46%] shrink")} data-testid="inbox-place">{place}</span>;
           return (
             <li
               key={a.id}
@@ -255,7 +255,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
                       <span className="sr-only">, {a.read ? "read" : "unread"}{a.data?.snoozed ? ", snoozed" : a.data?.held ? ", held by the snooze" : ""}: </span>
                     </span>
                     {alone && title}
-                    <span dir="auto" className={cn("min-w-[4rem] truncate text-left", "flex-1", a.read && !a.open ? "text-faint" : "text-fg")} data-testid="inbox-line" title={a.body}>{lineOf(a)}</span>
+                    {/* On a phone, what waits on the owner keeps its words: two lines before it is cut. */}
+                    <span dir="auto" className={cn("min-w-[4rem] truncate text-left", "flex-1", part === "need" && "max-md:line-clamp-2 max-md:whitespace-normal max-md:[overflow-wrap:anywhere]", a.read && !a.open ? "text-faint" : "text-fg")} data-testid="inbox-line" title={a.body}>{lineOf(a)}</span>
                     {/* What became of an ask that waits no more: allowed once from the page, denied, closed with no answer (on a phone without where it was given: in its tooltip). */}
                     {a.outcome && <span className={cn("text-micro", wide ? "min-w-0 max-w-[50%] truncate" : "shrink-0", /^denied|^closed/.test(a.outcome) ? "text-faint" : "text-muted", tight && "sr-only")} title={a.outcome} data-testid="inbox-outcome">{cap(wide ? a.outcome : a.outcome.split(" from ")[0]!.replace("closed with no answer", "not answered"))}</span>}
                     {(a.data?.snoozed || a.data?.held) && <span className="shrink-0 text-micro text-faint" aria-hidden>{a.data?.snoozed ? "snoozed" : "held by the snooze"}</span>}

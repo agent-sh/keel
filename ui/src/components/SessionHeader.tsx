@@ -1,7 +1,8 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Square, Trash2, X } from "lucide-react";
 import { setLensView, useLensView } from "../lib/lens-view.ts";
+import { askFind } from "../lib/find-ask.ts";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import type { Session } from "../../../src/core/types.ts";
@@ -402,6 +403,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
     ...(phone() ? [
       ...(session.phase === "working" ? [{ id: "menu-stop", label: "Stop the turn", icon: <Square />, run: () => void actions.interrupt(session.id).catch(reportError) }] : []),
       rename,
+      // A touch screen has no find key: Find in this conversation is here (lib/find-ask.ts).
+      ...(session.outside ? [] : [{ id: "menu-find", label: "Find in this conversation", icon: <Search />, run: () => askFind(session.id) }]),
       ...hand.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "Panels", gap: true } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })),
       ...(crowded ? rest.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "More panels", gap: !hand.length } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })) : []),
     ] : []),

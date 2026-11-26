@@ -1748,6 +1748,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-dropped:last-child { margin-bottom: 0; }
 .k-set-dropped dt { color: var(--faint); }
 .k-set-dropped dd { color: var(--muted); overflow-wrap: anywhere; }
+.k-set-dropped > [data-wide] { grid-column: 1 / -1; }
 .k-set-table tr.k-set-open[data-bare] { display: none; }
 .k-set-table tr.k-set-open:not([data-open]) > td { padding-top: 0; }
 @container set-box (max-width: 52rem) {
@@ -1762,6 +1763,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-set-table :is(th, td):first-child { padding-left: 1rem; }
   .k-set-table :is(th, td):last-child { padding-right: 1rem; }
   .k-set-table td[data-grow] { min-width: 9.5rem; }
+  /* A cell that may wrap there rather than push the table past its box (a model's id). */
+  .k-set-table td.k-set-wrap { white-space: normal; overflow-wrap: anywhere; }
 }
 
 /* ---------- Micro-interactions ---------- */

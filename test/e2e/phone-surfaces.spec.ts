@@ -284,6 +284,17 @@ for (const size of SIZES) {
         }
         expect(await small(all), "every control of the tree's cards is a finger's target").toEqual([]);
         await shoot(page, `phone-surfaces-05-tree-asks-${size.width}`);
+        // In the Inbox what waits on the owner keeps its words: the long command wraps to a second line before it is cut.
+        await page.goto("/?inbox=1");
+        const line = page.getByTestId("inbox-line").filter({ hasText: "touch gamma-with-a-long-file-name" });
+        await expect(line).toBeVisible({ timeout: 30_000 });
+        expect(await line.evaluate((el) => el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight) * 1.5), "the waiting command's words wrap").toBe(true);
+        const place = page.getByTestId("inbox-place").filter({ hasText: "Gamma the agent with a very long name" }).first();
+        expect(await place.evaluate((el) => el.scrollWidth > el.clientWidth + 1), "the waiting agent's name is cut off").toBe(false);
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-05-inbox-asks-${size.width}`);
+        await page.goto(`/s/${root}`);
+        await expect(asks).toHaveCount(2, { timeout: 45_000 });
         // Answered by touch, in place.
         const card = (id: string) => station.locator(`[data-agent="${id}"]`);
         const bt = kids.find((k) => k.title === "Beta")!.session_id;
@@ -2043,6 +2054,71 @@ for (const size of SIZES) {
         } finally { await ctx.close(); }
       } finally {
         await drop(request, id, ...(fork ? [fork] : []));
+      }
+    });
+
+    test("Find in a conversation is a row of the session menu, since a touch screen has no find key", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone find");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say the wombatique tier is in the pricing table" } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        await page.goto(`/s/${id}`);
+        await expect(page.getByTestId("assistant-text").first()).toContainText("wombatique", { timeout: 30_000 });
+        await page.getByTestId("session-menu").tap();
+        await page.getByTestId("menu-find").tap();
+        const bar = page.getByTestId("find-bar");
+        await page.getByTestId("find-input").fill("wombatique");
+        await expect(bar.getByTestId("find-count")).toContainText(/of [12]/);
+        await inside(page, bar);
+        expect(await small(bar), "Find's controls are a finger's targets").toEqual([]);
+        await shoot(page, `phone-surfaces-30-find-${size.width}`);
+        // Closed, it opens no keyboard: the message box is not given the focus a menu row never took from it.
+        await bar.getByTestId("find-close").tap();
+        await expect(bar).toHaveCount(0);
+        expect(await page.evaluate(() => document.activeElement?.getAttribute("data-testid"))).not.toBe("composer");
+      } finally {
+        await drop(request, id);
+      }
+    });
+
+    test("Settings > Models: the tiers read from the owner's words fit the page, each row's words whole under it", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider: the stand-in writes the words as a table");
+      const was = (await (await request.get("/api/settings")).json()).settings.agents;
+      test.skip(was.tiers.length > 0 || was.tiers_import !== null, "needs a daemon whose owner has no tiers yet: the card shows only then");
+      const rows = [
+        { name: "delicate", model: "scripted:stand-in-strict", effort: "high", use: ["review"], words: "complex and delicate work, safety rules and hard redesigns to the strong one" },
+        { name: "reader", model: "scripted:a-model-this-daemon-does-not-list", words: "code reading by the small readers" },
+      ];
+      const id = await start(request, "Phone tiers words");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: `The agent tiers I want. script:tiers ${JSON.stringify(rows)}` } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        await page.goto("/settings/models");
+        const card = page.getByTestId("tiers-import");
+        // (A reading made before stays on the card: then its rows are there with no press.)
+        const read = card.getByTestId("tiers-import-read");
+        await expect(read.or(card.getByTestId("tiers-import-row").first())).toBeVisible({ timeout: 30_000 });
+        if (await read.isVisible()) await read.tap();
+        await expect(card.getByTestId("tiers-import-row").nth(1)).toBeVisible({ timeout: 30_000 });
+        // (The reading's answer draws the card again: each look is tried until the card is still.)
+        const table = card.locator(".k-set-table-wrap");
+        await expect(async () => {
+          await table.scrollIntoViewIfNeeded();
+          expect(await table.evaluate((el) => el.scrollWidth - el.clientWidth), "the table does not scroll sideways").toBeLessThanOrEqual(1);
+        }).toPass({ timeout: 30_000 });
+        // (Under the row, where a narrow box lists the columns it dropped.)
+        const words = card.locator(".k-set-dropped dd", { hasText: "hard redesigns to the strong one" });
+        await expect(async () => {
+          await words.scrollIntoViewIfNeeded();
+          await inside(page, words);
+        }).toPass({ timeout: 30_000 });
+        await shoot(page, `phone-surfaces-31-tiers-import-${size.width}`);
+      } finally {
+        // The reading stays on the card until it is used or put away: put away, then the card is new again.
+        await request.post("/api/agent-tiers/import/dismiss");
+        await request.patch("/api/settings", { data: { agents: { tiers: null, tiers_import: null } } });
+        await drop(request, id);
       }
     });
   });

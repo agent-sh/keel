@@ -13,7 +13,8 @@ import { Seg } from "./Seg.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
 const COLS: Col[] = [{ head: "Tier" }, { head: "Model", grow: true }, { head: "Effort" }, { head: "Used by", minor: true }, { head: "", end: true }];
-const DRAFT_COLS: Col[] = [{ head: "Tier" }, { head: "Model" }, { head: "Effort" }, { head: "Used by" }, { head: "Your words", grow: true }];
+// Narrow, the uses and his words go under each row, whole: each row is checked against the words it came from.
+const DRAFT_COLS: Col[] = [{ head: "Tier" }, { head: "Model" }, { head: "Effort", minor: true }, { head: "Used by", minor: true }, { head: "Your words", grow: true, minor: true, wide: true }];
 const usesText = (u?: string[]) => (u?.length ? u.map((x) => (x === "default" ? "every other agent" : x)).join(", ") : "when named");
 
 type ImportState = { state: null | "used" | "dismissed"; tiers: number; draft?: { rows: DraftRow[]; said: number } };
@@ -56,7 +57,7 @@ function ImportCard({ onUsed }: { onUsed: () => void }) {
               <Table cols={DRAFT_COLS} label="Tiers from your words" testid="tiers-import-rows">
                 {draft.rows.map((r) => (
                   <Row key={r.name} name={<span className="font-medium text-fg">{r.name}</span>} testid="tiers-import-row">
-                    <Cell col={DRAFT_COLS[1]!}><span className={cn(!r.listed && "text-warn")} title={r.model}>{models.find((m) => m.id === r.model)?.name ?? r.model}{!r.listed && " (not listed)"}</span></Cell>
+                    <Cell col={DRAFT_COLS[1]!} className="k-set-wrap"><span className={cn(!r.listed && "text-warn")} title={r.model}>{models.find((m) => m.id === r.model)?.name ?? r.model}{!r.listed && " (not listed)"}</span></Cell>
                     <Cell col={DRAFT_COLS[2]!}>{r.effort ?? "its own"}</Cell>
                     <Cell col={DRAFT_COLS[3]!}>{usesText(r.use)}</Cell>
                     <Cell col={DRAFT_COLS[4]!} className="text-muted"><q>{r.words}</q></Cell>
@@ -108,7 +109,7 @@ export function AgentTiers() {
           <Table cols={COLS} label="Agent tiers" testid="tiers-table">
             {tiers.map((t, i) => (
               <Row key={t.name} name={<span className="font-medium text-fg">{t.name}</span>} testid="tier-row">
-                <Cell col={COLS[1]!} title={t.model}>{info(t.model)?.name ?? t.model}{!info(t.model) && <span className="text-warn"> (not listed)</span>}</Cell>
+                <Cell col={COLS[1]!} title={t.model} className="k-set-wrap">{info(t.model)?.name ?? t.model}{!info(t.model) && <span className="text-warn"> (not listed)</span>}</Cell>
                 <Cell col={COLS[2]!}>{t.effort ?? "its own"}</Cell>
                 <Cell col={COLS[3]!}>{usesText(t.use)}</Cell>
                 <Cell col={COLS[4]!}>

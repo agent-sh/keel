@@ -158,7 +158,8 @@ export function Notice({ tone, title, children, testid }: { tone?: "warn" | "bro
 
 // A column: its head, and how it lays out. `grow` takes what is left and cuts its words short;
 // `end` aligns right (figures); `minor` goes when the box is narrow (a Row lists it in its open area).
-export type Col = { head: ReactNode; grow?: boolean; end?: boolean; minor?: boolean };
+// `wide`: a minor column of words; dropped under its row, it takes the area's whole width.
+export type Col = { head: ReactNode; grow?: boolean; end?: boolean; minor?: boolean; wide?: boolean };
 const Cols = createContext<Col[]>([]);
 export function Table({ cols, children, testid, label }: { cols: Col[]; children: ReactNode; testid?: string; label?: string }) {
   return (
@@ -215,7 +216,7 @@ export function Row({ name, after, title, open, onOpen, detail, detailTestid, ch
             {dropped.length > 0 && (
               <dl className="k-set-dropped">
                 {dropped.map((c, i) => (
-                  <div key={i}>
+                  <div key={i} data-wide={c.props.col.wide || undefined}>
                     <dt>{c.props.col.head}</dt>
                     <dd className={c.props.className?.split(" ").filter((x) => !/^(max-w-|k-truncate$|truncate$)/.test(x)).join(" ") || undefined}>{c.props.children}</dd>
                   </div>

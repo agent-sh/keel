@@ -9,10 +9,17 @@ import { findKey } from "./find.ts";
 import { isMac } from "./keys.ts";
 import { focusBox } from "./utils.ts";
 
+// A touch screen has no find key: the session menu asks for Find by the session's id.
+const ASK = "keel:find";
+export function askFind(sessionId: string): void { window.dispatchEvent(new CustomEvent(ASK, { detail: sessionId })); }
+
 // `ask`: a request to take the keyboard (each press; 0 while closed). `close` gives the keyboard back.
 export function useFindAsk(scroller: RefObject<HTMLElement | null>, sessionId: string): { ask: number; close: () => void } {
   const [ask, setAsk] = useState(0);
   const from = useRef<HTMLElement | null>(null);
+  const menu = useRef(false);
+  const sessionNow = useRef(sessionId);
+  sessionNow.current = sessionId;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || !findKey(e, isMac)) return;
@@ -24,19 +31,29 @@ export function useFindAsk(scroller: RefObject<HTMLElement | null>, sessionId: s
       if (field && !t.matches('[data-testid="composer"], [data-testid="find-input"]')) return;
       if (!scroller.current?.offsetParent) return; // not shown (a view under another)
       e.preventDefault();
-      if (!t?.closest('[data-testid="find-bar"]')) from.current = t;
+      if (!t?.closest('[data-testid="find-bar"]')) { from.current = t; menu.current = false; }
       setAsk((n) => n + 1);
     };
     // (On the document: it is asked before the page's Find of the desktop app, on the window, at any order of mounting.)
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    // From the menu: no field to give the keyboard back to, and none to open on a phone when Find closes.
+    const onAsk = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== sessionNow.current || !scroller.current?.offsetParent) return;
+      from.current = null;
+      menu.current = true;
+      setAsk((n) => n + 1);
+    };
+    window.addEventListener(ASK, onAsk);
+    return () => { document.removeEventListener("keydown", onKey); window.removeEventListener(ASK, onAsk); };
   }, []);
   useEffect(() => setAsk(0), [sessionId]);
   const close = () => {
     setAsk(0);
-    const back = from.current;
+    const back = from.current, byMenu = menu.current;
     from.current = null;
+    menu.current = false;
     if (back?.isConnected && back !== document.body) back.focus({ preventScroll: true });
+    else if (byMenu) (document.activeElement as HTMLElement | null)?.blur();
     else focusBox(sessionId);
   };
   return { ask, close };
