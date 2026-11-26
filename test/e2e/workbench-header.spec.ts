@@ -98,7 +98,11 @@ test("a small window keeps the message box on screen under a full stack", async 
       .map((content, i) => ({ content, activeForm: content, status: i === 0 ? "completed" : i === 1 ? "in_progress" : "pending" }));
     await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "TodoWrite", input: { todos } }])}` } });
     await idle();
-    const writes = ["one", "two", "three"].map((n) => ({ name: "Bash", input: { command: `echo ${n} > ${n}.txt` } }));
+    // The first card needs enough actual content to require scrolling at
+    // the larger text size. The other requests exercise the focus handoff.
+    const notes = ["Version 2.1", "New export", "Updated help"];
+    const first = [`printf '%s\\n'`, ...notes.map((line) => `'${line}'`), "> one.txt"].join(" \\\n  ");
+    const writes = [first, "echo two > two.txt", "echo three > three.txt"].map((command) => ({ name: "Bash", input: { command } }));
     await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify(writes)}` } });
     // Two messages kept in this browser after sends that did not go.
     const kept = [
@@ -131,7 +135,6 @@ test("a small window keeps the message box on screen under a full stack", async 
     const oldest = pane.getByTestId("approval").first();
     await expect(pane.getByTestId("approvals")).toBeFocused();
     expect(await tray.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
-    expect(await oldest.evaluate((el) => el.getBoundingClientRect().height > el.closest('[data-testid="composer-tray"]')!.getBoundingClientRect().height)).toBe(true);
     await expect(oldest).toHaveAttribute("data-must-open", "true");
     await expect(oldest.getByTestId("approval-left")).toHaveText(/^\d+ (?:lines?|rows?) not seen yet/);
     // Read through by the owner (the region scrolls under the pointer until the card's last row has

@@ -1320,7 +1320,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      a finger's height, and the message box rests as its one line until it is tapped or holds something
      (its tools, Stop among them, come back with the tap). */
   .k-session:has(.k-tray[data-asking]) > .k-reading-room { min-height: clamp(0px, calc((100% - 24rem) / 2), var(--spacing-tap)); }
-  .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-compose-tools { display: none; }
+  .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-draft-row > .k-compose-tools { display: none; }
   /* An open question takes the room of the session's tools row, which comes back once it is answered (Composer marks the
      pane). The bar keeps the state's dot and its age as it does for any other state: the title is what gives way. */
   /* The tools row folds into the session's one menu button, at the end of the title's row, while any card waits
@@ -1395,7 +1395,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-compose-tools[data-busy] .k-compose-send > :is(.k-ctx-meter, .k-queue) { position: absolute; top: 0.125rem; }
   .k-compose-tools[data-busy] .k-compose-send > .k-queue { right: 0.375rem; }
   .k-compose-tools[data-busy] .k-compose-send > .k-ctx-meter { right: calc(var(--spacing-tap) + 0.375rem); }
-  .k-box:has(> .k-compose-tools[data-busy]) > textarea { padding-right: calc(2 * var(--spacing-tap) + 0.5rem); }
+  .k-draft-row:has(> .k-compose-tools[data-busy]) > textarea { padding-right: calc(2 * var(--spacing-tap) + 0.5rem); }
   .k-compose-tools[data-busy] .k-compose-send > .k-stop { margin-left: auto; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
@@ -1913,12 +1913,12 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* ---------- A finger's target: what a phone's layout does for it ----------
    (The floor itself is in styles.css.) At rest the message box's own controls stand beside its
    text, not over it: the text ends where they begin. */
-.k-box[data-rest] > .k-rest-text { width: calc(100% - 2.75rem); }
-.k-box[data-rest]:has(> .k-rest-ring > *) > .k-rest-text { width: calc(100% - 4.75rem); }
+.k-box[data-rest] > .k-draft-row > .k-rest-text { width: calc(100% - 2.75rem); }
+.k-box[data-rest]:has(> .k-draft-row > .k-rest-ring > *) > .k-draft-row > .k-rest-text { width: calc(100% - 4.75rem); }
 @media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
-  .k-box[data-rest] > .k-rest-text { width: calc(100% - var(--spacing-tap) - 0.375rem); }
-  .k-box[data-rest] > .k-rest-ring { right: calc(var(--spacing-tap) + 0.375rem); }
-  .k-box[data-rest]:has(> .k-rest-ring > *) > .k-rest-text { width: calc(100% - 2 * var(--spacing-tap) - 0.375rem); }
+  .k-box[data-rest] > .k-draft-row > .k-rest-text { width: calc(100% - var(--spacing-tap) - 0.375rem); }
+  .k-box[data-rest] .k-rest-ring { right: calc(var(--spacing-tap) + 0.375rem); }
+  .k-box[data-rest]:has(> .k-draft-row > .k-rest-ring > *) > .k-draft-row > .k-rest-text { width: calc(100% - 2 * var(--spacing-tap) - 0.375rem); }
   /* Rows and bars that hold targets are as tall as a target. */
   .k-station .k-session-header { height: calc(var(--spacing-tap) + 0.25rem); }
   .k-find { height: var(--spacing-tap); }
@@ -2116,17 +2116,14 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-head-need .k-dock-need-n { font-weight: 400; color: var(--muted); }
 /* The box is one line: the field, and beside it the plus, the queue, Stop and Send (Composer.tsx). Each is a
    line's icon, drawn small in a finger's target; Send fills its icon's square only while there is something to send. */
-.k-composer-box[data-line] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
-.k-composer-box[data-line] > * { grid-column: 1 / -1; }
-/* The attachments are the box's first row, and the row that gives way: a long draft in a short window keeps its
-   lines and the strip is what is left, down to one row that scrolls (as it yields in a box that is not one line). */
-.k-composer-box[data-line]:has(> .k-attachments) { grid-template-rows: 1fr; }
-.k-composer-box[data-line] > .k-attachments { align-self: stretch; }
 /* (The line saves the box a row, so the strip met no pressure until the conversation was gone: while the box holds
    attachments the conversation keeps a few lines where the pane has them, and the strip is what gives.) */
 .k-session:has(.k-composer-box[data-line] > .k-attachments) > .k-reading-room { min-height: clamp(0px, calc(100% - 18rem), 5rem); }
-.k-composer-box[data-line] > textarea { grid-column: 1; }
-.k-composer-box[data-line] > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; gap: 0; padding: 0 0.125rem 0 0; }
+/* The row shrinks when the tray needs room. The draft scrolls inside it,
+   and the tools stay against its bottom edge. */
+.k-composer-box[data-line] > .k-draft-row { display: flex; min-height: 0; align-items: flex-end; }
+.k-composer-box[data-line] > .k-draft-row > textarea { flex: 1; min-width: 0; max-height: 100%; }
+.k-composer-box[data-line] > .k-draft-row > .k-compose-tools { flex-wrap: nowrap; gap: 0; padding: 0 0.125rem 0 0; }
 .k-composer-box[data-line] .k-compose-send { gap: 0; }
 .k-composer-box[data-line] :is(.k-send, .k-stop, .k-queue, .k-box-more) { position: relative; background: transparent; border: 0; border-radius: var(--radius-md); }
 .k-composer-box[data-line] :is(.k-send, .k-stop) svg { position: relative; width: 0.875rem; height: 0.875rem; }
@@ -2144,8 +2141,8 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    pointer's controls: half a rem over and under the text, the tools a hair apart and off the frame, and the plain
    ones lit under the pointer. What else the box holds (attachments, notices) spans the line above or below. */
 @media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
-  .k-composer-box[data-line] > textarea { padding-top: 0.5rem; padding-bottom: 0.5rem; }
-  .k-composer-box[data-line] > .k-compose-tools { gap: 0.125rem; padding: 0 0.375rem 0.375rem 0; }
+  .k-composer-box[data-line] > .k-draft-row > textarea { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+  .k-composer-box[data-line] > .k-draft-row > .k-compose-tools { gap: 0.125rem; padding: 0 0.375rem 0.375rem 0; }
   .k-composer-box[data-line] :is(.k-queue, .k-box-more, .k-stop):hover { background: var(--hover); }
 }
 .k-shell[data-mode="phone-focus"] .k-composer-box { border-color: var(--line); box-shadow: none; }

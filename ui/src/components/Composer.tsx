@@ -553,7 +553,8 @@ const SessionComposer = memo(function SessionComposer({
     if (resized || lowAt.current !== scale) { lowAt.current = scale; setShort(low()); }
     const el = ref.current;
     if (!el) return;
-    const box = el.parentElement!;
+    const row = el.parentElement!, box = row.parentElement!;
+    const line = box.hasAttribute("data-line");
     // The text is measured with the box held at the height it has: measured in a box left
     // free, a draft of several lines is one row high for that moment, the conversation
     // above takes the room, the browser moves its scroll up to fit, and it stays there
@@ -565,7 +566,7 @@ const SessionComposer = memo(function SessionComposer({
     el.style.height = "auto";
     const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
     el.style.height = `${h}px`;
-    const shape = `${resized}|${h}|${width}|${innerHeight}|${!!el.value}|${scale}|${short}|${images.length}|${notice}|${synced}|${info?.id}|${working}|${rest}`;
+    const shape = `${resized}|${h}|${width}|${innerHeight}|${!!el.value}|${scale}|${short}|${images.length}|${notice}|${synced}|${info?.id}|${working}|${rest}|${line}`;
     if (!resized && shape === shapeAt.current.key) {
       el.style.minHeight = shapeAt.current.least;
       box.style.height = box.style.flex = "";
@@ -581,16 +582,20 @@ const SessionComposer = memo(function SessionComposer({
     box.style.height = box.style.flex = "";
     // In parts of a pixel, as they are laid out: whole pixels add up to more than the box is
     // high at a text size that makes its rows fractional, and the box would grow by the rest.
-    let under = 0;
+    let under = 0, rowMin = least;
     // (What lies over the box, like the resting box's tools button, takes no room under the text.)
-    // (Nor what stands beside the text on its line: Focus's tools, in the second column of the box's grid.)
-    for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) { const cs = getComputedStyle(x); if (cs.position !== "absolute" && cs.gridColumnStart !== "2") under += x.getBoundingClientRect().height; }
+    for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) {
+      if (getComputedStyle(x).position === "absolute") continue;
+      const height = x.getBoundingClientRect().height;
+      if (line) rowMin = Math.max(rowMin, height);
+      else under += height;
+    }
     // The attachments give way to a long draft down to one row (it scrolls), so what is above
     // the text counts that row, not all of them.
     const strip = box.querySelector<HTMLElement>(':scope > [data-testid="attachments"]');
     const yields = strip ? strip.getBoundingClientRect().height - parseFloat(getComputedStyle(strip).minHeight) : 0;
-    const above = el.getBoundingClientRect().top - box.getBoundingClientRect().top - Math.max(0, yields);
-    box.style.minHeight = `${above + least + under + parseFloat(getComputedStyle(box).borderBottomWidth)}px`;
+    const above = (line ? row : el).getBoundingClientRect().top - box.getBoundingClientRect().top - Math.max(0, yields);
+    box.style.minHeight = `${above + rowMin + under + parseFloat(getComputedStyle(box).borderBottomWidth)}px`;
   };
   const fitNow = useRef(fit);
   fitNow.current = fit;
@@ -1201,7 +1206,9 @@ const SessionComposer = memo(function SessionComposer({
         </div>
       )}
       {images.length > 0 && info && <Capability info={info} local={!splitId(sid ?? "")?.machine} shots={images.filter((a) => !a.file).length} pdfs={images.some((a) => a.file?.media_type === "application/pdf")} onUse={pickModel} onChoose={() => setPickerSignal((n) => n + 1)} />}
+      {short && oneLine && status}
 
+      <div className="k-draft-row contents">
       <textarea
         ref={ref}
         data-testid="composer"
@@ -1314,7 +1321,7 @@ const SessionComposer = memo(function SessionComposer({
         </button>
       )}
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
-      {short && status}
+      {short && !oneLine && status}
       <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-1.5", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy && !phoneLine) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
         <div className={short ? "k-compose-scroll -my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
           <span className={cn("k-compose-lead flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
@@ -1426,6 +1433,7 @@ const SessionComposer = memo(function SessionComposer({
             <ArrowUp className="size-4" strokeWidth={2.5} />
           </button>
         </div>
+      </div>
       </div>
     </div>
     </>
