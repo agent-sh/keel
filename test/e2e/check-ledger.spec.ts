@@ -108,8 +108,9 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
   expect(results[1]).toContain("To run it anyway, send the same command again.");
   expect(results[4]).toContain(`Check ledger: lint failed on this tree (2 fail). Red on main too (${mainCommit.slice(0, 9)},`);
   // The proof line: what the ledger saw after the agent's last edit.
-  expect(agent.result).toMatch(/\(Checks after its last edit \(\d\d:\d\d\): unit passed \d\d:\d\d, lint failed \d\d:\d\d \(2 fail; red on main too \(/);
-  expect(agent.result).toContain("No edit after the last green run. Its files are the ones its last check ran on.)");
+  const proof = (await (await request.get(`/api/sessions/${session.id}/agents/${agent.id}/report`)).json()).report;
+  expect(proof).toMatch(/\(Checks after its last edit \(\d\d:\d\d\): unit passed \d\d:\d\d, lint failed \d\d:\d\d \(2 fail; red on main too \(/);
+  expect(proof).toContain("No edit after the last green run. Its files are the ones its last check ran on.)");
   await report.getByRole("button").first().click();
   await expect(report).toContainText("(Checks after its last edit");
   await report.scrollIntoViewIfNeeded();

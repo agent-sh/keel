@@ -223,11 +223,12 @@ test("fails before: each new test on the base, on the report and in Review", asy
   const agent = (await agentsOf())[0];
   // The fix is in its worktree, and its test passes there.
   expect(execFileSync("sh", ["t.sh", "fix.test.sh"], { cwd: agent.worktree, encoding: "utf8" })).toContain(" 1 pass");
-  expect(agent.result).toContain("(Its new and changed tests on the base (main at ");
-  expect(agent.result).toContain(", without the change, run outside the sandbox (the session runs in full auto with its sandbox off): ");
-  expect(agent.result).toContain("fix.test.sh fails before: yes (1 of 1 failed)");
-  expect(agent.result).toContain("weak.test.sh passes without the change");
-  expect(agent.result).toContain("tools/ok.test.sh could not run (its command's script tools/run.sh is not on the base)");
+  const proof = (await (await request.get(`/api/sessions/${session.id}/agents/${agent.id}/report`)).json()).report;
+  expect(proof).toContain("(Its new and changed tests on the base (main at ");
+  expect(proof).toContain(", without the change, run outside the sandbox (the session runs in full auto with its sandbox off): ");
+  expect(proof).toContain("fix.test.sh fails before: yes (1 of 1 failed)");
+  expect(proof).toContain("weak.test.sh passes without the change");
+  expect(proof).toContain("tools/ok.test.sh could not run (its command's script tools/run.sh is not on the base)");
   await page.getByTestId("lens-to-stream").click();
   const report = page.getByTestId("agent-report").first();
   await expect(report).toBeVisible({ timeout: 60_000 });

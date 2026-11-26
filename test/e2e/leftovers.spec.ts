@@ -52,7 +52,8 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     const a = await agent();
     // The report's one line: both commands stopped (the server by its port); the worktree and the branch listed
     // with what is in them, not removed.
-    const line = String(a.result).split("\n").find((l: string) => l.startsWith("Left behind:"));
+    const { report } = await (await request.get(`/api/sessions/${session.id}/agents/${a.id}/report`)).json();
+    const line = String(report).split("\n").find((l: string) => l.startsWith("Left behind:"));
     expect(line).toContain(`stopped \`python3 -m http.server ${port} --bind 127.0.0.1\` on port ${port}, \`sleep 300\``);
     expect(line).toContain(`not removed (who made them is not known; Settings, Leftovers removes them): worktree ${wt} (branch ${branch}: 1 commit on no other branch, 1 ignored path (out/)), branch ${merged} in ${repo} (every commit on another branch)`);
     expect(await answers(port)).toBe(false);
