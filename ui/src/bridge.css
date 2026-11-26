@@ -1064,7 +1064,9 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-stow::after { content: ""; display: block; position: sticky; bottom: 0; height: var(--k-foot); margin-top: calc(-1 * var(--k-foot)); background: linear-gradient(to bottom, transparent, var(--raised)); pointer-events: none; animation: k-foot linear both; animation-timeline: scroll(self block); }
 }
 .k-stow-rule { height: 1px; margin: 0.25rem 0.25rem; background: var(--line); }
-.k-stow-cmd[data-danger], .k-stow-cmd[data-danger] svg { color: var(--danger); }
+/* An act that removes rests in the menu's ink like the rows over it: red is for where it is about to be
+   pressed, under the pointer or the keyboard (its confirmation asks in red too). */
+.k-stow-cmd[data-danger]:is(:hover, :focus-visible), .k-stow-cmd[data-danger]:is(:hover, :focus-visible) svg { color: var(--danger); }
 @media (hover: none) { .k-stow-cmd { height: var(--spacing-tap); } }
 
 /* Inside a station the transcript fills it, a little tighter than reading width. */

@@ -77,16 +77,26 @@ test("the bar rests with three or four controls, the rest in the session's one m
     await expect(menu.getByTestId("menu-rename")).toBeVisible();
     await shoot(page, "rest-bar-02-menu");
     // Up and Down walk its actions.
+    // (Down from Rename is on the action under it, whichever the session has there.)
+    const under = await menu.getByRole("menuitem").evaluateAll((els) => els[els.findIndex((el) => el.getAttribute("data-testid") === "menu-rename") + 1]!.getAttribute("data-testid")!);
     await menu.getByTestId("menu-rename").focus();
     await page.keyboard.press("ArrowDown");
-    await expect(menu.getByTestId("menu-link")).toBeFocused();
+    await expect(menu.getByTestId(under)).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(menu).toBeHidden();
     await expect(header.getByTestId("session-menu")).toBeFocused();
     // Tab past the last action leaves the menu and gives the keys back to its button.
     await header.getByTestId("session-menu").click();
     await expect(menu).toBeVisible();
-    await menu.getByTestId("menu-delete").focus();
+    // Delete rests in the menu's ink, as the row over it: it is red only where it is about to be pressed.
+    const ink = (id: string) => menu.getByTestId(id).evaluate((el) => getComputedStyle(el).color);
+    await page.mouse.move(1000, 800);
+    expect(await ink("menu-delete")).toBe(await ink("menu-archive"));
+    const rest = await ink("menu-archive");
+    await menu.getByTestId("menu-archive").focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(menu.getByTestId("menu-delete")).toBeFocused();
+    await expect.poll(() => ink("menu-delete")).not.toBe(rest);
     await page.keyboard.press("Tab");
     await expect(menu).toBeHidden();
     await expect(header.getByTestId("session-menu")).toBeFocused();
