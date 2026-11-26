@@ -27,10 +27,19 @@ import {
 } from "./timeline-rows.ts";
 
 // The events that make a row: a turn's start, a compaction, and a note of a
-// kind that has a row (a plain note has none, and is not in the index).
-const ROWS = `(kind IN ('turn_start', 'compaction') OR (kind = 'note' AND data ->> '$.kind' IN (${NOTE_MARKS.map((k) => `'${k}'`).join(", ")})))`;
-// Named by what it holds: a build whose rows differ makes its own and drops the other.
-const ROWS_IX = `events_rows_${createHash("sha256").update(ROWS).digest("hex").slice(0, 8)}`;
+// kind that has a row. The index holds every note with a kind (a plain note,
+// the memory text, has none, and is not in it), and the kinds that have a row
+// are picked from it: a build that adds a kind keeps the index. An index named
+// by the kinds was made again over the whole events table at the first start
+// of such a build, seconds of the start before the daemon listened.
+export function rowsIndex(marks: readonly string[]) {
+  const kept = "(kind IN ('turn_start', 'compaction') OR (kind = 'note' AND data ->> '$.kind' IS NOT NULL))";
+  // The index's own condition stays a term of its own, so a query that names the index can use it.
+  const rows = `${kept} AND (kind <> 'note' OR data ->> '$.kind' IN (${marks.map((k) => `'${k}'`).join(", ")}))`;
+  // Named by what it holds: a build whose index holds other events makes its own and drops the other.
+  return { kept, rows, name: `events_rows_${createHash("sha256").update(kept).digest("hex").slice(0, 8)}` };
+}
+const { kept: ROWS_KEPT, rows: ROWS, name: ROWS_IX } = rowsIndex(NOTE_MARKS);
 // The model's replies by position: a turn's steps are counted off the index.
 const STEPS_IX = "events_steps";
 // The activity rows the timeline tells: a session's thousands of turn ends are not read to find its agents.
@@ -40,7 +49,7 @@ const TOLD_IX = `activity_told_${createHash("sha256").update(TOLD).digest("hex")
 const SCHEMA = `
 DROP INDEX IF EXISTS events_marks;
 ${TURN_SCHEMA}
-CREATE INDEX IF NOT EXISTS ${ROWS_IX} ON events(session_id, ts, id) WHERE ${ROWS};
+CREATE INDEX IF NOT EXISTS ${ROWS_IX} ON events(session_id, ts, id) WHERE ${ROWS_KEPT};
 CREATE INDEX IF NOT EXISTS ${STEPS_IX} ON events(session_id, seq) WHERE kind = 'assistant';
 CREATE INDEX IF NOT EXISTS errors_session ON errors(session_id, ts);
 `;

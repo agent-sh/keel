@@ -5,7 +5,7 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { Timeline } from "./timeline.ts";
+import { rowsIndex, Timeline } from "./timeline.ts";
 import { markRow, NOTE_MARKS, timelineText } from "./timeline-rows.ts";
 
 // These tests write a database of their own to disk (tens of thousands of
@@ -33,6 +33,15 @@ const setup = () => {
 test("every kind of note that has a row is in the index, and no other", () => {
   for (const kind of NOTE_MARKS) expect(markRow({ id: "n", ts: 1, kind: "note", data: { kind } }), kind).not.toBeNull();
   for (const kind of [undefined, "tasks", "images", "handoff", "max_steps"]) expect(markRow({ id: "n", ts: 1, kind: "note", data: { kind } }), String(kind)).toBeNull();
+});
+
+// A new index is made over the whole events table at the start, before the daemon listens.
+test("a build that gives another kind of note a row keeps the rows index", () => {
+  const now = rowsIndex(NOTE_MARKS), next = rowsIndex([...NOTE_MARKS, "a_new_mark"]);
+  expect(next.name).toBe(now.name);
+  expect(next.rows).not.toBe(now.rows);
+  // The query names the index: its condition is a term of the query's own, or SQLite cannot use it.
+  expect(now.rows.startsWith(`${now.kept} AND `)).toBe(true);
 });
 
 test("a turn is read whole however many notes lie inside it and around it", () => {
