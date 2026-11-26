@@ -342,3 +342,14 @@ test("a provider that is well or not set up asks nothing: its mark is grey, and 
   expect(await page.getByTestId("provider-wire").first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
   await shoot(page, "quiet-15-providers");
 });
+
+test("a state that is well asks nothing: this machine's ready mark and the helper's connected mail are grey", async ({ page }) => {
+  const chroma = (testid: string) => page.getByTestId(testid).first().evaluate((el) => Number(/oklch\([\d.]+ ([\d.]+)/.exec(getComputedStyle(el).backgroundColor)?.[1] ?? 1));
+  await page.goto("/settings/machines");
+  await expect(page.getByTestId("machine-state").first()).toContainText("ready");
+  expect(await chroma("machine-state-mark"), "the ready mark is a grey").toBeLessThan(0.03);
+  await shoot(page, "quiet-16-well-machine");
+  await page.goto("/settings/helper");
+  await expect(page.getByTestId("helper-mail-mark")).toHaveAttribute("data-tone", "ok");
+  expect(await chroma("helper-mail-mark"), "the connected mark is a grey").toBeLessThan(0.03);
+});

@@ -213,7 +213,7 @@ export function HelperSettings() {
         </SettingRow>
         <SettingRow label="Mail" hint={view.mail.available ? `${view.mail.label} as ${view.mail.account ?? "your account"}. Sending always asks you first, on a card for that message.` : `Not connected: the helper reads the Google sign-in file named by KEEL_GOOGLE_TOKEN (by default the one Hermes keeps).`}>
           <span className={cn("inline-flex items-center gap-1.5 text-ui", view.mail.available ? "text-fg" : "text-muted")}>
-            <span className={cn("size-2 rounded-full", view.mail.available ? "bg-ok" : "bg-line-strong")} />{view.mail.available ? "Connected" : "Not connected"}
+            <span className="k-set-dot" data-tone={view.mail.available ? "ok" : "off"} data-testid="helper-mail-mark" />{view.mail.available ? "Connected" : "Not connected"}
           </span>
         </SettingRow>
         <SettingRow label="Check new mail" hint="Only mail that needs you wakes the helper; a cheaper model sorts it first.">
