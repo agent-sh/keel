@@ -732,6 +732,8 @@ test("the start page says what finished since you looked", async ({ page, reques
     const finished = page.getByTestId("home-count-finished");
     await expect(finished).toBeVisible({ timeout: 20_000 });
     await expect(finished).toHaveText(/^\d+ done since you looked$/);
+    // It is news, not a request: muted words at a regular weight and a grey dot.
+    expect(await finished.evaluate((el) => { const ink = (v: string) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = `var(${v})`; const c = getComputedStyle(p).color; p.remove(); return c; }; const c = getComputedStyle(el); return [c.fontWeight, c.color === ink("--muted"), getComputedStyle(el.querySelector(".k-mark")!).backgroundColor === ink("--st-idle")]; })).toEqual(["400", true, true]);
     const n = Number((await finished.innerText()).split(" ")[0]);
     expect(n).toBeGreaterThanOrEqual(2);
     await shoot(page, "home-finished-since");
