@@ -38,7 +38,8 @@
 // Keel runs by itself beside an agent ("beside", src/checks/beside-run.ts);
 // each kind keeps its order. A session's command can still wait for the
 // agents' commands that run. Work Keel starts for a later look (the pictures
-// of a branch, src/pictures/run.ts) goes after every command in line.
+// of a branch, src/pictures/run.ts) goes after every command in line. A check
+// or a look that waited AGE_MS goes with the agents' commands (below).
 import { basename } from "node:path";
 import type { Simple } from "../safety/shell.ts";
 
@@ -254,13 +255,22 @@ export function room(r: Reading, held: Held[], cfg: PoolConfig, gone: Gone[] = [
 }
 
 const RANK: Record<Who, number> = { owner: 0, session: 1, agent: 2, beside: 3, background: 4 };
+// A check Keel runs by itself (beside an agent, a pair of branches is an agent's) or work for a later look (the
+// pictures of a branch) that has waited AGE_MS goes with the agents' commands, by when it first asked: agents
+// that keep asking would otherwise keep it at the back for good. Since slots go from the head only, the oldest
+// of them then takes the next slot that fits it, ahead of every agent's command that asked after it. It is
+// raised that far and no further: a session's own command still goes first, and the owner's never waits.
+// A minute: twice the window of an agent's steps a beside check runs on (src/checks/beside.ts), and the time
+// a look at a branch's pictures is still a look; a check its tree moved past is dropped before it runs.
+export const AGE_MS = 60_000;
+const rank = (x: Waiting, now: number) => (RANK[x.who] > RANK.agent && now - x.at >= AGE_MS ? RANK.agent : RANK[x.who]);
 // How many in line go before one of this kind asking now.
-export const before = (line: Waiting[], who: Who) => line.filter((x) => RANK[x.who] <= RANK[who]).length;
+export const before = (line: Waiting[], who: Who, now = Date.now()) => line.filter((x) => rank(x, now) <= RANK[who]).length;
 // The line in the order slots go: a session's own command before an agent's,
-// each kind by when it asked. Slots go from its head only: a command that
-// does not fit yet is not passed by a smaller one behind it.
-export function order<T extends Waiting>(line: T[]): T[] {
-  return line.slice().sort((a, b) => RANK[a.who] - RANK[b.who] || a.at - b.at);
+// each kind by when it asked, an aged check with the agents'. Slots go from its
+// head only: a command that does not fit yet is not passed by a smaller one behind it.
+export function order<T extends Waiting>(line: T[], now = Date.now()): T[] {
+  return line.slice().sort((a, b) => rank(a, now) - rank(b, now) || a.at - b.at);
 }
 
 // A command that holds a slot and has gone quiet gives the slot back: its

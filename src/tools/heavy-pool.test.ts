@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { splitCommand } from "../safety/shell.ts";
-import { before, checkConfig, compile, MEM_WAIT_MS, cpuList, heavyPattern, light, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
+import { AGE_MS, before, checkConfig, compile, MEM_WAIT_MS, cpuList, heavyPattern, light, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
 import { DEFAULTS } from "./heavy.ts";
 
 const pats = compile(DEFAULTS.patterns, DEFAULTS.cost);
@@ -146,6 +146,28 @@ describe("the line", () => {
     expect(before(line, "session")).toBe(1);
     expect(before(line, "agent")).toBe(4);
     expect(before(line, "owner")).toBe(0);
+  });
+  test("a check behind a steady stream of agents' commands takes the next slot once it waited AGE_MS, never before a session's", () => {
+    // One slot that frees every 10 s; an agent asks every 5 s, so the line never empties.
+    type W = { key: string; who: "agent" | "beside" | "background" | "session"; at: number };
+    let q: W[] = [{ key: "check", who: "beside", at: 0 }, { key: "look", who: "background", at: 1 }];
+    let ran: Record<string, number> = {};
+    let n = 0;
+    for (let now = 0; now <= 10 * AGE_MS && !(ran.check !== undefined && ran.look !== undefined); now += 5000) {
+      q.push({ key: `a${n++}`, who: "agent", at: now });
+      if (now % 10_000 === 0) { const head = order(q, now)[0]!; q = q.filter((x) => x !== head); ran[head.key] = now; }
+    }
+    // It ran at the first free slot after its minute, the pictures right after it; agents that asked meanwhile waited.
+    expect(ran.check).toBe(AGE_MS);
+    expect(ran.look).toBe(AGE_MS + 10_000);
+    // A session's command asking now still goes first; the owner's never waits.
+    const aged = [{ key: "check", who: "beside" as const, at: 0 }, { key: "a", who: "agent" as const, at: 5 }];
+    expect(order([...aged, { key: "s", who: "session" as const, at: AGE_MS }], AGE_MS).map((x) => x.key)).toEqual(["s", "check", "a"]);
+    expect(before(aged, "agent", AGE_MS)).toBe(2);
+    expect(before(aged, "session", AGE_MS)).toBe(0);
+    // Not yet aged: behind every agent's command.
+    expect(order(aged, AGE_MS - 1).map((x) => x.key)).toEqual(["a", "check"]);
+    expect(before(aged, "agent", AGE_MS - 1)).toBe(1);
   });
   test("the place says who holds the slots, with no live number, so it changes only with the place or the holders", () => {
     expect(placeLine(0, ["tsc (this session)"], "slots")).toBe("Waiting for a heavy-command slot: next in line, held by tsc (this session); every slot is taken");
