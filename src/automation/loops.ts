@@ -92,6 +92,7 @@ const WEBHOOK_MIN_INTERVAL = 10_000;
 const SIGNATURE_TOLERANCE = 300_000; // Standard Webhooks: a timestamp more than five minutes off is refused
 const SEEN_KEEP = 7 * 86400_000; // delivery ids remembered this long (GitHub's carry no timestamp)
 const BODY_CAP = 16 * 1024;
+const ARCHIVE_PAUSE = "paused because the session was archived";
 
 export const DEFAULT_PROMPT =
   "Continue any unfinished work from this conversation. If nothing is unfinished, check the current branch's pull request (review comments, failed checks, conflicts) and handle what you find. If all is quiet, say so in one line.";
@@ -338,9 +339,14 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
 
 export type UpdateInput = Partial<{ enabled: boolean; name: string; prompt: string; schedule: string; max_runs: number | null; until_ms: number | null; tz: string; gate: string | null }>;
 
+function requireRestored(sessionId: string) {
+  if (D().store.session(sessionId)?.archived) throw Object.assign(new Error("the session is archived: restore it first"), { status: 409 });
+}
+
 export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owner"): LoopRecord {
   const l = get(id);
   if (!l) throw new Error("no such loop");
+  if (p.enabled) requireRestored(l.session_id);
   const out: Record<string, unknown> = {};
   if (p.name !== undefined) { if (!p.name.trim()) throw new Error("the name cannot be empty"); out.name = p.name.trim().slice(0, 80); }
   if (p.prompt !== undefined) out.prompt = checkPrompt(p.prompt);
@@ -386,6 +392,38 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
   // not outlive a pause, and it keeps its time when the edit reset the loop's.
   if (isEvent(l.kind)) { drainWebhook(id); if (l.kind === "mcp" && rec.enabled) keepOf(rec); return get(id)!; }
   return rec;
+}
+
+// Archive pauses only the loops that were on. Their pause does not count as downtime to catch up on.
+export function onArchived(sessionId: string) {
+  withdraw(sessionId, (m) => m.kind === "loop");
+  db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'the session was archived before it was free' WHERE session_id = ? AND started_ms IS NULL AND ended_ms IS NULL").run(Date.now(), sessionId);
+  for (const { id, enabled } of db().query<{ id: string; enabled: number }, [string]>("SELECT id, enabled FROM loops WHERE session_id = ?").all(sessionId)) {
+    checking.get(id)?.cancel();
+    if (!enabled) continue;
+    const l = patch(id, { enabled: false, next_ms: null, disabled_reason: ARCHIVE_PAUSE });
+    if (l && isEvent(l.kind)) drainWebhook(id);
+  }
+}
+
+export function onRestored(sessionId: string) {
+  const now = Date.now();
+  const paused = db().query<Row, [string, string]>("SELECT * FROM loops WHERE session_id = ? AND enabled = 0 AND disabled_reason = ?").all(sessionId, ARCHIVE_PAUSE);
+  for (const r of paused) {
+    const l = resumeAfterArchive(toRec(r), now);
+    if (l?.kind === "mcp") keepOf(l);
+  }
+}
+
+function resumeAfterArchive(l: LoopRecord, now: number): LoopRecord | undefined {
+  // Drop a pending event if a crash cut the pause before it could be discarded.
+  if (isEvent(l.kind)) drainWebhook(l.id, now);
+  if (l.until_ms && now >= l.until_ms) { endLoop(l, "expired"); return; }
+  if (l.max_runs && l.runs >= l.max_runs) { endLoop(l, "ran its runs"); return; }
+  let next: number | null;
+  try { next = l.kind === "auto" ? now + l.min_delay * 1000 : nextDue(l, now); }
+  catch (e) { invalidSchedule(l, e); return; }
+  return patch(l.id, { enabled: true, next_ms: next, disabled_reason: null });
 }
 
 export function remove(id: string): boolean {
@@ -611,7 +649,7 @@ function closeRuns(sessionId: string, outcome: NonNullable<RunRecord["outcome"]>
 
 // A loop that ends by its own limit is off, and the session is told which limit and when: its end time
 // (a model's loop has thirty days) or its runs. The reason kept on the loop is the short one.
-function endLoop(l: LoopRecord, how: "expired" | "ran its runs", now: number) {
+function endLoop(l: LoopRecord, how: "expired" | "ran its runs") {
   const runs = `ran its ${l.max_runs} run${l.max_runs === 1 ? "" : "s"}`;
   const why = how === "ran its runs" ? runs
     : l.created_by === "model" && l.until_ms !== null && l.until_ms !== undefined && l.until_ms - l.created >= MODEL_EXPIRY ? `reached its ${MODEL_EXPIRY / 86400_000} days, the longest a loop the model makes lasts`
@@ -646,7 +684,7 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   if (outcome === "failed") failures.seen(l.session_id, "loop", l.name, why);
   if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
   else if (outcome === "ok") D().readLoopFailures?.(l.session_id, l.id);
-  if (l.max_runs && next.runs >= l.max_runs && next.enabled) endLoop(l, "ran its runs", now);
+  if (l.max_runs && next.runs >= l.max_runs && next.enabled) endLoop(l, "ran its runs");
   // A webhook request that waited for this run goes now, if the loop still takes one.
   if (isEvent(l.kind)) drainWebhook(l.id, now);
 }
@@ -670,6 +708,14 @@ function missedAfter(l: LoopRecord, now: number): number {
 
 const STARTED = Date.now();
 let ticking = false;
+function invalidSchedule(l: LoopRecord, e: unknown) {
+  // A schedule saved before the parser refused it: off with the reason, and the owner is told.
+  const why = `its schedule "${l.schedule}" is not valid: ${(e as Error).message}`;
+  patch(l.id, { enabled: false, next_ms: null, disabled_reason: why });
+  activity.record("loop", "failed", l.session_id, `Loop "${l.name}" was turned off: ${why}`, { loop_id: l.id });
+  alertHook.raise?.("loop_failed", l.session_id, `Loop turned off: ${l.name}`, `${why}. Give it a schedule that reads, then turn it on.`, { loop_id: l.id });
+}
+
 export function tick() {
   if (ticking) return;
   ticking = true;
@@ -680,8 +726,8 @@ export function tick() {
       try {
         // A webhook loop is due when a request of its waited for its minimum interval.
         if (isEvent(l.kind)) { drainWebhook(l.id, now); continue; }
-        if (l.until_ms && now >= l.until_ms) { endLoop(l, "expired", now); continue; }
-        if (l.max_runs && l.runs >= l.max_runs) { endLoop(l, "ran its runs", now); continue; }
+        if (l.until_ms && now >= l.until_ms) { endLoop(l, "expired"); continue; }
+        if (l.max_runs && l.runs >= l.max_runs) { endLoop(l, "ran its runs"); continue; }
         const late = now - l.next_ms! > 60_000;
         // Why it is late, only as far as the daemon knows it: it was not running
         // at the due time, or it was (then the machine slept or the tick was held).
@@ -698,12 +744,7 @@ export function tick() {
         try {
           next = l.kind === "auto" ? null : nextDue(l, l.kind === "interval" ? Math.max(now, l.next_ms!) : now);
         } catch (e) {
-          // A schedule saved before the parser refused it: off, with the reason, not
-          // retried every second, and the owner is told (the activity, an alert).
-          const why = `its schedule "${l.schedule}" is not valid: ${(e as Error).message}`;
-          patch(l.id, { enabled: false, next_ms: null, disabled_reason: why });
-          activity.record("loop", "failed", l.session_id, `Loop "${l.name}" was turned off: ${why}`, { loop_id: l.id });
-          alertHook.raise?.("loop_failed", l.session_id, `Loop turned off: ${l.name}`, `${why}. Give it a schedule that reads, then turn it on.`, { loop_id: l.id });
+          invalidSchedule(l, e);
           continue;
         }
         // A gated loop's time is spent on its command first; the prompt follows only when the command says so.
@@ -731,7 +772,7 @@ export function tick() {
 
 // --- the gate: a command that decides whether a due run happens ---------------------------------------------
 
-const checking = new Map<string, Promise<unknown>>(); // loops whose gate command is running now
+const checking = new Map<string, { done: Promise<unknown>; cancel: () => void }>(); // loops whose gate is running now
 const gateGroups = new Map<string, number>(); // the process group of each of those commands, by loop
 const killGroup = (pid: number) => { try { process.kill(-pid, "SIGKILL"); } catch {} };
 process.on("exit", () => { for (const g of gateGroups.values()) killGroup(g); });
@@ -742,7 +783,7 @@ export const gateLimit = { ms: GATE_TIMEOUT_MS };
 // The gate command, in the session's folder and inside its sandbox, wrapped as a Bash call of the session is (the
 // permission gate's own wrapper: write scope, held branches, folder pin, credential folders). At the time limit the command's whole process group is killed: nothing of it stays
 // running, and no session is told.
-async function execGate(l: LoopRecord, timeoutMs = gateLimit.ms): Promise<GateRun> {
+async function execGate(l: LoopRecord, signal: AbortSignal, timeoutMs = gateLimit.ms): Promise<GateRun> {
   const s = D().store.session(l.session_id);
   if (!s) return { exit: null, error: "its session is gone", output: "" };
   if (s.machine) return { exit: null, error: "the session's tools run on another machine", output: "" };
@@ -750,6 +791,7 @@ async function execGate(l: LoopRecord, timeoutMs = gateLimit.ms): Promise<GateRu
   try {
     const g = gates.of();
     const how = g ? await g.commandOf(s.id, l.gate!, join(D().store.stateDir, "spill", s.id, "loop-gates")) : { wrap: (a: string[]) => a, env: {} };
+    signal.throwIfAborted();
     if ("deny" in how) return { exit: null, error: how.deny, output: "" };
     const argv = ["bash", "-c", l.gate!];
     const proc = Bun.spawn(how.wrap(argv), { cwd: s.workspace, env: { ...toolEnv(s.id), ...how.env, CI: "1", KEEL_LOOP: l.id }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
@@ -782,11 +824,16 @@ function gateBlocked(l: LoopRecord): string | undefined {
 function check(l: LoopRecord, due: number, note: string | undefined): Promise<unknown> | undefined {
   // A check still running when the next time comes is not started again: that time is not checked.
   if (checking.has(l.id)) return undefined;
-  const done = execGate(l)
-    .then((r) => settleCheck(l.id, due, note, r))
+  const abort = new AbortController();
+  const done = execGate(l, abort.signal)
+    .then((r) => { if (!abort.signal.aborted) settleCheck(l.id, due, note, r); })
     .catch((e) => capture(e, { at: "loop gate", loop: l.id }))
     .finally(() => { checking.delete(l.id); db().query("UPDATE loops SET check_due_ms = NULL WHERE id = ?").run(l.id); });
-  checking.set(l.id, done);
+  checking.set(l.id, { done, cancel: () => {
+    abort.abort();
+    const pid = gateGroups.get(l.id);
+    if (pid) killGroup(pid);
+  } });
   return done;
 }
 
@@ -820,7 +867,7 @@ export function endWithAgent(sessionId: string): number {
   return n;
 }
 // Resolves when every gate command running now has been settled (a test waits on it; nothing else does).
-export const checksSettled = async () => { while (checking.size) await Promise.all([...checking.values()]); };
+export const checksSettled = async () => { while (checking.size) await Promise.all([...checking.values()].map((c) => c.done)); };
 
 // What a check came to. A quiet one is counted in the loop's row and leaves no run and no word in the session; one
 // that says yes starts the run with its output; one that failed is a run that failed.
@@ -849,6 +896,7 @@ const CHECK_FAILED = "failed: ";
 export function runNow(id: string): LoopRecord {
   const l = get(id);
   if (!l) throw new Error("no such loop");
+  requireRestored(l.session_id);
   if (openRun(l.session_id)?.loop_id === l.id || queuedRun(l.id)) {
     const s = D().store.session(l.session_id);
     const why = s && openRun(l.session_id)?.loop_id === l.id ? stillGoing(s).replace(/^the previous run was still/, "its run is still") : "";
@@ -998,6 +1046,9 @@ export function recover() {
   const now = Date.now();
   bootMs = now;
   releasing.clear();
+  // A daemon from before archive paused its loops may have left them enabled.
+  for (const { session_id } of db().query<{ session_id: string }, []>(`
+    SELECT DISTINCT l.session_id FROM loops l JOIN sessions s ON s.id = l.session_id WHERE l.enabled = 1 AND s.archived = 1 AND s.outside IS NULL`).all()) onArchived(session_id);
   db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'the daemon stopped before the session was free' WHERE ended_ms IS NULL AND started_ms IS NULL").run(now);
   const open = db().query<{ session_id: string; first: number | null }, []>("SELECT session_id, MAX(first_seq) AS first FROM loop_runs WHERE ended_ms IS NULL AND started_ms IS NOT NULL GROUP BY session_id").all();
   for (const { session_id, first } of open) {
@@ -1015,6 +1066,9 @@ export function recover() {
     if (l) skip(l, r.check_due_ms, "the daemon stopped while its gate command ran");
     db().query("UPDATE loops SET check_due_ms = NULL WHERE id = ?").run(r.id);
   }
+  // The prior daemon may have stored the restore but not yet sent its session frame.
+  for (const r of db().query<Row, [string]>(`SELECT l.* FROM loops l JOIN sessions s ON s.id = l.session_id
+    WHERE s.archived = 0 AND s.outside IS NULL AND l.enabled = 0 AND l.disabled_reason = ?`).all(ARCHIVE_PAUSE)) resumeAfterArchive(toRec(r), now);
   for (const l of list()) {
     // A self-paced loop with no next time gets one, unless a run of its is
     // still open (its turn is being continued): that run's end names the next.

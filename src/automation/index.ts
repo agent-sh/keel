@@ -296,20 +296,21 @@ function init(deps: Deps) {
     alerts.onTurnEnd(p.id, p.settings.last_end ?? "end_turn", { subagent: false, loopRun: loops.runOpenIn(p.id), more: false });
   });
 
-  // Archiving a session cancels its waits and stops its agents at once (not at
-  // a later sweep, so a quick restore cannot keep one); restoring it hands it
-  // the reports its agents finished meanwhile and resumes nothing else.
+  // Archiving pauses the session's loops, cancels its waits and stops its agents at once.
+  // Restoring resumes only the loops paused by archive and hands it any owed inputs.
   const archived = new Set(deps.store.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE archived = 1").all().map((r) => r.id));
   deps.bus.on((f) => {
     if (f.t !== "session" || f.deleted) return;
     const s = f.session;
     if (s.archived && !archived.has(s.id)) {
       archived.add(s.id);
+      try { loops.onArchived(s.id); } catch (e) { capture(e, { at: "archive loops", session: s.id }); }
       waits.cancelForSession(s.id);
       agents.stopChildrenOf(s.id);
       // Its unread alerts are read: the count drops and the phone's and desktop's notification for it comes down.
       alerts.onArchived(s.id);
     } else if (!s.archived && archived.delete(s.id)) {
+      try { loops.onRestored(s.id); } catch (e) { capture(e, { at: "restore loops", session: s.id }); }
       agents.deliverOwed(s.id);
       // A prompt its queue was owed a start for when it was archived starts now, not at some later restart.
       deps.engine.startOwed(s.id);

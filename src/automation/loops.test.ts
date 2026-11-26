@@ -59,6 +59,35 @@ const skipped = (loopId: string) => loops.runs(loopId).filter((r) => r.skip_reas
 const at = (ms: number) => setSystemTime(new Date(ms));
 afterEach(() => { setSystemTime(); sent.length = 0; });
 
+test("recovery reconciles archive and restore without replaying archived slots or resuming a manual pause", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
+  const { loop: off } = loops.create({ session_id: s.id, schedule: "1m", prompt: "already paused" });
+  const { loop: expires } = loops.create({ session_id: s.id, schedule: "1m", until_ms: loop.next_ms! + 1, prompt: "expires while archived" });
+  loops.update(off.id, { enabled: false });
+  store.updateSession(s.id, { archived: true });
+  at(loop.next_ms!);
+  restart();
+  loops.tick();
+  at(loop.next_ms! + 60_000);
+  loops.tick();
+
+  expect(skipped(loop.id)).toEqual([]);
+  expect(sent).toHaveLength(0);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: false, next_ms: null, disabled_reason: "paused because the session was archived" });
+  expect(loops.get(off.id)).toMatchObject({ enabled: false, disabled_reason: "paused" });
+
+  // Restore stored just before a crash, without its session frame.
+  store.updateSession(s.id, { archived: false });
+  restart();
+  loops.tick();
+  expect(sent).toHaveLength(0);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: true, next_ms: Date.now() + 60_000, disabled_reason: null });
+  expect(loops.get(off.id)).toMatchObject({ enabled: false, disabled_reason: "paused" });
+  expect(loops.get(expires.id)).toMatchObject({ enabled: false, disabled_reason: "expired" });
+});
+
 for (const how of ["a graceful stop", "a crash"] as const) {
   test(`a loop run cut by ${how} closes once as ok when the engine continues its turn`, () => {
     fresh();
@@ -516,6 +545,25 @@ test("a gate does not run where its prompt cannot: an archived session, a held o
   expect(skipped(la.id)).toEqual(["the session is archived"]);
   expect(skipped(lh.id)).toEqual([expect.stringContaining("the session's queue is held")]);
   expect(loops.get(la.id)).toMatchObject({ checks: 0 });
+});
+
+test("a gate still awaiting its wrapper is canceled even if the session is restored before it answers", async () => {
+  fresh();
+  const s = session();
+  const mark = marker();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick", gate: `touch ${mark}` });
+  const wrapper = Promise.withResolvers<{ wrap: (argv: string[]) => string[]; env: Record<string, string> }>();
+  loops.gates.of = () => ({ commandOf: () => wrapper.promise });
+  const checking = loops.checkNow(loop.id);
+  store.updateSession(s.id, { archived: true });
+  loops.onArchived(s.id);
+  store.updateSession(s.id, { archived: false });
+  loops.onRestored(s.id);
+  wrapper.resolve({ wrap: (argv) => argv, env: {} });
+  await checking;
+  expect(existsSync(mark)).toBe(false);
+  expect(sent).toHaveLength(0);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: true, checks: 0 });
 });
 
 test("a time the gate could not be asked for leaves a row: one still running, one a restart cut", async () => {
