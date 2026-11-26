@@ -13,8 +13,8 @@
 // - momentum: the turns its nudges were delivered into that ended on their own, of those that ended
 //   (a nudge not delivered or not ended yet is pending: unobserved; observed outcomes, not their cause).
 // A system with nothing in the window says so (`helped: null`), never a zero.
-import { existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import type { Store } from "../core/store.ts";
 import { notesOf, type NoteFile } from "../engine/native-memory.ts";
 import { bytesPerToken } from "../engine/compact.ts";
@@ -43,7 +43,9 @@ export type OfferState = "open" | "applied" | "dismissed";
 export type Offer = {
   id: string; kind: OfferKind; system: SystemId; title: string; why: string; state: OfferState;
   // What pressing it does, exactly: stored with the offer, never taken from a request.
-  target: { key?: string; dir?: string; file?: string; add?: string[]; remove?: string[]; name?: string; text?: string };
+  // `stamp`: the size and time of the file it changes, as the sweep saw it; `updated`: the record's time. An apply
+  // whose file or record moved since is refused (stampOf, the route's record check).
+  target: { key?: string; dir?: string; file?: string; add?: string[]; remove?: string[]; name?: string; text?: string; stamp?: string; updated?: number };
   done?: string; at?: number;
 };
 export type Card = { id: string; ts: number; since: number; until: number; systems: System[]; offers: Offer[] };
@@ -101,6 +103,15 @@ export function momentumSystem(rows: ActRow[], o: Nudges, on: boolean): System {
 
 // --- offers ------------------------------------------------------------------------
 
+// A file as an offer saw it: its size and its time to the millisecond. Any write moves one of them.
+const stamp = (bytes: number, mtime: number) => `${bytes}:${Math.floor(mtime)}`;
+export function stampOf(path: string): string {
+  try { const st = statSync(path); return stamp(st.size, st.mtimeMs); } catch { return "none"; }
+}
+const unchanged = (path: string, want: string | undefined) => {
+  if (want !== undefined && stampOf(path) !== want) throw new Error(`${basename(path)} changed since the sweep offered this; the next sweep looks at it again`);
+};
+
 const age = (now: number, ts: number) => Math.max(0, Math.floor((now - ts) / DAY));
 
 export function offersFrom(i: { facts: FactRow[]; records: RecordRow[]; native: { dir: string; notes: NoteFile[]; index: ReturnType<typeof notesOf>["index"] }[]; reads?: Set<string>; now: number; sweep: string }): Offer[] {
@@ -108,7 +119,7 @@ export function offersFrom(i: { facts: FactRow[]; records: RecordRow[]; native: 
   const add = (o: Omit<Offer, "id" | "state">, score: number) => found.push({ ...o, id: "", state: "open", score });
   for (const r of i.records) {
     if (r.source === "owner" || r.used > 0 || age(i.now, r.updated) < RECORD_STALE_DAYS) continue;
-    add({ kind: "drop_record", system: "helper", title: `Drop the helper's record ${r.key}`, why: `Kept ${age(i.now, r.ts)} days ago by the helper and not used by any turn in the ${age(i.now, r.updated)} days since it last changed: "${r.value.slice(0, 120)}".`, target: { key: r.key } }, age(i.now, r.updated));
+    add({ kind: "drop_record", system: "helper", title: `Drop the helper's record ${r.key}`, why: `Kept ${age(i.now, r.ts)} days ago by the helper and not used by any turn in the ${age(i.now, r.updated)} days since it last changed: "${r.value.slice(0, 120)}".`, target: { key: r.key, updated: r.updated } }, age(i.now, r.updated));
   }
   for (const f of i.facts) {
     if (f.given < FACT_GIVEN || f.sessions < FACT_SESSIONS || f.used > 0) continue;
@@ -121,11 +132,11 @@ export function offersFrom(i: { facts: FactRow[]; records: RecordRow[]; native: 
   for (const d of i.native) {
     const fix = { add: d.notes.filter((n) => !n.indexed).map((n) => n.file), remove: d.index?.missing ?? [] };
     if (fix.add.length + fix.remove.length) {
-      add({ kind: "tidy_index", system: "claude", title: `Tidy MEMORY.md (${fix.add.length} note${fix.add.length === 1 ? "" : "s"} not listed, ${fix.remove.length} line${fix.remove.length === 1 ? "" : "s"} pointing nowhere)`, why: `A note the index does not list is not seen at a start; a line that points at a missing file is noise. Pressing adds a line for each unlisted note and removes the dead ones in ${d.dir}.`, target: { dir: d.dir, add: fix.add, remove: fix.remove } }, fix.add.length + fix.remove.length);
+      add({ kind: "tidy_index", system: "claude", title: `Tidy MEMORY.md (${fix.add.length} note${fix.add.length === 1 ? "" : "s"} not listed, ${fix.remove.length} line${fix.remove.length === 1 ? "" : "s"} pointing nowhere)`, why: `A note the index does not list is not seen at a start; a line that points at a missing file is noise. Pressing adds a line for each unlisted note and removes the dead ones in ${d.dir}.`, target: { dir: d.dir, add: fix.add, remove: fix.remove, stamp: d.index ? stamp(d.index.bytes, d.index.mtime ?? 0) : "none" } }, fix.add.length + fix.remove.length);
     }
     for (const n of d.notes) {
       if (n.type !== "project" || age(i.now, n.mtime) < NOTE_STALE_DAYS || i.reads?.has(join(d.dir, n.file))) continue;
-      add({ kind: "drop_note", system: "claude", title: `Drop the stale note ${n.file}`, why: `A project note not changed in ${age(i.now, n.mtime)} days and not read by any session in the log. Pressing moves it to .dropped/ in its folder (kept there) and removes its line from MEMORY.md.`, target: { dir: d.dir, file: n.file } }, age(i.now, n.mtime));
+      add({ kind: "drop_note", system: "claude", title: `Drop the stale note ${n.file}`, why: `A project note not changed in ${age(i.now, n.mtime)} days and not read by any session in the log. Pressing moves it to .dropped/ in its folder (kept there) and removes its line from MEMORY.md.`, target: { dir: d.dir, file: n.file, stamp: stamp(n.bytes, n.mtime) } }, age(i.now, n.mtime));
     }
   }
   // The best of each kind first, at most two of one kind, three in all.
@@ -148,8 +159,9 @@ const description = (text: string) => /^---\n[\s\S]*?\ndescription:\s*(.+)/.exec
 
 // The index lines an offer adds and removes, and a stale note moved aside. `dir` is one the log
 // saw a session load: the caller checks that.
-export function tidyIndex(dir: string, add: string[], remove: string[]): string {
+export function tidyIndex(dir: string, add: string[], remove: string[], want?: string): string {
   const file = join(dir, "MEMORY.md");
+  unchanged(file, want);
   let text = existsSync(file) ? readFileSync(file, "utf8") : "";
   const lines = text.split("\n").filter((l) => !remove.some((f) => l.includes(`](${f})`)));
   for (const f of add) {
@@ -163,10 +175,11 @@ export function tidyIndex(dir: string, add: string[], remove: string[]): string 
   return `Updated ${file}: ${add.length} added, ${remove.length} removed.`;
 }
 
-export function dropNote(dir: string, name: string): string {
+export function dropNote(dir: string, name: string, want?: string): string {
   if (!NOTE_NAME.test(name) || name === "MEMORY.md") throw new Error(`${name} is not a note of the folder`);
   const from = join(dir, name);
   if (!existsSync(from)) throw new Error(`${name} is gone already`);
+  unchanged(from, want);
   mkdirSync(join(dir, ".dropped"), { recursive: true });
   renameSync(from, join(dir, ".dropped", name));
   const file = join(dir, "MEMORY.md");

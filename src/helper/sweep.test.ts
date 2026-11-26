@@ -1,6 +1,7 @@
 // The daily sweep's figures and offers on fixture rows, and the file changes an offer makes.
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { notesOf } from "../engine/native-memory.ts";
 import { join } from "node:path";
 import { tempTree } from "../../test/env.ts";
 import { Store } from "../core/store.ts";
@@ -179,4 +180,30 @@ test("the helper's line wakes it only when a number moved since the card before"
   expect(sweepLine(card(sys(30, 9)), null)).toEqual({ line: "Claude 30% used", moved: [] });
   expect(sweepLine(card(sys(30, 9)), card(sys(30, 10))).moved).toEqual([]);
   expect(sweepLine(card(sys(30, 9, 1)), card(sys(30, 9)))).toEqual({ line: "Claude: 1 repeated mistake, up from 0. Claude 30% used, 1 repeat", moved: ["Claude: 1 repeated mistake, up from 0"] });
+});
+
+test("an offer is checked again before it changes a file: an edited note or index is left alone, an unchanged one is changed once", () => {
+  const dir = tempTree("sweep-recheck-");
+  const aged = (f: string) => utimesSync(join(dir, f), new Date(now - 300 * DAY), new Date(now - 300 * DAY));
+  put(join(dir, "MEMORY.md"), "- [a](a.md): kept\n- [b](b.md): kept\n- [gone](gone.md): dead\n");
+  put(join(dir, "a.md"), "---\nname: a\ndescription: A\ntype: project\n---\nold");
+  put(join(dir, "b.md"), "---\nname: b\ndescription: B\ntype: project\n---\nb");
+  aged("a.md"); aged("b.md");
+  const offers = offersFrom({ facts: [], records: [], native: [{ dir, ...notesOf(dir) }], now, sweep: "r" });
+  const drop = (f: string) => offers.find((o) => o.kind === "drop_note" && o.target.file === f)!;
+  const tidy = offers.find((o) => o.kind === "tidy_index")!;
+  expect(drop("a.md").target.stamp).toBeTruthy();
+  expect(tidy.target.stamp).toBeTruthy();
+  // The note was edited after the sweep: the offer refuses and the new bytes stay.
+  put(join(dir, "a.md"), "---\nname: a\ndescription: A\ntype: project\n---\nnew words, longer");
+  expect(() => dropNote(dir, "a.md", drop("a.md").target.stamp)).toThrow(/changed since/);
+  expect(readFileSync(join(dir, "a.md"), "utf8")).toContain("new words");
+  // An unchanged note is moved aside, once.
+  expect(dropNote(dir, "b.md", drop("b.md").target.stamp)).toContain(".dropped");
+  expect(() => dropNote(dir, "b.md", drop("b.md").target.stamp)).toThrow(/gone already/);
+  // The index changed since (the dead line restored as a real note): tidy refuses and keeps it.
+  put(join(dir, "gone.md"), "---\nname: gone\n---\nback");
+  put(join(dir, "MEMORY.md"), "- [a](a.md): kept\n- [gone](gone.md): back again\n");
+  expect(() => tidyIndex(dir, tidy.target.add ?? [], tidy.target.remove ?? [], tidy.target.stamp)).toThrow(/changed since/);
+  expect(readFileSync(join(dir, "MEMORY.md"), "utf8")).toContain("back again");
 });

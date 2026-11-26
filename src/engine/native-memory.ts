@@ -426,7 +426,7 @@ export function nativeKind(path: string, dirs: readonly string[]): "index" | "no
 
 // The topic files of an auto memory folder, with their size and age, and what the index says of them.
 export type NoteFile = { file: string; bytes: number; mtime: number; type: string | null; indexed: boolean };
-export function notesOf(dir: string): { notes: NoteFile[]; index: { lines: number; bytes: number; over: boolean; missing: string[] } | null } {
+export function notesOf(dir: string): { notes: NoteFile[]; index: { lines: number; bytes: number; mtime?: number; over: boolean; missing: string[] } | null } {
   let names: string[] = [];
   try { names = readdirSync(dir).filter((n) => n.endsWith(".md") && n !== "MEMORY.md").sort(); } catch { return { notes: [], index: null }; }
   const idx = read(join(dir, "MEMORY.md"));
@@ -442,6 +442,8 @@ export function notesOf(dir: string): { notes: NoteFile[]; index: { lines: numbe
       notes.push({ file, bytes: st.size, mtime: st.mtimeMs, type, indexed: linked.has(file) });
     } catch {}
   }
-  const index = idx === null ? null : { lines: idx.replace(/\n+$/, "").split("\n").length, bytes: Buffer.byteLength(idx), over: memoryHead(idx).cut, missing: [...linked].filter((f) => !names.includes(f)) };
+  let mtime: number | undefined;
+  try { mtime = statSync(join(dir, "MEMORY.md")).mtimeMs; } catch {}
+  const index = idx === null ? null : { lines: idx.replace(/\n+$/, "").split("\n").length, bytes: Buffer.byteLength(idx), ...(mtime !== undefined ? { mtime } : {}), over: memoryHead(idx).cut, missing: [...linked].filter((f) => !names.includes(f)) };
   return { notes, index };
 }

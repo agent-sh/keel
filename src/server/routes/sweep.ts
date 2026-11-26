@@ -6,6 +6,7 @@
 //                                               command it would run, to be confirmed
 //   POST /api/memory/sweep/offers/:id/confirm   { confirm } run that command, once
 //   POST /api/memory/sweep/offers/:id/dismiss   leave it
+import { join } from "node:path";
 import * as activity from "../../automation/activity.ts";
 import { dropNote, sweep, sweepLine, Sweeps, tidyIndex, DAY, type Card, type Offer } from "../../helper/sweep.ts";
 import { nativeLog } from "../../integrations/native-log.ts";
@@ -87,13 +88,19 @@ export function sweepRoutes({ store, errors }: Deps, mem: MemoryStore, tacit: { 
         if (o.state !== "open") return bad(`the offer is ${o.state}`, 409);
         try {
           if (o.kind === "drop_record") {
+            // The record as the sweep saw it: one the owner or a turn changed or used since is left alone.
+            const now = helperNow?.().records.index.byKey.get(o.target.key!);
+            if (now && o.target.updated !== undefined && (now.updated !== o.target.updated || now.source === "owner" || now.used > 0)) return bad(`${o.target.key} changed since the sweep offered this; the next sweep looks at it again`, 409);
             const r = helperNow?.().records.forget(o.target.key!);
             return json({ offer: done(o, r ? `forgot ${o.target.key}` : `${o.target.key} was gone already`) });
           }
           if (o.kind === "tidy_index" || o.kind === "drop_note") {
             // A folder a session was seen to load: an offer never reaches anywhere else.
             if (!o.target.dir || !seenDirs().has(o.target.dir)) return bad("that folder is not one a session loaded", 409);
-            const text = o.kind === "tidy_index" ? tidyIndex(o.target.dir, o.target.add ?? [], o.target.remove ?? []) : dropNote(o.target.dir, o.target.file!);
+            // A note a session read or wrote since the sweep is not stale any more.
+            const card = sweeps.get(o.id.slice(0, o.id.lastIndexOf(":")));
+            if (o.kind === "drop_note" && card && store.db.query("SELECT 1 FROM native_memory_log WHERE action IN ('read', 'wrote') AND file = ? AND ts >= ? LIMIT 1").get(join(o.target.dir, o.target.file!), card.ts)) return bad(`${o.target.file} was read since the sweep offered this`, 409);
+            const text = o.kind === "tidy_index" ? tidyIndex(o.target.dir, o.target.add ?? [], o.target.remove ?? [], o.target.stamp) : dropNote(o.target.dir, o.target.file!, o.target.stamp);
             return json({ offer: done(o, text) });
           }
           // A note to the memory store: its command is shown, and a second request runs it.
