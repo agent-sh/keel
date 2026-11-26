@@ -252,6 +252,13 @@ describe("a Codex session answered in place", () => {
         `bash -lc "bash -c 'echo x >> ~/.bashrc'"`, "bash -lc 'echo x >> ~/.bashrc' arg0", "bash --login -c 'echo x >> ~/.bashrc'",
         "bash -lc 'for f in ~/.ssh/*; do cat $f; done'", "bash -lc 'gh auth token'", "bash -lc 'git credential fill'"])
         expect([c, (await command(c)).risk]).toEqual([c, "high"]);
+      // Code it hands an interpreter that names a credential: what it prints goes to Codex's provider, past Keel's vault.
+      for (const c of [`/bin/bash -lc "python3 -c \\"print(open('${homeDir()}/.aws/credentials').read())\\""`, `bash -lc 'python3 - <<PY\nprint(open("${homeDir()}/.ssh/id_rsa").read())\nPY'`, `python3 -c "print(open('.env').read())"`,
+        `node -e "console.log(require('fs').readFileSync('${homeDir()}/.netrc','utf8'))"`])
+        expect([c, (await command(c)).risk]).toEqual([c, "high"]);
+      // (A key of that name, and a route that is no file on the disk, are none.)
+      for (const c of [`python3 -c "d = {'token': 1}; print(d['token'])"`, `bash -lc "python3 -c \\"routes = ['/oauth/token', '/v1/secrets']; print(routes)\\""`, `python3 -c "print(open('README.md').read())"`])
+        expect([c, (await command(c)).risk]).toEqual([c, "low"]);
       rmSync(join(homeDir(), ".ssh/id_rsa"), { force: true });
       expect((await command("/bin/bash -lc 'make test'")).risk).toBe("low");
       expect((await command(`bash -lc "bash -lc 'make test'"`)).risk).toBe("low");

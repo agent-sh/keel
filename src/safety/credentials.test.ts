@@ -105,6 +105,35 @@ test("a client told to print the credential it holds and a loop over a store are
   expect(shell("for f in ~/.ssh/*; do cat $f; done", undefined, { expand: () => [`${home}/.ssh/id_ed25519.pub`, `${home}/.ssh/id_ed25519`] })).toBe("the command reads in a loop");
 });
 
+test("code a harness's command hands an interpreter is read for the credentials it names; Keel's own call is not", () => {
+  const code = (c: string, look?: Parameters<typeof shellCredentialReads>[5]) => shellCredentialReads(splitCommand(c)!, `${home}/projects/app`, home, (p) => credentialAt(p, at), undefined, look, true, true)?.by ?? null;
+  const reads = [
+    `python3 -c "print(open('/home/u/.ssh/id_rsa').read())"`, `python3 -c 'import os; print(open(os.path.expanduser("~/.netrc")).read())'`, `node -e "console.log(require('fs').readFileSync('/home/u/.npmrc','utf8'))"`,
+    "python3 - <<'PY'\nimport json\nprint(json.load(open('/home/u/.claude/.credentials.json')))\nPY", "python3 - <<PY | head -3\nprint(open('/home/u/.aws/credentials').read())\nPY", `node <<< "console.log(require('fs').readFileSync('/home/u/.npmrc','utf8'))"`,
+    `python3 -c "print(open('.env').read())"`, `ruby -e 'puts File.read("config/prod.env")'`, `python3 -c "import glob; print(glob.glob('/home/u/.ssh/*'))"`,
+    `python3 -c "import sqlite3; sqlite3.connect('/home/u/.local/share/keel/state/keel.db')"`,
+    // As a harness sends it, inside its shell's -c, and one wrapper deeper.
+    `/bin/bash -lc "python3 -c \\"print(open('/home/u/.ssh/id_rsa').read())\\""`, "bash -lc 'python3 - <<PY\nprint(open(\"/home/u/.netrc\").read())\nPY'", `bash -lc "sh -c 'node -e \\"require(\\\\\\"fs\\\\\\").readFileSync(\\\\\\"/home/u/.npmrc\\\\\\")\\"'"`,
+  ];
+  for (const c of reads) {
+    expect([c, code(c)?.replace(/ (python3|node|ruby) /, " X ")]).toEqual([c, "the command gives X code that names"]);
+    // Keel's own call: the same words are no read (the vault masks what its commands print).
+    expect([c, shell(c)]).toEqual([c, null]);
+  }
+  for (const c of [
+    // A key, a word, a regular expression, an address and a path that holds none are no credential file.
+    `python3 -c "d = {'token': 1, 'credentials': 2, 'secret': 3}; print(d['token'])"`, `python3 -c "import re; print(re.sub('.*', '', 'x'))"`, `node -e "fetch('https://example.com/.env')"`,
+    `python3 -c "print(open('/home/u/.ssh/id_rsa.pub').read())"`, `python3 -c "print(open('src/main.py').read())"`, "python3 - <<PY\nprint(open('README.md').read())\nPY",
+    // A script file the line names is not read, and a here-document is the code only of an interpreter that takes its input.
+    "python3 run.py <<PY\n'/home/u/.netrc'\nPY", "cat <<EOF\n'/home/u/.netrc'\nEOF",
+  ]) expect([c, code(c)]).toEqual([c, null]);
+  // Outside the home's stores a string is a file when the disk has it: a route is none, a file of that name is.
+  const route = `python3 -c "import requests; requests.post(base + '/oauth/token'); open('api/token')"`;
+  expect(code(route, { has: () => false })).toBeNull();
+  expect(code(route, { has: (p) => p === `${home}/projects/app/api/token` })).toBe("the command gives python3 code that names");
+  expect(code(`python3 -c "open('/home/u/.ssh/id_rsa')"`, { has: () => false })).toBe("the command gives python3 code that names");
+});
+
 test("a helper that reads a file for a command is the same class as a plain cat of it", () => {
   for (const c of [
     "echo ~/.aws/credentials | xargs cat", "printf '%s\\n' ~/.aws/credentials | xargs -I{} cat {}", "find ~/.aws -type f -print0 | xargs -0 cat", "ls ~/.aws | xargs head",

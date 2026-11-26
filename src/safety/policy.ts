@@ -570,6 +570,10 @@ export type Facts = {
   look?: DiskLook;
   // The session is an agent another session started: it reads no credential, in any mode.
   agent?: true;
+  // The call is what another harness asks to run (a Codex or Claude Code card), not Keel's own: what it prints
+  // goes to that harness's provider, past Keel's vault, so code it hands an interpreter is read for the
+  // credentials it names (credential-reads.ts).
+  harness?: true;
   // Why a file (where it lands) is in Keel's own state folder, which no session's tool writes in any mode; nothing
   // for any other file, the session's own artifacts and a worktree Keel made for it.
   keel?: (path: string) => string | null;
@@ -1199,7 +1203,7 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
   // same class as a file tool's read of it.
   // (In Read only a line that starts a shell is refused below as no read: its script adds no card to that.)
-  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only");
+  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only", f.harness);
   if (cred) {
     // In the sandbox the command reads what the sandbox shows and nothing else: a credential it hides is not read,
     // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a

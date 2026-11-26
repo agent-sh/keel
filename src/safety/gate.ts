@@ -1437,6 +1437,8 @@ export class Gate {
       // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
       ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look(cls, facts?.looked) }),
       ...(session.parent_id ? { agent: true as const } : {}),
+      // (Another harness's request: harnessRisk.)
+      ...(free ? { harness: true as const } : {}),
       // Whether the owner's words are in the turn (a turn nobody started merges and force-pushes nothing: unstarted.ts).
       ...(cls.kind === "shell" && this.byOwner ? { byOwner: () => this.byOwner!(session.id) } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)

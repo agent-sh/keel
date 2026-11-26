@@ -3,6 +3,7 @@
 // wildcard that can reach one, a loop that reads each word of its list, a copy of one, a client told to print the
 // credential it holds (gh auth token), and a recursive search of a folder that holds the home's stores or files
 // named like credentials. The script a line hands a shell it starts is read as a line of its own (nested-shell.ts).
+// For another harness's request only (`code`): the paths written out in code the line hands an interpreter.
 // A file tool's read of the same paths is the same class (policy.ts decides both).
 import { lstatSync, readdirSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,8 +11,8 @@ import { timed } from "../admin/stall.ts";
 import { contains } from "../core/paths.ts";
 import { credentialAt, credentialName, foreignAt, homeOf, placesOf, realPlaces, storesSaid, storesUnder, STORES, type Credential } from "./credentials.ts";
 import { innerLines } from "./nested-shell.ts";
-import { laid, type Laid } from "./risk.ts";
-import { name as baseName, printsHeld } from "./risk-words.ts";
+import { codeGiven, laid, type Laid } from "./risk.ts";
+import { INTERPRETERS, name as baseName, printsHeld } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
 
 // Programs whose file operands are read for their content (a command of the shell's allow-list prints them, or
@@ -110,6 +111,7 @@ const EXPANDED_MAX = 500;
 export type Found = { path: string; foreign?: true; unread?: true; why?: string; resumes?: true };
 export type DiskLook = { named?: (folder: string) => (string | Found)[]; // the files under a folder that hold credentials (by their names, by where they are, by being a link to one), as full paths
    expand?: (pattern: string, dir: string) => string[];
+   has?: (path: string) => boolean; // whether the disk has a path (a string that code names outside the home's stores is a file only then)
    own?: () => string[] }; // Keel's own folders (state, config), as named and where they land
 
 // A literal excluded by an option of a searcher or a find: `--exclude=.env`, `-g '!.env'`, `--ignore .env`.
@@ -129,7 +131,16 @@ function substituted(how: Made | undefined, depth = 0): string[] {
 
 // `scripts`: the scripts the line hands a shell it starts (`bash -c '...'`, a here-document into sh) are read too,
 // each as a line of its own where its shell starts (nested-shell.ts).
-export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts = true): Reads | null {
+// `code`: the code the line hands an interpreter (python3 -c, node -e, a here-document or a here-string an
+// interpreter with no script of its own reads) is read for the paths written out in it, each quoted string as a
+// file the code may open: `python3 -c "print(open('/home/u/.netrc').read())"`. Only for what another harness asks
+// to run (the gate's harnessRisk): what such a command prints goes to that harness's provider, past Keel's vault.
+// Keel's own calls are not read so: an agent's own diagnostics name such files every day, and the vault masks
+// what they print. A string counts when it is a path by its looks (from the root or the home, or with a `/` or
+// a `.` in it; a relative one with no pattern characters, since a regular expression is no wildcard) and, outside
+// the home's stores, when the disk has it (a route '/oauth/token' is no file). Not read: a path the code puts
+// together (os.path.join, Path.home() / '.ssh'), a string in backticks, code piped in from an echo.
+export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts = true, code = false): Reads | null {
   let first: { what: string; by: string; api?: string } | null = null;
   const paths: string[] = [];
   const hits: Hit[] = [];
@@ -255,6 +266,33 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
   const entered: string[] = [];
   // The words each `for` of the line gives its name in turn: a reader of `$name` reads each of them.
   const loops = new Map<string, string[]>();
+  // The here-documents an interpreter with no script of its own reads as its code, by the part that starts it: a
+  // run of them feeds the first such command since the run before (as a shell's: nested-shell.ts).
+  const fed = new Map<number, string[]>();
+  const takesInput = (i: number) => { const w = pre.runs[i]!.words; return INTERPRETERS.test(baseName(w[0])) && codeGiven(pre.runs[i]!) === null && (w.slice(1).find((a) => a === "-" || !a.startsWith("-")) ?? "-") === "-"; };
+  if (code) for (let i = 0, since = 0; i < parts.length; i++) {
+    if (!parts[i]!.heredoc) continue;
+    let end = i;
+    while (end < parts.length && parts[end]!.heredoc) end++;
+    let feeder = -1;
+    for (let k = since; k < i && feeder < 0; k++) if (takesInput(k)) feeder = k;
+    if (feeder >= 0) fed.set(feeder, parts.slice(i, end).flatMap((q) => (q.doc === undefined ? [] : [q.doc])));
+    since = end;
+    i = end - 1;
+  }
+  const codeNames = (text: string, dir: string | null, by: string) => {
+    // (Each quoted string as it stands: a short one is passed, not skipped half-way into the next.)
+    for (const m of text.matchAll(/"([^"\n]*)"|'([^'\n]*)'/g)) {
+      const t = m[1] ?? m[2]!;
+      if (t.length < 3 || t.length > 300 || /\s/.test(t)) continue;
+      const rooted = /^(?:\/|~\/|\$HOME\/|\$\{HOME\}\/)/.test(t);
+      if (!rooted && (!/[\/.]/.test(t) || /[*?[{\\$`]|:\/\//.test(t))) continue;
+      const p = at(t, dir);
+      if (!p) continue;
+      if (look.has && !/[*?[{]/.test(t) && !STORES.some((s) => contains(join(home, s), p)) && !look.has(p)) continue;
+      reads(t, dir, by);
+    }
+  };
   for (let i = 0; i < parts.length && paths.length < 64; i++) {
     const part = parts[i]!;
     if (part.heredoc) continue;
@@ -270,6 +308,12 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     // A client told to print the credential it holds (gh auth token, git credential fill): a read of its store.
     const held = printsHeld(run.words);
     if (held) note(join(home, held), "the command prints a credential kept in");
+    if (code && INTERPRETERS.test(prog)) {
+      const by = `the command gives ${prog} code that names`;
+      const given = codeGiven(run);
+      if (given !== null) codeNames(given, dir, by);
+      else if (takesInput(i)) for (const text of [...(fed.get(i) ?? []), ...(part.here === undefined ? [] : [part.here])]) codeNames(text, dir, by);
+    }
     // git reads two paths with no repository (`git diff --no-index`) and searches a folder as grep does (`git grep --no-index`).
     let gitSearch = false;
     if (prog === "git") {
@@ -374,7 +418,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
   }
   if (scripts) for (const inner of innerLines(parts, pre, home)) {
     if (paths.length >= 64) break;
-    const r = shellCredentialReads(inner.parts, cwd, home, credential, inner.pre, look, false);
+    const r = shellCredentialReads(inner.parts, cwd, home, credential, inner.pre, look, false, code);
     if (!r) continue;
     first ??= { what: r.what, by: r.by, ...(r.api ? { api: r.api } : {}) };
     paths.push(...r.paths);
@@ -480,6 +524,6 @@ export const diskLook = (is?: () => Classifier, own?: () => string[], kept: Look
       if (kept.size > 64) for (const k of kept.keys()) { kept.delete(k); if (kept.size <= 32) break; }
       return found;
     },
-    expand: expanded, ...(own ? { own } : {}),
+    expand: expanded, has: (path) => { try { lstatSync(path); return true; } catch { return false; } }, ...(own ? { own } : {}),
   };
 };
