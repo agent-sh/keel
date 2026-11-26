@@ -3296,7 +3296,7 @@ export class Engine {
   // says where it keeps from). A session at rest gives its bodies back after two minutes, and a
   // turn that starts then read them back a run at a time, on the loop, from the disk.
   // `line`: the branch as the caller read it (the same events: their bodies are read through them).
-  private async warmContext(id: string, line?: readonly StoredEvent[], allowQueue = false) {
+  private async warmContext(id: string, line?: readonly StoredEvent[], allowQueue?: "step" | "startup") {
     try {
       if (!line) {
         if (!this.store.isKept(id)) await this.store.warm(id, false);
@@ -3305,7 +3305,7 @@ export class Engine {
       // A steer can still be queued when the reply returns. Check before
       // claiming the one wait shared by the checkpoint and the tail.
       let waited = false;
-      const waitOnce = allowQueue ? () => {
+      const waitOnce = allowQueue === "startup" ? () => true : allowQueue === "step" ? () => {
         if (waited || this.byOwner(id, line) || this.liveSteers(id).some((q) => ownersMeta(q.meta))) return false;
         waited = true;
         return true;
@@ -3332,7 +3332,7 @@ export class Engine {
     // (And the bodies its first request is made from, which a session at rest gave back: warmContext.)
     // (Each part of a turn's start is a span of the activity record: a memory step names which.)
     const ready = await during("turn", () => this.store.warm(id, false), "a turn's start: reading its session's rows")
-      .then(() => during("turn", () => this.warmContext(id, undefined, true), "a turn's start: reading the bodies of its context"))
+      .then(() => during("turn", () => this.warmContext(id, undefined, "step"), "a turn's start: reading the bodies of its context"))
       .then(() => during("turn", () => this.step(session, session.model), "a turn's start: building its first step"))
       .finally(() => this.setting.delete(id))
       // A setup that fails after the stop has nothing left to say: the turn is closed.
@@ -3511,7 +3511,7 @@ export class Engine {
         this.takeSteers(id);
         // Tool, approval and provider waits can outlive the bodies. Read
         // them again once any owner steer has joined this step.
-        if (steps) await this.warmContext(id, undefined, true);
+        if (steps) await this.warmContext(id, undefined, "step");
         // A row a stopping daemon owed a start, taken by the turn the next one continued: nothing is owed for an empty queue.
         if (this.owed.has(id) && !this.store.queue(id).length) this.settleOwed(id);
         session = this.store.session(id)!;
@@ -3560,7 +3560,7 @@ export class Engine {
         if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness", system: true });
         // (A history not counted yet is counted here in slices: the counts below then read what is kept.)
         const toCount = this.lineage(id);
-        await this.warmContext(id, toCount, true);
+        await this.warmContext(id, toCount, "step");
         await countPaced(toCount, st.info.id);
         let events = this.lineage(id);
         const limit = this.limitOf(session, st.info.context);
@@ -3710,7 +3710,7 @@ export class Engine {
         if (this.cachePlans.owes(id)) this.cachePlans.answered(id, { route: st.info.id, usage: res.usage, sentAt, compactedAt: events.findLast((e) => e.kind === "compaction")?.ts, cause: cacheBreaks.get(res) });
         // The stream may have waited for the provider or its account for longer than the bodies
         // were kept. The after-response hooks, counts and tool calls still use that history.
-        await this.warmContext(id, undefined, true);
+        await this.warmContext(id, undefined, "step");
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         // (Right before the step's own writes: the hold's notice comes a moment before the lock is taken.)
         if (this.store.pacing?.()) await this.store.clear(signal);
@@ -5160,19 +5160,28 @@ export class Engine {
   // cut before a step is done (STALLED_MAX) is held, with the reason shown
   // and its Continue. A session with an owner of its own (an agent's, through
   // the cutTurn hook) may say otherwise.
-  async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
-    // Each part is a span of the activity record: a memory step in the start names which part it was.
-    duringSync("start", "the start's recovery: closing the turns the last daemon left open", () => this.closeCut(openAtBoot));
-    // Every module is up by now: the turns this start closed are told of
-    // first, whoever goes on with them.
-    duringSync("start", "the start's recovery: telling of the closed turns and arming the queued ones", () => {
-      for (const [id, cut] of this.cutAtBoot) {
-        const s = this.store.session(id);
-        if (s) this.tellCut(s, cut);
-      }
-      this.rearmContinues();
-      this.startQueued(openAtBoot, waitModel);
-    });
+  async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>, onReady?: () => void) {
+    try {
+      // Each part is a span of the activity record: a memory step in the start names which part it was.
+      await this.closeCut(openAtBoot);
+      // Every module is up by now: the turns this start closed are told of
+      // first, whoever goes on with them.
+      duringSync("start", "the start's recovery: telling of the closed turns and arming the queued ones", () => {
+        for (const [id, cut] of this.cutAtBoot) {
+          timed(() => "telling of a turn closed at startup", () => {
+            const s = this.store.session(id);
+            if (s) this.tellCut(s, cut);
+          }, false, "startup cut notices");
+        }
+        timed(() => "arming the turns and queued prompts owed at startup", () => {
+          this.rearmContinues();
+          this.startQueued(openAtBoot, waitModel);
+        }, false, "startup queued turns");
+      });
+    } finally {
+      // Crash closure and arming are startup; continuing turns may wait for a provider while the daemon serves.
+      onReady?.();
+    }
     return this.continueCut(waitModel);
   }
 
@@ -5264,21 +5273,42 @@ export class Engine {
   // are the sessions that carried the working mark when the store was opened;
   // one that no longer does (closed already, or its turn was parked since) or
   // that runs a turn now is left alone. Safe to call again.
-  closeCut(openAtBoot: string[]) {
+  closeCut(openAtBoot: string[]): Promise<void> {
+    return during("start", () => this.closeCuts(openAtBoot), "the start's recovery: closing the turns the last daemon left open");
+  }
+
+  private async closeCuts(openAtBoot: string[]) {
     // Readers' answers older than they are kept go at the start (and on the kept store's own timer after).
-    try { this.readerKept.start(); } catch (e) { this.errors.capture("server", e, { at: "pruning readers' answers" }); }
+    try {
+      timed(() => "pruning old reader answers at startup", () => this.readerKept.start(), false, "startup recovery");
+    } catch (e) { this.errors.capture("server", e, { at: "pruning readers' answers" }); }
     for (const id of openAtBoot) {
       const session = this.store.session(id);
       if (!session || session.phase !== "working" || this.running.has(id)) continue;
+      const release = this.store.hold(id);
       try {
-        this.closeOne(id, session);
+        // Requests wait for crash closure. Do not queue these reads behind a report.
+        await this.store.warm(id, false);
+        const from = timed(() => "finding the crash-cut turn's start", () => {
+          const line = this.lineage(id);
+          const start = line.findLastIndex((e) => e.kind === "turn_start");
+          const end = line.findLastIndex((e) => e.kind === "turn_end");
+          return start > end ? line[start]!.seq : undefined;
+        }, false, "startup cut bounds");
+        // Only the unfinished turn needs its bodies to be read. With no
+        // unfinished turn the branch's kinds tell whether a prompt is owed.
+        if (from !== undefined) await this.store.warmBodies(id, from);
+        const now = this.store.session(id);
+        if (now?.phase !== "working" || this.running.has(id)) continue;
+        timed(() => "closing a crash-cut turn at startup", () => this.closeOne(id, now), false, "startup closing turns");
       } catch (e) {
         // One session that cannot be read must not stop the others: its mark
         // is taken off without acting, and it is left as it was found.
         this.errors.capture("server", e, { at: "recover", session: id });
         this.store.bootSettled(id);
         this.emitSession(id);
-      }
+      } finally { release(); }
+      await yieldLoop();
     }
   }
 
@@ -5330,23 +5360,21 @@ export class Engine {
     // Only the sessions whose branch ends in a turn a restart cut are read:
     // the store finds them from each session's last event.
     const sessions = await this.store.cutSessionsOff();
+    // Read the cold histories one at a time. Several histories parsing bodies
+    // as their reads come back can otherwise take the loop together.
+    let preparing: Promise<unknown> = Promise.resolve();
     await Promise.all(sessions.map(async (s) => {
-      // Not in memory after a start: its pages are read off the loop first (store.warm).
-      await during("start", () => this.store.warm(s.id, false, 0, true), "the start's recovery: reading a cut session's rows");
-      const line = this.lineage(s.id);
-      const end = line.at(-1);
-      if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
-      // A turn a stop parked is found here; one this start closed was told of already.
-      const cut = this.cutAtBoot.get(s.id)?.end_event === end.id ? this.cutAtBoot.get(s.id)! : cutOf(s.id, line, end);
-      this.tellCut(s, cut);
+      const prep = preparing.then(() => this.prepareCut(s));
+      preparing = prep.then(yieldLoop, yieldLoop);
+      const found = await prep;
+      if (!found) return;
+      const { end, cut, unanswered, owed, cards, stalled } = found;
+      timed(() => "telling of a turn cut at startup", () => this.tellCut(s, cut), false, "startup cut notices");
       const held = (text: string) => {
         this.append(s.id, "note", { kind: "restart", text });
         for (const h of allHooks()) try { h.cutTurnHeld?.(s, text); } catch (e) { this.errors.capture("server", e, { hook: "cutTurnHeld", session: s.id }); }
         this.tellCut(s, cut, "held", text);
       };
-      // A turn that waits on the owner's card is waiting, not stalled.
-      const owed = owedCalls(s.id, line).length;
-      const stalled = owed ? 0 : stalledContinuations(line);
       const verdict = allHooks().map((h) => h.cutTurn?.(s, { stalled })).find(Boolean);
       if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was resumed after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not resumed again. Resume when you want it to go on.`);
       try {
@@ -5361,7 +5389,6 @@ export class Engine {
       // an approval card may send at once (the mode it is in now may settle
       // the card by itself): it takes a slot and gives it back as soon as it
       // is seen waiting on the owner.
-      const cards = owed > 0 && owedCalls(s.id, line).every((u) => asksOwner(u.name));
       if (!cards) await slots.take();
       try {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
@@ -5379,7 +5406,7 @@ export class Engine {
         try {
           const later = this.store.session(s.id);
           if (!later || later.archived || this.running.has(s.id) || later.head !== end.id) return this.tellCut(s, cut, "moved", !later ? "not continued: its session was deleted" : later.archived ? "not continued: its session was archived" : undefined);
-          this.acceptRestart(s.id);
+          timed(() => "accepting a cut turn's continuation", () => this.acceptRestart(s.id, unanswered), false, "startup continuing turns");
           this.start(s.id);
           this.emitQueue(s.id);
           this.tellCut(s, cut, "continued");
@@ -5392,6 +5419,26 @@ export class Engine {
         if (!cards) slots.give();
       }
     }));
+  }
+
+  private async prepareCut(s: Session) {
+    const release = this.store.hold(s.id);
+    try {
+      await during("start", () => this.store.warm(s.id, false, 0, true), "the start's recovery: reading a cut session's rows");
+      const line = timed(() => "walking the branch of a cut session", () => this.lineage(s.id), false, "startup cut bounds");
+      const end = line.at(-1);
+      if (s.archived || end?.kind !== "turn_end" || this.store.body(end).reason !== "restart") return;
+      await during("start", () => this.warmContext(s.id, line, "startup"), "the start's recovery: reading a cut session's bodies");
+      const now = this.store.session(s.id);
+      if (!now || now.archived || now.head !== end.id) return;
+      return timed(() => "reading a cut turn's record and waiting calls", () => {
+        // A turn a stop parked is found here; one this start closed was told of already.
+        const cut = this.cutAtBoot.get(s.id)?.end_event === end.id ? this.cutAtBoot.get(s.id)! : cutOf(s.id, line, end);
+        const pending = unanswered(line);
+        const calls = pending.filter((u) => waitsOnOwner(s.id, u));
+        return { end, cut, unanswered: pending, owed: calls.length, cards: calls.length > 0 && calls.every((u) => asksOwner(u.name)), stalled: calls.length ? 0 : stalledContinuations(line) };
+      }, false, "startup cut records");
+    } finally { release(); }
   }
 
   // Resolves once the turn has prepared its first request (its status is no longer idle: the request
@@ -5420,7 +5467,7 @@ export class Engine {
   // such message the model never read gets no second one: restarts while a
   // card waits do not grow the context.
   // True when the branch ends in a cut turn and now has its restart message.
-  private acceptRestart(id: string): boolean {
+  private acceptRestart(id: string, pending?: ToolUseBlock[]): boolean {
     // Asked at every input (a prompt, a report, a wake), and the answer is
     // no for all but a session a restart cut: the branch's last event says
     // so, and it is read by itself when the session is not in memory. An
@@ -5434,7 +5481,8 @@ export class Engine {
     const line = this.lineage(id);
     const end = line.at(-1);
     if (end?.kind !== "turn_end" || end.data.reason !== "restart") return false;
-    const owed = owedCalls(id, line).length;
+    // The head pins the unanswered calls, but an approval could have changed while the model or a slot was awaited.
+    const owed = pending ? pending.filter((u) => waitsOnOwner(id, u)).length : owedCalls(id, line).length;
     // A restart message the model has not read yet: looked for back to the last reply only, by kind
     // first (a body is read for a prompt alone). Looked for over the whole branch, a session that was
     // never told of a restart read every prompt back to its first, and the runs that hold them, from

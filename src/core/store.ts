@@ -314,7 +314,8 @@ const pause = () => new Promise<void>((r) => setImmediate(r));
 const BODIES = "SELECT data FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq";
 const CUT_SESSIONS = `SELECT s.* FROM sessions s JOIN events e ON e.id = s.head
   WHERE s.archived = 0 AND e.kind = 'turn_end' AND json_extract(e.data, '$.reason') = 'restart' ORDER BY s.updated DESC`;
-const BARE_PART = "SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 4096";
+const BARE_PAGE = 4096;
+const barePart = (db: Database) => `SELECT id, seq, parent, kind, ts FROM events ${bareBy(db)} WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ${BARE_PAGE}`;
 // KEEL_TRACE_COLD=1: each whole-session read and each read of bodies made on the loop is a line of the log, with who asked; =stack: and its call stack.
 const TRACE_COLD = process.env.KEEL_TRACE_COLD;
 // SQLite's words for a write on a connection that takes none (PRAGMA query_only).
@@ -1403,18 +1404,32 @@ export class Store {
   }
 
   // A session's events as kept, from their rows without bodies.
-  private keep(session_id: string, rows: Bare[]): Kept {
+  private newKept(session_id: string, first: number): Kept {
     const store = this;
     const k: Kept = {
-      id: session_id, all: [], first: rows[0]?.seq ?? -1, runs: [], bytes: 0, at: Date.now(),
+      id: session_id, all: [], first, runs: [], bytes: 0, at: Date.now(),
       body(this: StoredEvent) { return store.bodyOf(k, this.seq); },
     };
-    for (let i = 0; i < rows.length; i++) {
-      if (k.first >= 0 && rows[i]!.seq !== k.first + i) k.first = -1;
-      k.all.push(this.bare(k, rows[i]!));
+    return k;
+  }
+
+  private addBare(k: Kept, rows: Bare[]) {
+    for (const r of rows) {
+      if (k.first >= 0 && r.seq !== k.first + k.all.length) k.first = -1;
+      k.all.push(this.bare(k, r));
     }
-    this.kept.set(session_id, k);
-    this.charge(k, rows.length * BARE_COST);
+  }
+
+  private keep(session_id: string, rows: Bare[]): Kept {
+    const k = this.newKept(session_id, rows[0]?.seq ?? -1);
+    this.addBare(k, rows);
+    return this.installKept(k);
+  }
+
+  private installKept(k: Kept): Kept {
+    k.at = Date.now();
+    this.kept.set(k.id, k);
+    this.charge(k, k.all.length * BARE_COST);
     if (!this.sweeper) {
       this.sweeper = setInterval(() => this.sweep(), IDLE_KEPT_MS / 4);
       this.sweeper.unref?.();
@@ -1439,7 +1454,9 @@ export class Store {
     }
     const who = asker();
     const t0 = performance.now();
-    const rows = asking(who, () => this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
+    const rows = asking(who, () => this.db.query<Bare, [string]>(
+      `SELECT id, seq, parent, kind, ts FROM events ${bareBy(this.db)} WHERE session_id = ? ORDER BY seq`,
+    ).all(session_id));
     const ms = performance.now() - t0;
     // (A session made a moment ago, found empty: no read of a session.)
     if (this.fresh.delete(session_id) && !rows.length) return this.keep(session_id, rows);
@@ -1570,26 +1587,34 @@ export class Store {
       }
     }
     if (!k) {
-      const rows: Bare[] = [];
       // The rows are read on the read thread and handed over, a few thousand at a time: the loop
       // waits for no page of them (a disk busy with other work makes each read slow, wherever the
       // page is). What was stored meanwhile, and everything where no thread answers, is read here.
+      const sql = barePart(this.db);
+      let built: Kept | undefined;
+      const add = (rows: Bare[]) => {
+        built ??= this.newKept(session_id, rows[0]?.seq ?? -1);
+        const run = () => this.addBare(built!, rows);
+        if (this.timed) this.timed(() => "keeping a page of event rows in memory", run, false, "warming event rows");
+        else run();
+      };
       while (this.readOff) {
-        const part: Bare[] | undefined = await ((patient && this.readLater) || this.readOff)(BARE_PART, [session_id, rows.at(-1)?.seq ?? 0]).catch(() => undefined);
-        if (!part) break;
-        for (const r of part) rows.push(r);
-        if (part.length < 4096) break;
+        const part: Bare[] | undefined = await ((patient && this.readLater) || this.readOff)(sql, [session_id, built?.all.at(-1)?.seq ?? 0]).catch(() => undefined);
+        if (!part || this.kept.has(session_id)) break;
+        add(part);
+        if (part.length < BARE_PAGE) break;
+        await pause();
       }
-      const page = this.db.query<Bare, [string, number]>(BARE_PART);
-      if (this.kept.has(session_id)) rows.length = 0;
-      else for (;;) {
-        const part = page.all(session_id, rows.at(-1)?.seq ?? 0);
-        for (const r of part) rows.push(r);
-        if (part.length < 4096) break;
+      const page = this.db.query<Bare, [string, number]>(sql);
+      while (!this.kept.has(session_id)) {
+        const read = () => page.all(session_id, built?.all.at(-1)?.seq ?? 0);
+        const part = this.timed ? this.timed(() => "reading a page of event rows on the loop", read, false, "warming event rows") : read();
+        add(part);
+        if (part.length < BARE_PAGE) break;
         await pause();
       }
       // Read by someone else meanwhile: theirs is the one kept.
-      k = this.kept.get(session_id) ?? this.keep(session_id, rows);
+      k = this.kept.get(session_id) ?? this.installKept(built!);
     }
     if (!bodies) return;
     await this.fill(k, fromSeq > 0 ? firstAfter(k.all, fromSeq - 1) : 0, k.all.length, true);

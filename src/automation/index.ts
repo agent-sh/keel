@@ -56,6 +56,7 @@ import * as now from "./now.ts";
 import * as lane from "./lane.ts";
 import { liveAgents } from "./state.ts";
 import { joinPulse } from "../core/pulse.ts";
+import { timed } from "../admin/stall.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
 import { forwardedStanding, isLocal } from "../safety/presence.ts";
@@ -385,24 +386,24 @@ function init(deps: Deps) {
 
   if (!g.__keelAutomationRecovered && !runMode.client) {
     g.__keelAutomationRecovered = true;
-    const recover = () => {
+    const recover = async () => {
       try {
         // Before anything of this start is delivered to a session: the turn the
         // last daemon left open there is closed, after the gate's hooks and job
         // recovery can say what became of a cut call.
-        try { deps.engine.closeCut(deps.store.bootWorking); } catch (e) { capture(e, { at: "recover", step: "close" }); }
-        waits.recover();
-        loops.recover();
-        agents.recover();
-        writeAsks.recover();
-        failures.recover();
-        goals.recover();
+        try { await deps.engine.closeCut(deps.store.bootWorking); } catch (e) { capture(e, { at: "recover", step: "close" }); }
+        for (const [name, wake] of [
+          ["waits", waits.recover], ["loops", loops.recover], ["agents", agents.recover],
+          ["write requests", writeAsks.recover], ["failures", failures.recover], ["goals", goals.recover],
+        ] as const) {
+          timed(() => `recovering ${name} at startup`, wake, false, "startup automation");
+        }
       } catch (e) {
         capture(e, { at: "recover" });
       }
     };
-    if (deps.boot?.jobs) void deps.boot.jobs.then(recover);
-    else recover();
+    if (deps.boot) deps.boot.jobs = (deps.boot.jobs ?? Promise.resolve()).then(recover);
+    else void recover();
     process.on("exit", () => waits.stopAll());
   }
 

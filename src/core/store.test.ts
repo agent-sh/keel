@@ -78,7 +78,7 @@ function tableReads(store: Store) {
   const reads: string[] = [];
   const db = store.db as any;
   const real = db.query.bind(db);
-  db.query = (sql: string) => { if (/FROM events WHERE session_id = \? (ORDER|AND seq)/.test(sql)) reads.push(sql); return real(sql); };
+  db.query = (sql: string) => { if (/FROM events(?: INDEXED BY events_bare)? WHERE session_id = \? (ORDER|AND seq)/.test(sql)) reads.push(sql); return real(sql); };
   return { reads, stop: () => { db.query = real; } };
 }
 

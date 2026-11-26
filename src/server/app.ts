@@ -60,7 +60,7 @@ export const registerSocket = (kind: string, h: SocketHandler) => void socketKin
 const socketKind = (ws: Bun.ServerWebSocket<any>) => (ws.data && typeof ws.data === "object" ? socketKinds.get((ws.data as any).kind) : undefined);
 
 export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string;
-  // Set only for a serving daemon's start. Tool routes provide the recovery; session requests and
+  // Set only for a serving daemon's start. Tool and automation routes provide the recovery; session requests and
   // the startup hooks wait for it rather than treating a previous daemon's commands as missing.
   boot?: { jobs?: Promise<void> };
 };

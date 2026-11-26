@@ -3,9 +3,10 @@
 // time to prepare (the messages, the hooks, the send): back to back, four of them held the loop for
 // the sum. They go one at a time now, the loop served between the parts of a request's preparation.
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { rig } from "./delivery.fixture.ts";
+import { Reads } from "../server/reads.ts";
 
 const scratch = (name: string) => mkdtempSync(join(process.env.TMPDIR ?? ".", `${name}-`));
 const busy = (ms: number) => { const t = performance.now(); while (performance.now() - t < ms) {} };
@@ -45,4 +46,44 @@ test("a start that continues four cut turns holds the loop under 100 ms at every
   // All four went on, and none of the loop's holds reached the bound.
   expect(next.requests.length).toBe(4);
   expect(worst).toBeLessThan(HOLD_MS);
+}, 30_000);
+
+test("startup recovery reads the rows and bodies of a cold cut turn off the loop", async () => {
+  const dir = scratch("start-hold-cold");
+  const first = rig(dir);
+  const id = first.session().id;
+  first.store.db.transaction(() => {
+    first.store.append(id, "user", { text: "Continue the task" });
+    first.store.append(id, "turn_start", { model: "scripted:stand-in" });
+    for (let i = 0; i < 160; i++) {
+      const call = `call-${i}`;
+      first.store.append(id, "assistant", { blocks: [{ type: "tool_use", id: call, name: "Bash", input: { command: "true" } }] });
+      first.store.append(id, "tool_result", { results: [{ type: "tool_result", tool_use_id: call, content: "ok" }] });
+    }
+    first.store.updateSession(id, { phase: "working" });
+  })();
+  first.store.db.close();
+
+  const next = rig(dir);
+  const { engine, store } = next;
+  const reads = new Reads(store, true);
+  store.readOff = (sql, params) => reads.rowsOff(sql, params);
+  let behindReports = 0;
+  store.readLater = (sql, params) => { behindReports++; return reads.rowsLater(sql, params); };
+  try {
+    await engine.closeCut(store.bootWorking);
+    // Requests wait for crash closure. It cannot use the path that queues behind reports.
+    expect(behindReports).toBe(0);
+    let onLoop: number[] = [];
+    await engine.recover(store.bootWorking, async () => { onLoop = [store.coldReads().start.n, store.bodyReads().start.n]; }, () => {
+      expect(store.session(id)?.phase).toBe("idle");
+    });
+    await engine.idle(id);
+    expect(next.requests).toHaveLength(1);
+    expect(onLoop).toEqual([0, 0]);
+  } finally {
+    reads.close();
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }, 30_000);

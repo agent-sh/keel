@@ -254,25 +254,18 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     }).catch((e) => errors.capture("provider", e, { at: "startup listing" }));
     // Turns the last daemon left open or parked continue; a model whose provider is
     // still starting (a plugin) is waited for, up to a minute.
-    // The recovery reads the branch of every session before its first await,
-    // while the daemon already listens: timed, so a stall it makes is named.
     // (Also a span of the activity record, with its parts inside engine.recover: a memory step names which.)
     void (jobs ?? Promise.resolve()).then(() => {
       if (deps.boot) deps.boot.jobs = undefined;
-      try {
-        return timed(() => "the start's recovery read every session's branch", () => spanning("start", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
-          for (let i = 0; ; i++) {
-            try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
-            await Bun.sleep(5_000);
-          }
-        })), "the start's recovery"));
-      } finally {
-        // Keep the startup's synchronous recovery reads distinct from the requests it held.
-        store.serving = true;
-      }
+      return spanning("start", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
+        for (let i = 0; ; i++) {
+          try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
+          await Bun.sleep(5_000);
+        }
+      }, () => { store.serving = true; })), "the start's recovery");
     }).catch((e) => errors.capture("server", e, { at: "recover" }))
       // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
-      .then(() => restarts?.finish((id, cut) => wentOn(store, engine, id, cut.turn_event)))
+      .then(() => timed(() => "settling the restart record", () => restarts?.finish((id, cut) => wentOn(store, engine, id, cut.turn_event)), false, "startup restart record"))
       .catch((e) => errors.capture("server", e, { at: "restart record" }));
   }
   if (opts.client) store.serving = true;
@@ -288,7 +281,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     void spanning("start", () => during("the start's pass bringing the rows of sessions used in the last hour into memory", (async () => {
       // (After that build: without the index a session's rows are read with their bodies.)
       await indexed;
-      const recent = store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE archived = 0 AND updated >= ? ORDER BY updated DESC LIMIT 200").all(Date.now() - 3_600_000);
+      const recent = timed(() => "finding the sessions to warm at startup", () =>
+        store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE archived = 0 AND updated >= ? ORDER BY updated DESC LIMIT 200").all(Date.now() - 3_600_000), false, "startup warm pass");
       for (const { id } of recent) {
         const kept = store.keptEvents();
         if (kept.bytes > kept.budget / 2) break;
