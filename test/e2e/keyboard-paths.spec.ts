@@ -163,6 +163,7 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
     "Stop the turn, while a turn works or a compaction is written",
     "Back to the session that started this agent, in an agent's session",
     "Deny an approval with a reason, on its card",
+    "Rewind to before a prompt, Escape twice in an empty box",
   ]);
   const shiftEsc = sheet.locator('[data-testid="shortcut-row"][data-keys="shift+escape"]');
   await expect(shiftEsc).toHaveCount(1);

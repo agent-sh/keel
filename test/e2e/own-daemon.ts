@@ -45,14 +45,15 @@ export function sessionsFolder(state: string): string {
 // and in an environment with no session bus they are not in a scope of their own to end. The run ends them
 // (`stopStrays`, from the worker's last fixture in isolate.ts). The run's id is made once, by the runner.
 export const STRAY_MARK = "KEEL_SPEC_DAEMON";
+const STRAY_STATE = "KEEL_SPEC_DAEMON_STATE";
 const runId = () => (process.env.KEEL_SPEC_RUN ||= `${process.pid}-${Date.now()}`);
-// `home`: only the processes of the daemon whose state folder is `state` (its home is `<state>-ws`).
+// HOME is not a daemon identity: a tool's shell can have a different one.
 export function stopStrays(state?: string): number {
   const has = (env: Buffer, e: Buffer) => {
     const at = env.indexOf(e);
     return at >= 0 && (at === 0 || env[at - 1] === 0) && (env[at + e.length] === undefined || env[at + e.length] === 0);
   };
-  const run = Buffer.from(`${STRAY_MARK}=${runId()}`), home = state ? Buffer.from(`HOME=${state.replace(/\/+$/, "")}-ws`) : undefined;
+  const run = Buffer.from(`${STRAY_MARK}=${runId()}`), mark = state ? Buffer.from(`${STRAY_STATE}=${state}`) : undefined;
   let stopped = 0;
   for (let pass = 0; pass < 3; pass++) {
     let found = 0;
@@ -60,7 +61,7 @@ export function stopStrays(state?: string): number {
       if (!/^\d+$/.test(n) || Number(n) === process.pid) continue;
       let env: Buffer;
       try { env = readFileSync(`/proc/${n}/environ`); } catch { continue; }
-      if (!has(env, run) || (home && !has(env, home))) continue;
+      if (!has(env, run) || (mark && !has(env, mark))) continue;
       try { process.kill(Number(n), "SIGKILL"); found++; } catch {}
     }
     stopped += found;
@@ -79,7 +80,7 @@ export const bareEnv = (home: string): Record<string, string> => {
 };
 export function specEnv(root: string, more: Record<string, string | undefined> = {}, workspace = sessionsFolder(root)): Record<string, string> {
   const env: Record<string, string | undefined> = {
-    ...bareEnv(dirname(workspace)), ...standIns(root),
+    ...bareEnv(dirname(workspace)), ...standIns(root), [STRAY_STATE]: root,
     // Claude's instruction walk stops at the native harness home, not at HOME
     // when KEEL_IMPORT_HOME is set. Both must enclose the test workspace.
     KEEL_IMPORT_HOME: dirname(workspace),

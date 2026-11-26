@@ -20,7 +20,9 @@ test("a command a killed spec daemon left running is ended by stopStrays, and no
     const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
       fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
     const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Leaves a command" });
-    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    // This contract is about the run marker inherited by ordinary descendants, not sandbox
+    // environment filtering (which deliberately gives a process only the sandbox's environment).
+    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
     await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `sleep 700.${tag}` } }])}` });
     await expect.poll(() => left().length, { timeout: 30_000 }).toBe(2);
     d.proc.kill("SIGKILL");
