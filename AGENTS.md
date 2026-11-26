@@ -538,19 +538,29 @@ under `~/.cache/keel-work/bun/research/`.
   used in a loop, a group or a `${D%/}` is not read, and nothing is placed by one. A word that holds such a name where
   a protected path is looked for (a redirect's target, a file a writer or reader the rules know is given, the folder a
   copy or a move is told with `-t`, the file `git config -f` sets something in, a relative one of those after a `cd`
-  spelled so and the relative steps written out after it, in the line or in a script it hands a shell) is tried as the
-  paths the words of the line let it be: every value they show the name given, and for a value they do not show the
-  folder the line runs in, the session's and the home, with its steps back up and without, or one name after a folder
-  that is spelled out. When one is a file that is the owner's alone to change or a credential, a path whose every
-  part is in the line's words is answered as the written-out line is: a credential read is refused to an agent and
-  the owner's elsewhere, an owner-only write is his (one the sandbox is what stops asks as high risk), over a line
-  that is high risk for another reason too, and when the line runs the credentials go to the vault first
-  (`unspeltCredentials`). A name with no value in sight inside a store of credentials counts as shown, as a wildcard
-  there does. A path that is only possible asks as high risk and says the path to write into the command. The reading
-  is bounded for the line and its scripts: 2,000 different paths looked at, ten times as many candidates, no word or
-  candidate longer than a path can be, names set from names 256 deep; a line past a bound asks as high risk. It only
-  raises: its answer stands where it is stricter than every other rule's, and a name with nothing protected in sight
-  asks nobody. A name the line does not set is an unknown variable, as before.
+  spelled so, in the line or in a script it hands a shell) is tried as the paths the words of the line let it be:
+  every value they show the name given, and for a value they do not show the folder the line runs in, the session's
+  and the home, with its steps back up and without, or one name after a folder that is spelled out. A name's values
+  are read in the line's order, a loop's words and an assignment alike, so one set from itself reads what the line
+  gave it before, a value a builtin read included; a name worked out while another it is set from is being worked
+  out is worked out again whole, so the order the words are read in changes nothing. The relative `cd`s written out
+  after a `cd` spelled so are steps that may not have been taken: the folders tried are where the first led, where
+  the shell was before it, and on from either by the steps, each taken or not. When one of the paths is a file that
+  is the owner's alone to change or a credential, a path whose every part is in the line's words is answered as the
+  written-out line is: a credential read is refused to an agent and the owner's elsewhere, an owner-only write is
+  his (one the sandbox is what stops asks as high risk), over a line that is high risk for another reason too. A
+  name with no value in sight inside a store of credentials counts as shown, as a wildcard there does. A path that
+  is only possible asks as high risk and says the path to write into the command. The reading is bounded for the
+  line and its scripts: 2,000 different paths looked at, ten times as many candidates, no word or candidate longer
+  than a path can be, names set from names 256 deep; a line past a bound asks as high risk. Its answer stands only
+  where it is stricter than every other rule's, and a name with nothing protected in sight asks nobody. A name the
+  line does not set is an unknown variable, as before. When the line runs, the credentials it may reach this way go
+  to the vault first, a store whole when the name may be any of its files: the decision leaves what it met with the
+  call (`Facts.named`) when it read the line to its end, else the gate reads it (`unspeltCredentials`).
+- An agent reads none of the owner's credentials, whatever else its line does (`decideParts` in
+  `src/safety/policy.ts`): the read is looked for, written out or through names the line sets, before any answer
+  that is not a refusal stands (the owner's card for a write that is his alone, a command that never runs without
+  him, a risk class, a flagged run in Full auto), and its refusal is the answer.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
