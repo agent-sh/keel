@@ -21,7 +21,8 @@
 //   for fields named like an object's own parts;
 // - `forever` asks again after every answer (ASK_MCP_FOREVER times), `many`
 //   asks ASK_MCP_MANY questions at once;
-// - `later` asks while `hold` is also in flight on the server;
+// - `later` asks while `hold` is also in flight on the server; `hold` with no
+//   `later` waiting only waits (ASK_MCP_HOLD ms);
 // - `sample` asks for a reply of the client's model (sampling/createMessage);
 //   `sample_big` asks with a message no model's window of the stand-ins holds.
 // - `link` sends the owner to a page (URL mode) and says the step is done once
@@ -42,6 +43,7 @@ const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 const log = (row: unknown) => { if (process.env.ASK_MCP_LOG) appendFileSync(process.env.ASK_MCP_LOG, JSON.stringify(row) + "\n"); };
 const side = (line: string) => { if (process.env.ASK_MCP_SIDE) appendFileSync(process.env.ASK_MCP_SIDE, line + "\n"); };
 let overlap: { enter(): void; answered: Promise<void> } | undefined;
+let holding = 0;
 const text = (t: string) => ({ content: [{ type: "text", text: t }] });
 const form = (message: string, properties: Record<string, unknown>, required: string[] = []) => ({ mode: "form", message, requestedSchema: { type: "object", properties, required } });
 
@@ -186,6 +188,7 @@ async function legacy(name: string): Promise<unknown> {
       const answered = Promise.withResolvers<void>();
       overlap = { enter: second.resolve, answered: answered.promise };
       side("later waiting for hold");
+      if (holding) second.resolve();
       try {
         await second.promise;
         return await elicit(YESNO("A question that came late: go on?"));
@@ -208,9 +211,12 @@ async function legacy(name: string): Promise<unknown> {
       return r.result ?? r.error;
     }
     case "hold": {
+      // With a `later` waiting, hold until it is answered; else for ASK_MCP_HOLD ms.
       const pair = overlap;
-      pair?.enter();
-      await pair?.answered;
+      holding++;
+      try {
+        if (pair) { pair.enter(); await pair.answered; } else await sleep(Number(process.env.ASK_MCP_HOLD ?? 6000));
+      } finally { holding--; }
       return "held";
     }
   }
