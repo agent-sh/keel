@@ -12,6 +12,8 @@ const POPUP = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="list
 
 // The element is inside a popup (a dialog, a menu, a list of choices), not in the page under it.
 export const inPopup = (el: Element | null | undefined): boolean => !!el?.closest(POPUP);
+// A portal can stay mounted under a hidden ancestor after it closes.
+export const popupShown = (el: Element): boolean => !el.closest("[hidden], [inert]") && el.getClientRects().length > 0;
 // A modal dialog or menu is open over the page.
 export const modalOpen = (): boolean => [...document.querySelectorAll<HTMLElement>(BACKDROP)].some((el) => el.style.position === "fixed");
 // Something lies over `el` (over the page, when none is given). What is inside a popup is not under it.

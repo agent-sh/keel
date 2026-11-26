@@ -12,8 +12,9 @@
 // sources, wins; one from other sources (the binary moved on) is passed over.
 // Pages of every bundle still held keep their files: an open page that loads a
 // chunk after a swap still finds it.
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileRoute } from "./compress.ts";
 import { daemonApi, sourceApi } from "../core/api-stamp.ts";
 
@@ -45,20 +46,19 @@ export function checkManifest(m: any, api: string, have: Set<string>): UiManifes
   return { format: 1, version: m.version, api: m.api, files: m.files };
 }
 
-// A file written and synced, and a folder's entries synced (where the system syncs folders).
-function writeSynced(path: string, bytes: Uint8Array) {
-  const fd = openSync(path, "w");
-  try {
-    for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at);
-    fsyncSync(fd);
-  } finally { closeSync(fd); }
+// Keep the durable writes on the runtime's file pool, not the daemon's loop.
+async function writeSynced(path: string, bytes: Uint8Array | string) {
+  const file = await open(path, "w");
+  try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
 }
-function syncDir(dir: string) {
-  try { const fd = openSync(dir, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } } catch {}
+async function syncDir(dir: string) {
+  // Best effort where the system does not sync folders.
+  try { const file = await open(dir, "r"); try { await file.sync(); } finally { await file.close(); } } catch {}
 }
 
 type Held = { manifest: UiManifest; dir: string; page: (req: Request) => Response; files: Map<string, (req: Request) => Response> };
 type Pointer = { current?: number; previous?: number };
+const keptPaths = (p: Pointer) => new Set(["current.json", ...[p.current, p.previous].filter(Boolean).map(String)]);
 
 // An install is a transaction. The bundle is written to a staging folder of
 // its own and read back from there, the folder is renamed to its version, and
@@ -98,20 +98,29 @@ export class UiBundles {
   // A bundle read whole into memory from `dir`: what is served never reads the disk again.
   private load(dir: string, v: number): Held {
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as UiManifest;
-    const files = new Map<string, (req: Request) => Response>();
-    for (const f of manifest.files) if (f !== "index.html") files.set(f, fileRoute(join(dir, f), Bun.file(join(dir, f)).type, `${v}-${f}`, undefined, this.onError));
-    const html = stamp(readFileSync(join(dir, "index.html"), "utf8"), String(v));
-    const page = fileRoute(new TextEncoder().encode(html), "text/html;charset=utf-8", `${v}`, "no-cache", this.onError);
-    return { manifest, dir: join(this.root, String(v)), page, files };
+    return this.hold(manifest, v, (f) => readFileSync(join(dir, f)));
   }
 
-  // Everything under ui/ the pointer does not name: bundles no longer kept and what a cut install left.
+  private hold(manifest: UiManifest, v: number, read: (name: string) => Buffer): Held {
+    const dir = join(this.root, String(v));
+    const files = new Map<string, (req: Request) => Response>();
+    for (const f of manifest.files) if (f !== "index.html") files.set(f, fileRoute(read(f), Bun.file(join(dir, f)).type, `${v}-${f}`, undefined, this.onError));
+    const html = stamp(read("index.html").toString("utf8"), String(v));
+    const page = fileRoute(new TextEncoder().encode(html), "text/html;charset=utf-8", `${v}`, "no-cache", this.onError);
+    return { manifest, dir, page, files };
+  }
+
+  // At start, clear everything the pointer does not name, including what a cut install left.
   private sweep() {
-    const keep = new Set(["current.json", ...[this.ptr.current, this.ptr.previous].filter(Boolean).map(String)]);
+    const keep = keptPaths(this.ptr);
     for (const d of readdirSync(this.root)) {
       if (keep.has(d)) continue;
-      try { rmSync(join(this.root, d), { recursive: true, force: true }); } catch (e) { this.onError(Object.assign(e as Error, { message: `UI bundles: ${(e as Error).message}` })); }
+      try { rmSync(join(this.root, d), { recursive: true, force: true }); } catch (e) { this.sweepError(e); }
     }
+  }
+
+  private sweepError(e: unknown) {
+    this.onError(Object.assign(e as Error, { message: `UI bundles: ${(e as Error).message}` }));
   }
 
   status() {
@@ -135,11 +144,15 @@ export class UiBundles {
     return out;
   }
 
-  // One at a time, each after the one before it, whatever that one's outcome.
-  install(bytes: Uint8Array): Promise<UiManifest> {
-    const run = this.queue.then(() => this.installOne(bytes));
+  // Installs and rollbacks share the pointer and staging area. Each waits for the one before it.
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(work);
     this.queue = run.catch(() => {});
     return run;
+  }
+
+  install(bytes: Uint8Array): Promise<UiManifest> {
+    return this.enqueue(() => this.installOne(bytes));
   }
 
   private async installOne(bytes: Uint8Array): Promise<UiManifest> {
@@ -150,65 +163,84 @@ export class UiBundles {
     try { raw = mf ? JSON.parse(await mf.text()) : undefined; } catch {}
     const m = checkManifest(raw, this.api, new Set(entries.keys()));
     const names = [...m.files, "manifest.json"];
-    const data = new Map<string, Uint8Array>();
-    for (const f of names) data.set(f, new Uint8Array(await entries.get(f)!.arrayBuffer()));
     const dir = join(this.root, String(m.version));
     const served = this.active.source === "installed" ? Number(this.active.version) : undefined;
+    const p = { current: m.version, previous: served };
 
     if (this.held.has(m.version)) {
-      const same = (f: string) => { try { return Buffer.compare(readFileSync(join(dir, f)), data.get(f)!) === 0; } catch { return false; } };
-      if (!names.every(same)) throw Object.assign(new Error(`UI bundle ${m.version} is already kept with other files: build the bundle again for a version of its own`), { status: 409, code: "version_conflict" });
-      if (served !== m.version) this.point({ current: m.version, previous: served });
+      for (const f of names) {
+        const stored = await readFile(join(dir, f)).catch(() => undefined);
+        if (!stored || Buffer.compare(stored, await entries.get(f)!.bytes()) !== 0) throw Object.assign(new Error(`UI bundle ${m.version} is already kept with other files: build the bundle again for a version of its own`), { status: 409, code: "version_conflict" });
+      }
+      if (served !== m.version) {
+        await this.writePointer(p);
+        await this.publish(p);
+      }
       return m;
     }
 
     const stage = join(this.root, `.stage-${process.pid}-${++this.staged}`);
     let moved = false;
+    let h: Held;
     try {
       // Each file, then each folder, is on disk before the pointer names the bundle: after a
       // power cut the pointer never leads to a folder of empty files.
       const folders = new Set([stage]);
       for (const f of names) {
-        mkdirSync(join(stage, f, ".."), { recursive: true });
-        folders.add(join(stage, f, ".."));
-        writeSynced(join(stage, f), data.get(f)!);
+        const path = join(stage, f);
+        const folder = dirname(path);
+        await mkdir(folder, { recursive: true });
+        for (let d = folder; !folders.has(d); d = dirname(d)) folders.add(d);
+        await writeSynced(path, await entries.get(f)!.bytes());
       }
-      for (const d of folders) syncDir(d);
-      const h = this.load(stage, m.version);
-      rmSync(dir, { recursive: true, force: true }); // not kept (checked above): left by an install that was cut
-      renameSync(stage, dir);
-      syncDir(this.root);
+      for (const d of folders) await syncDir(d);
+      const manifest = JSON.parse(await readFile(join(stage, "manifest.json"), "utf8")) as UiManifest;
+      const data = new Map<string, Buffer>();
+      for (const f of manifest.files) data.set(f, await readFile(join(stage, f)));
+      h = this.hold(manifest, m.version, (f) => data.get(f)!);
+      await rm(dir, { recursive: true, force: true }); // not kept (checked above): left by an install that was cut
+      await rename(stage, dir);
       moved = true;
-      this.held.set(m.version, h);
-      this.point({ current: m.version, previous: served });
+      await syncDir(this.root);
+      await this.writePointer(p);
     } catch (e) {
       // The pointer was not replaced: nothing of this install stays.
-      this.held.delete(m.version);
-      rmSync(moved ? dir : stage, { recursive: true, force: true });
+      await rm(moved ? dir : stage, { recursive: true, force: true });
       throw e;
     }
+    await this.publish(p, h);
     return m;
   }
 
   // Drops the served bundle: back to the one before, or to the embedded page when none is kept.
-  rollback(): void {
-    const prev = this.ptr.previous;
-    this.point(prev && this.held.get(prev) ? { current: prev } : {});
+  rollback(): Promise<void> {
+    return this.enqueue(async () => {
+      const prev = this.ptr.previous;
+      const p = prev && this.held.get(prev) ? { current: prev } : {};
+      await this.writePointer(p);
+      await this.publish(p);
+    });
   }
 
-  // The commit: current.json replaced in one rename, then what is served and kept follows it.
-  private point(p: Pointer) {
+  // The commit: current.json replaced in one rename. No bundle is published before this.
+  private async writePointer(p: Pointer) {
     const f = join(this.root, "current.json");
-    const fd = openSync(`${f}.part`, "w");
-    try { writeSync(fd, JSON.stringify(p)); fsyncSync(fd); } finally { closeSync(fd); }
-    renameSync(`${f}.part`, f);
-    syncDir(this.root);
+    await writeSynced(`${f}.part`, JSON.stringify(p));
+    await rename(`${f}.part`, f);
+    await syncDir(this.root);
+  }
+
+  private async publish(p: Pointer, h?: Held) {
+    const keep = keptPaths(p);
+    const names = await readdir(this.root).catch((e) => { this.sweepError(e); return []; });
+    for (const d of names) if (!keep.has(d)) {
+      await rm(join(this.root, d), { recursive: true, force: true }).catch((e) => this.sweepError(e));
+    }
+    // Change the served state together, without another disk wait before the route reload.
+    if (h) this.held.set(p.current!, h);
     this.ptr = p;
     this.active = p.current ? { source: "installed", version: String(p.current) } : { source: "embedded", version: this.embedded.version };
-    // Two kept: what is served and the one before it.
-    const keep = new Set([p.current, p.previous].filter(Boolean).map(String));
-    for (const v of [...this.held.keys()]) if (!keep.has(String(v))) this.held.delete(v);
-    this.sweep();
+    for (const v of this.held.keys()) if (!keep.has(String(v))) this.held.delete(v);
   }
 }
 

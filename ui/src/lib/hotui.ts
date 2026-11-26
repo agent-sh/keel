@@ -5,6 +5,7 @@
 // every transcript at its end, or the tab hidden with no text in a box);
 // otherwise it offers the reload and keeps trying while it waits.
 import { useSyncExternalStore } from "react";
+import { popupShown } from "./overlay.ts";
 import { sendsBusy } from "./send-drafts.ts";
 
 const mine = document.querySelector<HTMLMetaElement>('meta[name="keel-ui"]')?.content ?? "dev";
@@ -19,7 +20,7 @@ addEventListener("keydown", () => (lastKey = Date.now()), true);
 const hasDraft = () => sendsBusy() || [...document.querySelectorAll("textarea")].some((t) => t.value.trim())
   || !!document.querySelector("[contenteditable=true]:not(:empty)");
 const atRest = () =>
-  !document.querySelector('[role="dialog"]') &&
+  ![...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].some(popupShown) &&
   Date.now() - lastKey > 5000 &&
   [...document.querySelectorAll('[data-testid="transcript"]')].every((c) => {
     const el = c.parentElement!;

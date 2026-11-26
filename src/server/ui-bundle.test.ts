@@ -1,8 +1,9 @@
 // An install of a UI bundle is a transaction: the failures here are real ones
 // of the file system (a path that is both a file and a folder, a folder where
 // the pointer's draft goes), which no e2e can cause on a running daemon.
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { open as openFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UI_PREFIX, UiBundles } from "./ui-bundle.ts";
@@ -47,6 +48,57 @@ test("the same bundle twice at once is one install, and other files under its ve
   expect(readdirSync(join(dir, "ui")).sort()).toEqual(["100", "200", "current.json"]);
 });
 
+test("rollback follows an install already in flight", async () => {
+  const dir = state();
+  const ui = open(dir);
+  await ui.install(await bundle(100, "first"));
+  const next = await bundle(200, "second");
+
+  await Promise.all([ui.install(next), ui.rollback()]);
+
+  expect(kept(ui)).toEqual(["100", 100, undefined]);
+  expect((await served(ui)).title).toBe("first");
+  expect(kept(open(dir))).toEqual(kept(ui));
+});
+
+test("install waits for async fsync before publishing the new bundle", async () => {
+  const dir = state();
+  const ui = open(dir);
+  const pointer = join(dir, "ui", "current.json");
+  await ui.install(await bundle(100, "first"));
+  const next = await bundle(200, "second");
+  const probe = await openFile(pointer, "r");
+  const proto: FileHandle = Object.getPrototypeOf(probe);
+  await probe.close();
+  const sync = proto.sync;
+  const entered = Promise.withResolvers<FileHandle>();
+  const release = Promise.withResolvers<void>();
+  let first = true;
+  const spy = spyOn(proto, "sync").mockImplementation(async function (this: FileHandle) {
+    if (first) {
+      first = false;
+      entered.resolve(this);
+      await release.promise;
+    }
+    await sync.call(this);
+  });
+  const install = ui.install(next);
+  try {
+    const file = await Promise.race([entered.promise, install.then(() => null)]);
+    // A synchronous install reaches completion instead of the gate.
+    expect(file).not.toBeNull();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(file!.fd).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(readFileSync(pointer, "utf8")).current).toBe(100);
+    expect(kept(ui)).toEqual(["100", 100, undefined]);
+  } finally {
+    release.resolve();
+    spy.mockRestore();
+    await install;
+  }
+  expect(kept(ui)).toEqual(["200", 200, 100]);
+});
+
 for (const [name, fail] of [
   // "a" is written as a file, then "a/b" needs it to be a folder.
   ["while it is staged", async (_dir: string) => bundle(300, "third", { a: "file", "a/b": "inside" })],
@@ -70,7 +122,7 @@ for (const [name, fail] of [
     expect(errors).toEqual([]);
     expect(kept(again)).toEqual(["200", 200, 100]);
     expect(await served(again)).toEqual({ title: "second", chunk: 'console.log("second")' });
-    again.rollback();
+    await again.rollback();
     expect(kept(again)).toEqual(["100", 100, undefined]);
     expect((await served(again)).title).toBe("first");
     // And the next install goes through.

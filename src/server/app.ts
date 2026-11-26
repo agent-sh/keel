@@ -316,7 +316,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           return swapUi();
         }),
       },
-      "/api/ui/rollback": { POST: wrap(() => (ui.rollback(), swapUi())) },
+      "/api/ui/rollback": { POST: wrap(async () => {
+        await ui.rollback();
+        return swapUi();
+      }) },
 
       "/api/models": {
         GET: wrap(async (req) => {
