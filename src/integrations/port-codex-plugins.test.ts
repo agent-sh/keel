@@ -71,13 +71,30 @@ test("a Codex plugin id that could leave the cache names no folder", async () =>
   for (const id of ["../../x@..", "x@..", "../x@m", "a/b@m", "a\\b@m", "docs@m/..", "@m", "docs@"]) expect(codexPluginDir(join(home, ".codex"), id)).toBeNull();
 });
 
-test("an agent file's apps._default is no app, and an app is on only when enabled", async () => {
+test("an agent file's apps._default is no app, and an app with an entry is on unless it says enabled = false", async () => {
   const { codexIntegrations } = await import("../automation/codex-agent.ts");
   const codex = join(home, ".codex");
   expect(codexIntegrations({ apps: { _default: { enabled: false } } }, codex).unavailable).toBeUndefined();
   expect(codexIntegrations({ apps: { _default: { enabled: true } } }, codex).unavailable).toBeUndefined();
-  expect(codexIntegrations({ apps: { _default: { enabled: false }, gmail: {} } }, codex).unavailable).toBeUndefined();
+  expect(codexIntegrations({ apps: { _default: { enabled: false }, gmail: {} } }, codex).unavailable).toContain("ChatGPT app connector");
   expect(codexIntegrations({ apps: { _default: { enabled: false }, gmail: { enabled: true } } }, codex).unavailable).toContain("ChatGPT app connector");
   expect(codexIntegrations({ apps: { gmail: {} } }, codex).unavailable).toContain("ChatGPT app connector");
   expect(codexIntegrations({ apps: { gmail: { enabled: false } } }, codex).unavailable).toBeUndefined();
+});
+
+test("a carried Codex skill registers no hooks, and its allowed-tools ask for Codex's reason", async () => {
+  const { loadSkill, skillRun } = await import("../tools/skills.ts");
+  put(join(cache, "m", "docs", "1.0.0", "skills", "hook", "SKILL.md"),
+    "---\nname: hook\ndescription: Hooked.\nallowed-tools: Bash(node:*)\nhooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: echo hi\n---\nHook.");
+  const was = skillRun.hooks;
+  let registered = 0;
+  skillRun.hooks = () => { registered++; return { events: ["PreToolUse"], problems: [], notes: [] } as any; };
+  try {
+    const r = await loadSkill("docs:hook", "", { sessionId: "s1", cwd: home, signal: new AbortController().signal, seen: new Map(), spillDir: "" } as any);
+    const text = JSON.stringify(r);
+    expect(registered).toBe(0);
+    expect(text).toContain("a Codex plugin's skill carries no hooks");
+    expect(text).toContain("Codex pre-approves nothing from allowed-tools");
+    expect(text).not.toContain("Trust panel");
+  } finally { skillRun.hooks = was; }
 });

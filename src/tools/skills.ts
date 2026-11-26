@@ -418,6 +418,8 @@ function hooksSaid(skill: Skill, text: string, sessionId: string): string {
   const { hooks, problem } = hooksOf(text);
   if (problem) return `Its hooks are not registered: ${problem}.`;
   if (!hooks) return "";
+  // A Codex skill has no hooks field: Codex runs none from it, so nothing here registers them.
+  if (skill.asks) return "Its hooks are not registered: a Codex plugin's skill carries no hooks.";
   if (!skillRun.hooks) return "Its hooks are not registered: nothing here runs them.";
   const r = skillRun.hooks(sessionId, { name: skill.name, scope: skill.scope, dir: skill.kind === "command" ? skill.file : skill.dir, file: skill.file }, hooks);
   const out: string[] = [];
@@ -444,8 +446,9 @@ function said(skill: Skill, granted: string[], left: string[], held?: string, ho
 const choiceOf = (skill: Skill) => ({ ...(skill.model ? { model: skill.model } : {}), ...(skill.effort ? { effort: skill.effort } : {}), ...(skill.disallowed ? { disallowed: skill.disallowed } : {}) });
 
 // The grant a skill makes, or why it makes none.
+const CODEX_ASKS = "a Codex plugin's skill: Codex pre-approves nothing from allowed-tools";
 const NOT_TRUSTED = "it is this repository's own skill, and its tools run without asking only once the owner trusts it himself (the session's Trust panel)";
-function grantOf(skill: Skill, vars: Record<string, string>, grantable = mayGrant(skill), why = NOT_TRUSTED): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
+function grantOf(skill: Skill, vars: Record<string, string>, grantable = mayGrant(skill), why = skill.asks ? CODEX_ASKS : NOT_TRUSTED): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
   if (!skill.allowedTools?.length) return { rules: [], granted: [], left: [] };
   if (!grantable) return { rules: [], granted: [], left: [], held: why };
   if (!skillRun.grant) return { rules: [], granted: [], left: [], held: "nothing here grants them" };

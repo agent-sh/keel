@@ -52,14 +52,12 @@ export function codexIntegrations(t: Record<string, unknown>, codexHome: string)
     const parts = [existsSync(join(dir, ".mcp.json")) ? "MCP servers" : "", existsSync(join(dir, ".app.json")) ? "app connectors" : ""].filter(Boolean);
     if (parts.length) { codexOnly.push(id); notTaken.push(`the ${parts.join(" and ")} of the Codex plugin ${id}: they are Codex's own and Keel does not run them`); }
   }
-  // `apps._default` holds the defaults of every app, not an app: an app is on when its own `enabled` is true, or
-  // unset while the defaults do not turn apps off.
+  // `apps._default` holds the defaults of apps with no entry, not an app. An app with an entry is on unless that
+  // entry says `enabled = false`: Codex reads the app's own entry first, and its `enabled` defaults to true.
   const appTable = t.apps && typeof t.apps === "object" && !Array.isArray(t.apps) ? (t.apps as Record<string, unknown>) : {};
-  const byDefault = (appTable._default as { enabled?: unknown } | undefined)?.enabled !== false;
   const apps = Object.entries(appTable).filter(([k, v]) => {
     if (k === "_default") return false;
-    const set = v && typeof v === "object" ? (v as { enabled?: unknown }).enabled : undefined;
-    return set === true || (set === undefined && byDefault);
+    return !(v && typeof v === "object" && (v as { enabled?: unknown }).enabled === false);
   }).map(([k]) => k);
   if (apps.length) {
     const named = codexOnly.length ? ` (${listOf(codexOnly)})` : "";
