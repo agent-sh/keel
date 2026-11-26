@@ -59,7 +59,7 @@ export function NetworkPanel() {
             {r.hosts.map((h) => (
               <Row key={h.host} testid="network-host" data-host={h.host} data-new={h.new || undefined} title={h.host}
                 name={<span className="font-mono text-caption">{h.host}</span>}
-                after={h.new && <span className="ml-2"><Status tone="new" title="No transfer went to this host before today" testid="network-new">new today</Status></span>}
+                after={h.new && <span className="ml-2"><Status tone="new" bare title="No transfer went to this host before today" testid="network-new">new today</Status></span>}
                 open={open === h.host} onOpen={() => setOpen(open === h.host ? null : h.host)} detailTestid="network-host-sessions"
                 detail={
                   <ul className="flex flex-col gap-1 text-caption">

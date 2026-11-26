@@ -131,8 +131,8 @@ export function More({ children }: { children: ReactNode }) {
 }
 
 export type Tone = "ok" | "warn" | "broken" | "new" | "info" | "quiet";
-export function Status({ tone = "quiet", children, title, testid, ...data }: { tone?: Tone; children: ReactNode; title?: string; testid?: string } & Data) {
-  return <span className="k-set-status" data-tone={tone} title={title} data-testid={testid} {...data}>{children}</span>;
+export function Status({ tone = "quiet", bare, children, title, testid, ...data }: { tone?: Tone; bare?: boolean; children: ReactNode; title?: string; testid?: string } & Data) {
+  return <span className="k-set-status" data-tone={tone} data-bare={bare ? "" : undefined} title={title} data-testid={testid} {...data}>{children}</span>;
 }
 
 // More words behind one line: what a reader asks for, not what the page owes at first sight.

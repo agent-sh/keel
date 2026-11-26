@@ -1760,6 +1760,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-status[data-tone="new"]::before { background: var(--brass); }
 .k-set-status[data-tone="info"] { background: var(--accent-soft); color: var(--accent-ink); }
 .k-set-status[data-tone="info"]::before { display: none; }
+/* Bare: the tone's dot and the words in the quiet ink, no ground. For a mark many rows of a table can carry at once (every
+   host is new on a first day): a column of chips would be louder than what the rows list. */
+.k-set-status[data-bare] { height: auto; padding: 0; background: transparent; color: var(--muted); }
 
 /* Nothing to show, inside the box where the rows would be. */
 .k-set-box > .k-set-empty, .k-set-list > .k-set-empty { padding: 1rem 0; }

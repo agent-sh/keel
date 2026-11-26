@@ -44,6 +44,8 @@ test("network: what left, by host and session", async ({ page, request }) => {
     await expect(row).toBeVisible();
     // Never seen before today.
     await expect(row.getByTestId("network-new")).toBeVisible();
+    // Said by a dot in the news colour and plain words: no chip, so a first day's list is not a column of them.
+    expect(await row.getByTestId("network-new").evaluate((el) => [el.textContent, getComputedStyle(el).backgroundColor, getComputedStyle(el, "::before").backgroundColor !== getComputedStyle(el).color])).toEqual(["new today", "rgba(0, 0, 0, 0)", true]);
     await expect(panel.getByTestId("network-by-session")).toContainText(title);
     await expect(panel.getByTestId("network-unseen")).toContainText(/cannot see|not here/);
     // The host's name is a button: the keyboard opens the row as the mouse does.
