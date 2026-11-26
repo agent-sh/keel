@@ -61,7 +61,7 @@ import { agentMemory, memoryDir, memoryOff, memoryOver, SCOPES, type MemoryScope
 import { lessonStart } from "./lesson-start.ts";
 import { targetsOf } from "../engine/nested.ts";
 import type { Tool } from "../tools/types.ts";
-import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
+import { agentChoices, canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
 import type { NowLine } from "./now-line.ts";
 import * as caps from "./caps.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
@@ -2913,7 +2913,7 @@ export function resolveTarget(parentId: string, target: string): AgentRecord {
   const all = list(parentId);
   const t = target.trim().toLowerCase();
   const a = all.find((x) => x.id === target) ?? all.find((x) => x.session_id === target) ?? [...all].reverse().find((x) => x.title.toLowerCase() === t);
-  if (!a) throw new Error(`no agent "${target}" in this session; agents: ${all.map((x) => `${x.id} (${x.title})`).join(", ") || "none"}`);
+  if (!a) throw new Error(`no agent "${target}" in this session; agents: ${agentChoices(all, [parentId])}`);
   return a;
 }
 
@@ -2935,7 +2935,7 @@ export function resolveInTree(sessionId: string, target: string): AgentRecord {
     let up = parentOf(sessionId);
     for (let n = 0; up && n < 64; n++, up = parentOf(up))
       if (up === target.trim() || (n === 0 && (ABOVE_WORDS.has(t) || D().store.session(up)?.title.trim().toLowerCase() === t))) throw new Error(`"${target}" is ${n ? "a session above the one that started you" : "the session that started you"}, not an agent of this tree: it takes no message. Your final answer is your report to the session that started you, sent when you end your turn.`);
-    throw new Error(`no agent "${target}" in this session's tree; agents: ${all.map((x) => `${x.id} (${x.title})`).join(", ") || "none"}`);
+    throw new Error(`no agent "${target}" in this session's tree; agents: ${agentChoices(all, [sessionId, parentOf(sessionId) ?? ""])}`);
   }
 }
 

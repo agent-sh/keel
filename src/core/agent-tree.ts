@@ -130,3 +130,19 @@ export function nested<T extends { id: string; parent_id?: string | null }>(list
   for (const s of list) put(s, 0);
   return out;
 }
+
+// The agents a message that named none of them is told it can reach, in an error the model reads: a tree
+// keeps every agent it ever started (a long coordinator's holds a thousand), and listing them all put tens
+// of kilobytes into the asking agent's context. The nearest come first (its own agents, then those of its
+// parent, then the rest), working ones before ended ones, newest first; at most `max`, the rest counted.
+export const CHOICES_SHOWN = 12;
+export function agentChoices<T extends TreeAgent & { title: string; status?: string }>(
+  all: readonly T[], near: readonly string[] = [], max = CHOICES_SHOWN,
+): string {
+  if (!all.length) return "none";
+  const rank = (a: T) => { const i = near.indexOf(a.parent_id); return i < 0 ? near.length : i; };
+  const working = (a: T) => (a.status === "running" || a.status === "waiting" ? 0 : 1);
+  const shown = [...all].sort((x, y) => rank(x) - rank(y) || working(x) - working(y) || y.created - x.created).slice(0, max);
+  const line = shown.map((a) => `${a.id} (${a.title.length > 60 ? `${a.title.slice(0, 59)}…` : a.title})`).join(", ");
+  return all.length > shown.length ? `${line}, and ${all.length - shown.length} more (a message names one by its id, session id or title)` : line;
+}

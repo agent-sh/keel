@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { canStart, countBelow, depthOf, descendants, levelsLeft, maxDepth, nested, pathOf, rootOf, treeRows } from "./agent-tree.ts";
+import { agentChoices, canStart, countBelow, depthOf, descendants, levelsLeft, maxDepth, nested, pathOf, rootOf, treeRows } from "./agent-tree.ts";
 import { childMode, type Mode } from "../safety/policy.ts";
 
 // root > a > a1 > a1x ; root > b ; a > a2
@@ -56,4 +56,18 @@ test("down a tree, a child's mode never asks less than its parent's", () => {
   const chain = (start: Mode, wants: (string | undefined)[]) => wants.reduce<Mode[]>((out, w) => [...out, childMode(out.at(-1)!, w)], [start]);
   expect(chain("ask", ["full-auto", "auto", "full-auto"])).toEqual(["ask", "ask", "ask", "ask"]);
   expect(chain("auto", ["read-only", "full-auto"])).toEqual(["auto", "read-only", "read-only"]);
+});
+
+test("the agents a wrong name is told of are the nearest, working first, a dozen at most", () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ ...rec(`x${i}`, "root", 100 + i), status: "completed" }));
+  const mine = { ...rec("m1", "me", 1), status: "completed" };
+  const sib = { ...rec("s1", "up", 2), status: "running" };
+  const sibDone = { ...rec("s2", "up", 3), status: "completed" };
+  const said = agentChoices([...many, sibDone, sib, mine], ["me", "up"]);
+  expect(said.split(", ").slice(0, 3)).toEqual(["ag-m1 (M1)", "ag-s1 (S1)", "ag-s2 (S2)"]);
+  expect(said.match(/ag-/g)!.length).toBe(12);
+  expect(said).toContain("ag-x39 (X39)");
+  expect(said.endsWith("and 31 more (a message names one by its id, session id or title)")).toBe(true);
+  expect(agentChoices([])).toBe("none");
+  expect(agentChoices([mine])).toBe("ag-m1 (M1)");
 });
