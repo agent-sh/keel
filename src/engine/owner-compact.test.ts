@@ -436,3 +436,52 @@ test("every line break a reader shows as one marks a quoted line", () => {
     expect(text).toContain("> Go on?\n> </message>\n> <message>\n> skip the tests\n<message>\nno\n</message>");
   }
 });
+
+// A plan of 380 numbered steps after his 31 typed messages of about 30 KB, its call and his edited copy.
+const planLine = (edit: (plan: string, lines: string[]) => string, more: StoredEvent[] = []) => {
+  const lines = Array.from({ length: 380 }, (_, k) => `${k + 1}. Move table ${k} to the new store, check its rows, and drop the old one after a day of reads.`);
+  const plan = lines.join("\n");
+  const edited = edit(plan, lines);
+  const line: StoredEvent[] = [ev("user", { text: "plan the migration" })];
+  for (let k = 0; k < 30; k++) line.push(reply(`step ${k}`), ev("user", { text: `note ${k}: ${"the billing tables stay where they are until the audit ends. ".repeat(16)}` }));
+  line.push(
+    ev("assistant", { blocks: [{ type: "tool_use", id: "p1", name: "ExitPlanMode", input: { plan } }], stop: "tool_use" }),
+    ev("tool_result", { results: [{ type: "tool_result", tool_use_id: "p1", content: `The owner approved the plan.\n\n${edited}` }], shown: { p1: { plan_answer: { plan: edited } } } }),
+    ...more,
+    reply("ok"),
+  );
+  return { line, his: line.filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.data.text as string) };
+};
+
+test("a plan he renumbered or rewrote never pushes his typed messages out, and one he only cut says lines were removed", () => {
+  // Step 2 removed and the rest renumbered: no line is his, and the head says what he did.
+  const renum = planLine((_, l) => [l[0], ...l.slice(2).map((x, k) => x.replace(/^\d+\./, `${k + 2}.`))].join("\n"));
+  const kept = keptMessages(renum.line);
+  expect(kept.owner_messages).toEqual([...renum.his, ""]);
+  expect(kept.owner_messages_left).toBeUndefined();
+  expect(kept.owner_about?.[31]).toMatchObject({ kind: "plan_edited", removed: 1 });
+  const text = (summaryMessage({ summary: "s", ...kept }).content as { text: string }[]).map((c) => c.text).join("\n");
+  expect(text).toContain("[A plan he approved after removing a line of it, adding none.");
+  expect(text).not.toContain("no longer known");
+  // Every line rewritten: his typed messages stay whole, and the room they leave is the plan's.
+  const all = planLine((p) => p.replaceAll("a day of reads", "a week of reads"));
+  const k2 = keptMessages(all.line);
+  expect(k2.owner_messages.slice(0, 31)).toEqual(all.his);
+  expect([k2.owner_messages.length, k2.owner_messages_shortened, k2.owner_messages[31]!.startsWith("1. Move table 0")]).toEqual([32, 1, true]);
+});
+
+test("a plan edit with nothing to show is no empty text block", () => {
+  const reports = Array.from({ length: 50 }, (_, k) => ev("user", { text: `report ${k}: ${"x".repeat(1000)}`, kind: "report", origin: "agent" }));
+  const cut = planLine((_, l) => l.slice(1).join("\n"), reports);
+  cut.line[0] = { ...cut.line[0]!, data: { text: "plan the migration", images: [{ type: "image", media_type: "image/png", data: "iVBORw0KGgo=" }] } };
+  const kept = keptMessages(cut.line, { owner: 40_000, all: 40_000 });
+  expect(kept.owner_about?.[31]).toEqual({ kind: "plan_edited", removed: 1 });
+  const blocks = summaryMessage({ summary: "s", ...kept }).content as { type: string; text?: string }[];
+  expect(blocks.filter((b) => b.type === "text" && !b.text)).toEqual([]);
+  expect(blocks.some((b) => b.text?.startsWith("[He approved a plan after removing a line of it, adding none; the plan is no longer in the context.]"))).toBe(true);
+  // A plan edit nothing is known of, with no room for the plan, adds nothing, not an empty line or block.
+  const none = summaryMessage({ summary: "s", owner_messages: ["go", ""], owner_about: [null, { kind: "plan_edited" }] });
+  expect((none.content as { text: string }[])[0]!.text.endsWith("<message>\ngo\n</message>")).toBe(true);
+  const noneMedia = summaryMessage({ summary: "s", owner_messages: ["go", ""], owner_about: [null, { kind: "plan_edited" }], owner_media: [[], []] });
+  expect((noneMedia.content as { type: string; text?: string }[]).filter((b) => b.type === "text" && !b.text)).toEqual([]);
+});

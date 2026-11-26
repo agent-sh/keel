@@ -481,7 +481,8 @@ export const OWNER_MEDIA_BYTES = 20 * 1024 * 1024;
 // approved with a note, or the plan as he edited it. `text` is left out when his words leave no room for it.
 // Of an edited plan, his message is the lines he changed (the only ones of it that are his words) and `text` the
 // plan as he approved it, the work's but for those lines; `cut`: it is kept as its start and end.
-export type About = { kind: "asked" | "card" | "denied" | "plan_back" | "plan_note" | "plan_edited"; text?: string; cut?: true };
+// `removed`: of a plan he edited, how many of the proposal's lines he took out (set when he added none).
+export type About = { kind: "asked" | "card" | "denied" | "plan_back" | "plan_note" | "plan_edited"; text?: string; cut?: true; removed?: number };
 type Entry = { text: string; media: PromptBlock[]; about?: About; n?: number };
 
 // The most bytes of what one message of his answers: a closing question's last paragraphs, a card's question,
@@ -571,17 +572,25 @@ export function ownerReplies(lineage: readonly StoredEvent[], i: number): OwnerR
       const start = typeof was === "string" && was ? { text: startOf(was) } : {};
       if (typeof plan.feedback === "string" && plan.feedback.trim()) out.push({ words: plan.feedback.trim(), about: { kind: "plan_back", ...start } });
       if (typeof plan.note === "string" && plan.note.trim()) out.push({ words: plan.note.trim(), about: { kind: "plan_note", ...start } });
-      if (typeof plan.plan === "string" && plan.plan.trim()) out.push({ words: changedLines(typeof was === "string" ? was : "", plan.plan).join("\n"), about: { kind: "plan_edited", text: plan.plan } });
+      if (typeof plan.plan === "string" && plan.plan.trim()) {
+        const edit = planEdit(typeof was === "string" ? was : "", plan.plan);
+        out.push({ words: edit.changed.join("\n"), about: { kind: "plan_edited", text: plan.plan, ...(edit.known && !edit.changed.length ? { removed: edit.removed } : {}) } });
+      }
     }
   }
   return out;
 }
 
-// The lines of an edited text that its original does not hold: what the editor wrote. With no original, none.
-export function changedLines(was: string, now: string): string[] {
-  if (!was) return [];
-  const before = new Set(was.split(LINE_BREAK).map((l) => l.trim()));
-  return [...new Set(now.split(LINE_BREAK).map((l) => l.trim()).filter((l) => l && !before.has(l)))];
+// What an edit of a plan did: the lines of the edited text that its original does not hold (what the editor wrote),
+// and how many of the original's it no longer holds. Lines are compared apart from a leading list number, so a
+// removed step whose followers were renumbered changes no line of theirs. With no original, nothing is known.
+const LIST_NUMBER = /^\d+[.)]\s*/;
+export function planEdit(was: string, now: string): { known: boolean; changed: string[]; removed: number } {
+  if (!was) return { known: false, changed: [], removed: 0 };
+  const lines = (t: string) => t.split(LINE_BREAK).map((l) => l.trim()).filter(Boolean);
+  const key = (l: string) => l.replace(LIST_NUMBER, "");
+  const before = new Set(lines(was).map(key)), after = new Set(lines(now).map(key));
+  return { known: true, changed: [...new Set(lines(now).filter((l) => !before.has(key(l))))], removed: [...before].filter((k) => !after.has(k)).length };
 }
 // Every line break a reader may show as one.
 export const LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/;
@@ -651,8 +660,8 @@ function entries(lineage: readonly StoredEvent[], who: "owner" | "other"): Entry
 // crosses the budget keeps a marked excerpt (its start and end), as Codex cuts
 // the message at its remaining allowance; `shortened` says it happened.
 // `bytes` counts the messages' own text only: what they answer is added by `withAbout`, last.
-function fit(all: Entry[], budget: number): { kept: Entry[]; bytes: number; shortened: boolean } {
-  const kept: Entry[] = [];
+function fit<E extends Entry>(all: E[], budget: number): { kept: E[]; bytes: number; shortened: boolean } {
+  const kept: E[] = [];
   let bytes = 0, shortened = false;
   for (let i = all.length - 1; i >= 0; i--) {
     const b = Buffer.byteLength(all[i]!.text);
@@ -708,10 +717,14 @@ export function keptMessages(lineage: readonly StoredEvent[], words: WordsBudget
   // His messages first, alone (of a plan he edited, the lines he changed); then the others in what they leave of
   // `all`, as on main. What his messages answer comes last, in what both leave: a plan he edited, long and mostly
   // the work's, is cut to its ends there, so it never pushes or cuts a word of his.
-  const mine = fit(said, budget.owner);
+  // His typed messages before the lines he changed in a plan: a plan he rewrote is long, and only the room his
+  // messages leave is its own.
+  const typed = fit(said.filter((e) => e.about?.kind !== "plan_edited"), budget.owner);
+  const planned = fit(said.filter((e) => e.about?.kind === "plan_edited"), Math.max(0, budget.owner - typed.bytes));
+  const mine = { kept: [...typed.kept, ...planned.kept].sort((x, y) => x.n - y.n), bytes: typed.bytes + planned.bytes, shortened: (typed.shortened ? 1 : 0) + (planned.shortened ? 1 : 0) };
   const other = fit(entries(lineage, "other"), Math.max(0, budget.all - mine.bytes));
   const whole = Math.max(budget.owner, budget.all);
-  const owner = { kept: withAbout(mine.kept, Math.max(0, whole - mine.bytes - other.bytes)), shortened: mine.shortened ? 1 : 0 };
+  const owner = { kept: withAbout(mine.kept, Math.max(0, whole - mine.bytes - other.bytes)), shortened: mine.shortened };
   let media = 0, mediaLeft = 0;
   for (let i = owner.kept.length - 1; i >= 0; i--) {
     owner.kept[i]!.media = owner.kept[i]!.media.map((m: any) => {
@@ -892,25 +905,33 @@ export function summaryMessage(data: { summary: string; trail_text?: string; run
     : `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${trail}${fixed}`;
   const msgs = data.owner_messages ?? [];
   const wrap = (t: string) => `<message>\n${t}\n</message>`;
+  const lines = (n: number) => (n === 1 ? "a line" : `${n} lines`);
   // What a message of his answers stands before it, outside its wrap, every line of the work's words marked.
   const mine = (t: string, k: number) => {
     const a = data.owner_about?.[k];
     if (!a || !ABOUT_HEAD[a.kind]) return wrap(t);
     // With no room for what it answers, no head that promises it.
-    if (!a.text) return a.kind !== "plan_edited" ? wrap(t) : t ? `${PLAN_LINES_HEAD}\n${wrap(t)}` : "";
+    if (!a.text) return a.kind !== "plan_edited" ? wrap(t) : t ? `${PLAN_LINES_HEAD}\n${wrap(t)}` : a.removed ? `[He approved a plan after removing ${lines(a.removed)} of it, adding none; the plan is no longer in the context.]` : "";
     const quote = a.text.split(LINE_BREAK).map((l) => `> ${l}`).join("\n");
     // A plan he edited with no line his own (its proposal is gone): the plan alone, no message under it.
-    if (a.kind === "plan_edited" && !t) return `[A plan he edited and approved; which lines he changed is no longer known. The plan:]\n${quote}`;
+    if (a.kind === "plan_edited" && !t) {
+      if (a.removed === undefined) return `[A plan he edited and approved; which lines he changed is no longer known. The plan:]\n${quote}`;
+      return `[A plan he approved after ${a.removed ? `removing ${lines(a.removed)} of it` : "moving or renumbering its lines"}, adding none. The plan as he approved it, in the work's words:]\n${quote}`;
+    }
     return `${ABOUT_HEAD[a.kind]}\n${quote}\n${wrap(t)}`;
   };
   const others = data.other_messages?.length ? `\n\n[Other messages delivered before the compaction (agent reports, wakes, loop runs, tasks, messages from other sessions; not the owner's words), oldest first:]\n${data.other_messages.map(wrap).join("\n")}` : "";
   if (!data.owner_media) {
-    const owner = msgs.length ? `\n\n[The owner's messages before the compaction, oldest first:]\n${msgs.map(mine).join("\n")}` : "";
+    const owner = msgs.length ? `\n\n[The owner's messages before the compaction, oldest first:]\n${msgs.map(mine).filter(Boolean).join("\n")}` : "";
     return { role: "user", content: [{ type: "text", text: head + owner + others }] };
   }
   // Each message with the images and files it was sent with, in place.
   const content: any[] = [{ type: "text", text: `${head}\n\n[The owner's messages before the compaction, oldest first, with what they attached:]` }];
-  msgs.forEach((t, k) => content.push(...(data.owner_media![k] ?? []), { type: "text", text: mine(t, k) }));
+  // A message with nothing to say (a plan edit whose plan had no room) is no block: a provider refuses an empty text.
+  msgs.forEach((t, k) => {
+    const text = mine(t, k);
+    content.push(...(data.owner_media![k] ?? []), ...(text ? [{ type: "text", text }] : []));
+  });
   if (others) content.push({ type: "text", text: others.trimStart() });
   return { role: "user", content };
 }
