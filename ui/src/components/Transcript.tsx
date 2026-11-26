@@ -2212,10 +2212,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             title="Go to the latest messages"
             className="flex h-7 items-center gap-1.5 rounded-full border border-line bg-raised px-3 text-caption font-medium text-muted animate-pop hover:text-fg"
           >
-            {/* A reply being written below the view (a prompt sent from elsewhere moves no reader): the way there says so. */}
-            {session.phase === "working"
-              ? <><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" aria-hidden="true" /> A reply is being written</>
-              : <><ArrowDown className="size-3.5" /> Latest</>}
+            {/* The session works below the view (a prompt sent from elsewhere moves no reader): the way there says so
+                in its words. It lies under what is being read, so nothing on it moves or is coloured: the head's
+                mark and the line over the box are what say the session works. */}
+            <ArrowDown className="size-3.5" /> {session.phase === "working" ? "Working below" : "Latest"}
           </button>
         </div>
       )}

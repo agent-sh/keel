@@ -203,8 +203,12 @@ test("a long session opens with its newest part and reads the rest as asked", as
     // agent's report) leaves the reader in the part: only this page's own send moves them.
     const idle = () => expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 30_000 }).toBe(false);
     await fetch(`${d.url}/api/sessions/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "script:render sent from elsewhere" }) });
-    // The way to the end says a reply is being written there.
-    await expect(page.getByTestId("jump-latest")).toContainText("A reply is being written");
+    // The way to the end says the session works there, in words: under what is being read nothing pulses or is coloured.
+    const way = page.getByTestId("jump-latest");
+    await expect(way).toHaveText("Working below");
+    await expect(way).toHaveAttribute("data-live", "true");
+    expect(await way.evaluate((el) => [...el.querySelectorAll("*")].filter((n) => n.tagName !== "svg" && !n.closest("svg")).length)).toBe(0);
+    expect(await way.evaluate((el) => getComputedStyle(el).animationName)).not.toContain("pulse");
     await idle();
     await expect(page.getByTestId("jump-latest")).toContainText("Latest");
     await expect(page.locator(`#e-${far.id}`)).toHaveCount(1);
