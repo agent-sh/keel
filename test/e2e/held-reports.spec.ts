@@ -10,6 +10,8 @@ test("a paused session shows its waiting reports; a loop run brings one, Resume 
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Paused coordinator" } })).json();
+  // Only the owner's Stop holds reports here. The unattended pace has its own test.
+  expect((await request.patch(`/api/sessions/${session.id}`, { data: { settings: { pace_min: 0 } } })).ok()).toBe(true);
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   const helper = (title: string, seconds: number) => ({
     name: "spawn_agent",

@@ -18,21 +18,24 @@ async function start(request: any, title: string, calls: unknown[]) {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title } })).json();
+  // This scenario checks grouping, not the separate pace of unattended turns.
+  expect((await request.patch(`/api/sessions/${session.id}`, { data: { settings: { pace_min: 0 } } })).ok()).toBe(true);
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
   return session.id as string;
 }
 
 // The session's events once every agent ended and nothing more comes.
-async function settled(request: any, id: string, agents: number) {
+async function settled(request: any, id: string, agents: number, reports: number) {
   const view = () => request.get(`/api/sessions/${id}`).then((r: any) => r.json());
   await expect.poll(async () => {
     const list = (await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as any[];
     const v = await view();
-    return list.length === agents && list.every((a) => !["running", "waiting"].includes(a.status)) && !v.running && v.events.at(-1)?.kind === "turn_end" && !v.queue?.length;
+    const delivered = v.events.filter((e: any) => e.kind === "user" && e.data.kind)
+      .reduce((n: number, e: any) => n + (String(e.data.text).match(/<subagent_result /g)?.length ?? 0), 0);
+    return list.length === agents && list.every((a) => !["running", "waiting"].includes(a.status)) &&
+      delivered >= reports && !v.running && v.events.at(-1)?.kind === "turn_end" && !v.queue?.length;
   }, { timeout: 90_000 }).toBe(true);
-  await new Promise((r) => setTimeout(r, 1500)); // an input held back for the turn's end has started its turn by now
-  await expect.poll(async () => { const v = await view(); return !v.running && v.events.at(-1)?.kind === "turn_end"; }, { timeout: 60_000 }).toBe(true);
   return (await view()).events as any[];
 }
 
@@ -46,7 +49,7 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     pause(5, "slept"),
   ]);
   try {
-    const events = await settled(request, id, 7);
+    const events = await settled(request, id, 7, 2);
     const inputs = events.filter((e) => e.kind === "user" && e.data.kind);
     const text = inputs.map((e) => String(e.data.text)).join("\n\n");
     const lanes = ((await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as any[]).filter((a) => a.title.startsWith("Lane"));
@@ -137,7 +140,7 @@ test("an agent that repeated a shared cause is told with its own failure, not th
     const timeline = await (await request.get(`/api/sessions/${loop.session_id}/timeline?only=failures&since=40m&format=text`)).text();
     expect(timeline).toMatch(/Running a turn started by its parent's task: step \d+, 3 failed tools so far, running Bash/);
 
-    const events = await settled(request, id, 3);
+    const events = await settled(request, id, 3, 3);
     expect(events.filter((e) => e.kind === "user" && e.data.kind).map((e) => String(e.data.text)).join("\n").match(/<failures>/g)).toHaveLength(1);
     // The record groups the same missing path, not every failure of Read.
     const groups = ((await (await request.get(`/api/errors?session=${id}`)).json()).failures as any[]).filter((g) => g.kind === "tool" && g.cls === "Read");
@@ -166,7 +169,7 @@ test("an agent that repeated a shared cause is told with its own failure, not th
 test("failures a wait already returned are not told again", async ({ request }) => {
   const id = await start(request, "Failure digest, waited", [...failing(2), { name: "Bash", input: { command: "sleep 3; echo slept" } }, { name: "wait_agent", input: { targets: ["Lane 1", "Lane 2"], timeout_ms: 5000 } }]);
   try {
-    const events = await settled(request, id, 2);
+    const events = await settled(request, id, 2, 0);
     const waited = events.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => String(r.content)).find((c) => c.includes('"status"'));
     expect(waited).toContain("errored");
     expect(events.filter((e) => e.kind === "user" && e.data.kind)).toHaveLength(0);
