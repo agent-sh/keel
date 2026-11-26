@@ -196,7 +196,8 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
   const id = `0c1a0e2e-0000-4000-8000-${tag.slice(-12).padStart(12, "0")}`;
   const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `outside-claude-${tag}`);
   mkdirSync(cwd, { recursive: true });
-  const dir = join(root!, `-e2e-outside-claude-${tag}`);
+  // Kept under the folder Claude Code names after the session's own folder: Keel starts the child there.
+  const dir = join(root!, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
   const path = join(dir, `${id}.jsonl`);
   let parent: string | null = null;
   const write = (r: object) => {
