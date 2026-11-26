@@ -40,6 +40,7 @@ import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { holderSaid } from "../../../src/core/holder-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
+import { every } from "../lib/clock.ts";
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
@@ -1077,6 +1078,21 @@ function CountsKeeper() {
 
 // The note above the list was on screen: it is read for the next load (ListArrange.tsx).
 const sawNoteRef = (el: HTMLElement | null) => { if (el) sawNote(); };
+// A line that says something once does not stay for as long as the page does (an app's page is up for days): the
+// line goes after this long on a page that is seen, at a beat when the hand is not on the list, so no row moves
+// under it. The Arrange menu still says it until it was opened.
+const NOTE_MS = 12_000;
+function useNoteLine(note: boolean, held: boolean) {
+  const [said, setSaid] = useState(false);
+  const hand = useRef(held);
+  hand.current = held;
+  useEffect(() => {
+    if (!note || said) return;
+    let seen = 0;
+    return every(1000, () => { if ((seen += 1000) >= NOTE_MS && !hand.current) setSaid(true); });
+  }, [note, said]);
+  return note && !said;
+}
 
 function Index({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
@@ -1085,7 +1101,7 @@ function Index({ current }: { current: string | null }) {
   const nav = useRef<HTMLElement>(null);
   // What moves in the list moves around the row the hand is on (lib/list-hold.ts).
   useAnchor(nav);
-  const note = useNote();
+  const note = useNoteLine(useNote() && !narrow, held);
   useFleet((s) => s.machines.length); // machine names in the group heads
   // An External section of a machine reached over ssh can be up while one answers: the list hears what its
   // harnesses run (a feed, src/fleet/far-outside.ts); with none, the daemon asks none of them.

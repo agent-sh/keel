@@ -144,6 +144,13 @@ test("a row says one state, in one weight, and news is a quiet dot in the time's
     await page.evaluate(() => localStorage.setItem("keel.listArrange", JSON.stringify({ group: "folder", sort: "recent", hideDone: false })));
     await page.reload();
     await expect(page.getByTestId("list-note")).toBeVisible();
+    // Said once, the line does not stay as long as the page does: it goes by itself, with the hand off the list,
+    // and the Arrange menu still says it until it was opened.
+    await page.mouse.move(1200, 600);
+    await expect(page.getByTestId("list-note")).toHaveCount(0, { timeout: 40_000 });
+    await page.getByTestId("list-arrange").click();
+    await expect(page.getByTestId("arrange-note")).toBeVisible();
+    await page.keyboard.press("Escape");
     await page.reload();
     await expect(row(page, fresh)).toBeVisible();
     await expect(page.getByTestId("list-note")).toHaveCount(0);
