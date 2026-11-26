@@ -7,8 +7,9 @@
 // What "helped" means, per system, is the share of what it gave that a turn then used:
 // - the owner's memory store (tacit): facts a turn named, of the facts given (the meter's proxy);
 // - the helper's records: recalls a turn used, of the recalls made;
-// - Claude Code's auto memory: sessions that read or wrote a file of it, of the sessions it was loaded into;
-// - Codex's memories: the same, for its folder;
+// - Claude Code's auto memory: its index facts a loading session's next steps used, of the facts loaded
+//   (src/helper/sweep-recall.ts); with no steps to judge, access: the loading sessions that read or wrote a file of it;
+// - Codex's memories: the same, for its summary and folder;
 // - momentum: nudges after which the session's next turn ended on its own, of the nudges sent.
 // A system with nothing in the window says so (`helped: null`), never a zero.
 import { existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
@@ -76,7 +77,7 @@ export function helperSystem(rows: PathRow[], records: RecordRow[], now: number)
 }
 
 // A native system from its log rows and the notes found in its folders.
-export function nativeSystem(id: "claude" | "codex", log: NativeRow[], dirs: { dir: string; notes: NoteFile[]; index: ReturnType<typeof notesOf>["index"] }[], on: boolean, note?: string): System {
+export function nativeSystem(id: "claude" | "codex", log: NativeRow[], dirs: { dir: string; notes: NoteFile[]; index: ReturnType<typeof notesOf>["index"] }[], on: boolean, note?: string, accessed = 0): System {
   const of = (action: string) => log.find((r) => r.system === id && r.action === action);
   const loaded = of("loaded"), read = of("read"), wrote = of("wrote");
   const notes = dirs.flatMap((d) => d.notes);
@@ -86,9 +87,9 @@ export function nativeSystem(id: "claude" | "codex", log: NativeRow[], dirs: { d
     notes: notes.length, unindexed: notes.filter((n) => !n.indexed).length,
     dangling: dirs.reduce((n, d) => n + (d.index?.missing.length ?? 0), 0), over: dirs.filter((d) => d.index?.over).length,
   };
-  // A session that read and wrote counts once in the better of the two: the larger count bounds it.
-  const touched = Math.max(f.sessions_read!, f.sessions_wrote!);
-  return { id, label: id === "claude" ? "Claude Code auto memory" : "Codex memories", on, ...(note ? { note } : {}), figures: f, helped: share(Math.min(touched, f.sessions!), f.sessions!) };
+  // Access, not use: the loading sessions of the window whose tools read or wrote a file of it, each once.
+  f.accessed = Math.min(accessed, f.sessions!);
+  return { id, label: id === "claude" ? "Claude Code auto memory" : "Codex memories", on, ...(note ? { note } : {}), figures: f, helped: share(f.accessed, f.sessions!) };
 }
 
 export function momentumSystem(rows: ActRow[], on: boolean): System {
@@ -240,6 +241,9 @@ const PATHS = `SELECT path, COUNT(*) AS asked, COALESCE(SUM(outcome = 'added'), 
 const FACTS = `SELECT name, COUNT(*) AS given, COUNT(DISTINCT session_id) AS sessions, COALESCE(SUM(used IS NOT NULL), 0) AS checked, COALESCE(SUM(used), 0) AS used, MAX(rule) AS rule,
   COALESCE(SUM(held = 1), 0) AS followed, COALESCE(SUM(held = 0), 0) AS broken, COALESCE(SUM(tokens), 0) AS tokens, MAX(ts) AS last
   FROM memory_given WHERE ts >= ? AND ts < ? GROUP BY name`;
+// The sessions that loaded a native memory in the window and whose tools then read or wrote a file of it.
+const ACCESSED = `SELECT system, COUNT(DISTINCT session_id) AS n FROM native_memory_log WHERE action IN ('read', 'wrote') AND ts >= ? AND ts < ?
+  AND session_id IN (SELECT session_id FROM native_memory_log WHERE action = 'loaded' AND ts >= ? AND ts < ?) GROUP BY system`;
 const NATIVE = `SELECT system, action, COUNT(*) AS rows, COUNT(DISTINCT session_id) AS sessions, COALESCE(SUM(bytes), 0) AS bytes FROM native_memory_log WHERE ts >= ? AND ts < ? GROUP BY system, action`;
 const ACTS = `SELECT action, COUNT(*) AS ok FROM momentum_acts WHERE ts >= ? AND ts < ? GROUP BY action`;
 
@@ -309,12 +313,14 @@ export function measured(s: System, facts: FactRow[] = [], recall?: Recall): Sys
 
 export async function sweep(d: SweepDeps): Promise<Card> {
   const now = d.now ?? Date.now(), since = now - DAY;
-  const [paths, facts, nlog, acts] = await Promise.all([
+  const [paths, facts, nlog, acts, access] = await Promise.all([
     d.sql<PathRow>(PATHS, [since, now]),
     d.sql<FactRow>(FACTS, [now - FACT_DAYS * DAY, now]),
     d.sql<NativeRow>(NATIVE, [since, now]),
     d.sql<{ action: string; ok: number }>(ACTS, [since, now]).catch(() => []),
+    d.sql<{ system: string; n: number }>(ACCESSED, [since, now, since, now]),
   ]);
+  const accessed = (sys: string) => access.find((r) => r.system === sys)?.n ?? 0;
   const db = d.store.db;
   let records: RecordRow[] = [];
   try { records = db.query<RecordRow, []>("SELECT key, value, kind, source, ts, updated, used FROM helper_records").all(); } catch {} // the helper's table is made with the helper
@@ -341,8 +347,8 @@ export async function sweep(d: SweepDeps): Promise<Card> {
   const systems: System[] = [
     measured(tacitSystem(paths, d.tacit.on, d.tacit.falls), facts),
     measured(helperSystem(paths, records, now)),
-    measured(nativeSystem("claude", nlog, claudeDirs, claudeOn, claudeOn ? undefined : "no session has loaded it yet"), [], claudeRecall),
-    measured(nativeSystem("codex", nlog, codexDirs, nlog.some((r) => r.system === "codex"), nlog.some((r) => r.system === "codex") ? undefined : "off, or no session has loaded it yet"), [], codexRecall),
+    measured(nativeSystem("claude", nlog, claudeDirs, claudeOn, claudeOn ? undefined : "no session has loaded it yet", accessed("claude")), [], claudeRecall),
+    measured(nativeSystem("codex", nlog, codexDirs, nlog.some((r) => r.system === "codex"), nlog.some((r) => r.system === "codex") ? undefined : "off, or no session has loaded it yet", accessed("codex")), [], codexRecall),
     measured(momentumSystem(byAct, d.momentum.on)),
   ];
   const id = Bun.randomUUIDv7();

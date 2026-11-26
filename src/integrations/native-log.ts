@@ -15,7 +15,8 @@ import { memoryMeter } from "./memory-meter.ts";
 
 export const KEEP_MS = 90 * 86_400_000;
 export type NativeSystem = "claude" | "codex";
-export type NativeAction = "loaded" | "read" | "wrote";
+// looked: a shell command named the folder but no file it read can be told (a pipe, a listing): no read, no bytes.
+export type NativeAction = "loaded" | "read" | "wrote" | "looked";
 
 export class NativeLog {
   constructor(private store: Store) {
@@ -49,10 +50,13 @@ CREATE INDEX IF NOT EXISTS native_memory_log_ts ON native_memory_log(ts);`);
     let read = false;
     for (const dir of places.read) {
       const paths = targetsOf(tool, input, s.workspace).paths.map((p) => resolve(p)).filter((p) => p === dir || p.startsWith(`${dir}/`));
-      // A shell command naming the folder is a look at it, whatever it is.
-      if (!paths.length && !(tool.kind === "shell" && text.includes(dir))) continue;
+      if (!paths.length) {
+        // A shell command naming the folder is a look at it: what it read cannot be told, so it carries no read.
+        if (tool.kind === "shell" && text.includes(dir)) this.note(s.id, system, "looked");
+        continue;
+      }
       const write = places.write.some((w) => w === dir || paths.some((p) => p.startsWith(`${w}/`)));
-      for (const p of paths.length ? paths : [dir]) this.note(s.id, system, edit && write ? "wrote" : "read", p === dir ? "" : p);
+      for (const p of paths) this.note(s.id, system, edit && write ? "wrote" : "read", p === dir ? "" : p);
       if (!(edit && write)) read = true;
       if (system === "claude" && edit && paths.includes(join(dir, "MEMORY.md"))) {
         try { over = memoryOver(readFileSync(join(dir, "MEMORY.md"), "utf8")); } catch {}

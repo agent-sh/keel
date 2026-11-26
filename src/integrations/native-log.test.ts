@@ -39,9 +39,12 @@ test("a Read or a shell command on the auto memory folder is one meter row with 
   log.after(s, { name: "Read" }, { file_path: join(cwd, "src.ts") }, { is_error: false, content: text });
   log.after(s, { name: "Write", kind: "edit" }, { file_path: join(dir, "c.md"), content: "x" }, { is_error: false, content: "ok" });
   expect(rows()).toMatchObject({ asked: 2 });
+  // A command that only names the folder where no reader's file can be told (a pipe) is a look, not a read: no bytes.
+  log.after(s, { name: "Bash", kind: "shell" }, { command: `ls ${dir} | wc -l` }, { is_error: false, content: "3" });
+  expect(rows()).toMatchObject({ asked: 2 });
   // The headline of what recall did does not count a read the model chose to make.
   expect(memoryMeter(store).report({ session: s.id }).total.asked).toBe(0);
-  // The sweep's own log keeps its rows: two reads and a write.
+  // The sweep's own log keeps its rows: two reads, a write and the look.
   const logged = store.db.query<{ action: string }, []>("SELECT action FROM native_memory_log WHERE action != 'loaded' ORDER BY id").all().map((r) => r.action);
-  expect(logged).toEqual(["read", "read", "wrote"]);
+  expect(logged).toEqual(["read", "read", "wrote", "looked"]);
 });

@@ -22,7 +22,7 @@ export function said(s: System): { gave: string; used: string } {
   if (s.id === "helper") return { gave: `${plural(f.recalls!, "recall")}; ${plural(f.records!, "record")} kept`, used: f.checked ? `${f.recalls_used} of ${f.checked} recalls used; ${f.stale} stale` : `nothing recalled; ${f.stale} stale` };
   if (s.id === "momentum") return { gave: plural(f.acts!, "nudge"), used: f.ended! + f.interrupted! + f.failed! ? `${f.ended} ended on their own, ${f.interrupted} stopped, ${f.failed} failed` : "nothing followed yet" };
   const m = s.measure;
-  return { gave: s.on ? `loaded in ${plural(f.sessions!, "session")}; ${plural(f.notes!, "note")}` : (s.note ?? "off"), used: m?.given ? `${m.used} of ${m.given} facts used; ${f.sessions_read} read, ${f.sessions_wrote} wrote` : f.sessions ? `${f.sessions_read} read, ${f.sessions_wrote} wrote` : "no session used it" };
+  return { gave: s.on ? `loaded in ${plural(f.sessions!, "session")}; ${plural(f.notes!, "note")}` : (s.note ?? "off"), used: [m?.given ? `${m.used} of ${m.given} facts used` : "", f.sessions ? `${f.accessed ?? 0} of ${plural(f.sessions, "session")} opened its files` : ""].filter(Boolean).join("; ") || "no session loaded it" };
 }
 
 // A card made before the four figures were kept has none: its rows show nothing there.

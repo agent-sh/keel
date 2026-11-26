@@ -152,6 +152,24 @@ test("a native memory's day: the facts a loading session's next steps used, a co
   expect(card.systems.find((s) => s.id === "momentum")!.next!.text).toContain("no command");
 });
 
+test("native access: every loading session that read or wrote its files counts once, a look or another day's load not at all", async () => {
+  const { dir, store, log, sql } = fixture();
+  const at = now - 3_600_000, nd = join(dir, "claude-access");
+  put(join(nd, "MEMORY.md"), "- [x](xnote.md): one\n");
+  for (const s of ["r", "w", "both", "look"]) log.note(s, "claude", "loaded", nd, 800, at);
+  log.note("r", "claude", "read", join(nd, "xnote.md"), 0, at);
+  log.note("w", "claude", "wrote", join(nd, "y.md"), 0, at);
+  log.note("both", "claude", "read", join(nd, "xnote.md"), 0, at);
+  log.note("both", "claude", "wrote", join(nd, "y.md"), 0, at);
+  log.note("look", "claude", "looked", "", 0, at);
+  // A session that loaded it only yesterday read today: not of today's cohort.
+  log.note("old", "claude", "loaded", nd, 800, now - 2 * DAY);
+  log.note("old", "claude", "read", join(nd, "xnote.md"), 0, at);
+  const card = await sweep({ sql, store, tacit: { on: false, falls: 0 }, momentum: { on: false }, now });
+  const claude = card.systems.find((s) => s.id === "claude")!;
+  expect(claude.figures).toMatchObject({ sessions: 4, accessed: 3 });
+});
+
 test("the helper's line wakes it only when a number moved since the card before", () => {
   const sys = (given: number, used: number, mistakes = 0) => ({ id: "claude" as const, label: "Claude Code auto memory", short: "Claude", on: true, figures: {}, helped: null, measure: { given, used, mistakes, tokens: 100 } });
   const card = (s: ReturnType<typeof sys>) => ({ id: "c", ts: now, since: now - DAY, until: now, systems: [s], offers: [] });
