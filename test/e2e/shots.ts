@@ -15,6 +15,22 @@ mkdirSync(SHOTS, { recursive: true });
 // "1920x1040,390x844": the before and after pictures of src/pictures) takes each at every size, the
 // spec's own first, named <name>-<W>x<H>-<theme>.png, and gives the page its own size back after.
 // KEEL_SHOT_THEMES ("light,dark") names the themes.
+// KEEL_LOOK takes each once more as the owner's page is drawn (src/core/look.ts): the look as JSON (a pictures
+// run with "owner" in its sizes sets it), or "owner" to read the newest from the daemon at KEEL_LOOK_FROM (else
+// KEEL_URL), GET /api/looks. That picture is at the look's size, view, text scale and theme, named
+// <name>-look-<W>x<H>-<view>-<scale>-<theme>.png, and the page gets its own look back after.
+export type ShotLook = { view: "workbench" | "focus"; scale: number; theme: "light" | "dark"; width: number; height: number };
+let lookRead: Promise<ShotLook | null> | undefined;
+export function shotLook(): Promise<ShotLook | null> {
+  const v = process.env.KEEL_LOOK?.trim();
+  if (!v) return Promise.resolve(null);
+  return (lookRead ??= (async () => {
+    if (v !== "owner") return JSON.parse(v) as ShotLook;
+    const from = process.env.KEEL_LOOK_FROM ?? process.env.KEEL_URL ?? "";
+    const r = await fetch(`${from.replace(/\/$/, "")}/api/looks`);
+    return ((await r.json()) as { owner: ShotLook | null }).owner;
+  })());
+}
 export async function shoot(page: Page, name: string) {
   const themes = (process.env.KEEL_SHOT_THEMES || "light,dark").split(",").filter((t): t is "light" | "dark" => t === "light" || t === "dark");
   const sizes = (process.env.KEEL_SHOT_SIZES ?? "").split(",").map((s) => /^(\d+)x(\d+)$/.exec(s.trim())).filter((m): m is RegExpExecArray => !!m).map((m) => ({ width: Number(m[1]), height: Number(m[2]) }));
@@ -37,7 +53,24 @@ export async function shoot(page: Page, name: string) {
       if (sizes.length) appendFileSync(`${SHOTS}/shots.tsv`, `${file}\t${relative(process.cwd(), test.info().file)}\n`);
     }
   }
-  if (was && order.length && (was.width !== page.viewportSize()?.width || was.height !== page.viewportSize()?.height)) { await page.setViewportSize(was); await settled(); }
+  const look = await shotLook();
+  if (look) {
+    if (look.width !== page.viewportSize()?.width || look.height !== page.viewportSize()?.height) await page.setViewportSize({ width: look.width, height: look.height });
+    // (The page's own listener, lib/ui.ts: the view and text size for this picture, saved nowhere.)
+    const dark = await page.evaluate((l) => {
+      const was = document.documentElement.classList.contains("dark");
+      dispatchEvent(new CustomEvent("keel-look", { detail: { view: l.view, scale: l.scale } }));
+      document.documentElement.classList.toggle("dark", l.theme === "dark");
+      return was;
+    }, look);
+    await settled();
+    await page.waitForTimeout(60);
+    const file = `${name}-look-${look.width}x${look.height}-${look.view}-${look.scale}-${look.theme}.png`;
+    await page.screenshot({ path: `${SHOTS}/${file}` });
+    appendFileSync(`${SHOTS}/shots.tsv`, `${file}\t${relative(process.cwd(), test.info().file)}\n`);
+    await page.evaluate((d) => { dispatchEvent(new CustomEvent("keel-look", { detail: null })); document.documentElement.classList.toggle("dark", d); }, dark);
+  }
+  if (was && (order.length || look) && (was.width !== page.viewportSize()?.width || was.height !== page.viewportSize()?.height)) { await page.setViewportSize(was); await settled(); }
   await page.evaluate(() => document.documentElement.classList.remove("theme-switch"));
 }
 

@@ -37,6 +37,7 @@ import { config as heavyConfig, pool } from "../tools/heavy.ts";
 import { toolEnv } from "../tools/jobs.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import { FILE, readPictures, sizeWord, type PicturesConfig } from "./config.ts";
+import { lookWord, readLook, type Look } from "../core/look.ts";
 import { pairsOf, type Pair, type PairState } from "./pairs.ts";
 import { selectSpecs, type Selection } from "./select.ts";
 import { againSpecs, finished, readTookBy, resumed, type Side, type SideName, type Sides, type SideState } from "./sides.ts";
@@ -84,8 +85,10 @@ export type PictureRun = {
   kept: boolean;            // its pictures are still on disk
   created: number; started: number | null; ended: number | null;
   sizes?: string[]; themes?: string[];
+  // The owner's look the run took its pictures at too ("owner" in the sizes), the same on both sides and across a restart.
+  look: Look | null;
 };
-type Row = Omit<PictureRun, "selection" | "sides" | "pairs" | "counts" | "kept"> & { selection: string | null; sides: string; pairs: string | null; kept: number };
+type Row = Omit<PictureRun, "selection" | "sides" | "pairs" | "counts" | "kept" | "look"> & { selection: string | null; sides: string; pairs: string | null; kept: number; look: string | null };
 
 type Deps = {
   store: Store; bus: Bus; capture: (e: unknown, ctx: object) => void;
@@ -93,6 +96,8 @@ type Deps = {
   confine: (sessionId: string, workspace: string, tool: string, shown?: string[]) => { wrap: (argv: string[]) => string[]; sandbox: string; network?: boolean; layered?: boolean } | undefined;
   // The sessions whose views read a run (the agent's own, its tree's root).
   viewers?: (run: PictureRun) => string[];
+  // How the owner's page is drawn now (src/server/routes/looks.ts), for a config with "owner" in its sizes.
+  look?: () => Look | undefined;
 };
 let d: Deps | undefined;
 const dir = () => join(d!.store.stateDir, "pictures");
@@ -108,7 +113,7 @@ const kept = ((globalThis as any).__keelPictures ??= { chain: Promise.resolve(),
 
 const toRun = (r: Row): PictureRun => {
   const pairs = r.pairs ? JSON.parse(r.pairs) as Pair[] : [];
-  return { ...r, selection: r.selection ? JSON.parse(r.selection) : null, sides: JSON.parse(r.sides), pairs, counts: countsOf(pairs), kept: !!r.kept };
+  return { ...r, selection: r.selection ? JSON.parse(r.selection) : null, sides: JSON.parse(r.sides), pairs, counts: countsOf(pairs), kept: !!r.kept, look: r.look ? readLook(JSON.parse(r.look)) ?? null : null };
 };
 export function countsOf(pairs: readonly Pair[]): Counts {
   const c: Counts = { changed: 0, unstable: 0, new: 0, gone: 0, unread: 0, same: 0 };
@@ -119,6 +124,7 @@ export function countsOf(pairs: readonly Pair[]): Counts {
 export function bindPictures(deps: Deps): Promise<void> {
   d = deps;
   d.store.migrate(SCHEMA);
+  if (!d.store.columnExists("pictures", "look")) d.store.db.exec("ALTER TABLE pictures ADD COLUMN look TEXT");
   // A run a restart cut goes on at the side it was on: what a side ended with is kept in the row.
   const cut = d.store.db.query<Row, []>("SELECT * FROM pictures WHERE state IN ('queued', 'running') ORDER BY id").all().filter((r) => !kept.going.has(r.id));
   return sweep().then(() => {
@@ -144,8 +150,8 @@ async function sweep() {
 
 function save(r: PictureRun) {
   // (Who is owed its answer is written by owe and followed alone: a run going holds no word of it.)
-  d!.store.db.query("UPDATE pictures SET state = ?, why = ?, sides = ?, pairs = ?, kept = ?, started = ?, ended = ? WHERE id = ?")
-    .run(r.state, r.why, JSON.stringify(r.sides), r.pairs.length ? JSON.stringify(r.pairs) : null, r.kept ? 1 : 0, r.started, r.ended, r.id);
+  d!.store.db.query("UPDATE pictures SET state = ?, why = ?, sides = ?, pairs = ?, kept = ?, started = ?, ended = ?, look = ? WHERE id = ?")
+    .run(r.state, r.why, JSON.stringify(r.sides), r.pairs.length ? JSON.stringify(r.pairs) : null, r.kept ? 1 : 0, r.started, r.ended, r.look ? JSON.stringify(r.look) : null, r.id);
   r.counts = countsOf(r.pairs);
   for (const sid of new Set([...(r.session_id ? [r.session_id] : []), ...(d!.viewers?.(r) ?? [])])) d!.bus.emit({ t: "feature", name: "pictures", session_id: sid, data: brief(r) });
 }
@@ -275,7 +281,9 @@ async function executeOf(run: PictureRun, known?: { cfg: PicturesConfig; paths: 
   const paths = known?.paths ?? (await git(repo.top, ["ls-tree", "-r", "-z", "--name-only", run.head], { read: true, timeout: 30_000 })).out.split("\0").filter(Boolean);
   run.state = "running";
   run.started = Date.now();
-  run.sizes = cfg.sizes.map(sizeWord);
+  // The owner's look is read once, when the run first starts: both sides, and a side a restart cut, take the same.
+  if (cfg.owner && !run.look) { const l = d!.look?.(); run.look = l ? readLook(l) ?? null : null; }
+  run.sizes = [...cfg.sizes.map(sizeWord), ...(run.look ? [`owner ${lookWord(run.look)}`] : [])];
   run.themes = cfg.themes;
   save(run);
   const specs = run.selection!.specs.map((s) => s.path);
@@ -350,6 +358,7 @@ async function takeSide(run: PictureRun, repo: Repo, cfg: PicturesConfig, side: 
     const env: Record<string, string> = {
       ...(sid ? toolEnv(sid) : toolEnv("pictures")), CI: "1",
       KEEL_PICTURES_OUT: shots, KEEL_SHOT_SIZES: cfg.sizes.map(sizeWord).join(","), KEEL_SHOT_THEMES: cfg.themes.join(","),
+      ...(run.look ? { KEEL_LOOK: JSON.stringify(run.look) } : {}),
       // The run's instant, to the minute: the same on every side (src/core/fixed-world.ts).
       [FIXED_ENV]: String(Math.floor(run.created / 60_000) * 60_000),
       // A temporary folder of the side's own, at the same path on every side (a scratch path the page shows).

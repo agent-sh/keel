@@ -6,7 +6,8 @@
 //     "run": "scripts/pictures.sh",          the command; Keel adds the spec files as arguments
 //     "pages": ["ui/"],                       folders whose files make the page
 //     "specs": ["test/e2e/*.spec.ts"],        the specs that drive it (globs)
-//     "sizes": ["1920x1040", "390x844"],      each picture at each size
+//     "sizes": ["1920x1040", "390x844", "owner"],  each picture at each size; "owner": also as the owner's
+//                                             page is drawn now (src/core/look.ts): its size, view, text scale and theme
 //     "themes": ["light", "dark"],            and in each theme
 //     "global": ["test/e2e/chat.spec.ts"],    run when a change reaches every page (a stylesheet, the entry)
 //     "harness": ["test/e2e/*.ts"],           files taken from the head on both sides (the specs, their helpers)
@@ -18,7 +19,8 @@
 // names are the head's on the base's checkout too, so the same steps drive the page before and after.
 // The command runs in a checkout of the commit, with KEEL_PICTURES_OUT (a folder: it writes PNG files
 // there, any names, the same name on both sides for the same picture), KEEL_SHOT_SIZES ("1920x1040,390x844")
-// and KEEL_SHOT_THEMES ("light,dark") set.
+// and KEEL_SHOT_THEMES ("light,dark") set, and with "owner" in the sizes KEEL_LOOK (the owner's look as JSON,
+// the same on both sides: test/e2e/shots.ts takes each picture once more at it).
 export const FILE = ".keel/pictures.json";
 
 export type Size = { w: number; h: number };
@@ -27,6 +29,7 @@ export type PicturesConfig = {
   pages: string[];
   specs: string[];
   sizes: Size[];
+  owner: boolean;           // "owner" is one of the sizes
   themes: string[];
   global: string[];
   harness: string[];
@@ -55,9 +58,11 @@ export function readPictures(text: string): { config?: PicturesConfig; problems:
   const specs = words(v.specs, "specs", problems) ?? [];
   if (!specs.length) problems.push("specs names the spec files (globs)");
   const sizes: Size[] = [];
+  let owner = false;
   for (const s of words(v.sizes, "sizes", problems) ?? []) {
+    if (s === "owner") { owner = true; continue; }
     const m = SIZE.exec(s);
-    if (!m) { problems.push(`sizes: ${s} is not WIDTHxHEIGHT`); continue; }
+    if (!m) { problems.push(`sizes: ${s} is not WIDTHxHEIGHT or owner`); continue; }
     sizes.push({ w: Number(m[1]), h: Number(m[2]) });
   }
   const themes = words(v.themes, "themes", problems) ?? [];
@@ -73,7 +78,7 @@ export function readPictures(text: string): { config?: PicturesConfig; problems:
     config: {
       run: v.run.trim(),
       pages: pages.map((p) => p.replace(/^\.\//, "").replace(/\/?$/, "/")),
-      specs, sizes, themes, global, harness,
+      specs, sizes, owner, themes, global, harness,
       max_specs: max ?? null,
       timeout_s: t ?? TIMEOUT_S,
     },

@@ -7,6 +7,7 @@
 //                                               the given head), started when it has none and its tree names pictures
 // POST /api/sessions/:id/pictures            -> { run } taken again for the session's folder's head (null: its tree names none)
 // A frame "pictures" to the agent's session and its tree's root says each step.
+import { theOwnersLook } from "./looks.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { byChild, rootSession } from "../../automation/agents.ts";
@@ -26,6 +27,7 @@ export const pictureRoutes: RouteModule = ({ store, bus, errors }) => {
     perm: (id) => gate?.perm(id),
     confine: (id, workspace, tool, shown) => gate?.confineFor(id, workspace, tool, shown),
     capture: (e, ctx) => errors.capture("server", e, ctx),
+    look: theOwnersLook,
     viewers: (r) => {
       const root = r.session_id ? rootSession(r.session_id) : undefined;
       if (root) workBoard()?.forget(root);

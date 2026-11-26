@@ -15,6 +15,7 @@ import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { ClientFrame, DraftBlocks, Frame, SocketFrame } from "../core/types.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
+import { keepLook } from "./routes/looks.ts";
 import { ALL, EVERY, feedNames, feedTopic, isScoped, LIST_ROWS, named, route, ROWS, RowGate, sessionTopic } from "./scope.ts";
 
 export class Live {
@@ -75,6 +76,7 @@ export class Live {
     let m: ClientFrame;
     try { m = JSON.parse(String(raw)); } catch { return; }
     if (m.op === "ping") return void send(ws, { t: "pong", nonce: m.nonce });
+    if (m.op === "look") return void keepLook(m.look);
     if (m.op === "unsub") {
       for (const id of named(m.watch)) ws.unsubscribe(sessionTopic(id));
       for (const name of feedNames(m.feeds)) ws.unsubscribe(feedTopic(name));

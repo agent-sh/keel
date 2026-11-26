@@ -949,6 +949,13 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // that what it shows is from before.
 // A hidden page asks nothing; it asks the moment it is seen again.
 let socket: WebSocket | undefined;
+// Frames a module says on each socket as it opens, after its resume (lib/look.ts), and one it says now.
+const onOpen = new Set<() => object | undefined>();
+export const sayOnOpen = (f: () => object | undefined) => void onOpen.add(f);
+export function sayOnSocket(m: object): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  try { socket.send(JSON.stringify(m)); return true; } catch { return false; }
+}
 // When the live feed was last known good before a drop (null while what the
 // page shows is current, and before the page's first socket): from the drop
 // until the page has caught up again, not only until a socket speaks. A clock
@@ -1279,6 +1286,7 @@ function sync(ws: WebSocket, quiet = false, again = 0) {
   watch();
   replaying = new Set(Object.keys(cursors));
   ws.send(JSON.stringify(scope.resume(cursors, (m) => ws.readyState === WebSocket.OPEN && (ws.send(JSON.stringify(m)), true))));
+  for (const f of onOpen) { try { const m = f(); if (m) ws.send(JSON.stringify(m)); } catch (e) { reportError(e, { at: "socket open" }); } }
   // What the page loads at start is loaded again: a first load the daemon
   // was not up for (a restart under the page) comes in now, quietly.
   const reload = () => {

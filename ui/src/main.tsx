@@ -3,6 +3,7 @@ import "./lib/fonts.ts";
 import "./lib/shell.ts";
 import "./lib/frames.ts";
 import "./lib/tips.ts";
+import "./lib/look.ts";
 import { createRoot } from "react-dom/client";
 import { App, firstView } from "./App.tsx";
 import { firstDraw } from "./lib/preload.ts";

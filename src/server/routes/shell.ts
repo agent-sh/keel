@@ -5,7 +5,8 @@
 //
 // GET  /api/shell          -> { attached, shells: [{ engine, version, since, acks }], running: [title] }
 //      `running`: the top-level sessions with a turn at work, by title (what
-//      the app names before it stops the daemon).
+//      the app names before it stops the daemon). `looks`: how the owner's pages are
+//      drawn, the newest of each kind of client (src/server/routes/looks.ts).
 // GET  /api/shell/events   the shell's stream (server-sent events). The shell
 //      is attached while it is open. ?engine= and ?version= name it; ?acks=1
 //      says it shows notifications and posts each one's number back. Only
@@ -33,6 +34,7 @@ import { ackShell, attachShell, shellAttached, shellList, shellTakes, tellShells
 import { trayFrame } from "../shell-list.ts";
 import { reach } from "../../automation/reminders.ts";
 import { board } from "./state.ts";
+import { keptLooks } from "./looks.ts";
 
 const json = (v: unknown, status = 200) => Response.json(v, { status });
 const deskOnly = (req: Request) => (isLocal(req) ? undefined : json({ error: "the desktop shell's routes are for this machine only" }, 403));
@@ -96,7 +98,7 @@ export const shellRoutes: RouteModule = (deps) => {
   });
 
   return {
-    "/api/shell": { GET: (req: Request) => deskOnly(req) ?? json({ attached: shellAttached(), shells: shellList(), running: running() }) },
+    "/api/shell": { GET: (req: Request) => deskOnly(req) ?? json({ attached: shellAttached(), shells: shellList(), running: running(), looks: keptLooks() }) },
     "/api/shell/events": {
       GET: (req: Request) => {
         const no = deskOnly(req);

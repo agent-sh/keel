@@ -96,7 +96,9 @@ describe("the parts", () => {
     expect(kebabOf("ui/src/components/WorkBoard.tsx")).toBe("work-board");
   });
   test("the file's problems", () => {
-    expect(readPictures(JSON.stringify({ run: "x", pages: ["ui"], specs: ["a"], sizes: ["big"] })).problems).toEqual(["sizes: big is not WIDTHxHEIGHT"]);
+    expect(readPictures(JSON.stringify({ run: "x", pages: ["ui"], specs: ["a"], sizes: ["big"] })).problems).toEqual(["sizes: big is not WIDTHxHEIGHT or owner"]);
+    const owned = readPictures(JSON.stringify({ run: "x", pages: ["ui"], specs: ["a"], sizes: ["1920x1040", "owner"] })).config!;
+    expect([owned.sizes, owned.owner]).toEqual([[{ w: 1920, h: 1040 }], true]);
     expect(readPictures(JSON.stringify({ run: "x", pages: ["ui"], specs: ["a"] })).config!.pages).toEqual(["ui/"]);
   });
 });

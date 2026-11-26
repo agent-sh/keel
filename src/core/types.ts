@@ -291,11 +291,14 @@ export type SocketFrame =
 // src/server/scope.ts. Without `only` the socket hears every session's
 // stream, as every client did before: a page of an earlier build, a script.
 // `sub` adds to what the socket hears, `unsub` takes away. `ping` asks for a pong.
+// `look` says how the page is drawn (src/server/routes/looks.ts).
 export type ClientFrame =
   | { op: "resume"; cursors: Record<string, number>; only?: boolean; watch?: string[]; feeds?: string[] }
   | { op: "sub"; cursors?: Record<string, number>; watch?: string[]; feeds?: string[] }
   | { op: "unsub"; watch?: string[]; feeds?: string[] }
-  | { op: "ping"; nonce?: number };
+  | { op: "ping"; nonce?: number }
+  // What the page looks like (src/core/look.ts): kept, never answered.
+  | { op: "look"; look: unknown };
 
 // One kind of failure: `ts` is its last time, `count` how often it happened
 // since `first_ts`; `session_id`, `turn_event` (the turn_start event) and

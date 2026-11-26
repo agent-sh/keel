@@ -4,6 +4,7 @@ import { checkpointRoutes } from "./checkpoints.ts";
 import { lspRoutes } from "./lsp.ts";
 import { codeModeRoutes } from "./codemode.ts";
 import { draftRoutes } from "./drafts.ts";
+import { lookRoutes } from "./looks.ts";
 import { errorRoutes } from "./errors.ts";
 import { observeRoutes } from "./observe.ts";
 import { adminRoutes } from "./admin.ts";
@@ -158,6 +159,7 @@ const modules: Record<string, RouteModule> = {
   terminalRoutes, // after fleet: a placed session's commands are asked of its machine
   mobileRoutes, // after automation: it registers the phone as an alert channel
   draftRoutes,
+  lookRoutes,
   marksRoutes, // after automation: unread marks are its alerts
   projectRoutes, // after permissions: a project's default mode goes through its gate
   sessionFolderRoutes,

@@ -215,6 +215,17 @@ export function useCrowded(): boolean {
 export const stepScale = (by: -1 | 1) => setScale(SCALES[Math.min(SCALES.length - 1, Math.max(0, SCALES.indexOf(nearest(state.scale) as (typeof SCALES)[number]) + by))]!);
 state.scale = nearest(pref("keel.textScale", 1));
 applyScale(state.scale);
+// A picture taken at another look (test/e2e/shots.ts, KEEL_LOOK): its view and text size for that picture
+// only, saved nowhere; the event with no detail puts the page's own back. lib/look.ts tells nothing meanwhile.
+export let lookShown = false;
+addEventListener("keel-look", (e) => {
+  const d = (e as CustomEvent<{ view?: string; scale?: number } | null>).detail;
+  lookShown = !!d;
+  const scale = nearest(d?.scale ?? pref("keel.textScale", 1));
+  applyScale(scale);
+  setUI({ scale, workbench: d ? d.view === "workbench" : pref("keel.workbench", false) });
+  dispatchEvent(new Event("resize"));
+});
 
 const media = matchMedia("(prefers-color-scheme: dark)");
 function applyTheme() {
