@@ -15,13 +15,15 @@ import { Empty, Group, Item, List, Notice, Page, Status, type Tone } from "./set
 const MARK: Record<Level, { icon: typeof CircleCheck; tone: string; chip: Tone }> = {
   broken: { icon: CircleAlert, tone: "text-danger", chip: "broken" },
   warning: { icon: TriangleAlert, tone: "text-warn", chip: "warn" },
-  ok: { icon: CircleCheck, tone: "text-ok", chip: "ok" },
+  // What is well asks nothing: its check is grey and its count has no ground. The colour is what is wrong.
+  ok: { icon: CircleCheck, tone: "text-faint", chip: "quiet" },
 };
 
 function Tally({ level, n }: { level: Level; n: number }) {
+  const tone = n ? MARK[level].chip : "quiet";
   return (
-    <Status tone={n ? MARK[level].chip : "quiet"} testid="health-count" data-level={level}>
-      <b className="font-semibold tabular-nums">{n}</b> {LEVEL_WORD[level].toLowerCase()}
+    <Status tone={tone} testid="health-count" data-level={level}>
+      <b className={cn("tabular-nums", tone === "quiet" ? "font-normal" : "font-semibold")}>{n}</b> {LEVEL_WORD[level].toLowerCase()}
     </Status>
   );
 }

@@ -40,6 +40,14 @@ test("health: a broken skill and a dead hook matcher are rows with their fix and
     await expect(page.locator('[data-testid="health-count"][data-level="broken"]')).toContainText(String(report.counts.broken));
     // What is well is in the list too.
     await expect(page.locator('[data-testid="health-row"][data-level="ok"]').first()).toBeVisible();
+    // What is well asks nothing: its check is grey, not a column of green, and its count stands on no colour.
+    {
+      const ink = (v: string) => page.evaluate((v) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = `var(${v})`; const c = getComputedStyle(p).color; p.remove(); return c; }, v);
+      const well = page.locator('[data-testid="health-row"][data-level="ok"] .k-set-lead svg');
+      expect(await well.evaluateAll((els) => [...new Set(els.map((el) => getComputedStyle(el).color))])).toEqual([await ink("--faint")]);
+      await expect(page.locator('[data-testid="health-count"][data-level="ok"]')).toHaveAttribute("data-tone", "quiet");
+      expect(await page.locator('[data-testid="health-row"][data-level="broken"] .k-set-lead svg').first().evaluate((el) => getComputedStyle(el).color)).not.toBe(await ink("--faint"));
+    }
     await shoot(page, "health-01-broken");
 
     // A narrow page keeps the row's fix and its button.
