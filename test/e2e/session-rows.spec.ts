@@ -301,6 +301,9 @@ test("what needs you is named in a long list, and keeps its reason in a narrow o
     await expect(named).toHaveText("Next: Rotate the long-list certificates");
     // One chip: the foot names the next one and counts the rest, it does not list them.
     expect(await strip.locator(".k-need-name[data-session]").count(), "the foot names one session").toBe(1);
+    // It speaks as a dock line does: muted words with no rule over them, and its one dot is the colour.
+    expect(await named.evaluate((el) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = "var(--muted)"; const muted = getComputedStyle(p).color; p.remove(); const c = getComputedStyle(el); return [c.color === muted, c.fontWeight, getComputedStyle(el.closest(".k-need-strip")!).borderTopWidth]; }), "a quiet line").toEqual([true, "400", "0px"]);
+    await expect(named.locator(".k-mark")).toHaveAttribute("data-watch", "need");
     // The list's rows did not move for it: what shrank is the room under them.
     await shoot(page, "session-rows-need-strip");
     // The same at the desk's own size.

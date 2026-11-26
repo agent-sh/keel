@@ -247,7 +247,10 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     await expect(head).toContainText("Not moving");
     expect(await head.evaluate((el) => getComputedStyle(el).textTransform), "no capitals").toBe("none");
     await expect(strip.locator("svg"), "no warning glyph").toHaveCount(0);
-    expect(await strip.evaluate((el) => { const c = getComputedStyle(el); return [c.borderTopWidth, c.backgroundColor, c.boxShadow]; }), "no box").toEqual(["0px", "rgba(0, 0, 0, 0)", "none"]);
+    expect(await strip.evaluate((el) => { const c = getComputedStyle(el); return [c.borderTopWidth, c.borderBottomWidth, c.backgroundColor, c.boxShadow]; }), "no box and no rule").toEqual(["0px", "0px", "rgba(0, 0, 0, 0)", "none"]);
+    // Its head and its titles are in the quiet inks at a regular weight: the entry's own dot is the one colour.
+    expect(await head.evaluate((el) => getComputedStyle(el).fontWeight), "a head that is not heavy").toBe("400");
+    expect(await strip.locator(".k-row-title").first().evaluate((el) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = "var(--muted)"; const muted = getComputedStyle(p).color; p.remove(); return getComputedStyle(el).color === muted; }), "muted titles").toBe(true);
     await expect.poll(() => tip(strip.locator(`[data-session="${stream}"]`))).toMatch(/no output/);
     await expect.poll(() => tip(strip.locator(`[data-session="${tool}"]`))).toMatch(/Running until .+, no output/);
     // An agent is no entry of its own: the session it works for is, with how many of its agents are stuck.
