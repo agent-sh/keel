@@ -967,6 +967,14 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 /* (The clock stays at every width: the line is the one place that says how long the step has run.) */
 @container docket (max-width: 34rem) { .k-now-project .k-now-name { display: none; } .k-now-project { padding: 0 0.375rem; } }
 @container docket (max-width: 26rem) { .k-now-files, .k-docket-jobs-word { display: none; } .k-now-name { max-width: 5rem; } }
+/* A phone: while the line says what the session does, those words get the room and the folder is its mark alone
+   (its press and its name for a reader stay). */
+/* A wait's words stand still, so they may take a second line there instead of losing their end. */
+@container docket (max-width: 26rem) {
+  .k-now:has(.k-now-act) .k-now-folder .k-now-name { display: none; }
+  .k-now:has(.k-now-act) .k-now-folder { padding: 0 0.375rem; }
+  .k-now[data-moment="waiting"] .k-now-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
+}
 /* The marker of the action: its own shape at rest, so that with motion off the three still differ. */
 .k-moment { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 0.125rem; width: 1rem; height: 1rem; color: var(--st-work); }
 .k-moment > i { display: block; flex-shrink: 0; background: currentColor; }

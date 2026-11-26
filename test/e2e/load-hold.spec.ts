@@ -47,6 +47,14 @@ test("a loop run waits while the machine is over its line, the rail and Health s
     expect(await page.locator('.k-mark[data-watch="need"]').count()).toBe(0);
     expect(await page.getByTestId("load-hold").locator(".k-load-line-what").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     await shoot(page, "load-hold-00-held");
+    // On a phone the wait's words are read whole: the folder is its mark alone and the words take a second line.
+    const size = page.viewportSize();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const text = page.getByTestId("dock-action-text");
+    await expect(text).toContainText("Waits for the machine: load");
+    await expect.poll(() => text.evaluate((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight)).toBe(true);
+    await shoot(page, "load-hold-02-phone");
+    if (size) await page.setViewportSize(size);
     await page.getByTestId("load-hold").click();
     await expect(page.getByTestId("health-panel")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
     const row = page.locator('[data-testid="health-row"]').filter({ hasText: "1 tree waits for the machine" });
