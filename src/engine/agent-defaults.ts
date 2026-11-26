@@ -9,23 +9,32 @@
 import { registerSettings, settings } from "../admin/settings.ts";
 import type { Session, SessionSettings } from "../core/types.ts";
 import { COMPACT_SHARE } from "./compact.ts";
+import { READER_TIER, tiersProblem, type Tier } from "./tiers.ts";
 
 // The smallest share of a window an agent compacts at. Under it the system prompt, the tools and a
 // summary leave too little room for a step in a small window, and the agent would compact at every step.
 export const MIN_WINDOW_SHARE = 0.3;
 
-export const AGENT_DEFAULTS = { window_share: null as number | null, cache_plan: true, read_through: false };
+// `tiers`: the owner's table of agent tiers (src/engine/tiers.ts), empty until he sets one or takes the
+// import of his own words (src/server/routes/tiers.ts); `tiers_import`: that import was used or put away.
+export const AGENT_DEFAULTS = { window_share: null as number | null, cache_plan: true, read_through: false, tiers: [] as Tier[], tiers_import: null as "used" | "dismissed" | null };
 const DEFAULTS = AGENT_DEFAULTS;
 const check = (v: any) =>
   v.window_share !== null && !(typeof v.window_share === "number" && v.window_share >= MIN_WINDOW_SHARE && v.window_share <= 1) ? `window_share is a share of the model's window from ${MIN_WINDOW_SHARE} to 1, or null for the usual ${COMPACT_SHARE}`
   : typeof v.cache_plan !== "boolean" ? "cache_plan is true or false"
-  : typeof v.read_through !== "boolean" ? "read_through is true or false" : undefined;
+  : typeof v.read_through !== "boolean" ? "read_through is true or false"
+  : v.tiers_import !== null && v.tiers_import !== "used" && v.tiers_import !== "dismissed" ? "tiers_import is used, dismissed or null"
+  : tiersProblem(v.tiers);
 registerSettings("agents", DEFAULTS, check);
 // What a session the owner talks to does by default: its long file reads come back as a reader's compiled reading.
 export const SESSION_DEFAULTS = { read_through: true };
 registerSettings("sessions", SESSION_DEFAULTS, (v) => (typeof v.read_through !== "boolean" ? "read_through is true or false" : undefined));
 
 const agents = (): typeof DEFAULTS => settings().agents;
+// The owner's agent tiers now.
+export const agentTiers = (): Tier[] => agents().tiers ?? [];
+// The model of the owner's reader tier, which readers read through first (src/engine/turn.ts ownSmall).
+export const readerTierModel = (): string | undefined => agentTiers().find((t) => t.name.trim().toLowerCase() === READER_TIER)?.model.trim() || undefined;
 
 // The first value of a session setting up the tree: the session's own, else its parent's, and so on.
 function up<K extends keyof SessionSettings>(key: K, s: Session, parentOf: (id: string) => Session | undefined): SessionSettings[K] | undefined {

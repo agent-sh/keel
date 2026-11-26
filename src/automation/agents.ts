@@ -53,6 +53,8 @@ import type { AgentLanding } from "./landing.ts";
 import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, parentLine, successorOrder, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { firstOpen, skippedWords } from "../providers/account.ts";
 import { routeShut } from "./incidents.ts";
+import { agentTiers } from "../engine/agent-defaults.ts";
+import { pickTier, tierLine, type TierPick } from "../engine/tiers.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryDir, memoryOff, memoryOver, SCOPES, type MemoryScope } from "./agent-memory.ts";
@@ -177,6 +179,7 @@ export type AgentDef = {
   file?: string; // the definition's file (none for a built-in)
   silent?: boolean; // its result goes to its own panel (a reviewer's findings), not to the parent's conversation
   effort?: string; // a reasoning effort, used when the child's model lists it
+  tier?: string; // a tier of the owner's agent tiers (agents.tiers, src/engine/tiers.ts) its agents start on when no model is named
   format?: "codex"; // a Codex TOML file: its model is another harness's id, a preference rather than a demand
   // Claude Code's sub-agent fields (code.claude.com/docs/en/sub-agents, "Supported frontmatter fields"):
   maxTurns?: number;      // the model steps it may take before it stops, its report marked partial
@@ -592,6 +595,7 @@ function readFiles(files: string[], source: string, plugin = false): AgentDef[] 
         timeoutMins: fm.meta.timeout_mins ? Number(fm.meta.timeout_mins) : undefined,
         permissionMode: plugin ? undefined : modeName(fm.meta.permission_mode ?? fm.meta.permissionMode),
         isolation: fm.meta.isolation === "worktree" ? "worktree" : fm.meta.isolation === "none" ? "none" : undefined,
+        ...(typeof fm.meta.tier === "string" && fm.meta.tier.trim() ? { tier: fm.meta.tier.trim() } : {}),
         ...claudeFields(fm.meta, plugin),
         budget: budgetOfMeta(fm.meta),
       });
@@ -620,7 +624,7 @@ function readCodexDir(dir: string, source: string): AgentDef[] {
       if (!name || !description || !body) throw new Error("a Codex agent file needs name, description and developer_instructions");
       out.push({
         name, description, body, source, file: p, format: "codex",
-        model: str(t.model), effort: str(t.model_reasoning_effort),
+        model: str(t.model), effort: str(t.model_reasoning_effort), ...(str(t.tier) ? { tier: str(t.tier) } : {}),
         disallowed: t.features?.shell_tool === false ? ["Bash"] : undefined,
       });
     } catch (e) {
@@ -934,6 +938,7 @@ export type SpawnInput = {
   branch?: string; // Keel's own: an existing branch its worktree has out (it takes over a gone agent's work); never from a tool's input
   writes?: unknown; // the folders, files or globs it may write (src/automation/write-asks.ts); a reviewer gets its own folders
   effort?: string; // over its definition's (a skill's with context: fork), and the spawn tools' own; else its parent's
+  tier?: string; // a tier of the owner's agent tiers by name, or a task kind one lists (src/engine/tiers.ts)
   speed?: string; // a speed offer of its model (the id or the label); else its parent's, when its model lists it
   disallowed?: string[]; // added to its definition's (a skill's disallowed-tools with context: fork); not in any tool's schema
   reviews?: unknown; // the branch (or branches) it reviews, for the work board (src/board/rules.ts reviewsInput)
@@ -1067,9 +1072,23 @@ const API_LINE = `Your commands may read the daemon's read-only lists through it
 async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal: AbortSignal | undefined, depth: number, max: number, queued?: number) {
   const { store, bus, engine } = D();
   const parentId = parent.id;
+  const route = routeOf(store, parentId);
+  const explore = def.name === "Explore" && def.source === "built-in";
+  // The owner's tier for it (agents.tiers): when the spawn names no model and names a tier, or its type names no
+  // model either. Rows whose model does not list, takes no work now or is not allowed in the folder give way to the next.
+  const tierWords: string[] = [];
+  let tiered: TierPick | undefined;
+  if (!input.fork && !input.model && (input.tier?.trim() || !def.model)) {
+    const got = pickTier(agentTiers(), { asked: input.tier, defTier: def.tier, type: def.name, explore }, await D().providers.models(),
+      (m) => routeShut(m) ?? (crossingIn(route, "agent", m) ? "is not allowed for this folder" : undefined));
+    if (got && "error" in got) throw new Error(got.error);
+    if (got && "pick" in got) tiered = got.pick;
+    if (got && "none" in got) tierWords.push(`No tier of agents.tiers could take it (${got.none.join("; ")}), so it starts as it would with no tiers`);
+  }
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
-  const tried = !input.fork && !input.model && !def.model && !(def.name === "Explore" && def.source === "built-in") ? await trialBuilder(parent, mergeBudget(def.budget, parseBudget(input.budget))) : undefined;
+  const tried = !tiered && !input.fork && !input.model && !def.model && !explore ? await trialBuilder(parent, mergeBudget(def.budget, parseBudget(input.budget))) : undefined;
   let model = input.fork ? parent.model
+    : tiered ? tiered.model
     : tried ? tried
     : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
     : !input.model && !def.model && def.name === "Explore" && def.source === "built-in" && readRunsOf(parent, (id) => D().store.session(id)) === "reader"
@@ -1078,7 +1097,6 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // The agent reads its parent's content: its model's provider must be one the parent's folder allows
   // (src/safety/content-routes.ts). A model the caller named is refused; a type's own model gives way
   // to the parent's.
-  const route = routeOf(store, parentId);
   const cross = crossingIn(route, "agent", model);
   if (cross) {
     sayCrossing(parent, cross, false);
@@ -1094,8 +1112,10 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // What the parent has and the child's model does not list is left off and said; a speed the spawn names
   // that the model does not list is refused, with the ones it lists.
   const parentNow = store.session(parent.id) ?? parent;
-  const inheritedEffort = !input.effort && !def.effort && typeof parentNow.settings.effort === "string" ? parentNow.settings.effort : undefined;
-  const wantEffort = input.effort ?? def.effort ?? inheritedEffort;
+  // A tier's model runs at the tier's effort, else at its own default: the parent's effort is for another model.
+  const onTier = !!tiered && model === tiered.model;
+  const inheritedEffort = !input.effort && !def.effort && !onTier && typeof parentNow.settings.effort === "string" ? parentNow.settings.effort : undefined;
+  const wantEffort = input.effort ?? (onTier ? tiered!.effort : undefined) ?? def.effort ?? inheritedEffort;
   const effort = wantEffort && info.efforts?.includes(wantEffort) ? wantEffort : undefined;
   const askedSpeed = typeof input.speed === "string" && input.speed.trim() && input.speed.trim().toLowerCase() !== "standard" ? input.speed.trim() : undefined;
   if (input.speed !== undefined && typeof input.speed !== "string") throw new Error("speed is the id of one of the model's speeds, or standard");
@@ -1189,6 +1209,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (wantEffort && !effort && (input.effort || inheritedEffort || def.format !== "codex")) left.push(`${inheritedEffort ? "your effort" : "the effort"} ${wantEffort}: ${model} does not list it`);
   if (inheritedSpeed && !speed) left.push(`your speed ${inheritedSpeed}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);
+  if (onTier) tierWords.unshift(tierLine(tiered!));
+  else if (tiered) tierWords.unshift(`Tier ${tiered.tier} named ${tiered.model}, but it starts on ${model}: ${tiered.model} takes no work for this folder now`);
+  if (tierWords.length) { tierOut.set(id, tierWords.join(" ")); if (tierOut.size > EARLIER_KEPT) tierOut.delete(tierOut.keys().next().value!); }
   if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
   const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
   // The agent's start does not wait for the look past EARLIER_WAIT_MS: a slower answer is still said in a
@@ -1228,7 +1251,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     lineUp(get(id)!);
     return get(id)!;
   }
-  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})${leftLine(id)}`, { agent_id: id, child_session: child.id });
+  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${onTier ? `, tier ${tiered!.tier}` : ""}${placed ? `, its tools on ${placed.name}` : ""})${leftLine(id)}`, { agent_id: id, child_session: child.id });
   return begin(id, input, model, signal);
 }
 
@@ -1359,6 +1382,9 @@ export function notCarried(id: string): string {
   const l = leftOut.get(id);
   return l?.length ? `\n\nIts definition asks for what Keel does not give it: ${l.join("; ")}.` : "";
 }
+// Which of the owner's tiers an agent started on and why (src/engine/tiers.ts), by agent id, for the spawn's result to say.
+const tierOut = new Map<string, string>();
+export const tierNote = (id: string) => tierOut.get(id) ?? "";
 // Where an agent with a write scope may write and why it has one, by agent id, for the spawn's result to say.
 const scopeOut = new Map<string, string>();
 export const scopeNote = (id: string) => scopeOut.get(id) ?? "";
@@ -1389,7 +1415,8 @@ export const takeEarlier = (id: string) => {
 export function spawnNotes(id: string): string {
   const s = scopeOut.get(id);
   const f = takeFork(id);
-  return notCarried(id) + (s ? `\n\n${s}` : "") + (f ? `\n\n${f}` : "") + takeEarlier(id);
+  const t = tierOut.get(id);
+  return (t ? `\n\n${t}` : "") + notCarried(id) + (s ? `\n\n${s}` : "") + (f ? `\n\n${f}` : "") + takeEarlier(id);
 }
 
 // Whether the owner's own words are in a session's running turn (a stand-in engine that does not say: no).

@@ -62,7 +62,7 @@ import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, freshStartText, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
-import { cachePlanOn, compactLimit, readThrough } from "./agent-defaults.ts";
+import { cachePlanOn, compactLimit, readThrough, readerTierModel } from "./agent-defaults.ts";
 import { readAim, readNamed } from "./read-aim.ts";
 import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
 import { PriceFacts } from "./price-facts.ts";
@@ -1297,9 +1297,11 @@ export class Engine {
 
   // The small models a request of the session's tree reads through first: the owner's, with the model the
   // tree is trying in this role (src/engine/model-trial.ts) ahead of them.
+  // Readers go through the owner's reader tier (agents.tiers, src/engine/tiers.ts) after the trial's model.
   private ownSmall(id: string, role: "reader" | "small"): string[] {
     const t = trialModel(role, this.store.session(id), (x) => this.store.session(x));
-    return t ? [t, ...smallModels().filter((x) => x !== t)] : smallModels();
+    const tier = role === "reader" ? readerTierModel() : undefined;
+    return [...new Set([t, tier, ...smallModels()].filter((x): x is string => !!x))];
   }
 
   // One request for the title, through the owner's small models in order (the

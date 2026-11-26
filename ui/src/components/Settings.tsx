@@ -14,6 +14,7 @@ import { ReadThrough } from "./ReadThrough.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 import { NewModelCards } from "./NewModels.tsx";
 import { RouteChange } from "./RouteChange.tsx";
+import { AgentTiers } from "./AgentTiers.tsx";
 import { Seg } from "./Seg.tsx";
 
 // Settings building blocks other lanes reuse for their sections: the kit (components/settings/kit.tsx).
@@ -157,6 +158,7 @@ function Models() {
           </button>
         </SettingRow>
       </Card>
+      <AgentTiers />
       <RouteChange />
       {byProvider.map(([p, list]) => (
         <Card key={p}>

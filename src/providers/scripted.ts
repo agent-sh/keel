@@ -52,6 +52,7 @@
 //                               and Anthropic's rate-limit headers saying what is left
 //   script:account-wait         a reply that says its place among the answers since the limit
 //                               ended, and how many requests the account refused
+import { TIERS_SYSTEM } from "../engine/tiers-import.ts";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -383,6 +384,9 @@ export class ScriptedProvider implements Provider {
       const named = prompts.map((p) => p.match(/script:title[ \t]+([^\n]+)/)?.[1]?.trim()).filter(Boolean).at(-1);
       return reply(named ?? (prompts[0] ?? "").split("\n").find((l) => l.trim()) ?? "");
     }
+
+    // The tiers' import (src/engine/tiers-import.ts): the table the owner's `script:tiers <json>` words give, else none.
+    if (req.system === TIERS_SYSTEM) return reply(lastText.match(/script:tiers[ \t]+([^\n]+)/)?.[1]?.trim() ?? "[]");
 
     // The helper's look at an error (src/helper/error-look.ts): it answers with the `script:say` line the error's own
     // text carries, else a look that blames nothing.

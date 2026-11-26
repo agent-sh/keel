@@ -20,6 +20,7 @@ import { bindLedger } from "../checks/ledger.ts";
 import { Worktrees } from "../worktree/manager.ts";
 import * as writeAsks from "./write-asks.ts";
 import { scopes } from "../safety/write-scope.ts";
+import { patchSettings } from "../admin/settings.ts";
 
 // Agents get git worktrees here, several git commands each, and on a busy disk one git
 // command takes half a second: the 5 s default was passed in whole-suite runs.
@@ -1953,6 +1954,56 @@ test("an agent inherits its parent's effort and speed, a spawn may set either, a
     for (const x of [a, b, c, g]) end(x, "end_turn");
     await settled();
   } finally {
+    setDeps(baseDeps);
+  }
+});
+
+// FIND-M75: the owner's agent tiers. A spawn with no model starts on its tier's model and effort, says which tier
+// and why, falls to the next tier when a model does not list, and a named model or a fork keeps no tier.
+test("a spawn with no model starts on the owner's tier, falls to the next one when its model does not list, and says so", async () => {
+  const infos: Record<string, any> = {
+    "m:x": { id: "m:x", provider: "m", model: "x", name: "x", efforts: ["low", "high"] },
+    "m:y": { id: "m:y", provider: "m", model: "y", name: "y", efforts: ["medium", "high"] },
+    "m:z": { id: "m:z", provider: "m", model: "z", name: "z", efforts: ["high"] },
+  };
+  setDeps({ ...baseDeps, providers: { ...baseDeps.providers, models: async () => Object.values(infos), resolve: async (id: string) => ({ info: infos[id] }) } });
+  try {
+    expect(patchSettings({ agents: { tiers: [
+      { name: "build", model: "m:y", effort: "medium", use: ["default"] },
+      { name: "research", model: "m:gone", effort: "high", use: ["survey"] },
+      { name: "simple", model: "m:z", effort: "high" },
+      { name: "reader", model: "m:z" },
+    ] } }).ok).toBe(true);
+    const p = store.createSession({ model: "m:x", workspace: dir, title: "tiers", settings: { effort: "low" } });
+    store.append(p.id, "assistant", { blocks: [] });
+    // Each agent's first answer lets the next one on its model start (the cache stagger), as in the daemon.
+    const own = async (o: Partial<agents.SpawnInput> = {}) => {
+      const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true, ...o });
+      bus.emit({ t: "event", event: { session_id: a.session_id, kind: "assistant" } } as any);
+      return a;
+    };
+    const on = (a: agents.AgentRecord) => [store.session(a.session_id)!.model, store.session(a.session_id)!.settings.effort];
+    // No tier named: the tier for every other agent, at its effort (not the parent's).
+    const a = await own();
+    expect(on(a)).toEqual(["m:y", "medium"]);
+    expect(agents.spawnNotes(a.id)).toContain("Tier build: m:y at medium effort, because tier build is for every other agent.");
+    // A kind a tier lists, whose model is not listed: the next tier down, said.
+    const b = await own({ tier: "survey" });
+    expect(on(b)).toEqual(["m:z", "high"]);
+    expect(agents.tierNote(b.id)).toBe("Tier simple: m:z at high effort, because the spawn names the kind survey, which tier research lists, in place of tier research. Not taken: tier research's model m:gone is not listed now.");
+    // A tier named by its name.
+    const c = await own({ tier: "Simple" });
+    expect(on(c)).toEqual(["m:z", "high"]);
+    expect(agents.tierNote(c.id)).toContain("because the spawn names tier simple.");
+    // A named model keeps no tier; an unknown tier is refused.
+    const d = await own({ model: "m:x" });
+    expect(on(d)).toEqual(["m:x", "low"]);
+    expect(agents.tierNote(d.id)).toBe("");
+    await expect(own({ tier: "fastest" })).rejects.toThrow(/no tier "fastest".*build, research, simple, reader/);
+    for (const x of [a, b, c, d]) end(x, "end_turn");
+    await settled();
+  } finally {
+    patchSettings({ agents: { tiers: null } });
     setDeps(baseDeps);
   }
 });
