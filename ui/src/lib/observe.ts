@@ -1,5 +1,6 @@
 // Traces, the debug bundle and "fix this", shared by the Errors panel, the
 // Traces side panel and the Logs settings.
+import { useSyncExternalStore } from "react";
 import { copyOrSay } from "./copy.ts";
 import { api } from "./store.ts";
 import { getUI, navigate, savePref, setUI } from "./ui.ts";
@@ -39,8 +40,23 @@ export function copyBundle(t: BundleTarget, at?: Element | null): Promise<boolea
 
 // A new session asked to find the cause and fix it, with the bundle on disk; the page goes there.
 // `task`: the agent's instruction in place of the stock one; `repo: "keel"`: it works in Keel's source folder.
+// One fix a cause (src/server/routes/observe.ts): the open fix session of each error's cause, by error id, as the
+// daemon last said. A press on a cause that has one opens it; the daemon decides, this only names the button.
+let fixes: Record<string, string> = {};
+const fixSubs = new Set<() => void>();
+const setFixes = (next: Record<string, string>) => { fixes = next; fixSubs.forEach((f) => f()); };
+export async function loadFixes(errorIds: string[]) {
+  if (!errorIds.length) return;
+  const r = await api<{ fixes: Record<string, string> }>(`/api/debug/fixes?error_ids=${errorIds.slice(0, 200).map(encodeURIComponent).join(",")}`);
+  const next = { ...fixes };
+  for (const id of errorIds) delete next[id];
+  setFixes({ ...next, ...r.fixes });
+}
+export const useFixOf = (errorId: string): string | undefined => useSyncExternalStore((f) => (fixSubs.add(f), () => void fixSubs.delete(f)), () => fixes[errorId]);
+
 export async function fixThis(t: BundleTarget & { task?: string; repo?: "keel" }) {
-  const r = await api<{ session: { id: string }; path: string }>("/api/debug/fix", { method: "POST", body: JSON.stringify(t) });
+  const r = await api<{ session: { id: string }; path?: string; existing?: boolean }>("/api/debug/fix", { method: "POST", body: JSON.stringify(t) });
+  if (t.error_id) setFixes({ ...fixes, [t.error_id]: r.session.id });
   setUI({ errors: false });
   navigate({ name: "session", id: r.session.id });
   return r;

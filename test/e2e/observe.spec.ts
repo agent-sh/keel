@@ -129,7 +129,8 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await page.goto(`/s/${lead.id}`);
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "child work\nscript:calls []", isolation: "none" } }])}`);
     await page.getByTestId("composer").press("Enter");
-    await expect(page.getByTestId("turn-end").first()).toBeVisible({ timeout: 20_000 });
+    // (The page folds a turn the agent's report woke with the one before it, so the end is read from the session.)
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${lead.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 20_000 }).toBe(true);
     const spawned = async () => {
       const first = (await (await request.get(`/api/debug/traces?session_id=${lead.id}`)).json()).traces.at(-1);
       const spans = first ? (await (await request.get(`/api/debug/traces/${first.trace_id}`)).json()).spans : [];
@@ -160,6 +161,19 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     expect(existsSync(path)).toBe(true);
     expect(readFileSync(path, "utf8")).toContain(broken);
     await shoot(page, "observe-04-fix-session");
+
+    // One fix a cause: the row now opens that session, said on its button, and a press starts no other.
+    const fixUrl = page.url();
+    const fixes = async () => (await (await request.get("/api/sessions")).json()).sessions.filter((x: any) => String(x.title).startsWith("Fix: ")).length;
+    const many = await fixes();
+    await page.getByTestId("errors-button").click();
+    const reopen = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: broken }).first();
+    await reopen.hover();
+    await expect(reopen.getByTestId("error-fix")).toContainText("Open the fix");
+    await shoot(page, "observe-07-fix-open");
+    await reopen.getByTestId("error-fix").click();
+    await expect(page).toHaveURL(fixUrl);
+    expect(await fixes()).toBe(many);
 
     // The daemon log, live, filtered, and the export count.
     await page.goto("/settings/logs");

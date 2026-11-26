@@ -2,7 +2,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Activity, Bug, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { agentCanFix, rowFailure, stoppedOn } from "../lib/failure.ts";
-import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
+import { copyBundle, fixThis, loadFixes, openTrace, type Span, traceOfTurn, useFixOf } from "../lib/observe.ts";
 import type { ErrorRecord, ErrorSite } from "../../../src/core/types.ts";
 import { elsewhere, ERROR_STATE, errorState, healedWords } from "../../../src/admin/error-rows.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
@@ -137,6 +137,9 @@ function Row({ e }: { e: ErrorRecord }) {
   const failure = rowFailure(e);
   const live = useStore((st) => !!e.session_id && stoppedOn(st.errors, e.session_id, st.sessions[e.session_id]?.settings.failed_ms) === e.id);
   const fixable = agentCanFix(e);
+  // The session already working on this failure's cause, if one is: the press opens it (one fix a cause).
+  const fixOpen = useFixOf(e.id);
+  const fixWorks = useStore((st) => (fixOpen ? st.sessions[fixOpen]?.phase === "working" : false));
   const acts = !!failure && !!(live || failure.fix || failure.page);
   // One primary action a row, and only where there is one to lead with: the page that fixes it, else trying again.
   // The rest, Fix this included, are text.
@@ -233,11 +236,11 @@ function Row({ e }: { e: ErrorRecord }) {
                 className={tool}
                 data-quiet=""
                 disabled={fixing}
-                title="Starts a session that reads this failure's debug bundle and fixes the cause"
+                title={fixOpen ? `Opens the session already ${fixWorks ? "working on" : "started for"} this cause; archive it to start a fresh one` : "Starts a session that reads this failure's debug bundle and fixes the cause"}
                 onClick={() => { setFixing(true); fixThis(target).catch(reportError).finally(() => setFixing(false)); }}
                 data-testid="error-fix"
               >
-                <Wrench className="size-3.5 text-accent" /> {fixing ? "Starting" : "Fix this"}
+                <Wrench className="size-3.5 text-accent" /> {fixing ? (fixOpen ? "Opening" : "Starting") : fixOpen ? (fixWorks ? "Open the fix, working" : "Open the fix") : "Fix this"}
               </button>
             )}
           </span>
@@ -330,6 +333,9 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
   const recovered = errors.filter((e) => errorState(e) === "recovered");
   const resolved = errors.filter((e) => e.resolved_ts);
   const list = tab === "open" ? (unreadOnly ? unread : openList) : tab === "recovered" ? recovered : resolved;
+  // Which rows' causes have a fix session already, read when the panel opens or its rows change.
+  const listed = list.map((e) => e.id).join(",");
+  useEffect(() => { if (open && listed) loadFixes(listed.split(",")).catch((err) => reportError(err, { at: "error fixes" })); }, [open, listed]);
   // A few open errors are a popover over the corner they are reached from, not a drawer of a page's height; the
   // tabs that hold nothing are not drawn, and with only one left there is no strip.
   const popover = tab === "open" && openList.length < 3;

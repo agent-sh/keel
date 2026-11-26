@@ -11,7 +11,15 @@ import { observeRoutes } from "./observe.ts";
 const hooksAtStart = allHooks().length; // the routes register turn hooks on this store: taken off before it closes
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "observe-routes-"));
 const store = new Store(dir);
-const routes = observeRoutes({ store, bus: new Bus(), engine: { isRunning: () => false, statusOf: () => undefined }, providers: {}, errors: { capture: () => {} }, workspace: dir } as any) as any;
+// The errors a fix is asked for, and the prompts the fix sessions were sent.
+const rows = new Map<string, any>();
+const sent: string[] = [];
+const routes = observeRoutes({
+  store, bus: new Bus(), workspace: dir,
+  engine: { isRunning: () => false, statusOf: () => undefined, send: (id: string) => void sent.push(id) },
+  providers: { defaultModel: async () => "p:m", resolve: async () => ({}) },
+  errors: { capture: () => {}, get: (id: string) => rows.get(id), find: (id: string) => rows.get(id) },
+} as any) as any;
 const G = globalThis as any;
 afterAll(() => {
   clearInterval(G.__keelSpanPrune);
@@ -56,4 +64,29 @@ test("a retry whose kept request aged out is not offered for replay, and says wh
   const r = await at("POST", "/replay");
   expect(r.status).toBe(409);
   expect(((await r.json()) as any).error).toContain("aged out");
+});
+
+// FIND-S54: one fix a failure's cause. Two presses on errors of one cause, a moment apart, start one session; a later
+// press opens it while it is not archived, and the fixes list names it for each error of the cause.
+test("two Fix presses on one cause start one session, and a later one opens it", async () => {
+  const now = Date.now();
+  for (const id of ["stall-a", "stall-b"]) rows.set(id, { id, ts: now, source: "server", message: `The loop was held for ${id === "stall-a" ? 812 : 2301} ms: reading the call marks`, stack: null, context: null });
+  rows.set("other", { id: "other", ts: now, source: "server", message: "TypeError: x is undefined", stack: null, context: null });
+  const fix = (error_id: string) => routes["/api/debug/fix"].POST(new Request("http://x/api/debug/fix", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ error_id }) })) as Promise<Response>;
+  const [one, two] = await Promise.all([fix("stall-a"), fix("stall-b")]);
+  const a = (await one.json()) as any, b = (await two.json()) as any;
+  expect(a.session.id).toBe(b.session.id);
+  expect(sent).toEqual([a.session.id]);
+  const later = (await (await fix("stall-b")).json()) as any;
+  expect([later.session.id, later.existing]).toEqual([a.session.id, true]);
+  // Another cause is another fix.
+  const other = (await (await fix("other")).json()) as any;
+  expect(other.session.id).not.toBe(a.session.id);
+  const listed = (await (routes["/api/debug/fixes"].GET(new Request("http://x/api/debug/fixes?error_ids=stall-a,stall-b,other,none")) as Response).json()) as any;
+  expect(listed.fixes).toEqual({ "stall-a": a.session.id, "stall-b": a.session.id, other: other.session.id });
+  // An archived fix frees its cause: the next press starts a fresh one.
+  store.db.query("UPDATE sessions SET archived = 1 WHERE id = ?").run(a.session.id);
+  const fresh = (await (await fix("stall-a")).json()) as any;
+  expect(fresh.session.id).not.toBe(a.session.id);
+  expect(fresh.existing).toBeUndefined();
 });

@@ -7,7 +7,10 @@
 //        task: the instruction for the agent, in place of the stock one (the helper's look writes one for a bug of
 //        Keel's); repo "keel": the agent works in Keel's own source folder (from the checkout the daemon runs from, else helper.keel_repo, else the folder the binary was built from; 409 saying which is missing)
 //        writes the bundle under the state folder and starts a session that is
-//        asked to find the cause and fix it -> { session, path }
+//        asked to find the cause and fix it -> { session, path }. One fix a cause: while the session started for the
+//        failure's cause (its error group, else its span or turn) is there and not archived, a press opens it
+//        -> { session, existing: true }; two presses at once start one session.
+// GET  /api/debug/fixes?error_ids=a,b            { fixes: { <error id>: <session id> } }: the open fix of each one's cause
 // GET  /api/debug/traces?session_id=&limit=     a session's traces (their root spans), newest first
 //                                               (limit: a whole number from 1, 50 by default, at most 200)
 // GET  /api/debug/traces/:id                    { spans } of one trace, in start order
@@ -27,6 +30,7 @@ import { buildBundle } from "../../admin/bundle.ts";
 import { detached } from "../../core/errors.ts";
 import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
+import { causeOf } from "../../helper/error-look.ts";
 import { keelRepo } from "../../core/keel-source.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
 import { agentLine, say, sayAt, stopLine } from "../../admin/daemon-log.ts";
@@ -70,8 +74,21 @@ function source(): { dir: string; commit?: string } | undefined {
 
 export let tracer: Tracer | undefined;
 
+// The key a fix is kept under: an error's cause (the helper's grouping, src/helper/error-look.ts), else the span or turn it names.
+export const fixKey = (b: { error_id?: string; session_id?: string; turn_event?: string; span_id?: string }, err?: { source: string; message: string }) =>
+  err ? `cause:${causeOf(err)}` : b.span_id ? `span:${b.span_id}` : b.session_id ? `turn:${b.session_id}:${b.turn_event ?? ""}` : undefined;
+
 export const observeRoutes: RouteModule = ({ store, bus, engine, providers, errors, workspace }) => {
   installLogs(store.stateDir);
+  store.migrate("CREATE TABLE IF NOT EXISTS debug_fixes (key TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL)");
+  // The fix session kept for a key while it is there and not archived (an archived or deleted one frees the key).
+  const openFix = (key: string) => {
+    const r = store.db.query<{ session_id: string }, [string]>("SELECT session_id FROM debug_fixes WHERE key = ?").get(key);
+    const s = r ? store.session(r.session_id) : undefined;
+    return s && !s.archived ? s : undefined;
+  };
+  // A fix being started now, by key: a second press waits for it and opens the same session.
+  const starting = new Map<string, Promise<Response>>();
   const t = (tracer = new Tracer(store, bus, (id) => engine.isRunning(id)));
   // An error that names a span is filed under that span's session and turn.
   errors.spanOf = (id) => t.span(id);
@@ -214,6 +231,42 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     return buildBundle(store, t, { error, session_id: q.session_id ?? undefined, turn_event: q.turn_event ?? undefined, span_id: q.span_id ?? undefined, daemon: { state_dir: store.stateDir }, version, live: (id) => ({ running: engine.isRunning(id), status: engine.statusOf(id) }) });
   };
 
+  // A new fix session for the failure the body names, kept under its key.
+  async function startFix(body: any, key: string | undefined): Promise<Response> {
+    const b = bundleFor({ error_id: body.error_id, session_id: body.session_id, turn_event: body.turn_event, span_id: body.span_id });
+    if ("status" in b) return json({ error: b.error }, b.status);
+    const dir = join(store.stateDir, "debug");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, `bundle-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
+    writeFileSync(path, b.markdown, { mode: 0o600 });
+    const kind = body.error_id ? errors.get(body.error_id) : undefined;
+    const err = kind && atSession(kind, body.session_id ?? undefined);
+    const from = err?.session_id ? store.session(err.session_id) : body.session_id ? store.session(body.session_id) : undefined;
+    // Keel's own failures are fixed in Keel's source when the daemon runs from it; others where they happened.
+    const own = err && (err.source === "server" || err.source === "client");
+    if (body.task !== undefined && (typeof body.task !== "string" || !body.task.trim() || body.task.length > 6000)) return json({ error: "task is the agent's instruction, up to 6000 characters" }, 400);
+    const keel = keelRepo();
+    if (body.repo === "keel" && !body.workspace && "problem" in keel) return json({ error: `Keel's source folder is not known: ${keel.problem}` }, 409);
+    const keelDir = "repo" in keel ? keel.repo.dir : undefined;
+    const ws = resolve(body.workspace || (body.repo === "keel" ? keelDir! : own && keelDir ? keelDir : from?.workspace ?? keelDir ?? workspace));
+    const model = body.model || (await providers.defaultModel());
+    if (!model) return json({ error: "no model is available: no provider has credentials" }, 409);
+    await providers.resolve(model);
+    const s = store.createSession({ model, workspace: ws, title: `Fix: ${err ? err.message.split("\n")[0] : b.title}`.slice(0, 90) });
+    bus.emit({ t: "session", session: store.session(s.id)! });
+    const text = [
+      `Something failed in Keel${from ? ` (session "${from.title}")` : ""}: ${b.title}`,
+      "",
+      `The debug bundle is ${path}. Read it first: it has the failure, the trace of its turn with the failing request's shape and wire facts, the transcript before it and the daemon log around it.`,
+      ...(body.task
+        ? ["", body.task.trim()]
+        : ["Find the cause. If it is a bug in code you can change here, fix it and say how you checked the fix. If it is not a code problem (a key, a quota, the network, a provider outage), say what it is and what the owner should do."]),
+    ].join("\n");
+    if (key) store.db.query("INSERT INTO debug_fixes (key, session_id, ts) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET session_id = excluded.session_id, ts = excluded.ts").run(key, s.id, Date.now());
+    engine.send(s.id, text);
+    return json({ session: store.session(s.id), path }, 201);
+  }
+
   return {
     "/api/debug/bundle": {
       GET: (req: Request) => {
@@ -224,40 +277,34 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
       },
     },
 
+    "/api/debug/fixes": {
+      GET: (req: Request) => {
+        const ids = (new URL(req.url).searchParams.get("error_ids") ?? "").split(",").filter(Boolean).slice(0, 200);
+        const fixes: Record<string, string> = {};
+        for (const id of ids) {
+          const e = errors.find(id);
+          const key = e ? fixKey({ error_id: id }, e) : undefined;
+          const s = key ? openFix(key) : undefined;
+          if (s) fixes[id] = s.id;
+        }
+        return json({ fixes });
+      },
+    },
+
     "/api/debug/fix": {
       POST: async (req: Request) => {
         const body = (await req.json().catch(() => ({}))) as any;
-        const b = bundleFor({ error_id: body.error_id, session_id: body.session_id, turn_event: body.turn_event, span_id: body.span_id });
-        if ("status" in b) return json({ error: b.error }, b.status);
-        const dir = join(store.stateDir, "debug");
-        mkdirSync(dir, { recursive: true, mode: 0o700 });
-        const path = join(dir, `bundle-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
-        writeFileSync(path, b.markdown, { mode: 0o600 });
-        const kind = body.error_id ? errors.get(body.error_id) : undefined;
-        const err = kind && atSession(kind, body.session_id ?? undefined);
-        const from = err?.session_id ? store.session(err.session_id) : body.session_id ? store.session(body.session_id) : undefined;
-        // Keel's own failures are fixed in Keel's source when the daemon runs from it; others where they happened.
-        const own = err && (err.source === "server" || err.source === "client");
-        if (body.task !== undefined && (typeof body.task !== "string" || !body.task.trim() || body.task.length > 6000)) return json({ error: "task is the agent's instruction, up to 6000 characters" }, 400);
-        const keel = keelRepo();
-        if (body.repo === "keel" && !body.workspace && "problem" in keel) return json({ error: `Keel's source folder is not known: ${keel.problem}` }, 409);
-        const keelDir = "repo" in keel ? keel.repo.dir : undefined;
-        const ws = resolve(body.workspace || (body.repo === "keel" ? keelDir! : own && keelDir ? keelDir : from?.workspace ?? keelDir ?? workspace));
-        const model = body.model || (await providers.defaultModel());
-        if (!model) return json({ error: "no model is available: no provider has credentials" }, 409);
-        await providers.resolve(model);
-        const s = store.createSession({ model, workspace: ws, title: `Fix: ${err ? err.message.split("\n")[0] : b.title}`.slice(0, 90) });
-        bus.emit({ t: "session", session: store.session(s.id)! });
-        const text = [
-          `Something failed in Keel${from ? ` (session "${from.title}")` : ""}: ${b.title}`,
-          "",
-          `The debug bundle is ${path}. Read it first: it has the failure, the trace of its turn with the failing request's shape and wire facts, the transcript before it and the daemon log around it.`,
-          ...(body.task
-            ? ["", body.task.trim()]
-            : ["Find the cause. If it is a bug in code you can change here, fix it and say how you checked the fix. If it is not a code problem (a key, a quota, the network, a provider outage), say what it is and what the owner should do."]),
-        ].join("\n");
-        engine.send(s.id, text);
-        return json({ session: store.session(s.id), path }, 201);
+        const at = body.error_id ? errors.find(body.error_id) : undefined;
+        const key = fixKey(body, at);
+        if (key) {
+          const open = openFix(key);
+          if (open) return json({ session: open, existing: true });
+          const going = starting.get(key);
+          if (going) return (await going).clone();
+        }
+        const run = startFix(body, key);
+        if (key) { starting.set(key, run); run.finally(() => starting.delete(key)); }
+        return (await run).clone();
       },
     },
 

@@ -4,7 +4,7 @@
 import { Bot, RotateCw } from "lucide-react";
 import { useState } from "react";
 import { askLook, lookOf, useHelper, type Look } from "../lib/helper.ts";
-import { fixThis } from "../lib/observe.ts";
+import { fixThis, useFixOf } from "../lib/observe.ts";
 import { reportError } from "../lib/store.ts";
 import { fmtSessionCost } from "../lib/utils.ts";
 import { HelperFace, useHelperName } from "./HelperFace.tsx";
@@ -20,6 +20,8 @@ export function HelperLook({ errorId }: { errorId: string }) {
   const [starting, setStarting] = useState(false);
   const [asking, setAsking] = useState(false);
   const [err, setErr] = useState("");
+  // A session already started for this cause: the press opens it instead of starting another (one fix a cause).
+  const fixOpen = useFixOf(errorId);
   if (!look) return null;
   // The look stands under the first row of its cause; the others say they are the same.
   if (look.error_ids[0] !== errorId && look.state === "done") {
@@ -60,7 +62,7 @@ export function HelperLook({ errorId }: { errorId: string }) {
                 <label className="k-pick-label" htmlFor={`look-task-${look.cause}`}>A task for an agent in Keel's repository</label>
                 <textarea id={`look-task-${look.cause}`} className="k-field k-pick-prompt" rows={4} value={text} onChange={(e) => setTask({ cause: look.cause, text: e.target.value })} data-testid="helper-look-task" />
                 <div className="k-look-acts">
-                  <button type="button" className="k-btn" disabled={starting || !text.trim()} onClick={start} data-testid="helper-look-start"><Bot className="size-3.5" />{starting ? "Starting" : "Start an agent on this"}</button>
+                  <button type="button" className="k-btn" disabled={starting || !text.trim()} onClick={start} data-testid="helper-look-start"><Bot className="size-3.5" />{starting ? (fixOpen ? "Opening" : "Starting") : fixOpen ? "Open the agent on this" : "Start an agent on this"}</button>
                   <span className="k-pick-note">It starts only when you press this.</span>
                 </div>
                 {err && <p className="k-pick-note" role="alert" data-testid="helper-look-start-error">{err}</p>}
