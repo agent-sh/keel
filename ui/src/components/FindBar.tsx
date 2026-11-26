@@ -106,9 +106,15 @@ export type FindProps = {
   // A request to take the keyboard (each open of the find key).
   ask: number;
   onClose: () => void;
+  // A view that draws a place by itself (the Conversation lens opens the stretch that holds it):
+  // called in place of the search hit's way, and `stands` says where a place stands in it.
+  reach?: (p: Place) => void;
+  stands?: (p: Place) => Element | null;
+  // Places before this seq are not in the view (the lens reaches back a few days): not counted.
+  from?: number;
 };
 
-export function FindBar({ sessionId, events, head, before, after, whole, content, bring, ask, onClose }: FindProps) {
+export function FindBar({ sessionId, events, head, before, after, whole, content, bring, ask, onClose, reach: reachIn, stands: standsIn, from }: FindProps) {
   const input = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
   const [needle, setNeedle] = useState("");
@@ -139,7 +145,11 @@ export function FindBar({ sessionId, events, head, before, after, whole, content
   const searching = asks && !theirs;
 
   const units = useMemo(() => unitsOf(events), [events]);
-  const list = useMemo(() => (needle ? placesOf(units, theirs?.places ?? [], needle, events[0]?.seq ?? 0) : []), [units, theirs, needle, events]);
+  const list = useMemo(() => {
+    if (!needle) return [];
+    const out = theirs?.places ?? [];
+    return placesOf(units, from === undefined ? out : out.filter((o) => o.seq >= from), needle, events[0]?.seq ?? 0);
+  }, [units, theirs, needle, events, from]);
   // The current place, kept by what it is: the list changes under it as parts are read.
   const [cur, setCur] = useState<Place | null>(null);
   const at = cur ? placeAgain(list, cur) : -1;
@@ -170,10 +180,13 @@ export function FindBar({ sessionId, events, head, before, after, whole, content
     };
     if (land()) return;
     mark(NOW, []);
-    const held = events.some((e) => e.id === p.ev);
-    // (A call whose step is drawn needs only its card opened; anything else is reached as a hit is.)
-    const step = held && p.call && [...c.querySelectorAll(`[data-events~="${CSS.escape(p.ev)}"]`)].some(drawn);
-    setUI({ ...(step ? {} : { focusEvent: p.ev, focusStay: p.ev }), focusCall: p.call ?? null });
+    if (reachIn) reachIn(p);
+    else {
+      const held = events.some((e) => e.id === p.ev);
+      // (A call whose step is drawn needs only its card opened; anything else is reached as a hit is.)
+      const step = held && p.call && [...c.querySelectorAll(`[data-events~="${CSS.escape(p.ev)}"]`)].some(drawn);
+      setUI({ ...(step ? {} : { focusEvent: p.ev, focusStay: p.ev }), focusCall: p.call ?? null });
+    }
     const until = performance.now() + REACH_MS;
     let quiet = 0;
     const look = () => {
@@ -194,10 +207,10 @@ export function FindBar({ sessionId, events, head, before, after, whole, content
     const c = content.current;
     const top = c?.closest(".k-reading")?.getBoundingClientRect().top ?? 0;
     // (Where a place stands: its row, drawn or held as a light box; a row not on the page yet is above the view.)
-    const stands = (p: Place) => c?.querySelector(`[data-event-id="${CSS.escape(p.ev)}"], [data-events~="${CSS.escape(p.ev)}"]`);
-    const first = list.find((p) => { const el = p.held && stands(p); return !!el && el.getClientRects().length > 0 && el.getBoundingClientRect().bottom > top; });
+    const stands = (p: Place) => (standsIn ? standsIn(p) : c?.querySelector(`[data-event-id="${CSS.escape(p.ev)}"], [data-events~="${CSS.escape(p.ev)}"]`));
+    const first = list.find((p) => { const el = (p.held || !!standsIn) && stands(p); return !!el && el.getClientRects().length > 0 && el.getBoundingClientRect().bottom > top; });
     // None under it (a reader at the end): the nearest above, the newest the page holds.
-    const pick = first ?? list.findLast((p) => p.held) ?? null;
+    const pick = first ?? list.findLast((p) => p.held || !!standsIn) ?? null;
     setCur(pick);
     if (pick) go(pick);
   }, [needle, list.length > 0]);

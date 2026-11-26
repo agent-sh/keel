@@ -3,16 +3,25 @@
 // what came of it. A line opens that stretch's full stream in place. The lens is read from the
 // daemon (GET /api/sessions/:id/lens): a folded stretch costs its line, never its events, until
 // it is opened. New since read lands on the first new item of the lens.
+//
+// The find key is the page's Find here too (FindBar.tsx). The lens holds no stretch's words, so
+// every place is the daemon's (GET /api/sessions/:id/find, on the read thread); a place inside a
+// folded stretch opens only that stretch, read as far as the place, and only the call that holds
+// it. Escape folds back what Find opened and puts the view back where it was.
 import { ArrowDown, ArrowUp, Check, ChevronRight } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { joinRuns, runWords, span, dollars, type EndFacts, type LensItem } from "../../../src/core/lens.ts";
 import { MARK_READ, newSinceAt } from "../../../src/core/state-words.ts";
 import type { Page } from "../../../src/core/tree.ts";
 import type { StoredEvent } from "../../../src/core/types.ts";
 import { presentAt } from "../lib/automation.ts";
+import { useFindAsk } from "../lib/find-ask.ts";
+import type { Place } from "../lib/find.ts";
+import { keptJournal } from "../lib/kept.ts";
 import { setLensView } from "../lib/lens-view.ts";
 import { placeOf, putPlace } from "../lib/place.ts";
 import { api, failed, useStore } from "../lib/store.ts";
+import { getUI, setUI } from "../lib/ui.ts";
 import { clock, cn } from "../lib/utils.ts";
 import { useWatch } from "../lib/watch.ts";
 import { CopyButton } from "./CopyButton.tsx";
@@ -42,29 +51,57 @@ function onBranch(events: StoredEvent[]): StoredEvent[] {
 }
 
 const PART = 200;
+const NONE: StoredEvent[] = [];
+// (The bar's own chunk, the one the full stream loads: lib/preload.ts fetches it once the page settles.)
+const FindBar = lazy(() => import("./FindBar.tsx").then((m) => ({ default: m.FindBar })));
 
 // One folded stretch: its line, and its full stream in place once opened (read a part at a time).
-const RunLine = memo(function RunLine({ sid, run, live, needs, fresh, lensKey }: { sid: string; run: Run; live: boolean; needs: boolean; fresh?: string; lensKey: string }) {
+// `reveal`: a seq Find reaches in it: the stretch opens (when it was folded) and is read as far as
+// that; once Find lets go (undefined again), a stretch Find opened folds back.
+const RunLine = memo(function RunLine({ sid, run, live, needs, fresh, lensKey, reveal }: { sid: string; run: Run; live: boolean; needs: boolean; fresh?: string; lensKey: string; reveal?: number }) {
   const [open, setOpen] = useState(false);
   const [part, setPart] = useState<{ events: StoredEvent[]; done: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const w = runWords(run, { live, needs });
+  // How far a read goes on by itself (a place Find reaches), and whether one is under way.
+  const until = useRef(0), reading = useRef(false), had = useRef(part);
+  had.current = part;
   const read = (after: number) => {
+    reading.current = true;
     setLoading(true);
     setError(null);
     api<Page>(`/api/sessions/${sid}/page?after=${after}&limit=${PART}`)
       .then((p) => {
         const mine = onBranch(p.events).filter((e) => e.seq > after && e.seq <= run.to);
-        setPart((was) => ({ events: [...(was?.events ?? []), ...mine], done: p.end || !mine.length || mine.at(-1)!.seq >= run.to }));
-      }, (e) => setError(failed(e, { at: "lens run", session_id: sid })))
-      .finally(() => setLoading(false));
+        const done = p.end || !mine.length || mine.at(-1)!.seq >= run.to;
+        setPart((was) => ({ events: [...(was?.events ?? []), ...mine], done }));
+        const last = mine.at(-1)?.seq ?? after;
+        if (!done && last < until.current) return read(last);
+        reading.current = false;
+        setLoading(false);
+      }, (e) => { reading.current = false; setLoading(false); setError(failed(e, { at: "lens run", session_id: sid })); });
   };
   const toggle = () => {
     const next = !open;
+    byFind.current = false;
     setOpen(next);
     if (next && !part) read(run.from - 1);
   };
+  const byFind = useRef(false);
+  useEffect(() => {
+    if (reveal === undefined) {
+      if (byFind.current) { byFind.current = false; setOpen(false); }
+      return;
+    }
+    if (!open) { byFind.current = true; setOpen(true); }
+    // (A call's output is the event after it: read as far as that too.)
+    until.current = Math.min(run.to, reveal + 1);
+    const p = had.current;
+    if (reading.current) return;
+    if (!p) read(run.from - 1);
+    else if (!p.done && (p.events.at(-1)?.seq ?? run.from) < until.current) read(p.events.at(-1)?.seq ?? run.from - 1);
+  }, [reveal]);
   // A stretch that grew since it was opened (it is the one at work) has more to read.
   const more = !!part && (!part.done || (part.events.at(-1)?.seq ?? run.from) < run.to);
   return (
@@ -196,6 +233,57 @@ export function Lens({ sessionId }: { sessionId: string }) {
     looks.current();
   };
 
+  // ---------- The page's Find (lib/find-ask.ts, FindBar.tsx) ----------
+  const find = useFindAsk(scroller, sessionId);
+  const [reveal, setReveal] = useState<{ key: string; seq: number } | null>(null);
+  // Where the view stood and what Find opened, put back when it closes.
+  const before = useRef<{ top: number; stick: boolean; back: () => void } | null>(null);
+  const finding = find.ask > 0;
+  // (Before the bar's own effects: what its first place opens is in the journal.)
+  useLayoutEffect(() => {
+    if (!finding || before.current) return;
+    const el = scroller.current;
+    before.current = { top: el?.scrollTop ?? 0, stick: stick.current, back: keptJournal(() => getUI().focusCall !== null) };
+  }, [finding]);
+  const runAt = (seq: number) => items.find((x): x is Run => x.t === "run" && x.from <= seq && seq <= x.to);
+  const reach = (p: Place) => {
+    const run = runAt(p.seq);
+    stick.current = false; // (Find moves the view: the end is not followed under it)
+    setReveal(run ? { key: keyOf(run), seq: p.seq } : null);
+    setUI({ focusCall: p.call ?? null });
+  };
+  const stands = (p: Place) => {
+    const run = runAt(p.seq);
+    return content.current?.querySelector(`[data-lens-key="${CSS.escape(run ? keyOf(run) : p.ev)}"]`) ?? null;
+  };
+  const bring = (r: DOMRect) => {
+    const sc = scroller.current;
+    if (!sc) return;
+    const box = sc.getBoundingClientRect();
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    if (r.top >= box.top + 4 * rem && r.bottom <= box.bottom - 3 * rem) return;
+    stick.current = false;
+    sc.scrollTop += r.top - box.top - Math.max(0, (box.height - r.height) / 2);
+  };
+  const closeFind = () => {
+    const was = before.current;
+    before.current = null;
+    setReveal(null);
+    if (getUI().focusCall !== null) setUI({ focusCall: null });
+    was?.back();
+    find.close();
+    if (!was) return;
+    // (After the stretches and calls it opened have folded back.)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = scroller.current;
+      if (!el) return;
+      stick.current = was.stick;
+      el.scrollTop = was.stick ? el.scrollHeight : was.top;
+    }));
+  };
+  useEffect(() => () => before.current?.back(), []);
+  useEffect(() => { before.current?.back(); before.current = null; setReveal(null); }, [sessionId]);
+
   // ---------- The end is followed while the reader is at it ----------
   useLayoutEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [items, awaited]);
   useEffect(() => {
@@ -234,7 +322,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
           {data && !items.length && <p className="text-caption text-faint" data-testid="lens-empty">No messages yet.</p>}
           {items.map((it, i) => {
             const k = keyOf(it);
-            if (it.t === "run") return <RunLine key={k} lensKey={k} sid={sessionId} run={it} live={working && i === items.length - 1} needs={needs && i === lastRun && i === items.length - 1} fresh={said(it)} />;
+            if (it.t === "run") return <RunLine key={k} lensKey={k} sid={sessionId} run={it} live={working && i === items.length - 1} needs={needs && i === lastRun && i === items.length - 1} fresh={said(it)} reveal={reveal?.key === k ? reveal.seq : undefined} />;
             const e = data!.events[it.id];
             if (!e) return null;
             return <Shown key={k} lensKey={k} sid={sessionId} e={e} turn={it.t === "reply" ? it.turn : undefined} fresh={said(it)} />;
@@ -242,6 +330,12 @@ export function Lens({ sessionId }: { sessionId: string }) {
           {awaited && <Live sessionId={sessionId} working asking={false} elsewhere={null} onTail={() => {}} />}
         </div>
       </div>
+      {finding && data && (
+        <Suspense fallback={null}>
+          <FindBar sessionId={sessionId} events={NONE} before={Number.MAX_SAFE_INTEGER} whole={false} content={content} bring={bring} ask={find.ask} onClose={closeFind}
+            reach={reach} stands={stands} from={items.length ? (items[0]!.t === "run" ? items[0]!.from : items[0]!.seq) : undefined} />
+        </Suspense>
+      )}
       {fresh && freshAt && (
         <div className="k-new-bar">
           <span className="k-new-jump">

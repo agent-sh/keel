@@ -14,6 +14,9 @@
 //     owner's, each answered after some work, and between them stretches of
 //     turns the harness started (agents' reports, a failed one among them,
 //     wakes, a landing outcome whose entries landed), about <events> events.
+// KEEL_FIXTURE_FIND=word (coordinator): the word in the output of one call of the second stretch,
+// past the part a stretch opens with (220 events into it), and of one call early in the third, and
+// nowhere else.
 // KEEL_FIXTURE_FIND=word (turns): the word in the second turn's prompt (older
 // than the part a page opens with), in the prompt of a turn half way down that
 // part (far from the end the page opens at), and in the output of a call near
@@ -107,14 +110,14 @@ function coordinator(id: string, model: string) {
   restarts INTEGER NOT NULL DEFAULT 0, def TEXT)`);
   kids.forEach((c, i) => store.db.run("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, ended, handback) VALUES (?, ?, ?, ?, 'general-purpose', ?, 1, 'completed', ?, ?, 1)",
     [`a-${c}`, id, c, `Worker ${i + 1}`, model, t0 + i * 1000, t0 + 3600_000]));
-  const work = (tag: string, last: string) => {
+  const work = (tag: string, last: string, find = false) => {
     k++;
     add("turn_start", { model });
     add("assistant", { model, usage, stop: "tool_use", blocks: [
       { type: "text", text: `Checking ${tag}. ${say(k, 12)}.` },
       { type: "tool_use", id: `call-${k}`, name: "Bash", input: { command: `git log --oneline -3 ${tag}`, description: `Read ${tag}` } },
     ] });
-    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${k}`, content: `${say(k, 8)}\n${say(k + 1, 8)}` }] });
+    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${k}`, content: `${say(k, 8)}\n${say(k + 1, 8)}${find ? ` ${FIND}` : ""}` }] });
     add("assistant", { model, usage, stop: "end_turn", blocks: [{ type: "text", text: last }] });
     add("turn_end", { reason: "end_turn", usage, ms: 38_000 + (k % 5) * 4000, steps: 2, tools: 1 });
   };
@@ -127,8 +130,8 @@ function coordinator(id: string, model: string) {
   for (let p = 0; p < asks.length; p++) {
     add("user", { text: asks[p] });
     work(`lane-${p}`, `Reply to your message ${p + 1}: ${say(p + 3, 30)}.`);
-    const until = n + per;
-    let j = 0;
+    const until = n + per, start = n;
+    let j = 0, put = false;
     while (n < until) {
       j++;
       if (j % 7 === 3) add("user", { text: "[harness] A wait fired.", kind: "wait", wait_id: `w-${p}-${j}`, outcome: "fired" });
@@ -137,7 +140,10 @@ function coordinator(id: string, model: string) {
         for (const [i, e] of entries.entries()) store.db.run("INSERT INTO landing_queue (id, repo, branch, pos, queued_by, tip, state, created, updated) VALUES (?, '/repo', ?, ?, ?, 'abc', 'landed', 0, 0)", [e, `keel/lane-${j}-${i}`, j * 2 + i, id]);
         add("user", { text: "[harness] Landing queue: two branches landed.", kind: "landing", entries, landed: 2, left: 0 });
       } else add("user", { text: `[harness] Agent report: ${say(j, 10)}.`, kind: "subagent", agent_id: `a-${kids[j % 3]}`, status: p === 1 && j === 4 ? "failed" : "completed" });
-      work(`report-${p}-${j}`, `Noted report ${j}: ${say(j + p, 18)}.`);
+      // (The second stretch's call past its first part, the third's early one.)
+      const here = !!FIND && !put && ((p === 1 && n - start >= 220) || (p === 2 && j === 3));
+      if (here) put = true;
+      work(`report-${p}-${j}`, `Noted report ${j}: ${say(j + p, 18)}.`, here);
     }
   }
   add("compaction", { mode: "summary", summary: "Goal: a coordinator's history. State: the lanes ran; next, answer the newest prompt.", auto: true, tokens_before: 6400 });

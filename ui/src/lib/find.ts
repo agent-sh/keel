@@ -104,7 +104,7 @@ export function unitsOf(events: readonly StoredEvent[]): Unit[] {
 }
 
 // A place Find stops at: the unit, which of its matches, and whether the page holds it.
-export type Place = { key: string; ev: string; call?: string; k: number; held: boolean };
+export type Place = { key: string; ev: string; call?: string; seq: number; k: number; held: boolean };
 // What the daemon found outside the part the page holds.
 export type Outside = { event: string; seq: number; call?: string; count: number };
 
@@ -118,7 +118,7 @@ export function placesOf(units: readonly Unit[], outside: readonly Outside[], ne
     const n = count(fold(u.text), needle);
     if (!n) continue;
     keys.add(u.key);
-    for (let k = 0; k < n; k++) held.push({ key: u.key, ev: u.ev, call: u.call, k, held: true });
+    for (let k = 0; k < n; k++) held.push({ key: u.key, ev: u.ev, call: u.call, seq: u.seq, k, held: true });
   }
   const before: Place[] = [], after: Place[] = [];
   // (A call's output adds to the count of the call the daemon named before it.)
@@ -134,7 +134,7 @@ export function placesOf(units: readonly Unit[], outside: readonly Outside[], ne
   for (const o of order) {
     const key = o.call ? `call:${o.call}` : o.event;
     const list = o.seq < first ? before : after;
-    for (let k = 0; k < outs.get(key)!; k++) list.push({ key, ev: o.event, call: o.call, k, held: false });
+    for (let k = 0; k < outs.get(key)!; k++) list.push({ key, ev: o.event, call: o.call, seq: o.seq, k, held: false });
   }
   return [...before, ...held, ...after];
 }

@@ -323,9 +323,13 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
     e.preventDefault();
     setAll((a) => ({ n: a.n + 1, open: line.getAttribute("aria-expanded") !== "true" }));
   };
-  // In Focus a finished run is one quiet line; a press opens it (lib/work-fold.ts).
+  // In Focus a finished run is one quiet line; a press opens it (lib/work-fold.ts), and so does a
+  // search or Find hit on one of its calls (the step and the call take it from there).
   const calm = useCalm();
-  const [opened, setOpened] = useState(false);
+  const [kept, setOpened] = useKept(`work:${sid}:${row.id}`);
+  const opened = kept ?? false;
+  const hit = useUI((u) => !!u.focusCall && row.steps!.some((st) => callsOf(st).some((c) => c.id === u.focusCall)));
+  useEffect(() => { if (hit && calm && !opened) setOpened(true); }, [hit]);
   const table = isTable(row.steps!);
   if (calm && !opened && settled(row.steps!)) {
     return (

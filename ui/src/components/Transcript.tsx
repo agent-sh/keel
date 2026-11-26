@@ -21,8 +21,8 @@ import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
 import { useAgentCount, useToldState } from "../lib/watch.ts";
-import { composing, isMac } from "../lib/keys.ts";
-import { findKey } from "../lib/find.ts";
+import { composing } from "../lib/keys.ts";
+import { useFindAsk } from "../lib/find-ask.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { preloadSettled } from "../lib/preload.ts";
@@ -1732,39 +1732,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => removeEventListener("keel:sent", onSent);
   }, [earlier, sessionId]);
 
-  // The page's own Find (FindBar.tsx) on the find key: the browser's reaches only what is drawn,
-  // and this one every place of the branch shown, folded, not drawn or not read yet. The key is the
-  // conversation's in its pane (the pane with the keys; with the keys in no pane, the one at the
-  // helm or the only one) from anywhere but a text field: in the message box it is the
-  // conversation's too, and any other field (a terminal's, a panel's, a menu's) keeps its own.
-  const [findAsk, setFindAsk] = useState(0);
-  const findFrom = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || !findKey(e, isMac)) return;
-      const mine = scroller.current?.closest("[data-station]");
-      const t = document.activeElement as HTMLElement | null;
-      const at = t?.closest("[data-station]");
-      if (at ? at !== mine : !!mine && !mine.hasAttribute("data-helm")) return;
-      const field = !!t && (t.matches("input, textarea, select") || t.isContentEditable);
-      if (field && !t.matches('[data-testid="composer"], [data-testid="find-input"]')) return;
-      if (!scroller.current?.offsetParent) return; // not shown (a view under another)
-      e.preventDefault();
-      if (!t?.closest('[data-testid="find-bar"]')) findFrom.current = t;
-      setFindAsk((n) => n + 1);
-    };
-    // (On the document: it is asked before the page's Find of the desktop app, on the window, at any order of mounting.)
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-  useEffect(() => setFindAsk(0), [sessionId]);
-  const closeFind = () => {
-    setFindAsk(0);
-    const back = findFrom.current;
-    findFrom.current = null;
-    if (back?.isConnected && back !== document.body) back.focus({ preventScroll: true });
-    else focusBox(sessionId);
-  };
+  // The page's own Find (FindBar.tsx) on the find key (lib/find-ask.ts says whose key it is).
+  const { ask: findAsk, close: closeFind } = useFindAsk(scroller, sessionId);
   // A match brought into the view as the reader's own move (the view stops following the end);
   // one in view already moves nothing.
   const bringFound = (r: DOMRect) => {

@@ -32,8 +32,8 @@ test("the daemon's places stand before and after the part held, and a place the 
   const places = placesOf(unitsOf(events), outside, "quokka", first);
   expect(places.map((p) => `${p.key}#${p.k}${p.held ? "" : "*"}`)).toEqual(["old#0*", "old#1*", "call:c9#0*", "call:c9#1*", "m#0", "new#0*"]);
   // The place that was current is found again in the new list, held or not.
-  expect(placeAgain(places, { key: "call:c9", ev: "a1", call: "c9", k: 1, held: false })).toBe(3);
-  expect(placeAgain(places, { key: "old", ev: "old", k: 5, held: false })).toBe(1);
+  expect(placeAgain(places, { key: "call:c9", ev: "a1", call: "c9", seq: 0, k: 1, held: false })).toBe(3);
+  expect(placeAgain(places, { key: "old", ev: "old", seq: 0, k: 5, held: false })).toBe(1);
   expect(placeAgain(places, null)).toBe(0);
   expect(placeAgain([], null)).toBe(-1);
 });
