@@ -54,6 +54,7 @@ import { checkpointAt } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
+import { importOf, personTyped } from "../safety/imported.ts";
 import { readText } from "../core/proc.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, namedPrograms, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
@@ -558,6 +559,13 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   // the event and on the record before, as for an append). Should the session show another
   // branch, change its model or folder, or go meanwhile, nothing is published: transcript()
   // writes it in one piece, as it always did. One writer a session at a time.
+  // Which prompts of the session a person gave, for the transcript's typed marks (src/safety/imported.ts personTyped):
+  // what of it is a copy of another harness's transcript is read once a write.
+  private typedOf(id: string) {
+    const imp = importOf(this.store, id);
+    return (e: StoredEvent) => personTyped(imp, e);
+  }
+
   private wholes = new Set<string>();
   private async writeWhole(id: string): Promise<boolean> {
     if (this.wholes.has(id)) return false;
@@ -579,7 +587,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         line = this.store.lineage(id);
         if (!now || now.model !== first.model || now.workspace !== first.workspace || (at > 0 && line[at - 1]?.id !== last)) return false;
         const end = Math.min(line.length, at + WHOLE_SLICE);
-        const records = toClaudeRecords(now, line.slice(at, end), id, { parent });
+        const records = toClaudeRecords(now, line.slice(at, end), id, { parent, typed: this.typedOf(id) });
         const buf = Buffer.from(toJsonl(records));
         if (buf.length) writeSync(fd, buf);
         bytes += buf.length;
@@ -641,9 +649,10 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
       tmp = `${path}.${crypto.randomUUID()}.tmp`;
       const fd = openSync(tmp, "wx", 0o600);
       let last: string | null = null, bytes = 0;
+      const typed = this.typedOf(s.id);
       try {
         for (let i = 0; i < line.length; i += PART_EVENTS) {
-          const records = toClaudeRecords(current, line.slice(i, i + PART_EVENTS), s.id, { parent: last });
+          const records = toClaudeRecords(current, line.slice(i, i + PART_EVENTS), s.id, { parent: last, typed });
           const part = Buffer.from(toJsonl(records));
           if (part.length) writeAll(fd, part);
           bytes += part.length;
@@ -698,7 +707,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
       let at = -1;
       if (cached && same) for (let i = line.length - 1; i >= 0; i--) if (line[i]!.id === cached.head) { at = i; break; }
       if (cached && at >= 0) {
-        const records = toClaudeRecords(current, line.slice(at + 1), s.id, { parent: cached.last });
+        const records = toClaudeRecords(current, line.slice(at + 1), s.id, { parent: cached.last, typed: this.typedOf(s.id) });
         const bytes = Buffer.from(toJsonl(records));
         if (bytes.length) appendFileSync(path, bytes);
         const after = fileStamp(path);
@@ -714,7 +723,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
       // (One piece of the loop's time, named should it be long: a long session's is written in
       // slices before this is reached, see writeWhole.)
       const { records, bytes } = timed(() => `writing a session's memory transcript whole (${line.length} events)`, () => {
-        const records = toClaudeRecords(current, line);
+        const records = toClaudeRecords(current, line, s.id, { typed: this.typedOf(s.id) });
         const bytes = Buffer.from(toJsonl(records));
         writeTranscript(path, bytes);
         return { records, bytes };

@@ -103,6 +103,44 @@ test("Tacit reuses only the retained transcript of the same version", () => {
   }
 });
 
+// The memory store tells the owner's words from an agent's by Claude Code's marks of a typed turn. Keel writes them
+// on the prompts a person gave here, and on a copy's prompts only where the copy's reader found them typed; never on
+// a notice of the harness's, a peer's message or a command line's prompt. Keel's own import of such a file finds no
+// prompt typed: a Keel transcript read back is outside content.
+test("the memory transcript marks the prompts a person gave as typed, and Keel reading it back takes none for typed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tacit-transcript-typed-"));
+  const store = new Store(dir);
+  try {
+    const tacit = new Tacit(store, new Bus(), { capture: () => {} } as unknown as ErrorTracker, null);
+    const s = store.createSession({ title: "Typed", model: "fixture:model", workspace: dir });
+    // The copy of an outside session: one prompt its reader found typed, one it did not (a drive send, a program's).
+    store.append(s.id, "user", { text: "copied, typed there", typed: true });
+    const lastCopied = store.append(s.id, "user", { text: "copied, sent by a program" });
+    store.migrate("CREATE TABLE IF NOT EXISTS import_links (session_id TEXT PRIMARY KEY, harness TEXT NOT NULL, source_id TEXT NOT NULL, source_path TEXT NOT NULL, items INTEGER NOT NULL, source_size INTEGER NOT NULL, source_mtime INTEGER NOT NULL, imported_ms INTEGER NOT NULL, synced_ms INTEGER NOT NULL)");
+    store.db.query("INSERT INTO import_links VALUES (?, 'claude', 'x', ?, 1, 1, 1, ?, ?)").run(s.id, join(dir, "src.jsonl"), lastCopied.ts, lastCopied.ts);
+    Bun.sleepSync(5);
+    store.append(s.id, "user", { text: "typed in the page" });
+    store.append(s.id, "user", { text: "steered in", origin: "steer" });
+    store.append(s.id, "user", { text: "spoken", origin: "voice" });
+    store.append(s.id, "user", { kind: "wake", text: "[harness] Your background command exited." });
+    store.append(s.id, "user", { text: '<external_input source="peer_session" from="x">hi</external_input>' });
+    store.append(s.id, "user", { text: "from the command line", origin: "cli" });
+    store.append(s.id, "user", { origin: "momentum", text: "[momentum] go on" });
+    const path = tacit.transcript(s);
+    const users = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((r) => r.type === "user");
+    const typedOnes = users.filter((r) => r.origin?.kind === "human" && r.promptSource === "typed" && r.turnOrigin === "human").map((r) => typeof r.message.content === "string" ? r.message.content : r.message.content[0].text);
+    expect(typedOnes).toEqual(["copied, typed there", "typed in the page", "steered in", "spoken"]);
+    // Every other prompt carries marks of no person's typing, or none at all.
+    for (const r of users.filter((r) => r.origin?.kind !== "human")) expect(r.promptSource === undefined || r.promptSource === "system").toBe(true);
+    const back = await (await import("./import/claude.ts")).readClaude(path);
+    expect(back.events.filter((e) => e.kind === "user").length).toBe(users.length);
+    expect(back.events.filter((e) => e.typed)).toEqual([]);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A daemon that starts holds no transcript in memory. Each session's file is
 // as the last daemon left it, and the mark beside it says up to where: the
 // file is found again and only what came since is appended. Without the mark

@@ -20,22 +20,32 @@ const usageOf = (u: any) => ({
 // one version is not appended to in another (the memory tool's transcript,
 // src/integrations/tacit.ts): bump it with any change of a record's shape.
 // 2: an input that is not the owner's words carries Claude Code's marks of a turn no person started.
-export const RECORD_FORMAT = 2;
+// 3: a prompt a person gave carries Claude Code's marks of a typed turn (the memory store's transcript only).
+export const RECORD_FORMAT = 3;
 
 // The marks Claude Code writes on a user turn no person typed (versions 2.1.3xx): a message of another session
 // is a peer's, the rest of what the harness delivers (an agent's task or report, a wake, a loop run, a Keel note)
 // a task notification's. A reader that goes by them (Claude Code's own list, the memory store's digest, Keel's
-// import) then does not take Keel's notices for the owner's prompts. The owner's own prompts carry none: what
-// marks a person's typing is Claude Code's to write.
+// import) then does not take Keel's notices for the owner's prompts. The owner's own prompts carry none here; a
+// writer that knows a person gave one marks it with TYPED.
 export function notTyped(d: StoredEvent["data"]): Record<string, unknown> | undefined {
   const kind = inputKind(d);
   if (!kind && ownerPrompt(d)) return undefined;
   return kind === "peer" ? { origin: { kind: "peer" }, promptSource: "system", turnOrigin: "peer" } : { origin: { kind: "task-notification" }, promptSource: "system", turnOrigin: "task_notification" };
 }
 
+// The marks Claude Code writes on a turn a person typed at its prompt (versions 2.1.3xx): origin.kind "human",
+// promptSource "typed", turnOrigin "human". A reader that goes by them (the memory store's digest) reads the prompt as
+// the owner's. No entrypoint: it names the client typed into, and Keel is neither of Claude Code's; the marks decide
+// without it. `keelTyped` says Keel wrote them: Keel's own import of such a file never takes them for a person's
+// typing (import/claude.ts typedRecord), so a transcript of a Keel session read back is outside content, as any
+// copy of a Keel session is (src/safety/imported.ts).
+export const TYPED = { origin: { kind: "human" }, promptSource: "typed", turnOrigin: "human", keelTyped: true } as const;
+
 // `parent`: the uuid the first record hangs under, when these events go on
 // from records already written (the memory tool's transcript grows by appending).
-export function toClaudeRecords(s: Session, events: readonly StoredEvent[], sessionId: string = s.id, opts: { version?: string; parent?: string | null } = {}): ClaudeRecord[] {
+// `typed`: which of the owner's prompts a person gave (src/safety/imported.ts personTyped); those get TYPED.
+export function toClaudeRecords(s: Session, events: readonly StoredEvent[], sessionId: string = s.id, opts: { version?: string; parent?: string | null; typed?: (e: StoredEvent) => boolean } = {}): ClaudeRecord[] {
   const out: ClaudeRecord[] = [];
   let parent: string | null = opts.parent ?? null;
   const base = (ts: number) => ({
@@ -56,7 +66,7 @@ export function toClaudeRecords(s: Session, events: readonly StoredEvent[], sess
       // Images in the Messages API's shape, as Claude Code writes them.
       const images = (e.data.images ?? []).filter((b: any) => b.type === "image").map((b: any) => (b.source ? b : { type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } }));
       const content = [...images, ...(e.data.text ? [{ type: "text", text: e.data.text }] : [])];
-      push({ ...base(e.ts), type: "user", ...notTyped(e.data), message: { role: "user", content: content.length === 1 && !images.length ? e.data.text : content }, uuid: crypto.randomUUID() });
+      push({ ...base(e.ts), type: "user", ...(notTyped(e.data) ?? (opts.typed?.(e) ? TYPED : undefined)), message: { role: "user", content: content.length === 1 && !images.length ? e.data.text : content }, uuid: crypto.randomUUID() });
     } else if (e.kind === "note" && e.data.model) {
       push({ ...base(e.ts), type: "user", isMeta: true, message: { role: "user", content: [{ type: "text", text: e.data.text }] }, uuid: crypto.randomUUID() });
     } else if (e.kind === "assistant") {

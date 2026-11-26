@@ -7,6 +7,7 @@
 // store, or of a Keel session (which copies its source's data as it is) counts none.
 import type { Store } from "../core/store.ts";
 import { sourceMachine } from "../integrations/import/types.ts";
+import { PEER_PREFIX } from "../core/owner.ts";
 
 export type Imported = { until: number; through?: number; own: boolean };
 
@@ -31,3 +32,19 @@ export const inCopy = (imp: Imported, e: { seq: number; ts: number }): boolean =
 // else on it (a kind or an origin is the harness's).
 export const ownersImported = (imp: Imported, d: { typed?: unknown; kind?: unknown; origin?: unknown } | undefined): boolean =>
   imp.own && !!d && d.typed === true && !d.kind && !d.origin;
+
+// Origins of a prompt of Keel's own that a person gave at one of its prompts: typed in the page, steered into a
+// running turn, queued, spoken. Not "cli": a command line is as often a program's as a person's.
+const PERSON_ORIGINS: ReadonlySet<unknown> = new Set([undefined, "steer", "queued", "voice"]);
+
+// A stored prompt a person gave, for a writer that marks the owner's typing for another reader (the memory
+// store's transcript, src/integrations/claude-format.ts): of the copy, only what ownersImported takes (its reader's
+// mark, kept only when the drive did not send the words: src/drive/sent.ts); of Keel's own, the owner's words with
+// a person's origin, never the harness's notices or a peer's message.
+export const personTyped = (imp: Imported, e: { kind: string; seq: number; ts: number; data: any }): boolean => {
+  if (e.kind !== "user" || !e.data) return false;
+  const d = e.data;
+  if (inCopy(imp, e)) return ownersImported(imp, d);
+  const text = typeof d.text === "string" ? d.text : "";
+  return !d.kind && PERSON_ORIGINS.has(d.origin) && !text.startsWith("[harness]") && !text.startsWith(PEER_PREFIX);
+};

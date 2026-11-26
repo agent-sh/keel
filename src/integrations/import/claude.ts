@@ -155,8 +155,10 @@ const TYPED_KEYS = new Set([
   "isSidechain", "permissionMode", "origin", "promptSource", "turnOrigin", "promptId", "turnPosition", "turnPromptId", "dataFlowOn",
   "queueSkipSlashCommands", "imagePasteIds",
 ]);
+// A record Keel wrote with the typed marks (claude-format.ts TYPED: the memory store's transcript) is not one either,
+// whatever else it holds: a person's typing is only what their own client recorded.
 const typedRecord = (r: any): boolean =>
-  r?.type === "user" && r.isSidechain !== true && (r.promptSource === "typed" || r.promptSource === "queued") && r.turnOrigin === "human"
+  r?.type === "user" && r.keelTyped === undefined && r.isSidechain !== true && (r.promptSource === "typed" || r.promptSource === "queued") && r.turnOrigin === "human"
   && r.origin?.kind === "human" && Object.keys(r.origin).length === 1 && Object.keys(r).every((k) => TYPED_KEYS.has(k));
 
 // A record's chain parent. A compaction's boundary starts a chain of its own
