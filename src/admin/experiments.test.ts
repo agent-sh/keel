@@ -596,21 +596,25 @@ test("a lesson's trial draws its repository's agent trees and counts its class o
     const top = store.createSession({ model: "p:m", workspace: here });
     x.assign(top);
     expect(armOf(store, top.id)).toBeNull(); // a top-level session is no unit
-    const agent = (parent: string, workspace = join(here, "sub")) => {
-      const s = store.createSession({ model: "p:m", workspace });
+    const agent = (parent: string, workspace = join(here, "sub"), arm?: string) => {
+      let s;
+      do { s = store.createSession({ model: "p:m", workspace }); }
+      while (arm && e.arms[assignArm(e.id, s.id, e.arms.map((a) => a.weight ?? 1))]!.name !== arm);
       store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent, s.id);
       x.assign(store.session(s.id)!);
       return s.id;
     };
-    // Its agents are units; their agents take theirs; an agent of another repository gets none.
-    const ids: string[] = [];
+    // Interleave the arms. An agent's children take its arm; an agent of another repository gets none.
+    const ids = Array.from({ length: 8 }, (_, i) => agent(top.id, undefined, i % 2 ? "with lesson" : "without"));
     const by = (arm: string) => ids.filter((id) => armOf(store, id)!.arm === arm);
-    while (by("without").length < 4 || by("with lesson").length < 4) ids.push(agent(top.id));
     const deep = agent(ids[0]!);
     expect(armOf(store, deep)).toEqual({ ...armOf(store, ids[0]!)!, root: ids[0]! });
     expect(armOf(store, agent(top.id, there))).toBeNull();
-    // Each tree's turn, and its class count: two or three without the lesson, none or one with it.
-    ids.forEach((id, i) => { turn(store, id); counts.set(id, (armOf(store, id)!.arm === "without" ? 2 : 0) + (i % 2)); });
+    for (const id of ids) turn(store, id);
+    // Give each arm variation regardless of the order it was drawn. Two constant arms have no bootstrap interval.
+    for (const arm of ["without", "with lesson"]) {
+      by(arm).forEach((id, i) => counts.set(id, (arm === "without" ? 2 : 0) + (i % 2)));
+    }
     turn(store, deep);
     const r = x.report(x.get(e.id)!, closed());
     const of = (arm: string) => r.arms.find((a) => a.arm === arm)!;
