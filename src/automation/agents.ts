@@ -493,6 +493,7 @@ function modeName(v: string | string[] | undefined): string | undefined {
 export const agentServers: {
   give?: (child: Session, file: string) => { pending: string[] };
   release?: (childId: string) => void;
+  isOff?: (name: string) => boolean;
 } = {};
 // The definition an agent's session was started from.
 export const defOfSession = (sessionId: string): AgentDef | undefined => { const a = byChild(sessionId); return a ? defOf(a.id) : undefined; };
@@ -1230,7 +1231,10 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const pluginSkills = placed ? "" : pluginSkillsBlock(def.pluginSkills ?? []);
   if (placed && def.pluginSkills?.length) left.push(`the skills of its Codex plugins: they are on this machine, and the agent's tools run on ${placed.name}`);
   const have = catalogSources(child.id).map((x) => x.name.split("@")[0]!);
-  for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
+  for (const name of def.mcpServers ?? []) {
+    if (agentServers.isOff?.(name)) left.push(`the MCP server ${name}: it is turned off in Customize > MCP servers`);
+    else if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
+  }
   if (wantEffort && !effort && (input.effort || inheritedEffort || def.format !== "codex")) left.push(`${inheritedEffort ? "your effort" : "the effort"} ${wantEffort}: ${model} does not list it`);
   if (inheritedSpeed && !speed) left.push(`your speed ${inheritedSpeed}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);

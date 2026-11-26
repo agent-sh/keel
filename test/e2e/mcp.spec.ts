@@ -578,6 +578,7 @@ test("an agent file's own MCP servers run for that agent once the owner approves
     expect(first.got).toContain(`No tool named ae${tag}__echo`);
     expect(first.said).toContain(`its own MCP server (ae${tag}): it waits for the owner's approval in Customize > MCP servers`);
     await page.goto(`/s/${session.id}`);
+    await page.getByTestId("lens-to-stream").click();
     await expect(page.getByTestId("note").filter({ hasText: `waiting for your approval: ae${tag}` })).toHaveCount(1);
 
     // The owner approves it in the panel, shown the entry as the file holds it.
@@ -608,6 +609,32 @@ test("an agent file's own MCP servers run for that agent once the owner approves
     await expect(panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `ae${tag}` }).first()).toContainText("changed since approved");
     await shoot(page, "mcp-14-agent-file-changed");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an agent file distinguishes a turned-off MCP server from an unknown name", async ({ request }) => {
+  test.skip(!SCRIPTED, "drives the spawn with the scripted model");
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const tag = Date.now().toString(36), off = `off${tag}`, missing = `absent${tag}`;
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `agent-off-${tag}`);
+  mkdirSync(join(root, ".claude/agents"), { recursive: true });
+  writeFileSync(join(root, ".claude/agents/scout.md"), `---\nname: scout\ndescription: Looks things up\nmcpServers: [${off}, ${missing}]\n---\nLook things up.\n`);
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: root, model: HAIKU } })).json();
+  try {
+    const config = { command: "bun", args: [FIXTURE, tag], enabled: false };
+    expect((await request.post("/api/mcp/servers", { data: { name: off, config } })).ok()).toBe(true);
+    const input = { message: "Look things up.\nscript:say Done", agent_type: "scout", isolation: "none" };
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input }])}` } });
+    const result = async () => {
+      const { events } = await (await request.get(`/api/sessions/${session.id}`)).json();
+      return JSON.stringify(events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results));
+    };
+    await expect.poll(result, { timeout: 30_000 }).toContain(`the MCP server ${missing}: Keel has no server of that name`);
+    expect(await result()).toContain(`the MCP server ${off}: it is turned off`);
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+    await request.delete(`/api/mcp/servers/${off}`);
     rmSync(root, { recursive: true, force: true });
   }
 });

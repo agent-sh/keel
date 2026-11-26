@@ -122,6 +122,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   // An agent file's own servers: given to its agent at its start and at each of its turns, ended when it finishes.
   agentServers.give = (child, file) => projects.refreshAgent(child, file);
   agentServers.release = (id) => projects.releaseAgent(id);
+  agentServers.isOff = (name) => m.isOff(name);
   registerHooks({
     beforeRequest: (s, req) => {
       if (req.purpose !== "turn") return req;
