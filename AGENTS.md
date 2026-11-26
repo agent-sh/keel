@@ -352,6 +352,22 @@ under `~/.cache/keel-work/bun/research/`.
   loses its process again (`stopIdle`); not one with a call under way, resources it is told about, a channel
   the owner takes, `keep_running` set, or a browser the owner did not choose to close when idle. A server
   with no kept listing connects at start, as before.
+- ChatGPT's app connectors (Gmail, Calendar, Drive, Slack, GitHub, Linear...) are a server Keel brings
+  (`src/integrations/chatgpt-apps.ts`, the pure part and how Codex reaches them in `src/mcp/chatgpt-apps.ts`):
+  the backend's apps MCP server, signed in with the ChatGPT sign-in the plan's models use
+  (`CodexProvider.signIn`, never read another way). It is off until the owner turns it on in Customize > MCP
+  servers (`optIn`, kept in the state): that sign-in for his mail and files is his to decide. Its listing is the
+  server's own, kept and pinned as an owner's server's, and it holds no connection until a call
+  (`BundledServer.remote`). A session is offered a connector only where it is turned on: the owner's list for
+  every session (`chatgpt_apps.connectors`, none by default) and an agent definition's `apps` table for its
+  agent, when the definition is the owner's own (a repository's file turns none on) (`CatalogSource.only`: a session with none has no such source, so nothing of it is searched, declared
+  or called). A tool is a read only when its connector says readOnlyHint outright and does not say it reaches
+  outside the app (openWorldHint: a web search carries the call's words out, so it is judged as any remote
+  server's tool). A tool that changes things acts as the owner in someone else's service, so it is his card in
+  every mode, whatever it names, and an agent is refused it with what to report (`account.whole` in
+  `src/safety/policy.ts`). Its answers are outside content to the
+  provenance rule, and each request is an egress row under its call's label. A Codex agent file that turns a
+  connector on is offered only while the server is on and lists it (`src/automation/codex-agent.ts`).
 - The owner's helper answers only edits of plain text files and relays the
   owner's typed answers (`src/helper/relay.ts`); every command, MCP call and
   other card is the owner's. A card is the helper's only when it is on the

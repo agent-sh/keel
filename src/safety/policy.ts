@@ -115,7 +115,9 @@ export type CallClass =
   // `account`: the tool writes with an account its MCP server holds (the server's name), src/safety/accounts.ts.
   // `input`: what the call was given, which the owners it names are read from.
   // `reads`: the owner marked the tool a read (only read-only mode needs to know, for a tool that asks every call).
-  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; reads?: true; account?: { server: string; name?: string; tool?: string; input?: unknown } }
+  // `whole`: why every write with that account is the owner's, whatever it names (a server that signs in as him
+  // to services of others: src/mcp/chatgpt-apps.ts); said after the tool's name.
+  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; reads?: true; account?: { server: string; name?: string; tool?: string; input?: unknown; whole?: string } }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -727,6 +729,13 @@ export function decide(c: CallClass, f: Facts): Decision {
   }
   // A tool that writes with an account its server holds (Slack, mail, a forge): the owner's in every mode, unless its input
   // names an owner who is among his namespaces. An agent is refused.
+  // A tool that acts as the owner in a service of someone else's, through an account that is his whole (a ChatGPT
+  // app): his card in every mode whatever the call names, with or without a list of his namespaces. An agent is refused.
+  if (c.kind === "other" && c.account?.whole && f.mode !== "read-only") {
+    const why = `${f.tool} ${c.account.whole}`;
+    if (f.agent || f.accounts?.agent) return { deny: `Refused: ${why}. ${AGENT_ACTS}` };
+    return { ask: { risk: "high", why, rule: "writes with your account", suggest: [], ownerOnly: true, account: c.account.server } };
+  }
   if (c.kind === "other" && c.account && f.accounts && f.mode !== "read-only") {
     const owners = namedOwners(c.account.input);
     if (!(owners.length && owners.every((o) => ownsOwner(f.accounts!.names, o)))) {
@@ -1013,6 +1022,8 @@ export function accountContext(command: string, cwd: string, looked: Looked | un
   return accountFacts(accountWrites(parts, laid(parts, cwd, home), { looked, home, ...(sandboxed === undefined ? {} : { sandboxed }) }), names);
 }
 
+// What an agent is told of a write that acts as the owner in a service of someone else's (a ChatGPT app).
+const AGENT_ACTS = "That call is the owner's to make, in every mode: an agent is never allowed it. Do not try another form of it. Say in your report exactly what you wanted it to do (the tool and what it would send or change) and go on with the rest: the session that started you can make the call, and the owner answers its card.";
 const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it unless the place is one of his namespaces (Settings > Permissions > Your accounts, where he names them). Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";
 // What a write with an account beyond the owner's namespaces asks: the owner's card in every mode; an agent is refused.
 function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign> extends infer T ? (T extends { account: infer A } ? A : never) : never }, f: Facts, what = "the command", own = false): Decision {

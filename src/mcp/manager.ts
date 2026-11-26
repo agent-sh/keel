@@ -114,6 +114,23 @@ export type BundledServer = {
   refuses?: (session: string) => string | undefined;
   // What a call does, for the gate, before any card (phone control refuses an unarmed phone here).
   judge?: (tool: string, input: any) => Promise<CallClass>;
+  // A remote server Keel brings (ChatGPT's app connectors, src/integrations/chatgpt-apps.ts). Its tools are what the
+  // server lists, not a list that ships with Keel: they are kept, pinned and asleep as an owner's command server's
+  // are, and each is judged from its own definition. `token` signs a request in; `headers` go with every request;
+  // `reads`: whether a tool only reads; `account`: why a tool is the owner's to allow in every mode, when it is
+  // (src/safety/policy.ts: one that changes things; any other that is no read is judged as a remote server's tool); `meta`: what goes with a call as its `_meta`; `offers`: which tools a session is
+  // offered, when not all of them; `refused`: what is said when the sign-in was refused.
+  remote?: {
+    token(): Promise<string | undefined>;
+    headers?(): Record<string, string>;
+    reads(tool: McpTool): boolean;
+    account(tool: McpTool): string | undefined;
+    meta?(tool: McpTool | undefined, callId?: string): Record<string, unknown> | undefined;
+    offers?(session: string): ((tool: McpTool) => boolean) | "none" | undefined;
+    refused?(): string;
+  };
+  // Off until the owner turns it on (kept in the state): a server that acts with an account of the owner's.
+  optIn?: true;
 };
 
 export type McpServerState = {
@@ -328,7 +345,7 @@ const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
 // What a kept listing is for: the command, its arguments and the names of the environment it is given (a value is
 // the owner's secret and no part of the key). Another program, arguments or set of names is another server.
-const keptKey = (c: McpServerConfig) => digest(canon({ command: c.command, args: c.args ?? [], env: Object.keys(c.env ?? {}).sort(), env_vars: [...(c.env_vars ?? [])].sort() }));
+const keptKey = (c: McpServerConfig) => digest(canon({ command: c.command, args: c.args ?? [], env: Object.keys(c.env ?? {}).sort(), env_vars: [...(c.env_vars ?? [])].sort(), url: c.url }));
 
 // What a kept listing is signed over: its server's name and everything it holds, with Keel's own key (the one that
 // binds an app to its server). A listing that was edited, or moved to another name, no longer matches its signature.
@@ -533,10 +550,20 @@ export class McpManager {
 
   // Register a server Keel brings itself; call before start().
   addBundled(name: string, b: BundledServer) {
-    const off = this.bundledOff().includes(name);
+    const off = b.optIn ? !this.bundledOn().includes(name) : this.bundledOff().includes(name);
     const e = this.addEntry(name, b.config ?? { command: "" }, b);
-    e.state = off ? "disabled" : b.config || b.live ? "idle" : "missing";
+    // (A remote one with no kept listing connects once to take it: start() does.)
+    e.state = off ? "disabled" : b.config || b.live ? (b.remote && !e.cold ? "connecting" : "idle") : "missing";
     e.error = b.config || b.live ? undefined : b.missing;
+    if (off && b.remote) { e.tools = []; e.cold = false; }
+  }
+
+  // The tools a server lists now (or listed last, while it is asleep), and its state: for the code that brought it.
+  toolsOf(name: string): readonly McpTool[] {
+    return this.entries.get(name)?.tools ?? [];
+  }
+  stateOf(name: string): McpState | undefined {
+    return this.entries.get(name)?.state;
   }
 
   isOff(name: string) {
@@ -556,6 +583,10 @@ export class McpManager {
 
   private bundledOff(): string[] {
     try { return JSON.parse(readFileSync(this.bundledOffPath, "utf8")); } catch { return []; }
+  }
+  // The servers Keel brings that are off until the owner turns them on (`optIn`), and that the owner turned on.
+  private bundledOn(): string[] {
+    try { const on = JSON.parse(readFileSync(join(this.stateDir, "mcp-bundled-on.json"), "utf8")); return Array.isArray(on) ? on.filter((n) => typeof n === "string") : []; } catch { return []; }
   }
 
   isBundled(name: string) {
@@ -859,7 +890,7 @@ export class McpManager {
     // A command's own daemon connects a server only when a turn uses it.
     if (!runMode.client) setTimeout(() => {
       // (A command server with a kept listing waits for its first call.)
-      for (const e of this.entries.values()) if (e.state !== "disabled" && !e.bundled && !e.cold) this.ensure(e.name).catch(() => {});
+      for (const e of this.entries.values()) if (e.state !== "disabled" && e.state !== "missing" && (!e.bundled || e.bundled.remote) && !e.cold) this.ensure(e.name).catch(() => {});
     }, 50);
     // (The pass over the servers for a browser left open: once a minute, off the loop's way.)
     if (!runMode.client) {
@@ -906,7 +937,7 @@ export class McpManager {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing" || this.twinOf(e)) return [];
         // A bundled server's shipped list: searching it starts nothing. Nor does the kept list of a command server.
-        if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
+        if (e.bundled && !e.bundled.remote) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
         if (this.listed(e)) return this.forModel(e).map((t) => this.catalogTool(e, t));
         try {
           await this.ensure(name, 8_000);
@@ -928,9 +959,16 @@ export class McpManager {
       known: () => {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing" || this.twinOf(e)) return [];
-        if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
+        if (e.bundled && !e.bundled.remote) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
         return e.state === "ready" || this.listed(e) ? this.forModel(e).map((t) => this.catalogTool(e, t)) : [];
       },
+      // A server whose tools are not every session's (a remote one Keel brings): the ones this session is offered.
+      ...(bundled?.remote?.offers ? { only: (session: string) => {
+        const offers = bundled.remote!.offers!(session);
+        if (typeof offers !== "function") return offers;
+        const by = this.defsOf(e);
+        return (t: CatalogTool) => { const def = by.get(t.name); return !!def && offers(def); };
+      } } : {}),
     });
     return e;
   }
@@ -943,7 +981,18 @@ export class McpManager {
   // A command server of the owner's, a plugin's or a session's that may have no process: not one Keel brings,
   // not one the owner keeps running, not one whose events the owner takes (it must be there to push them).
   private sleeps(e: Entry): boolean {
+    if (e.bundled?.remote) return !!e.config.url;
     return !e.bundled && (!e.session || !!e.spec) && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e) && !this.watched?.(e.label ?? e.name);
+  }
+
+  // A server's listed tools by name, made once a listing.
+  private defs = new WeakMap<Entry, { from: McpTool[]; by: Map<string, McpTool> }>();
+  private defsOf(e: Entry): Map<string, McpTool> {
+    const had = this.defs.get(e);
+    if (had && had.from === e.tools) return had.by;
+    const by = new Map(e.tools.map((t) => [t.name, t] as const));
+    this.defs.set(e, { from: e.tools, by });
+    return by;
   }
 
   // Whether a listing is one the owner already accepted: every tool it names is pinned as it is, and its instructions are
@@ -978,7 +1027,7 @@ export class McpManager {
   }
   // The listing just taken, kept for the next start. Written only when it changed.
   private keep(e: Entry, prompts?: any[]) {
-    if (e.bundled || (e.session && !e.spec) || !e.config.command || e.config.url || !e.client) return;
+    if (!e.client || (e.bundled?.remote ? !e.config.url : e.bundled || (e.session && !e.spec) || !e.config.command || e.config.url)) return;
     const at = this.keptAs(e);
     const caps = { resources: !!e.client.capabilities.resources, prompts: !!e.client.capabilities.prompts };
     const was = this.kept[at];
@@ -1029,9 +1078,10 @@ export class McpManager {
 
   private catalogTool(e: Entry, t: McpTool): CatalogTool {
     const server = e.label ?? e.name;
-    const readOnly = e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name);
+    const remote = e.bundled?.remote;
+    const readOnly = remote ? remote.reads(t) : e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name);
     // (A server Keel brings is judged by Keel's own word: its `reads` and `judge`.)
-    const hints = e.bundled ? undefined : hintsOf(t.annotations);
+    const hints = e.bundled && !remote ? undefined : hintsOf(t.annotations);
     // A tool the owner marked as a read is a read whatever its server says; any other call carries what raises its care.
     const careful = !readOnly && (hints?.destructive || hints?.openWorld) ? { ...(hints.destructive ? { destructive: true as const } : {}), ...(hints.openWorld ? { openWorld: true as const } : {}) } : undefined;
     // A tool that writes, on a server that holds the owner's account: his to allow in every mode (src/safety/accounts.ts).
@@ -1039,6 +1089,8 @@ export class McpManager {
     // (src/mcp/class.ts: the owner's word, else the credential its config sends). A tool whose accepted definition says
     // it only reads (readOnlyHint, taken here for this and nothing else) is not held.
     const account = !readOnly && !e.bundled && t.annotations?.readOnlyHint !== true;
+    // A remote server Keel brings signs in as the owner: every tool of it that is no read is his to allow, whatever it names.
+    const whole = remote && !readOnly ? remote.account(t) : undefined;
     // A tool its server marks as one the owner answers on every call (tools/list _meta, exactly true: any other value
     // is ignored). It is a rule the gate holds the call to (src/safety/policy.ts), so it is part of what the call is
     // judged by and of the shape a card's answer is for.
@@ -1058,6 +1110,7 @@ export class McpManager {
       ...(t.annotations?.readOnlyHint === true ? { hinted_read: true as const } : {}),
       ...(hints || interaction ? { hints: { ...hints, ...(interaction ? { interaction: true as const } : {}) } } : {}),
       judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input)
+        : whole ? async () => ({ kind: "other" as const, ...(careful ? { hints: careful } : {}), account: { server, whole } })
         : interaction ? async (input: any) => ({ kind: "other" as const, hints: { ...careful, interaction: true as const }, ...(readOnly ? { reads: true as const } : {}), ...(account && this.classOf(e.name)?.account.yes ? { account: { server, name: e.name, tool: t.name, input } } : {}) })
         : careful || account ? async (input: any) => ({ kind: "other" as const, ...(careful ? { hints: careful } : {}), ...(account && this.classOf(e.name)?.account.yes ? { account: { server, name: e.name, tool: t.name, input } } : {}) }) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
@@ -1099,7 +1152,7 @@ export class McpManager {
       kind: "http",
       url: expand(c.url!),
       headers,
-      token: bearer ? async () => bearer : () => this.oauth.token(e.name),
+      token: e.bundled?.remote ? () => e.bundled!.remote!.token() : bearer ? async () => bearer : () => this.oauth.token(e.name),
       ...(c.transport === "sse" || e.sse ? { sse: true } : {}),
     };
   }
@@ -1111,6 +1164,8 @@ export class McpManager {
     if (!e) return Promise.reject(new Error(`no MCP server named ${name}`));
     if (e.bundled?.live) return Promise.reject(new Error(`${name} has no MCP process`));
     if (e.state === "disabled") return Promise.reject(new Error(`${name} is turned off`));
+    // (What a remote server Keel brings was missing, a sign-in, may be there now.)
+    if (e.state === "missing" && e.bundled?.remote) this.found(e);
     if (e.state === "missing") return Promise.reject(new Error(e.error ?? `${name} is not installed`));
     if (e.client && e.state === "ready") return Promise.resolve(e.client);
     if (!e.connecting) {
@@ -1135,6 +1190,7 @@ export class McpManager {
             t.env = sessionEnv(e.config, true);
           }
         }
+        if (t.kind === "http" && e.bundled?.remote?.headers) Object.assign(t.headers, e.bundled.remote.headers());
         if (t.kind === "http" && e.config.headers_helper) {
           const h = await helperHeaders(e.session ? e.config.headers_helper : expand(e.config.headers_helper), undefined, e.session ? this.projectHelper(e, t.url) : {});
           Object.assign(t.headers, h);
@@ -1286,7 +1342,12 @@ export class McpManager {
           // Dropped, or started again meanwhile: this attempt's end is not the server's state.
           if (this.entries.get(name) !== e || e.abort !== abort) throw err;
           e.failedMs = Date.now() - began;
-          if (err instanceof AuthRequired) {
+          if (err instanceof AuthRequired && e.bundled?.remote) {
+            // Its sign-in is not one this panel makes: said as the failure it is.
+            e.state = "error";
+            e.error = e.bundled.remote.refused?.() ?? "its sign-in was refused";
+            if (e.failures++ === 0) this.errors.capture("server", new Error(`${name}: ${e.error}`), { mcp: name });
+          } else if (err instanceof AuthRequired) {
             e.state = "needs_auth";
             e.www = err.wwwAuthenticate;
             e.error = "Sign in to use this server.";
@@ -1314,7 +1375,7 @@ export class McpManager {
   // A remote server that failed on the network is connected again after a wait that doubles (src/mcp/retry.ts),
   // for a day from its first failure. Nothing else is retried: a refusal or a bad answer would only fail again.
   private retryLater(e: Entry, name: string, err: Error) {
-    if (this.disposed || !e.config.url || e.bundled || !networkFailure(err)) return this.clearRetry(e);
+    if (this.disposed || !e.config.url || (e.bundled && !e.bundled.remote) || !networkFailure(err)) return this.clearRetry(e);
     const now = Date.now();
     const attempt = (e.retry?.attempt ?? 0) + 1;
     const since = e.retry?.since ?? now;
@@ -1346,6 +1407,12 @@ export class McpManager {
     const b = e?.bundled;
     const no = this.refusal(name, ctx.sessionId);
     if (no) return Promise.resolve({ content: no, is_error: true });
+    // A tool of a remote server Keel brings that this session is not offered is not called by it either.
+    const offers = e && b?.remote?.offers?.(ctx.sessionId);
+    if (e && offers) {
+      const def = this.defsOf(e).get(tool);
+      if (offers === "none" || (def && !offers(def))) return Promise.resolve({ content: `${name}__${tool} is not turned on for this session: the owner's setting chatgpt_apps.connectors turns an app on for every session, and an agent definition turns one on for its agent.`, is_error: true });
+    }
     if (e) { e.inflight = (e.inflight ?? 0) + 1; e.used = Date.now(); }
     const done = () => { if (e) { e.inflight = Math.max(0, (e.inflight ?? 1) - 1); e.used = Date.now(); } };
     // A call that goes on in the background keeps its server in use until it ends, not until the turn is told.
@@ -1548,7 +1615,9 @@ export class McpManager {
       // question would reach this session's next call on it. The connection
       // goes with the call; the next call starts the server again.
       if (client.era === "legacy" && client.unnamedRequests) client.drop(`a call of ${shown}__${tool} was ended because of the questions it asked, and the server may still be asking`);
-    }, client, readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
+    }, client, readOnly: e ? (e.bundled?.remote ? !!tools?.some((t) => t.name === tool && e.bundled!.remote!.reads(t)) : e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
+    // What a remote server Keel brings takes with a call (its tool's own routing).
+    if (!meta && e?.bundled?.remote?.meta) meta = e.bundled.remote.meta(tools?.find((t) => t.name === tool), ctx.callId);
     if (watch) { watch.call = call; watch.card = card; }
     // What the model is told besides the result: what the server asked that got no answer, and why.
     // The first call since it connected, when the server itself failed it (an error it answered, or a
@@ -1591,6 +1660,13 @@ export class McpManager {
       // Ended for a bound on its questions: the result says which, and that the call did not finish.
       if (call.ended) return noted({ content: `${shown}__${tool} was ended: ${call.ended} Its work may be half done: check before calling it again.`, is_error: true });
       if (err instanceof McpAuthorizationError) return { content: err.message, is_error: true };
+      if (err instanceof AuthRequired && e?.bundled?.remote) {
+        e.state = "error";
+        e.error = e.bundled.remote.refused?.() ?? "its sign-in was refused";
+        e.client?.close();
+        e.client = undefined;
+        return { content: `${shown} is not available: ${e.error}`, is_error: true };
+      }
       if (err instanceof AuthRequired && e) {
         e.state = "needs_auth";
         e.www = err.wwwAuthenticate;
@@ -1621,7 +1697,8 @@ export class McpManager {
     const out = noted(await toOutput(r, ctx, `${shown}__${tool}`, schema));
     // A tool that names an app (src/mcp/apps.ts): its page is read now, once, and kept with this result.
     const def = tools?.find((t) => t.name === tool);
-    const uri = !app && def ? appUriOf(def) : undefined;
+    // (An app of a remote server Keel brings is not kept: its page is its service's own, and no app of it calls back.)
+    const uri = !app && def && !e?.bundled ? appUriOf(def) : undefined;
     if (uri && e && this.apps) {
       const kept = await this.apps.keep({ server: name, source: binding(sourced(e.config), this.bindKey), shown, tool: def!, uri, input, result: r, ctx }).catch((err) => { this.errors.capture("tool", err, { mcp: name, tool, at: "mcp app", session: ctx.sessionId }); return undefined; });
       if (kept !== undefined) out.shown = { mcp_app: kept };
@@ -1993,8 +2070,8 @@ export class McpManager {
       state: live?.state ?? e.state,
       // (Of a session's own server, the reason in one line: what its command printed is not shown.)
       error: live ? live.error : e.session ? e.error?.split("\nstderr:")[0]!.split("\n")[0] : e.error,
-      tools: (e.bundled && !e.client ? e.bundled.tools : e.tools).length,
-      tool_names: (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
+      tools: (e.bundled && !e.bundled.remote && !e.client ? e.bundled.tools : e.tools).length,
+      tool_names: (e.bundled && !e.bundled.remote && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
       read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
       hinted_reads: e.bundled ? [] : e.tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
       // (What the model is offered: a changed tool the owner has not accepted is offered as accepted.)
@@ -2015,7 +2092,7 @@ export class McpManager {
       // Name, title and version; icons (data URIs of kilobytes) stay out of a list polled every second or two.
       server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
       endpoint: e.bundled ? undefined : endpoint(maskedServer(shown)),
-      sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
+      sign_in: !!e.config.url && !e.bundled && !e.config.bearer_env && !e.config.headers_helper,
       ...(e.plugin ? { plugin: e.plugin } : {}),
       ...(e.retry && e.state === "error" ? { retry: { attempt: e.retry.attempt, next_ms: e.retry.next, until_ms: e.retry.since + RETRY.giveUp } } : {}),
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
@@ -2211,7 +2288,7 @@ export class McpManager {
   // Pinned: the owner's servers. A server Keel brings ships its own list; a
   // session's own is the editor's or a project's, and lives with its session.
   private leashed(e: Entry) {
-    return !e.bundled && !e.session;
+    return (!e.bundled || !!e.bundled.remote) && !e.session;
   }
   private pinIdent(e: Entry) {
     return digest(endpoint(e.config)).slice(0, 16);
@@ -2331,7 +2408,7 @@ export class McpManager {
   private twinNames(): Map<string, string[]> {
     const by = new Map<string, string[]>();
     for (const e of this.entries.values()) {
-      if (!this.leashed(e)) continue;
+      if (!this.leashed(e) || e.bundled) continue;
       const keys = [`e:${endpoint(e.config)}`, ...(e.tools.length ? [`t:${digest(canon(e.tools.map(defOf).sort((a, b) => a.name.localeCompare(b.name))))}`] : [])];
       for (const k of keys) (by.get(k) ?? by.set(k, []).get(k)!).push(e.name);
     }
@@ -2346,7 +2423,7 @@ export class McpManager {
   // one program (the same command, arguments and environment, or the same address and headers) are a set, the first by
   // name is offered, and a later one is not, unless the owner turned that off for it (`offer_twin`).
   private twinOf(e: Entry): string | undefined {
-    if (!this.leashed(e) || e.state === "disabled" || e.config.offer_twin) return undefined;
+    if (!this.leashed(e) || e.bundled || e.state === "disabled" || e.config.offer_twin) return undefined;
     const key = (x: Entry) => `${endpoint(x.config)}\n${canon({ env: x.config.env ?? {}, env_vars: [...(x.config.env_vars ?? [])].sort(), cwd: x.config.cwd ?? "", headers: x.config.headers ?? {}, headers_env: x.config.headers_env ?? {}, bearer_env: x.config.bearer_env ?? "", headers_helper: x.config.headers_helper ?? "" })}`;
     const mine = key(e);
     let first: string | undefined;
@@ -2529,13 +2606,28 @@ export class McpManager {
     const e = this.entries.get(name)!;
     if (e.plugin) throw new Error(pluginWord(e.plugin));
     if (e.bundled) {
-      const off = new Set(this.bundledOff());
-      if (enabled) off.delete(name);
-      else off.add(name);
-      mkdirSync(dirname(this.bundledOffPath), { recursive: true });
-      writeFileSync(this.bundledOffPath, JSON.stringify([...off]));
+      // One that is off until turned on is kept by the ones turned on; any other by the ones turned off.
+      const path = e.bundled.optIn ? join(this.stateDir, "mcp-bundled-on.json") : this.bundledOffPath;
+      const set = new Set(e.bundled.optIn ? this.bundledOn() : this.bundledOff());
+      if (enabled === !!e.bundled.optIn) set.add(name);
+      else set.delete(name);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify([...set]));
       e.client?.close();
       e.client = undefined;
+      if (e.bundled.remote) {
+        // Its listing is its own: off it offers nothing, on it sleeps on the kept one or connects to take one.
+        e.abort?.abort();
+        e.abort = undefined;
+        e.connecting = undefined;
+        this.clearRetry(e);
+        e.tools = [];
+        e.cold = false;
+        e.error = undefined;
+        e.state = enabled ? "missing" : "disabled";
+        if (enabled && this.found(e) && !e.cold) this.ensure(name).catch(() => {});
+        return;
+      }
       e.state = !enabled ? "disabled" : e.bundled.config || e.bundled.live ? "idle" : "missing";
       e.error = enabled && !e.bundled.config && !e.bundled.live ? e.bundled.missing : undefined;
       if (enabled) void e.bundled.live?.check();
@@ -2558,6 +2650,18 @@ export class McpManager {
       e.state = "connecting";
       this.ensure(name).catch(() => {});
     }
+  }
+
+  // A remote server Keel brings that was missing what it needs (a sign-in): asked again. With it, the server sleeps on
+  // its kept listing, or is ready to connect; without it, it stays missing with what to do.
+  private found(e: Entry): boolean {
+    const c = e.bundled?.configure?.() ?? e.bundled?.config ?? null;
+    if (!c) { e.state = "missing"; e.error = e.bundled?.missing; return false; }
+    e.config = c;
+    e.error = undefined;
+    e.state = "connecting";
+    this.useKept(e);
+    return true;
   }
 
   // A server Keel brings whose command changed (a setting it follows): the
@@ -2587,6 +2691,7 @@ export class McpManager {
     this.clearRetry(e); // asked for by the owner: the count of tries starts again
     e.era = undefined;
     e.noSse = undefined; // asked for by the owner: the older transport is tried again
+    if (e.state === "missing" && e.bundled?.remote) this.found(e);
     if (e.state === "disabled" || e.state === "missing") return;
     e.state = "connecting";
     await this.ensure(name, 15_000).catch(() => {});

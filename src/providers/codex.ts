@@ -153,6 +153,21 @@ export class CodexProvider implements Provider {
     return h;
   }
 
+  // The sign-in as the backend's other services take it (the apps server, src/integrations/chatgpt-apps.ts): the
+  // bearer token, renewed as for a model request (`force`: after a refusal), and the account it is for. The one
+  // place another module gets it; never a tool's or a model's to read.
+  async signIn(force = false): Promise<{ token: string; account?: string }> {
+    const a = await this.auth(force);
+    return { token: a.tokens!.access_token!, ...(a.tokens?.account_id ? { account: a.tokens.account_id } : {}) };
+  }
+
+  // The ChatGPT account the stored sign-in is for, as the file names it.
+  account(): string | undefined { return this.read()?.tokens?.account_id; }
+
+  // Where the backend serves the account's app connectors as an MCP server: beside the model API, as Codex
+  // addresses it (codex-rs/codex-mcp/src/mcp/mod.rs codex_apps_mcp_url_for_base_url: <backend-api>/ps/mcp).
+  appsUrl(): string { return `${this.base.replace(/\/codex$/, "")}/ps/mcp`; }
+
   // The client version the backend's listing is asked for. The backend lists
   // only the models a client of that version knows, so it is the newer of the
   // Codex CLI this daemon would run and the version in Codex's models cache:

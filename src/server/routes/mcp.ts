@@ -11,6 +11,7 @@ import { toMessages } from "../../engine/turn.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { installTacitServer } from "../../integrations/tacit-mcp.ts";
+import { installChatgptApps, type AppsSignIn } from "../../integrations/chatgpt-apps.ts";
 import { memoryOn } from "../../integrations/tacit.ts";
 import { isAgentKey, ProjectServers } from "../../mcp/project.ts";
 import { agentServers, defOfSession } from "../../automation/agents.ts";
@@ -100,6 +101,9 @@ export const mcpRoutes: RouteModule = (deps) => {
   installChromeBridge(m);
   installPhone(m);
   installTacitServer(m, (id) => memoryOn(deps.store, id));
+  // ChatGPT's app connectors, signed in with the sign-in the plan's models use (off until the owner turns them on).
+  const chatgpt = deps.providers.get("chatgpt") as Partial<AppsSignIn> | undefined;
+  if (chatgpt?.available && chatgpt.signIn && chatgpt.account && chatgpt.appsUrl) installChatgptApps(m, chatgpt as AppsSignIn, (sid) => defOfSession(sid)?.apps);
   m.start();
   // A project's .mcp.json: its servers the owner approved go to the sessions working in it, from each turn's start.
   const projects = new ProjectServers(deps.store, m);

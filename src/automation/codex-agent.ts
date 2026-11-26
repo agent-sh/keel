@@ -3,16 +3,28 @@
 // - `mcp_servers`: the servers it names, by name (Keel gives every agent the owner's servers; a missing one is told).
 // - `plugins`: Codex plugins from Codex's plugin cache (<codex home>/plugins/cache/<marketplace>/<plugin>/<version>).
 //   Their skills are told in the agent's task (name, description, file), as Codex lists a plugin's skills; their MCP
-//   servers and app connectors are Codex's own and are told as not carried.
-// - `apps`: ChatGPT app connectors (Gmail, Calendar, Drive...), which Codex reaches through its ChatGPT sign-in.
-//   Keel has none, so an agent that turns one on cannot do its work here: it is unavailable, with why.
+//   servers are Codex's own and are told as not carried.
+// - `apps`: ChatGPT app connectors (Gmail, Calendar, Drive...), by connector id, and the ones a plugin names in its
+//   `.app.json`. Keel reaches them through the server it brings for them (src/mcp/chatgpt-apps.ts) once the owner
+//   turned it on: the agent is then offered those connectors' tools. Until then an agent whose `apps` table turns
+//   one on cannot do its work here: it is unavailable, with why.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { codexPluginDir } from "../integrations/codex-plugins.ts";
 import { join } from "node:path";
 import { frontmatter } from "../tools/skill-text.ts";
+import { appsMissing, appsNow, type AppsNow } from "../mcp/chatgpt-apps.ts";
 
 export type PluginSkill = { name: string; description: string; file: string; plugin: string };
-export type CodexIntegrations = { mcpServers?: string[]; pluginSkills?: PluginSkill[]; notTaken?: string[]; unavailable?: string };
+// `apps`: the connectors it turns on that Keel reaches now, by id.
+export type CodexIntegrations = { mcpServers?: string[]; pluginSkills?: PluginSkill[]; notTaken?: string[]; unavailable?: string; apps?: string[] };
+
+// The connectors a Codex plugin names (`.app.json`: apps.<name>.id).
+function pluginApps(dir: string): string[] {
+  try {
+    const apps = JSON.parse(readFileSync(join(dir, ".app.json"), "utf8"))?.apps;
+    return apps && typeof apps === "object" ? Object.values(apps as Record<string, { id?: unknown }>).map((a) => a?.id).filter((id): id is string => typeof id === "string" && !!id.trim()) : [];
+  } catch { return []; }
+}
 
 const on = (v: unknown) => !(v && typeof v === "object" && (v as { enabled?: unknown }).enabled === false);
 const turnedOn = (table: unknown): string[] => (table && typeof table === "object" && !Array.isArray(table) ? Object.entries(table as Record<string, unknown>).filter(([, v]) => on(v)).map(([k]) => k) : []);
@@ -37,20 +49,23 @@ function skillsOf(dir: string, plugin: string): PluginSkill[] {
 
 const listOf = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
-// The integrations of a parsed Codex agent file. `codexHome` is where Codex keeps its plugins.
-export function codexIntegrations(t: Record<string, unknown>, codexHome: string): CodexIntegrations {
+// The integrations of a parsed Codex agent file. `codexHome` is where Codex keeps its plugins; `now`: what is
+// known of ChatGPT's app connectors in Keel; `owners`: the file is one of the owner's own (his Codex or Keel
+// folder). A repository's file turns no connector on: it would give itself the owner's mail to read.
+export function codexIntegrations(t: Record<string, unknown>, codexHome: string, now: AppsNow | undefined = appsNow.of?.(), owners = true): CodexIntegrations {
   const out: CodexIntegrations = {};
   const servers = turnedOn(t.mcp_servers);
   if (servers.length) out.mcpServers = servers;
   const notTaken: string[] = [];
   const skills: PluginSkill[] = [];
-  const codexOnly: string[] = [];
+  const withApps: string[] = [];
+  const pluginIds: string[] = [];
   for (const id of turnedOn(t.plugins)) {
     const dir = codexPluginDir(codexHome, id);
     if (!dir) { notTaken.push(`the Codex plugin ${id}: it is not in Codex's plugin cache`); continue; }
     skills.push(...skillsOf(dir, id));
-    const parts = [existsSync(join(dir, ".mcp.json")) ? "MCP servers" : "", existsSync(join(dir, ".app.json")) ? "app connectors" : ""].filter(Boolean);
-    if (parts.length) { codexOnly.push(id); notTaken.push(`the ${parts.join(" and ")} of the Codex plugin ${id}: they are Codex's own and Keel does not run them`); }
+    if (existsSync(join(dir, ".mcp.json"))) notTaken.push(`the MCP servers of the Codex plugin ${id}: they are Codex's own and Keel does not run them`);
+    if (existsSync(join(dir, ".app.json"))) { withApps.push(id); pluginIds.push(...pluginApps(dir)); }
   }
   // `apps._default` holds the defaults of apps with no entry, not an app. An app with an entry is on unless that
   // entry says `enabled = false`: Codex reads the app's own entry first, and its `enabled` defaults to true.
@@ -59,10 +74,12 @@ export function codexIntegrations(t: Record<string, unknown>, codexHome: string)
     if (k === "_default") return false;
     return !(v && typeof v === "object" && (v as { enabled?: unknown }).enabled === false);
   }).map(([k]) => k);
-  if (apps.length) {
-    const named = codexOnly.length ? ` (${listOf(codexOnly)})` : "";
-    out.unavailable = `it turns on ChatGPT app ${apps.length === 1 ? "connector" : "connectors"}${named}, which Codex reaches through its ChatGPT sign-in and Keel does not`;
-  }
+  const all = [...new Set([...apps, ...pluginIds])];
+  const missing = !all.length ? undefined : owners ? appsMissing(all, now) : "only an agent definition of the owner's own turns one on (a file in his own agents folder, not a repository's)";
+  // Its own `apps` table is what its work needs: without those connectors it cannot run. A plugin's alone are told.
+  if (apps.length && missing) out.unavailable = `it turns on ${apps.length === 1 ? "a ChatGPT app connector" : "ChatGPT app connectors"}, and ${missing}`;
+  else if (all.length && !missing) out.apps = all;
+  if (withApps.length && missing) notTaken.push(`the app connectors of the Codex ${withApps.length === 1 ? "plugin" : "plugins"} ${listOf(withApps)}: ${missing}`);
   if (skills.length) out.pluginSkills = skills;
   if (notTaken.length) out.notTaken = notTaken;
   return out;

@@ -73,6 +73,7 @@ import { AGENT_FILE_MAX } from "../core/agent-file.ts";
 import { choiceOf as turnChoiceOf } from "../tools/skill-turn.ts";
 import { isApiGrant, listReach, type ApiGrant } from "./api-grant.ts";
 import { codexIntegrations, pluginSkillsBlock, type PluginSkill } from "./codex-agent.ts";
+import { appsBlock, appsNow } from "../mcp/chatgpt-apps.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. The child gets the same system
@@ -195,6 +196,8 @@ export type AgentDef = {
   // it cannot run here at all (it turns on ChatGPT app connectors): left out of the types offered, its spawn refused.
   pluginSkills?: PluginSkill[];
   unavailable?: string;
+  // The ChatGPT app connectors its definition turns on, by id: the ones its session is offered (src/mcp/chatgpt-apps.ts).
+  apps?: string[];
 };
 
 // A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
@@ -629,7 +632,7 @@ function readCodexDir(dir: string, source: string): AgentDef[] {
       const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
       const name = str(t.name), description = str(t.description), body = str(t.developer_instructions);
       if (!name || !description || !body) throw new Error("a Codex agent file needs name, description and developer_instructions");
-      const own = codexIntegrations(t, ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex"));
+      const own = codexIntegrations(t, ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex"), undefined, source === "owner");
       out.push({
         name, description, body, source, file: p, format: "codex",
         model: str(t.model), effort: str(t.model_reasoning_effort), ...(str(t.tier) ? { tier: str(t.tier) } : {}),
@@ -1251,7 +1254,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   let lessonsBlock = "";
   try { lessonsBlock = lessonStart.block?.(store.session(child.id) ?? child, id) ?? ""; } catch (e) { capture(e, { at: "agent lessons", agent: id }); }
   const task = [
-    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded, pluginSkills, lessonsBlock,
+    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded, pluginSkills, appsBlock(def.apps ?? [], appsNow.of?.()), lessonsBlock,
     reviews || isReviewer(def.name) ? VERDICT_LINE : "",
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",

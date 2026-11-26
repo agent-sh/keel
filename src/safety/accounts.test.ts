@@ -844,6 +844,25 @@ test("an MCP tool that writes with an account its server holds asks in every mod
   expect(how(mcp(undefined, "ask"))).toBe("ask-low");
 });
 
+// INT-M26: a server that signs in as the owner to services of others (ChatGPT's app connectors). Every tool of it
+// that is no read is his card in every mode, whatever the call names, and an agent is refused it.
+test("a write with an account that is the owner's whole is his card in every mode, an owner named or not, and an agent is refused", () => {
+  const whole = "sends from Gmail to people or services outside it (its connector says so), as you, through your ChatGPT account: every write through a ChatGPT app is yours to allow";
+  for (const mode of ["ask", "auto-edits", "auto", "reviewer", "full-auto"] as Mode[]) {
+    // (An owner of his named in the call does not lift it, as it does for a server that only holds an account.)
+    for (const input of [undefined, { owner: "me", repo: "repo" }]) {
+      const d = mcp({ server: "chatgpt-apps", whole, ...(input ? { input } : {}) } as { server: string }, mode) as { ask: { why: string; ownerOnly?: true; risk: string; rule: string; suggest: unknown[]; readTool?: unknown } };
+      expect([mode, d.ask?.ownerOnly, d.ask?.risk, d.ask?.rule, d.ask?.suggest, d.ask?.readTool]).toEqual([mode, true, "high", "writes with your account", [], undefined]);
+      expect(d.ask.why).toBe(`slack__post ${whole}`);
+    }
+  }
+  const agent = mcp({ server: "chatgpt-apps", whole } as { server: string }, "full-auto", true) as { deny: string };
+  expect(agent.deny).toContain(`Refused: slack__post ${whole}. That call is the owner's to make, in every mode: an agent is never allowed it.`);
+  expect(agent.deny).toContain("the session that started you can make the call");
+  // Read only refuses it as any tool that can change things.
+  expect((mcp({ server: "chatgpt-apps", whole } as { server: string }, "read-only") as { deny: string }).deny).toContain("read-only");
+});
+
 test("a command's writes are listed for the judge", async () => {
   const { accountFacts } = await import("./accounts.ts");
   const w = writesOf(["git", "push", "upstream"], { dir: "/w/fork", remotes: (d) => disk[d] ?? null });

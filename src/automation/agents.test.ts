@@ -1609,8 +1609,10 @@ test("an agent file's memory folder starts its task with MEMORY.md, within its b
   await settled();
 });
 
-// INT-S58: a Codex agent file's integrations. One that turns on a ChatGPT app connector (Gmail through Codex's sign-in)
-// cannot do its work in Keel: it is not offered and its spawn is refused with why. One that turns on a plugin of
+// INT-S58, INT-M26: a Codex agent file's integrations. One that turns on a ChatGPT app connector (Gmail through the
+// ChatGPT sign-in) cannot do its work while Keel's ChatGPT apps server is off, or does not list the connector: it is
+// not offered and its spawn is refused with why. With the server on it is offered, its definition carries the
+// connector, and its task says which app and how its tools are named. One that turns on a plugin of
 // skills starts with those skills named in its task, and a plugin's own servers are told as not carried.
 test("a Codex agent file's plugins and app connectors are read: an app's agent is refused, a plugin's skills are named", async () => {
   const codex = join(dir, "codex-home");
@@ -1625,19 +1627,46 @@ test("a Codex agent file's plugins and app connectors are read: an app's agent i
   plugin("security@remote", "0.2.0", { ".mcp.json": "{\"mcpServers\":{}}", "skills/scan/SKILL.md": "---\nname: scan\ndescription: Scan a repo.\n---\nScan." });
   const folder = join(dir, ".codex", "agents");
   mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "mailer.toml"), ['name = "mailer"', 'description = "Gmail searches"', 'developer_instructions = "Use the Gmail integration."', '[plugins."gmail@remote"]', "enabled = true", "[apps.connector_1]", "enabled = true"].join("\n"));
+  // (The mailer is the owner's own, in his Codex folder; a repository's copy of it is below.)
+  mkdirSync(join(codex, "agents"), { recursive: true });
+  const borrowed = ['name = "borrowed"', 'description = "Reads mail"', 'developer_instructions = "Use the Gmail integration."', "[apps.connector_1]", "enabled = true"].join("\n");
+  writeFileSync(join(folder, "borrowed.toml"), borrowed);
+  writeFileSync(join(codex, "agents", "mailer.toml"), ['name = "mailer"', 'description = "Gmail searches"', 'developer_instructions = "Use the Gmail integration."', '[plugins."gmail@remote"]', "enabled = true", "[apps.connector_1]", "enabled = true"].join("\n"));
   writeFileSync(join(folder, "writer.toml"), ['name = "writer"', 'description = "DOCX documents"', 'developer_instructions = "Write the document."', '[plugins."documents@runtime"]', "enabled = true", '[plugins."security@remote"]', "enabled = true", '[plugins."gone@remote"]', "enabled = true", '[plugins."off@remote"]', "enabled = false", "[mcp_servers.crm]", "enabled = true"].join("\n"));
   const was = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codex;
   try {
     const defs = agents.definitions(dir);
     const mailer = defs.find((d) => d.name === "mailer")!;
-    expect(mailer.unavailable).toContain("ChatGPT app connector (gmail@remote)");
+    expect(mailer.unavailable).toBe("it turns on a ChatGPT app connector, and Keel reaches ChatGPT apps only once the owner turns them on in Customize > MCP servers");
+    expect(mailer.apps).toBeUndefined();
     expect(agents.offeredTypes(dir)).not.toContain("mailer");
     expect(agents.offeredTypes(dir)).toContain("- writer: DOCX documents");
     const refused = await tool("Agent").run({ description: "mail", prompt: "find the invoice", subagent_type: "mailer", run_in_background: true, isolation: "none" }, ctx as any);
-    expect(String(refused.content)).toContain("the agent type mailer cannot run in Keel: it turns on ChatGPT app connector");
+    expect(String(refused.content)).toContain("the agent type mailer cannot run in Keel: it turns on a ChatGPT app connector");
     expect(agents.list(parent.id).some((a) => a.type === "mailer")).toBe(false);
+    // The server on, with a listing that lacks the connector: still not offered, and why names it.
+    const { appsNow } = await import("../mcp/chatgpt-apps.ts");
+    const before = appsNow.of;
+    try {
+      appsNow.of = () => ({ on: true, connectors: [{ id: "connector_2", name: "Slack" }] });
+      expect(agents.definitions(dir).find((d) => d.name === "mailer")!.unavailable).toBe("it turns on a ChatGPT app connector, and the owner's ChatGPT account does not list connector_1");
+      // On, and the account lists it: offered, the connector with its definition and named in its task.
+      appsNow.of = () => ({ on: true, connectors: [{ id: "connector_1", name: "Gmail" }, { id: "connector_2", name: "Slack" }] });
+      const on = agents.definitions(dir).find((d) => d.name === "mailer")!;
+      expect([on.unavailable, on.apps, on.notTaken]).toEqual([undefined, ["connector_1"], undefined]);
+      expect(agents.offeredTypes(dir)).toContain("- mailer: Gmail searches");
+      // A repository's own agent file turns no connector on, the server on or not: it is not offered.
+      expect(agents.definitions(dir).find((d) => d.name === "borrowed")).toMatchObject({ unavailable: "it turns on a ChatGPT app connector, and only an agent definition of the owner's own turns one on (a file in his own agents folder, not a repository's)" });
+      expect(agents.offeredTypes(dir)).not.toContain("borrowed");
+      const m = await tool("Agent").run({ description: "mail", prompt: "find the invoice", subagent_type: "mailer", run_in_background: true, isolation: "none" }, ctx as any);
+      expect(m.is_error).toBeFalsy();
+      const ma = agents.list(parent.id).find((x) => x.type === "mailer")!;
+      expect(agents.defOfSession(ma.session_id)?.apps).toEqual(["connector_1"]);
+      expect(sends.find((x) => x.id === ma.session_id)!.text).toContain("ChatGPT apps your definition turns on: Gmail (tools named chatgpt-apps__gmail.*).");
+      end(ma, "end_turn");
+      await settled();
+    } finally { appsNow.of = before; }
     const writer = defs.find((d) => d.name === "writer")!;
     expect([writer.unavailable, writer.mcpServers, writer.pluginSkills?.map((x) => x.name)]).toEqual([undefined, ["crm"], ["documents", "scan"]]);
     expect(writer.notTaken).toEqual([expect.stringContaining("the MCP servers of the Codex plugin security@remote"), expect.stringContaining("the Codex plugin gone@remote: it is not in Codex's plugin cache")]);
@@ -1651,6 +1680,7 @@ test("a Codex agent file's plugins and app connectors are read: an app's agent i
   } finally {
     if (was === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = was;
     rmSync(folder, { recursive: true, force: true });
+    rmSync(join(codex, "agents"), { recursive: true, force: true });
   }
 });
 

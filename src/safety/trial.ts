@@ -49,6 +49,7 @@ const REFUSALS: [RegExp, string][] = [
   [/credentials/, "credentials"],
   [/shares the repository's branches/, "shared branches"],
   [/namespaces/, "writes beyond your accounts"],
+  [/That call is the owner's to make/, "writes with your account"],
   [/never runs without the owner/, "never allowed"],
   [/sandbox/, "sandbox"],
   [/drive other sessions/, "other sessions"],
