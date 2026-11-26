@@ -130,10 +130,10 @@ export const setOf = (set: readonly string[] | undefined, name: string): string 
 
 const lateWhy = (what: string) => `the rules could not read ${what}`;
 
-// The remote a bare `git push` goes to, as git picks it.
+// The remote a bare `git push` goes to, as git picks it: the branch's pushRemote, remote.pushDefault, the branch's
+// remote, origin. Git takes the first one set as it is: a value that names no remote is an address or a folder to it.
 export function pushRemote(r: Remotes): string {
-  const pick = (n: string | undefined) => (n && (n in r.push || n in r.fetch) ? n : undefined);
-  return pick(r.branchPushRemote) ?? pick(r.pushDefault) ?? pick(r.branchRemote) ?? "origin";
+  return r.branchPushRemote || r.pushDefault || r.branchRemote || "origin";
 }
 
 // The repository `gh` acts on without -R: the one marked with `gh repo set-default`, else the first remote in its order
@@ -207,7 +207,8 @@ function viaRemote(does: string, name: string | null, env: Env): Write[] {
   const remote = name ?? pushRemote(r);
   const added = env.added?.get(remote);
   const urls = added !== undefined ? [added] : r.push[remote] ?? (r.fetch[remote] ? [r.fetch[remote]!] : []);
-  if (!urls.length) return [];
+  // (No remote of that name. One the repository's settings picked is then an address, or a folder, as git reads it.)
+  if (!urls.length) { const a = name === null ? repoOf(remote) : null; return a ? [{ does, account: shown(a) }] : []; }
   return urls.flatMap((u) => { const a = repoOf(u); return a ? [{ does, account: shown(a), ...(added === undefined ? { own: true as const } : {}) }] : []; });
 }
 

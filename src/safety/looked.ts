@@ -138,8 +138,8 @@ async function textOf(file: string): Promise<string | null> {
 // The remotes of the repository `dir` is in, as the owner's own git lists them there (`git remote -v`): each
 // address as git rewrites it for a fetch and for a push, what gh marked, and where a bare push goes. Keel's view of
 // the repository's config (src/core/git.ts) holds the remotes and no url rewrite, so the repository's own
-// url.<base>.insteadOf and .pushInsteadOf are given to this one listing (remotesAsRun); the owner's own apply by
-// themselves. A repository whose config includes other files is not read ("late"): what those files add, the
+// url.<base>.insteadOf and .pushInsteadOf are given to this one listing (remotesAsRun), which also carries the
+// repository's remote.pushDefault; the owner's own apply by themselves. A repository whose config includes other files is not read ("late"): what those files add, the
 // view does not hold.
 export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
   const run = (args: string[]) => git(dir, args, { read: true, timeout: 1_500 });
@@ -164,6 +164,9 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
     else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.remote`) r.branchRemote = value;
     else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.pushremote`) r.branchPushRemote = value;
   }
+  // (The repository's own remote.pushDefault is not in the view the listing above reads: it comes with the remotes, and
+  // stands over the owner's own, as a repository's config does.)
+  if (verbose.pushDefault !== undefined) r.pushDefault = verbose.pushDefault;
   return r;
 }
 

@@ -70,6 +70,17 @@ test("gh acts on the repository it is told to, else the one it marked, else upst
   expect(ghBase(remotes({}))).toBeNull();
 });
 
+test("a push with no remote named goes where git's settings pick: a remote, or an address that is no remote's name", () => {
+  const at = (r: Remotes) => writesOf(["git", "push"], { dir: "/w/x", remotes: () => r }).map((w) => (w.account ? say(w.account) : "unplaced"));
+  expect(at(remotes({ origin: mine, upstream: theirs }, { pushDefault: "upstream" }))).toEqual(["github.com/them/lib"]);
+  expect(at(remotes({ origin: mine, upstream: theirs }, { pushDefault: "upstream", branch: "main", branchPushRemote: "origin" }))).toEqual(["github.com/me/repo"]);
+  expect(at(remotes({ origin: mine }, { pushDefault: theirs }))).toEqual(["github.com/them/lib"]);
+  expect(at(remotes({ origin: mine }, { branch: "main", branchRemote: "git@github.com:them/lib.git" }))).toEqual(["github.com/them/lib"]);
+  // A name that is no remote, or a folder: git does not go on to origin, and nothing is written with an account.
+  expect(at(remotes({ origin: theirs }, { pushDefault: "gone" }))).toEqual([]);
+  expect(at(remotes({ origin: theirs }, { branch: "main", branchPushRemote: "/srv/git/x.git" }))).toEqual([]);
+});
+
 test("an MCP call's input names the owner it acts for", () => {
   expect(namedOwners({ owner: "Me", repo: "x" })).toEqual(["me"]);
   expect(namedOwners({ repository: "them/lib", body: "x" })).toEqual(["them"]);

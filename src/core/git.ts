@@ -330,8 +330,10 @@ const UPLOAD_PACK = `git ${INTO} upload-pack`;
 // Beyond its remotes' addresses, what a repository's own config says of where they lead: `rewrites`, its url
 // rewrites (url.<base>.insteadOf and .pushInsteadOf, as git lists the keys), and `includes`, whether it includes
 // other config files. Neither is in the view: Keel's own git rewrites no address and reads no file a repository
-// names. They are kept for the one read that says where the owner's own git would push (remotesAsRun).
-type Leads = { rewrites: [string, string][]; includes: boolean };
+// names. `pushDefault`: its remote.pushDefault, the remote a push with none named goes to, which the view does not
+// hold either (it keeps a remote's keys only under the remote's name). They are kept for the one read that says where
+// the owner's own git would push (remotesAsRun).
+type Leads = { rewrites: [string, string][]; includes: boolean; pushDefault?: string };
 function viewConfig(w: Where): { config: string; leads: Leads } {
   const all = entries(join(w.common, "config"));
   // A repository with per-worktree config: this checkout's own file applies after the shared one.
@@ -366,7 +368,9 @@ function viewConfig(w: Where): { config: string; leads: Leads } {
     const program = lfsProgram(checkouts(w));
     if (program) out.push('[filter "lfs"]', ...Object.entries(STOCK_LFS).map(([k, v]) => `\t${k.slice("filter.lfs.".length)} = ${quoted(v.replace(/^git-lfs/, shq(program)))}`));
   }
-  const leads: Leads = { rewrites: all.filter(([k]) => /^url\..+\.(insteadof|pushinsteadof)$/.test(k)), includes: all.some(([k]) => /^include(if\..*)?\.path$/.test(k)) };
+  // (The last one set wins, as git reads a key with one value.)
+  const pushDefault = all.findLast(([k]) => k === "remote.pushdefault")?.[1];
+  const leads: Leads = { rewrites: all.filter(([k]) => /^url\..+\.(insteadof|pushinsteadof)$/.test(k)), includes: all.some(([k]) => /^include(if\..*)?\.path$/.test(k)), ...(pushDefault !== undefined ? { pushDefault } : {}) };
   return { config: out.join("\n") + "\n", leads };
 }
 
@@ -683,12 +687,12 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
 // by the repository's own url.<base>.insteadOf and .pushInsteadOf as well as the owner's (git applies them: the
 // repository's are this read's own keys, after the owner's as in a repository's config, and a listing connects
 // nowhere). `includes`: the repository's config includes other files, which Keel does not read, so the listing may
-// not be the one his git uses.
-export async function remotesAsRun(dir: string, timeout: number): Promise<GitResult & { includes?: true }> {
+// not be the one his git uses. `pushDefault`: the repository's own remote.pushDefault, when it sets one.
+export async function remotesAsRun(dir: string, timeout: number): Promise<GitResult & { includes?: true; pushDefault?: string }> {
   let leads: Leads | undefined;
   try { const w = locate(dir); if (w) leads = made.get(viewOf(w))?.leads; } catch {} // the listing below says what failed
   const r = await git(dir, ["remote", "-v"], { read: true, timeout, ...(leads?.rewrites.length ? { config: leads.rewrites } : {}) });
-  return leads?.includes ? { ...r, includes: true } : r;
+  return { ...r, ...(leads?.includes ? { includes: true as const } : {}), ...(leads?.pushDefault !== undefined ? { pushDefault: leads.pushDefault } : {}) };
 }
 
 // The entries a listing prints (with -z), handed to `each` a pipe's chunk at a time as they come, so the

@@ -348,7 +348,8 @@ async function pushTarget(dir: string, args: string[]): Promise<Target & { refs:
   else if (named !== undefined && slug(named)) { url = named; }
   else if (named !== undefined) { refs = pos; remote = remotes ? pushRemote(remotes) : undefined; }
   else remote = remotes ? pushRemote(remotes) : undefined;
-  if (remote && remotes) url = remotes.push[remote]?.[0] ?? remotes.fetch[remote];
+  // (A remote the repository's settings picked that is no remote's name is an address to git.)
+  if (remote && remotes) url = remotes.push[remote]?.[0] ?? remotes.fetch[remote] ?? (/^[a-z][a-z0-9+.-]*:\/\/|@/i.test(remote) ? remote : undefined);
   return { repo: url ? slug(url) : null, remote, remotes, refs, wide, ...(del ? { del: true as const } : {}) };
 }
 

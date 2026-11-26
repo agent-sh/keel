@@ -867,6 +867,12 @@ test("the remotes are listed as the owner's own git lists them: the repository's
   // Keel's own git still rewrites nothing: a fetch or a push of its own goes to the address the remote names.
   expect((await git(instead, ["remote", "-v"], { read: true })).out).not.toContain("them");
   expect((await git(push, ["remote", "get-url", "--push", "origin"], { read: true })).out.trim()).toBe("https://forge.example/me/app.git");
+  // The repository's own remote.pushDefault comes with the listing: the view keeps a remote's keys only under its name.
+  const def = mk("rw-default", ["remote.pushDefault", "elsewhere"]);
+  expect((await remotesAsRun(def, 10_000)).pushDefault).toBe("elsewhere");
+  expect(((await remotesIn(def)) as { pushDefault?: string }).pushDefault).toBe("elsewhere");
+  expect((await remotesAsRun(instead, 10_000)).pushDefault).toBeUndefined();
+  expect((await git(def, ["config", "--get", "remote.pushDefault"], { read: true })).out.trim()).toBe("");
   // A config that includes another file: the listing says so, since that file is not read.
   writeFileSync(join(root, "rw-included"), `[remote "origin"]\n\tpushurl = https://forge.example/them/app.git\n`);
   must(plain, "config", "include.path", join(root, "rw-included"));
