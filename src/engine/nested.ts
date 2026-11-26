@@ -88,7 +88,7 @@ export function filesFor(target: string, cwd: string, edit: boolean, inPrompt: I
 // Which nested files the model reads now: marked in the results after the
 // last compaction on the session's branch. Kept per session and read on from
 // where it stopped while the branch only grows; anything else reads it again.
-type Seen = { cp: string; upto: number; lastId: string | null; paths: Set<string> };
+type Seen = { cp: string; upto: number; lastId: string | null; paths: Set<string>; loaded: Map<string, number> };
 const seen = new Map<string, Seen>();
 // Loaded in the step running now, before its results are stored.
 const pending = new Map<string, Set<string>>();
@@ -99,24 +99,32 @@ function textsOf(e: StoredEvent): string[] {
   return [];
 }
 
-export function loadedPaths(store: Store, sessionId: string): Set<string> {
+export function loadedPaths(store: Store, sessionId: string, loadedBefore?: number): Set<string> {
   const events = store.lineage(sessionId);
   const cp = checkpointAt(events);
   const cpId = cp.at >= 0 ? events[cp.at]!.id : "";
   let st = seen.get(sessionId);
   const grows = st && st.cp === cpId && st.upto <= events.length && (st.upto === 0 ? true : events[st.upto - 1]!.id === st.lastId);
   if (!st || !grows) {
-    st = { cp: cpId, upto: Math.max(0, cp.at >= 0 ? cp.keepFrom : 0), lastId: null, paths: new Set() };
+    st = { cp: cpId, upto: Math.max(0, cp.at >= 0 ? cp.keepFrom : 0), lastId: null, paths: new Set(), loaded: new Map() };
     // The files the checkpoint carries unchanged (src/engine/compact.ts fixedContext).
-    for (const f of cp.at >= 0 ? (events[cp.at]!.data.fixed ?? []) : []) for (const m of String(f.text).matchAll(MARK)) st.paths.add(m[1]!);
+    for (const f of cp.at >= 0 ? (events[cp.at]!.data.fixed ?? []) : []) for (const m of String(f.text).matchAll(MARK)) {
+      st.paths.add(m[1]!);
+      if (f.loaded && f.key === `nested:${m[1]}`) st.loaded.set(m[1]!, events[cp.at]!.seq);
+    }
   }
   for (let i = st.upto; i < events.length; i++) {
-    for (const t of textsOf(events[i]!)) if (t.includes(OPEN)) for (const m of t.matchAll(MARK)) st.paths.add(m[1]!);
+    const e = events[i]!;
+    for (const t of textsOf(e)) if (t.includes(OPEN)) for (const m of t.matchAll(MARK)) st.paths.add(m[1]!);
+    if (e.kind === "tool_result") for (const r of e.data.results ?? []) {
+      for (const p of e.data.shown?.[r.tool_use_id]?.nestedInstructions ?? []) if (!st.loaded.has(p)) st.loaded.set(p, e.seq);
+    }
   }
   st.upto = events.length;
   st.lastId = events.at(-1)?.id ?? null;
   seen.set(sessionId, st);
-  return new Set([...st.paths, ...(pending.get(sessionId) ?? [])]);
+  return loadedBefore === undefined ? new Set([...st.paths, ...(pending.get(sessionId) ?? [])])
+    : new Set([...st.loaded].filter(([, seq]) => seq < loadedBefore).map(([p]) => p));
 }
 
 // The prompt's chain of a folder and Codex's fallback names, kept while no file they were read from
@@ -159,14 +167,14 @@ export function block(path: string, window?: number): string | null {
 
 // The blocks to append to one call's result; marks them loaded for this step.
 // `window`: the context window of the session's model, in tokens.
-export function nestedFor(store: Store, s: Session, tool: Tool, input: any, toolCwd?: string, window?: number): string[] {
+export function nestedFor(store: Store, s: Session, tool: Tool, input: any, toolCwd?: string, window?: number): { path: string; text: string }[] {
   if (s.machine) return []; // the files are on the session's machine
   const cwd = s.workspace;
   const { paths, edit } = targetsOf(tool, input, toolCwd ?? cwd);
   if (!paths.length) return [];
   const { paths: inPrompt, fallback } = chainOf(cwd);
   let loaded: Set<string> | null = null;
-  const out: string[] = [];
+  const out: { path: string; text: string }[] = [];
   for (const p of paths) {
     for (const f of filesFor(p, cwd, edit, inPrompt, fallback)) {
       loaded ??= loadedPaths(store, s.id);
@@ -174,7 +182,7 @@ export function nestedFor(store: Store, s: Session, tool: Tool, input: any, tool
       const b = block(f, window);
       loaded.add(f);
       if (!b) continue;
-      out.push(b);
+      out.push({ path: f, text: b });
       (pending.get(s.id) ?? pending.set(s.id, new Set()).get(s.id)!).add(f);
     }
   }

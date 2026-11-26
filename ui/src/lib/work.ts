@@ -5,6 +5,7 @@
 // never from the model's words.
 // Pure: rows.ts keeps the steps of a row with these, a call at a time.
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import type { InstructionEdit } from "../../../src/engine/instruction-marks.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { HOOK_BLOCKED, RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway } from "../../../src/core/stops.ts";
@@ -145,6 +146,7 @@ function refamily(steps: Step[], s: number, k: number): Step[] {
 }
 
 export const callsOf = (step: Step) => step.items.filter(isCall);
+export const instructionEditsOf = (result?: ToolResultBlock) => (result as (ToolResultBlock & { shown?: { instructionEdits?: InstructionEdit[] } }) | undefined)?.shown?.instructionEdits;
 
 // Two steps that show the same: the same items, each call with the same result.
 export const sameStep = (a: Step, b: Step) =>
@@ -317,6 +319,7 @@ export type StepSummary = {
   code: boolean;      // the targets are code (a path, a command), not words
   added: number; removed: number;
   calls: number;
+  instructionEdits?: number;
   unrun?: string;     // why its calls that were not run were not (the first one's reason)
   looks: Record<Look, number>;
   exit?: number;      // a lone command's exit code when it failed
@@ -348,6 +351,10 @@ export function summarize(step: Step, live: Live = { working: true }): StepSumma
   }
   const s: StepSummary = { ...(unrun ? { unrun } : {}), ran, soft: step.family === "explore", label: "", counts: "", targets: [], more: 0, code: true, added: 0, removed: 0, calls: work.length, looks, thoughts: step.items.filter((i) => i.t === "thought").length };
   const named = live.own?.size ? work.filter((c) => !live.own!.has(c.id)) : work;
+  if (step.family === "change" || step.family === "run") {
+    const n = new Set(named.flatMap((c) => instructionEditsOf(c.result)?.map((f) => f.path) ?? [])).size;
+    if (n) s.instructionEdits = n;
+  }
   // A target is named whole up to a length: past it, it is cut in its own text, where the cut shows.
   const name = (list: string[], max = NAMED) => { const all = uniq(list); s.targets = all.slice(0, max).map(clip); s.more = all.length - s.targets.length; };
   const kinds = work.map((c) => toolKind(c.use.name));
@@ -470,5 +477,5 @@ export function sentence(s: StepSummary, words: Word[] = stateWords(s)): string 
   const what = [s.label, s.counts, s.targets.join(", ") + (s.more ? ` and ${s.more} more` : "")].filter(Boolean).join(" ");
   const delta = s.added || s.removed ? `, ${s.added} added, ${s.removed} removed` : "";
   const state = s.looks.running ? ", running" : "";
-  return `${what}${delta}${state}${words.map((w) => `, ${w.text}`).join("")}`;
+  return `${what}${delta}${state}${s.instructionEdits ? `, ${plural(s.instructionEdits, "instruction file", "instruction files")}` : ""}${words.map((w) => `, ${w.text}`).join("")}`;
 }

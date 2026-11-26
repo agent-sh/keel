@@ -22,7 +22,8 @@ import { movesFor, REPLY_FIRST, replyFirst, STEER_MOVE_MS } from "./reply-first.
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, blockDiff, blockTexts, promptNote, toldOf, type Rendered, type Told } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
-import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
+import { changedInstructionLines, editedPath, noteMark, type InstructionEdit, type InstructionScope, type Marks } from "./instruction-marks.ts";
+import { loadedPaths } from "./nested.ts";
 import { instructionChain, nativeContext, nativeMemory, nativeRoots, OnceSet, withoutPorted, type Native, type Same } from "./native-memory.ts";
 import type { LineSource } from "./sections.ts";
 import { testBuild } from "../core/build.ts";
@@ -474,7 +475,7 @@ export type InstructionFact = {
   trust: "trusted" | "as_trusted" | "held" | null; chars: number; carried: number; left_out: number;
   at?: number; same_of?: string; imports?: boolean; text?: string;
 };
-export type ChainMade = { text: string; data: string; files: InstructionFact[]; window?: number; limit: number; room: number };
+export type ChainMade = { text: string; data: string; files: InstructionFact[]; active: Map<string, InstructionScope>; window?: number; limit: number; room: number };
 
 // `once`: the chain's set, shared with a render before (a move's: what the session holds); `used`: filled
 // with the room each file took, by its real path; `held`: files already in the prompt, by real path, with
@@ -488,6 +489,7 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
   const parts: string[] = [];
   const made: string[] = [];
   const facts: InstructionFact[] = [];
+  const active = new Map<string, InstructionScope>();
   const once = o.once ?? new OnceSet();
   const asRead = o.whole ?? new Set<string>();
   const files = instructionPaths(cwd, marks, { covered: true, once });
@@ -565,12 +567,14 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
     const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
     const took = Math.min(fresh.text.length, limit);
     room -= took;
+    active.set(real(p), scope);
+    if (mapped && trusted) for (const source of new Set(fresh.lines.filter((f) => f.at < at && f.path !== p).map((f) => f.path))) active.set(real(source), scope);
     // (A cut one too: a file of the same text is cut where it is, and its cut line says where the rest is.)
     if (trusted) asRead.add(p);
     parts.push(`# ${p}\n\n${body}`);
     fact({ state: at < fresh.text.length ? "cut" : "whole", trust, chars: filtered.length, carried: at, left_out: fresh.left, imports: raw !== read, text: body, ...(at < fresh.text.length && { at }) }, took);
   }
-  return { text: parts.join("\n\n"), data: made.join("\0\0"), files: facts, ...(window && window > 0 && { window }), limit: whole, room: bound };
+  return { text: parts.join("\n\n"), data: made.join("\0\0"), files: facts, active, ...(window && window > 0 && { window }), limit: whole, room: bound };
 }
 
 // The instruction files a session moved (or cloned) from `from` to `to` gets, as a fresh start in `to`
@@ -626,11 +630,11 @@ const CORE = [
 // A render is not a load: the prompt is rendered again to be compared with the kept one (and for the
 // context popup), and the kept one is sent while a warm cache holds it. The memory counts as loaded
 // when a prompt that carries it is stored (`loadSystem`), so the sweep counts what models were sent.
-export function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): { parts: PromptPart[]; native: Native | null } {
-  const { text: inst, data: made } = instructionsMade(cwd, window, marks);
+export function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): { parts: PromptPart[]; native: Native | null; active: Map<string, InstructionScope> } {
+  const { text: inst, data: made, active } = instructionsMade(cwd, window, marks);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
   const mem = (native && nativeMemory(native.family, cwd, { top: native.top, store: nativeContext.store?.(native.session) })) || null;
-  return { native: mem, parts: [
+  return { native: mem, active, parts: [
     { name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: made },
     // The model's own harness's memory of the project: a block of the owner's data, kept in its place while it is empty.
     { name: "native memory", text: mem ? `\n${mem.text}\n` : "", data: mem?.data ?? "" },
@@ -856,6 +860,7 @@ export class Engine {
   // or looked for (src/engine/instruction-marks.ts). One that dropped out has
   // the prompt rendered and compared again at the session's next request.
   private marks = new SessionMap<Marks>(1024);
+  private activeInstructions = new SessionMap<Map<string, InstructionScope>>(1024);
   // The newest render of a session's prompt while its kept one stays sent: a
   // change of the owner's side is told at the tail until it is folded in
   // (src/engine/prompt-note.ts).
@@ -2527,6 +2532,7 @@ export class Engine {
     const made = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks, info ? { family: info.family, top: !session.parent_id, session } : undefined);
     const folder = made.parts.map(sent);
     this.marks.set(session.id, marks);
+    this.activeInstructions.set(session.id, made.active);
     for (const h of allHooks()) try { h.instructionsRendered?.(session); } catch (e) { this.errors.capture("server", e, { hook: "instructionsRendered", session: session.id }); }
     const parts = [...shared, ...folder, ...own];
     const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);
@@ -4087,7 +4093,21 @@ export class Engine {
       const authorizationError = authorizations.length ? () => authorizations.find((a) => !a.valid(call, input))?.deny : undefined;
       const deny = authorizationError?.();
       if (deny) return denied(deny);
-      const runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
+      let runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
+      const instructionEdits: InstructionEdit[] = [];
+      if (!runCtx.dispatch && !session.machine && !ctx.nestedIn && (tool.kind === "edit" || tool.appliesPatch)) {
+        const top = this.promptHolder(session);
+        const active = top && this.activeInstructions.get(top.id);
+        let nested: Set<string> | undefined;
+        runCtx = { ...runCtx, instructionEdit: (path) => {
+          const scope = active?.get(path) ?? ((nested ??= new Set([...loadedPaths(this.store, session.id, ctx.reply?.seq ?? 0)].map(real))).has(path) ? "nested" : undefined);
+          if (!scope) return;
+          return (before, after) => {
+            const lines = changedInstructionLines(before, after);
+            if (lines) instructionEdits.push({ path, scope, lines });
+          };
+        } };
+      }
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       // The calls before it in the reply that must come first (src/engine/step-order.ts): its tool runs after them.
       if (!checkAfterWrites && ctx.ordered) { await ctx.ordered(); if (ctx.signal.aborted) return interrupted(); }
@@ -4106,6 +4126,10 @@ export class Engine {
       const held = await capResult(out.content, tool.resultCap ?? OUTPUT_CAP, runCtx.dispatch ? undefined : ctx.spillDir, u.name, out.is_error || tool.resultCap !== undefined || runCtx.dispatch ? undefined : ctx.inline);
       result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(held, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
       if (out.shown !== undefined) { const sh = this.shown.get(u.id) as { card?: unknown } | undefined; this.shown.set(u.id, sh?.card && out.shown && typeof out.shown === "object" ? { ...out.shown, card: sh.card } : out.shown); }
+      if (!out.is_error && instructionEdits.length) {
+        const shown = this.shown.get(u.id);
+        this.shown.set(u.id, { ...(shown && typeof shown === "object" ? shown : {}), instructionEdits });
+      }
       ran(result, out.is_error && out.content === SLOT_STEERED ? "interrupted" : result.is_error ? "error" : "ok");
     } catch (e) {
       if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(true), "interrupted");
@@ -4138,6 +4162,10 @@ export class Engine {
     }
     // A hook that throws at once is caught like one that rejects.
     for (const h of allHooks()) await (async () => h.afterTool?.(session, call, result))().catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
+    if (call.nestedInstructions?.length && !ctx.nestedIn) {
+      const shown = this.shown.get(u.id);
+      this.shown.set(u.id, { ...(shown && typeof shown === "object" ? shown : {}), nestedInstructions: call.nestedInstructions });
+    }
     return told(result);
   }
 

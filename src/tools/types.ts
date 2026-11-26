@@ -56,6 +56,8 @@ export type ToolContext = {
   credential?: (path: string) => { what: string } | null;
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
+  // A file tool can report the write it actually made. For ordinary files the engine returns no recorder.
+  instructionEdit?: (path: string) => ((before: string, after: string) => void) | undefined;
   // Set on a call a program made (run_code): the id of the turn's call that runs the program.
   nestedIn?: string;
   // Where the call stands in the model's reply: the reply's event and the call's index in it (set by the

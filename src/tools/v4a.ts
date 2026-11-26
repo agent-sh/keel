@@ -208,6 +208,7 @@ export type ApplyOptions = {
   judged?: string[];         // the files the call was judged for (ToolContext.judged): nothing else is opened
   looked?: Record<string, string | null>; // and the file each was at the gate's look (ToolContext.looked)
   sessionId?: string;        // the session the patch is applied for (what its gate cleared lately holds a call with no `judged`)
+  instructionEdit?: (path: string) => ((before: string, after: string) => void) | undefined;
 };
 
 // Parses and applies a V4A patch inside the workspace `cwd`.
@@ -326,6 +327,7 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
       try { await rm(h.beside(basename(real))); } finally { h.close(); }
     }
   }
+  for (const [real, f] of files) if (f.original !== f.current) opts.instructionEdit?.(real)?.(f.original ?? "", f.current ?? "");
   return { files: out, summary: `Success. Updated the following files:\n${summary.join("\n")}` };
 }
 

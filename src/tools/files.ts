@@ -589,8 +589,13 @@ export async function writeFile(p: string, content: string, ctx: ToolContext): P
   // (A call stopped while its file was held writes nothing.)
   if (ctx.signal?.aborted) { h.close(); return `${p} was not written: the call was stopped.`; }
   try {
+    const record = ctx.instructionEdit?.(p);
+    // The same held file, not a second lookup of the path. Never make a write depend on this optional detail.
+    const before = record ? (h.existed ? await Bun.file(h.io).text().catch(() => undefined) : "") : undefined;
+    if (ctx.signal?.aborted) return `${p} was not written: the call was stopped.`;
     const no = await writeHeld(h, content);
     if (no) return no;
+    if (before !== undefined) record?.(before, content);
   } finally { h.close(); }
   ctx.seen.set(p, await mtimeOf(p));
   return undefined;

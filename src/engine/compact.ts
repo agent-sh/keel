@@ -4,7 +4,7 @@
 // a `compaction` event is appended. From there the model sees the summary and
 // the owner's recent words verbatim instead of the history; the history stays
 // stored, readable and searchable. Nothing earlier is rewritten.
-import type { AssistantBlock, Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
+import type { AssistantBlock, Message, PromptBlock, StoredEvent, ToolResultBlock, Usage } from "../core/types.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { denialReason } from "../core/stops.ts";
 import { imageTokens } from "./images.ts";
@@ -756,9 +756,10 @@ export function keptMessages(lineage: readonly StoredEvent[], words: WordsBudget
 // blocks of the summary before it. Claude Code re-injects invoked skills after
 // a compaction, capped; Keel keeps them whole, as it keeps the system prompt.
 const NESTED_BLOCK = /<nested-instructions path="([^"]+)">[\s\S]*?<\/nested-instructions>/g;
-export function fixedContext(lineage: readonly StoredEvent[], prior: { key: string; text: string }[] = []): { key: string; text: string }[] {
-  const out = new Map(prior.map((f) => [f.key, f.text]));
-  const put = (key: string, text: string) => { out.delete(key); out.set(key, text); };
+type FixedBlock = { key: string; text: string; loaded?: true };
+export function fixedContext(lineage: readonly StoredEvent[], prior: FixedBlock[] = []): FixedBlock[] {
+  const out = new Map(prior.map((f) => [f.key, f]));
+  const put = (key: string, text: string, loaded?: true) => { out.delete(key); out.set(key, { key, text, ...(loaded && { loaded }) }); };
   const cp = checkpointAt(lineage);
   for (let i = Math.max(0, cp.at >= 0 ? cp.keepFrom : 0); i < lineage.length; i++) {
     const e = lineage[i]!;
@@ -767,15 +768,16 @@ export function fixedContext(lineage: readonly StoredEvent[], prior: { key: stri
     const texts: string[] = e.kind === "tool_result"
       ? (e.data.results ?? []).flatMap((r: any) => (typeof r.content === "string" ? [r.content] : (r.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text)))
       : e.kind === "note" && e.data.model && (e.data.skill || e.data.mcp_prompt) ? [String(e.data.text ?? "")] : [];
+    const loaded = e.kind === "tool_result" ? (e.data.results ?? []).flatMap((r: ToolResultBlock) => e.data.shown?.[r.tool_use_id]?.nestedInstructions ?? []) : [];
     for (const t of texts) {
-      for (const m of t.matchAll(NESTED_BLOCK)) put(`nested:${m[1]}`, m[0]);
+      for (const m of t.matchAll(NESTED_BLOCK)) put(`nested:${m[1]}`, m[0], loaded.includes(m[1]) ? true : undefined);
       const skill = t.match(/^(?:<skill name="[^"]*">\n)?Base directory for this skill: (\S+)/);
       if (skill) put(`skill:${skill[1]}`, t);
       const prompt = t.match(/^<mcp-prompt server="([^"]*)" name="([^"]*)">/);
       if (prompt) put(`mcp-prompt:${prompt[1]}/${prompt[2]}`, t);
     }
   }
-  return [...out].map(([key, text]) => ({ key, text }));
+  return [...out.values()];
 }
 
 // What a summary checkpoint stores besides how it was made: the settled

@@ -95,6 +95,7 @@ function StepLine({ s, words }: { s: StepSummary; words: ReturnType<typeof state
       {words.map((w) => <Fragment key={w.text}><span className="k-line-state" data-tone={w.tone} data-testid="step-state">{w.text}</span>{" "}</Fragment>)}
       <span className="k-line-what" data-words={s.code ? undefined : ""}><Targets list={s.targets} /></span>
       {s.more > 0 && <>{" "}<span className="k-line-rest" data-more="">+{s.more} more</span></>}
+      {!!s.instructionEdits && <>{" "}<span className="k-line-rest" data-testid="step-instruction-edit">{s.instructionEdits > 1 ? `${s.instructionEdits} instruction files` : "instruction file"}</span></>}
     </span>
   );
 }

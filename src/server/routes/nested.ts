@@ -13,7 +13,8 @@ export const nestedRoutes: RouteModule = ({ store, errors, providers }) => {
         const info = providers.cachedModel(s.model);
         const blocks = nestedFor(store, s, call.tool, call.input, call.tool.cwdOf?.(call.ctx, call.input), info && !info.context_assumed ? info.context : undefined);
         if (!blocks.length) return;
-        const text = blocks.join("\n\n");
+        const text = blocks.map((b) => b.text).join("\n\n");
+        call.nestedInstructions = blocks.map((b) => b.path);
         if (typeof result.content === "string") result.content = result.content ? `${result.content}\n\n${text}` : text;
         else result.content = [...result.content, { type: "text", text }];
       } catch (e) {

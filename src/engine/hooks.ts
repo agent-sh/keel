@@ -15,7 +15,7 @@ import type { Typing } from "./steer-gather.ts";
 // `ruled`: what the gate's rules decided of the call, stored with its result (src/safety/trial.ts).
 // `card`: the call's approval card was answered by the owner's helper on his standing instruction (src/safety/delegate.ts):
 // kept with the call's result for the transcript.
-export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] }; ruled?: Ruled; card?: CardAnswer };
+export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] }; ruled?: Ruled; card?: CardAnswer; nestedInstructions?: string[] };
 export type CardAnswer = { by: "helper"; approval: string; choice: "once" | "deny"; said: string; reason?: string; helper_session: string };
 
 // A server's question to the owner (MCP elicitation), as the owner's Elicitation hooks see it before its card opens,

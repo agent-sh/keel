@@ -13,7 +13,7 @@ import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError, useStore } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
 import { scrollToError } from "../lib/error-scroll.ts";
-import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, shortPaths, smallChange } from "../lib/work.ts";
+import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, instructionEditsOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, shortPaths, smallChange } from "../lib/work.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
 import { callHeld, callKey, letGo, useHeld, useLetGoUnseen } from "../lib/held.ts";
@@ -208,10 +208,13 @@ function CallClock({ sessionId }: { sessionId: string }) {
 const LINE_COMMAND = 72;
 const NO_CALLS: { id: string; result?: unknown }[] = [];
 
+const INSTRUCTION_SCOPE = { owner: "Owner", parent: "Ancestor folder", folder: "Session folder", nested: "Nested folder" };
+
 function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, auto, peek, quiet, named, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = EDITS.has(kind) ? splitDiagnostics(m.text) : { text: m.text, diagnostics: [] }; return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result, kind]);
   const images = resultImages(result);
   const saved = (result as (ToolResultBlock & { shown?: { files?: SavedFile[] } }) | undefined)?.shown?.files;
+  const instructionEdits = instructionEditsOf(result);
   const spillGone = useSpillRemoved(sessionId, out);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
   // With no result it runs only while its session works, and waits while its approval card is open.
@@ -345,6 +348,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           <MachineBadge sessionId={sessionId} callId={use.id} />
           {plan && plan.length > 0 && !rejected && <span className="k-line-plan" data-testid="plan-count"><Pips done={planDone} total={plan.length} />{planDone}/{plan.length}</span>}
           {change && changed && (change.added > 0 || change.removed > 0) && <Delta added={change.added} removed={change.removed} />}
+          {!!instructionEdits?.length && <span className="k-line-rest" data-testid="tool-instruction-edit">{instructionEdits.length === 1 ? "instruction file" : `${instructionEdits.length} instruction files`}</span>}
           {/* What it brought along and where it went on: quiet words, no chips (nothing of it needs the owner). */}
           {nested.length > 0 && <span className="k-line-rest" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
           {shell.background && <span className="k-line-rest" data-testid="tool-background">background</span>}
@@ -381,6 +385,10 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
       {diagnostics.map((d, i) => <DiagnosticsRows key={i} d={d} />)}
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
         <div className="k-tool-body">
+          {!!instructionEdits?.length && <div className="k-under" data-testid="tool-instruction-detail">
+            {instructionEdits.map((f) => <Under key={f.path} name={INSTRUCTION_SCOPE[f.scope]}><code title={f.path}>{shortPath(f.path, cwd)}</code>: {f.lines}</Under>)}
+            <Under>Written to disk. This does not confirm the model loaded the new instructions.</Under>
+          </div>}
           {gate.length > 0 && <p className="k-mark-why" data-testid="mark-why">{gate.map((m) => m.why).join(" ")}</p>}
           {lead}
           {/* (A stop's or a restart's words are written for the model, not printed by the command.) */}

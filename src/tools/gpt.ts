@@ -57,7 +57,7 @@ async function runPatch(text: string, base: string, ctx: ToolContext) {
     // them): one outside the session's folder that it let through is written, as a Write there is. (The judged
     // paths when the gate named them; else the patch's own targets.)
     const cleared = patchTargetPaths(text).map((p) => realOf(atCwd(base, p)));
-    const r = await applyPatch(ctx.cwd, text, { base, allowOutside: ctx.judged ?? cleared, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId });
+    const r = await applyPatch(ctx.cwd, text, { base, allowOutside: ctx.judged ?? cleared, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId, instructionEdit: ctx.instructionEdit });
     for (const f of r.files) ctx.seen.set(resolve(base, f.path), Date.now());
     return ok(r.summary);
   } catch (e) {
