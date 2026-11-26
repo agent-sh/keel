@@ -94,7 +94,13 @@ test("the find bar counts every match of a conversation and goes to each, folded
     // Reading elsewhere does not drop the current match. The middle row is redrawn as it comes
     // into view; back at the end, the matching call stays open and its text stays marked.
     const middle = page.locator(`#e-${mid!.id}`);
-    await middle.evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await middle.evaluate((el) => {
+      // Only the transcript scrolls. scrollIntoView also moves its clipped ancestors.
+      const sc = el.closest<HTMLElement>(".k-reading")!;
+      const match = el.getBoundingClientRect();
+      const view = sc.getBoundingClientRect();
+      sc.scrollTop += match.top - view.top - (view.height - match.height) / 2;
+    });
     await expect(page.locator(`[data-testid="user-message"]#e-${mid!.id}`)).toBeInViewport({ timeout: 30_000 });
     await expect(card).not.toBeInViewport();
     await expect(card).toHaveAttribute("data-open", "");
