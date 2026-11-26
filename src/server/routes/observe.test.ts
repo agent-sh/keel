@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
 import { Store } from "../../core/store.ts";
 import { allHooks } from "../../engine/hooks.ts";
-import { observeRoutes } from "./observe.ts";
+import { fixKey, observeRoutes, topFrame } from "./observe.ts";
 
 const hooksAtStart = allHooks().length; // the routes register turn hooks on this store: taken off before it closes
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "observe-routes-"));
@@ -89,4 +89,21 @@ test("two Fix presses on one cause start one session, and a later one opens it",
   const fresh = (await (await fix("stall-a")).json()) as any;
   expect(fresh.session.id).not.toBe(a.session.id);
   expect(fresh.existing).toBeUndefined();
+});
+
+// Failures that read alike are one fix only from one place: a server error's top frame, else the failing session's folder.
+test("a fix's cause is told apart by the top frame of a stack, else by the failing session's folder", () => {
+  const at = (fn: string, file: string, line: number) => `TypeError: x is undefined\n    at ${fn} (/src/${file}:${line}:9)\n    at run (/src/loop.ts:1:1)`;
+  const e = (o: any) => ({ source: "server", message: "TypeError: x is undefined", ...o });
+  expect(topFrame(at("readMarks", "store.ts", 12))).toBe("readMarks@store.ts");
+  expect(topFrame("Error: x\n    at /src/a.ts:3:4")).toBe("@a.ts");
+  expect(topFrame(undefined)).toBeUndefined();
+  // The same frame after a rebuild moved its line: one cause; another function: another.
+  expect(fixKey({}, e({ stack: at("readMarks", "store.ts", 12) }))).toBe(fixKey({}, e({ stack: at("readMarks", "store.ts", 40) }))!);
+  expect(fixKey({}, e({ stack: at("readMarks", "store.ts", 12) }))).not.toBe(fixKey({}, e({ stack: at("sendFrame", "app.ts", 12) }))!);
+  // A tool's failure in two folders is two fixes; two sessions of one folder are one.
+  const folders: Record<string, string> = { s1: "/w/a", s2: "/w/b", s3: "/w/a" };
+  const tool = (sid: string) => fixKey({}, { source: "tool", message: "ENOENT: no such file", session_id: sid }, (id) => folders[id]);
+  expect(tool("s1")).not.toBe(tool("s2")!);
+  expect(tool("s1")).toBe(tool("s3")!);
 });

@@ -74,9 +74,27 @@ function source(): { dir: string; commit?: string } | undefined {
 
 export let tracer: Tracer | undefined;
 
-// The key a fix is kept under: an error's cause (the helper's grouping, src/helper/error-look.ts), else the span or turn it names.
-export const fixKey = (b: { error_id?: string; session_id?: string; turn_event?: string; span_id?: string }, err?: { source: string; message: string }) =>
-  err ? `cause:${causeOf(err)}` : b.span_id ? `span:${b.span_id}` : b.session_id ? `turn:${b.session_id}:${b.turn_event ?? ""}` : undefined;
+// The top frame of a stack, as a place in the code: its function and file, without the folder, line or column
+// (a rebuild moves those). Undefined: no stack, or no frame in it.
+export function topFrame(stack: string | null | undefined): string | undefined {
+  for (const line of (stack ?? "").split("\n")) {
+    const m = /^\s*at\s+(?:(.*?)\s+\()?(.*?)(?::\d+){0,2}\)?\s*$/.exec(line);
+    if (!m) continue;
+    const file = (m[2] ?? "").split(/[\\/]/).pop()?.replace(/\?.*$/, "") ?? "";
+    return `${m[1] ?? ""}@${file}`;
+  }
+  return undefined;
+}
+
+// The key a fix is kept under: an error's cause (the helper's grouping, src/helper/error-look.ts) with where it
+// came from, so two failures that read alike are one fix only from one place: the top frame of a server or
+// client error's stack, else the folder of the session it failed in. Else the span or turn the press names.
+export const fixKey = (b: { error_id?: string; session_id?: string; turn_event?: string; span_id?: string }, err?: { source: string; message: string; stack?: string | null; session_id?: string | null }, folderOf: (id: string) => string | undefined = () => undefined) => {
+  if (!err) return b.span_id ? `span:${b.span_id}` : b.session_id ? `turn:${b.session_id}:${b.turn_event ?? ""}` : undefined;
+  const frame = err.source === "server" || err.source === "client" ? topFrame(err.stack) : undefined;
+  const place = frame ? `frame:${frame}` : err.session_id ? `folder:${folderOf(err.session_id) ?? err.session_id}` : "";
+  return `cause:${causeOf(err)}${place ? `:${Bun.hash(place).toString(36)}` : ""}`;
+};
 
 export const observeRoutes: RouteModule = ({ store, bus, engine, providers, errors, workspace }) => {
   installLogs(store.stateDir);
@@ -87,6 +105,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     const s = r ? store.session(r.session_id) : undefined;
     return s && !s.archived ? s : undefined;
   };
+  const folderOf = (id: string) => store.session(id)?.workspace || undefined;
   // A fix being started now, by key: a second press waits for it and opens the same session.
   const starting = new Map<string, Promise<Response>>();
   const t = (tracer = new Tracer(store, bus, (id) => engine.isRunning(id)));
@@ -283,7 +302,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const fixes: Record<string, string> = {};
         for (const id of ids) {
           const e = errors.find(id);
-          const key = e ? fixKey({ error_id: id }, e) : undefined;
+          const key = e ? fixKey({ error_id: id }, e, folderOf) : undefined;
           const s = key ? openFix(key) : undefined;
           if (s) fixes[id] = s.id;
         }
@@ -295,7 +314,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
       POST: async (req: Request) => {
         const body = (await req.json().catch(() => ({}))) as any;
         const at = body.error_id ? errors.find(body.error_id) : undefined;
-        const key = fixKey(body, at);
+        const key = fixKey(body, at, folderOf);
         if (key) {
           const open = openFix(key);
           if (open) return json({ session: open, existing: true });
@@ -303,7 +322,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
           if (going) return (await going).clone();
         }
         const run = startFix(body, key);
-        if (key) { starting.set(key, run); run.finally(() => starting.delete(key)); }
+        if (key) { starting.set(key, run); const clear = () => void starting.delete(key); run.then(clear, clear); }
         return (await run).clone();
       },
     },
