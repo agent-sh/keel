@@ -64,6 +64,10 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
         expect(await edge(a!.session_id, '[data-testid="approval"]')).not.toBe("none");
         expect(await edge(g.session_id, '[data-testid="approval"]')).toBe("none");
         expect(await edge(b!.session_id, ".k-question")).toBe("none");
+        // The keyboard nowhere in the requests: still one edge, the first agent's.
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        const edges = await ask(page, root).evaluateAll((els) => els.map((el) => getComputedStyle(el.querySelector('[data-testid="approval"], .k-question')!).boxShadow !== "none"));
+        expect(edges).toEqual([true, false, false]);
       }
       // The second answer is not heavier than the first.
       if (size.width > 767) expect(await card(a!.session_id).getByTestId("allow-always").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
