@@ -318,7 +318,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await page.waitForTimeout(1500);
     expect({ turns: await turns(stopd), replies: await replies(stopd) }).toEqual(held);
     expect((await events(stopd)).filter((e) => e.kind === "user" && e.data.job)).toEqual([]);
-    const ended = `(ID ${waitedOn.id}) exited with code 0. Output: ${waitedOn.log}`;
+    const ended = `(ID ${waitedOn.id}) exited with code 0. Its output is in ${waitedOn.log}.`;
     expect(await notes(stopd)).not.toContain(ended);
     await send(stopd, "script:say back");
     await idle(stopd);
