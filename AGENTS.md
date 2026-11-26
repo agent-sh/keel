@@ -88,6 +88,24 @@ under `~/.cache/keel-work/bun/research/`.
   out (`src/engine/cold-clear.ts`). The decision is a stored note of the session, so every later request projects
   the same bytes; a warm cache is never touched, and the newest results, errors, the owner's answers, results with
   anything but text and files a later call of another tool named stay whole.
+- A session the owner talks to compacts at the window's line, and by price as an agent does when he turns it on
+  from its menu (`owner_compact_by_price`, `src/engine/owner-compact.ts`): the summary is written when a turn ends
+  and takes the history's place only at a turn's first step (not a run that continues a turn a restart cut) or a
+  cold one, never inside a running turn on a warm cache, when what it really leaves still pays, and only when its
+  meaning check holds (no statement retold, every owner message, card answer and attachment kept whole within a
+  quarter of the window, the probe's files and recurring identifiers at `MEANING_KEPT` or more, no identifier
+  nothing it read holds); one held back is told once in its timeline (kept with the prepared row, across restarts)
+  and stays for the window's line. Every compaction keeps the owner's words with his messages: his answers on question
+  cards, his reasons on denied calls, his feedback, note or edit on a plan, each with what it answers (a closing
+  question, the card's question, the call, the plan's start) beside it, outside his message, in the room his words
+  leave (`ownerReplies`, `owner_about` in `src/engine/compact.ts`). Its dialog shows the session's own numbers before the switch and
+  since (`src/admin/owner-compact-read.ts`). It is a switch, not a trial: the trials kit draws an arm once per
+  session at its first turn, and the owner's long sessions are few and already running.
+  `scripts/bench/compaction-replay.ts` replays a session's shape through the engine with it off and on. The saving
+  is for sessions of short turns: on replays of session shapes, with one to five steps a turn, tokens read fell to
+  32 to 52% and dollars to 38 to 66%; with 25 steps a turn, tokens to 56 to 66% and dollars to 63 to 79%; with 40
+  steps a turn or more, little or nothing, and up to 4% more dollars. The dearer a cache write is against a read
+  (the two price sets tried put it at 12.5 and 40 times), the less it saves.
 - A turn or an in-turn summary waits when the driver can tell the model request
   could not be sent (`src/providers/unreachable.ts`): DNS or connection setup
   failed, or the broker explicitly reports an upstream DNS or connect failure.

@@ -23,6 +23,7 @@ import { parseDiff } from "../board/tree.ts";
 import { readyRoots } from "../board/ready-roots.ts";
 import { earlierCandidates, earlierOutcomes } from "../automation/earlier-facts.ts";
 import { priceFactsRead } from "../engine/price-facts.ts";
+import { ownerCompactRead, type OwnerCompactAsk } from "../admin/owner-compact-read.ts";
 import { pressReport } from "../admin/presses.ts";
 import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
@@ -74,6 +75,8 @@ export const tasks = {
   "compact.settle": (db: Database, a: SettleAsk) => settleStored(db, a),
   // What compaction by price forecasts from: finished agents' step counts, and summaries' sizes and times (src/engine/price-facts.ts).
   "compact.priceFacts": (db: Database, a: { since: number; quiet: number }) => priceFactsRead(db, a),
+  // A session's own numbers before the owner's switch for compaction by price was turned on and since (src/admin/owner-compact-read.ts).
+  "compact.ownerNumbers": (db: Database, a: OwnerCompactAsk) => ownerCompactRead(db, a),
   // Where a session's agent tree spent its time: its spans, turns, agents and waits (src/admin/hours-read.ts).
   "hours.tree": (db: Database, a: HoursAsk) => readHours(db, a),
   // What a running live experiment says now (its intervals are a bootstrap over every turn and tree of it: a second of computing).

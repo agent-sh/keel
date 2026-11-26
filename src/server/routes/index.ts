@@ -79,6 +79,7 @@ import { modelTrialRoutes } from "./model-trials.ts";
 import { settingTrialRoutes } from "./setting-trials.ts";
 import { timelineRoutes } from "./timeline.ts";
 import { hoursRoutes } from "./hours.ts";
+import { ownerCompactRoutes } from "./owner-compact.ts";
 import { lensRoutes } from "./lens.ts";
 import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
@@ -184,6 +185,7 @@ const modules: Record<string, RouteModule> = {
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
   lensRoutes, // the Conversation lens: reads the events' index, their turn marks, the landing queue and the approvals
   hoursRoutes, // where a tree's hours went: reads the spans, turns, agents and waits the others record
+  ownerCompactRoutes, // the owner's switch for compaction by price: reads the ledger telemetry writes
   overviewRoutes, // every session's state, failure and spend as one answer
   stateRoutes, // last: it reads every module's cards and records to tell each session's state
   shellRoutes, // after state: it reads the board the state routes make
