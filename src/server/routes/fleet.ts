@@ -18,7 +18,7 @@ import { Handoffs, MoveError } from "../../fleet/handoff.ts";
 import { forgetOwnership, portalOf, portalPath, sessionPorts, setOpen } from "../../fleet/portal.ts";
 import { bridge, isUpgrade, present, sameText, upHeaders, upstream } from "../../fleet/portal-proxy.ts";
 import { validate as validatePlacement } from "../../fleet/placement.ts";
-import { groupOf, hostGroups, plainAlias } from "../../fleet/sshconfig.ts";
+import { groupOf, hostGroups, plainAlias, warmHostGroups } from "../../fleet/sshconfig.ts";
 import { bindFleetTools } from "../../fleet/tools.ts";
 import { bindNotices } from "../../fleet/notice.ts";
 import { registerSendFiles, RemoteAgents } from "../../fleet/agents.ts";
@@ -70,6 +70,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   const g = globalThis as { __keelFleet?: Fleet };
   g.__keelFleet?.stop();
   const f = (fleet = g.__keelFleet = new Fleet(store, bus, errors));
+  // The ssh configuration's machines are read off the loop now, before a page or a link asks for them.
+  if (!runMode.client) void warmHostGroups();
   // What Claude Code and Codex run now on the machines reached over ssh: rows of the list, read-only (src/fleet/far-outside.ts).
   const gfo = globalThis as { __keelFarOutside?: FarOutside };
   gfo.__keelFarOutside?.stop();

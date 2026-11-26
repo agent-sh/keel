@@ -79,31 +79,67 @@ export type HostGroup = { key: string; alias: string; routes: string[]; user?: s
 const isAddress = (a: string) => /^\d+(\.\d+){3}$/.test(a) || a.includes(":");
 let groupsCache: { stamp: string; groups: HostGroup[] } | undefined;
 
-export function resolveAlias(alias: string): { user?: string; hostname?: string; port?: number; hostkeyalias?: string } {
-  const r = Bun.spawnSync([sshProgram(), "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+const fieldsOf = (text: string) => {
   const out: Record<string, string> = {};
-  if (r.exitCode === 0) for (const l of r.stdout.toString().split("\n")) { const i = l.indexOf(" "); if (i > 0) out[l.slice(0, i)] ??= l.slice(i + 1).trim(); }
+  for (const l of text.split("\n")) { const i = l.indexOf(" "); if (i > 0) out[l.slice(0, i)] ??= l.slice(i + 1).trim(); }
   return { user: out.user, hostname: out.hostname, port: out.port ? Number(out.port) : undefined, hostkeyalias: out.hostkeyalias && out.hostkeyalias !== "none" ? out.hostkeyalias : undefined };
+};
+type Resolved = ReturnType<typeof fieldsOf>;
+
+export function resolveAlias(alias: string): Resolved {
+  const r = Bun.spawnSync([sshProgram(), "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+  return r.exitCode === 0 ? fieldsOf(r.stdout.toString()) : fieldsOf("");
+}
+async function resolveOff(alias: string): Promise<Resolved> {
+  const p = Bun.spawn([sshProgram(), "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 10_000, killSignal: "SIGKILL" });
+  const [out, code] = await Promise.all([readText(p.stdout), p.exited]);
+  return code === 0 ? fieldsOf(out) : fieldsOf("");
 }
 
-export function hostGroups(home = ownerHome()): HostGroup[] {
-  const hosts = sshHosts(home);
-  let stamp = hosts.join(",");
-  try { stamp += statSync(configFile(home)).mtimeMs; } catch {}
-  if (groupsCache?.stamp === stamp) return groupsCache.groups;
+function grouped(hosts: string[], resolved: Resolved[]): HostGroup[] {
   const byKey = new Map<string, HostGroup & { direct?: string }>();
-  for (const a of hosts) {
-    const r = resolveAlias(a);
+  hosts.forEach((a, n) => {
+    const r = resolved[n]!;
     const key = `${r.user ?? ""}@${(r.hostkeyalias ?? r.hostname ?? a).toLowerCase()}`;
     const g = byKey.get(key) ?? { key, alias: a, routes: [], user: r.user, hostname: r.hostname, port: r.port };
     g.routes.push(a);
     if (!r.hostkeyalias && !g.direct && !isAddress(a)) g.direct = a;
     byKey.set(key, g);
-  }
-  const groups = [...byKey.values()].map(({ direct, ...g }) => {
+  });
+  return [...byKey.values()].map(({ direct, ...g }) => {
     const alias = direct ?? g.routes.find((r) => !isAddress(r)) ?? g.routes[0]!;
     return { ...g, alias, routes: [alias, ...g.routes.filter((r) => r !== alias)] };
   });
+}
+function stampOf(home: string): { hosts: string[]; stamp: string } {
+  const hosts = sshHosts(home);
+  let stamp = hosts.join(",");
+  try { stamp += statSync(configFile(home)).mtimeMs; } catch {}
+  return { hosts, stamp };
+}
+
+// The groups are made with one `ssh -G` an alias. Made on the loop, a configuration of a few dozen hosts held it
+// for seconds on a busy machine (each a process to start and wait for). So they are made off the loop: at the
+// daemon's start (warmHostGroups), and again when the configuration changed, the groups made before it answering
+// meanwhile. Only a first call before any were made waits for them on the loop.
+let refreshing: { stamp: string; done: Promise<void> } | undefined;
+export function warmHostGroups(home = ownerHome()): Promise<void> {
+  const { hosts, stamp } = stampOf(home);
+  if (groupsCache?.stamp === stamp) return Promise.resolve();
+  if (refreshing?.stamp === stamp) return refreshing.done;
+  const done = Promise.all(hosts.map((a) => resolveOff(a).catch(() => fieldsOf(""))))
+    .then((resolved) => { if (stampOf(home).stamp === stamp) groupsCache = { stamp, groups: grouped(hosts, resolved) }; })
+    .catch(() => {})
+    .finally(() => { if (refreshing?.done === done) refreshing = undefined; });
+  refreshing = { stamp, done };
+  return done;
+}
+
+export function hostGroups(home = ownerHome()): HostGroup[] {
+  const { hosts, stamp } = stampOf(home);
+  if (groupsCache?.stamp === stamp) return groupsCache.groups;
+  if (groupsCache) { void warmHostGroups(home); return groupsCache.groups; }
+  const groups = grouped(hosts, hosts.map(resolveAlias));
   groupsCache = { stamp, groups };
   return groups;
 }
