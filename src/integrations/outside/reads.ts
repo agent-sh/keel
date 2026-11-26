@@ -12,7 +12,11 @@ export const HEAD_BYTES = 4096;
 // A saved place is written at most this often while its transcript grows, and when the watch stops.
 export const SAVE_MS = 30_000;
 
-export type SavedRead = { harness: OutsideHarness; offset: number; head_len: number; head: string; reader: ReaderState };
+// The bytes before a saved place it is tied to as well: a file cut or edited while no daemon watched it, and
+// grown past the place since, keeps its first bytes but not these.
+export const TAIL_BYTES = 4096;
+
+export type SavedRead = { harness: OutsideHarness; offset: number; head_len: number; head: string; tail: string; reader: ReaderState };
 
 // The hash of a transcript's first bytes (at most HEAD_BYTES, and never past the place saved).
 export const headHash = (bytes: Uint8Array): string => Bun.hash(bytes).toString(36);
@@ -20,12 +24,23 @@ export const headHash = (bytes: Uint8Array): string => Bun.hash(bytes).toString(
 // The length of the head a place at `offset` is tied to.
 export const headLen = (offset: number) => Math.min(HEAD_BYTES, offset);
 
+// The bytes a tail hash of a place at `offset` covers: [offset - tailLen(offset), offset).
+export const tailLen = (offset: number) => Math.min(TAIL_BYTES, offset);
+
+// The hash of the bytes that end at a place, only when they end a line (a place is always after a newline);
+// undefined otherwise, and for no bytes.
+export function tailHash(bytes: Uint8Array): string | undefined {
+  return bytes.length && bytes[bytes.length - 1] === 10 ? Bun.hash(bytes).toString(36) : undefined;
+}
+
 // Where a transcript is read from: the saved place when the file is still the one it was saved of (its harness,
-// a reader state of this build's shape, the same first bytes, and at least as long), else its start (0).
-export function resumeAt(saved: SavedRead | undefined, file: { harness: OutsideHarness; size: number; head: string }): number {
+// a reader state of this build's shape, the same first bytes, the same bytes up to the place ending a line, and
+// at least as long), else its start (0). `tail` is tailHash of the file's bytes before the saved place.
+export function resumeAt(saved: SavedRead | undefined, file: { harness: OutsideHarness; size: number; head: string; tail: string | undefined }): number {
   if (!saved || saved.harness !== file.harness || saved.offset <= 0) return 0;
   if (saved.reader?.v !== READER_V || saved.reader.h !== file.harness) return 0;
   if (file.size < saved.offset || file.head !== saved.head) return 0;
+  if (!saved.tail || file.tail !== saved.tail) return 0;
   return saved.offset;
 }
 

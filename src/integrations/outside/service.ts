@@ -37,7 +37,7 @@ import { offered } from "../import/offer.ts";
 import { itemsOf, storedData, type Found } from "../import/types.ts";
 import { filesStored } from "../import/service.ts";
 import { agyWord, aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader, type ReaderState } from "./facts.ts";
-import { headHash, headLen, lineEnd, resumeAt, SAVE_MS, type SavedRead } from "./reads.ts";
+import { headHash, headLen, lineEnd, resumeAt, SAVE_MS, tailHash, tailLen, type SavedRead } from "./reads.ts";
 import { excluded, outsideSettings, type OutsideSettings } from "./settings.ts";
 import { claudeHolder, claudeLive, codexHolder, recordHolder, codexKeepsLocks, FREE, readClaudeRecord, readLocks, type Holder, type Lock } from "./writer.ts";
 
@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS outside_reads (
   reader TEXT NOT NULL,
   ts INTEGER NOT NULL
 );
+-- A session that goes (deleted by the owner, folded into a copy, its row made again) takes its transcript's
+-- place with it: a session made of the file again reads it whole.
+CREATE TRIGGER IF NOT EXISTS outside_reads_gone AFTER DELETE ON outside_sessions BEGIN
+  DELETE FROM outside_reads WHERE path = old.path;
+END;
 CREATE TABLE IF NOT EXISTS outside_events (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   n INTEGER NOT NULL,
@@ -223,6 +228,19 @@ async function paced<T>(items: T[], fn: (x: T) => void, live: () => boolean) {
   return true;
 }
 
+// The hashes a kept place at `offset` is tied to: the file's first bytes and the bytes that end at the place.
+// Undefined when the file is shorter than the place.
+function endsOf(path: string, offset: number): { head: string; tail: string | undefined } | undefined {
+  const fd = openSync(path, "r");
+  try {
+    const h = new Uint8Array(headLen(offset));
+    if (readSync(fd, h, 0, h.length, 0) !== h.length) return undefined;
+    const b = new Uint8Array(tailLen(offset));
+    if (readSync(fd, b, 0, b.length, offset - b.length) !== b.length) return undefined;
+    return { head: headHash(h), tail: tailHash(b) };
+  } finally { closeSync(fd); }
+}
+
 export class Outside {
   // One watch a folder, however many want to hear of it.
   private watchers = new Map<string, { w: FSWatcher; ons: Set<(event: string, name: string) => void> }>();
@@ -248,6 +266,8 @@ export class Outside {
 
   constructor(private d: OutsideDeps) {
     d.store.migrate(SCHEMA);
+    // (A place kept before the bytes ending it were: never used, made again at the next keep.)
+    if (!d.store.columnExists("outside_reads", "tail")) d.store.migrate("ALTER TABLE outside_reads ADD COLUMN tail TEXT NOT NULL DEFAULT ''");
     this.cfg = this.settings();
   }
 
@@ -732,20 +752,18 @@ export class Outside {
   // reader goes on from there with the state it had (src/integrations/outside/reads.ts).
   private resume(t: Tracked, size: number) {
     if (t.saved === undefined) {
-      const row = this.d.store.db.query<{ harness: string; offset: number; head_len: number; head: string; reader: string }, [string]>("SELECT harness, offset, head_len, head, reader FROM outside_reads WHERE path = ?").get(t.path);
+      const row = this.d.store.db.query<{ harness: string; offset: number; head_len: number; head: string; tail: string; reader: string }, [string]>("SELECT harness, offset, head_len, head, tail, reader FROM outside_reads WHERE path = ?").get(t.path);
       let reader: ReaderState | undefined;
       try { reader = row ? JSON.parse(row.reader) : undefined; } catch {}
-      t.saved = row && reader ? { harness: row.harness as OutsideHarness, offset: row.offset, head_len: row.head_len, head: row.head, reader } : null;
+      t.saved = row && reader ? { harness: row.harness as OutsideHarness, offset: row.offset, head_len: row.head_len, head: row.head, tail: row.tail, reader } : null;
     }
     const saved = t.saved;
     t.saved = null;
     if (!saved || size < saved.offset) return;
-    let head = "";
-    try {
-      const fd = openSync(t.path, "r");
-      try { const b = new Uint8Array(headLen(saved.offset)); const n = readSync(fd, b, 0, b.length, 0); head = headHash(b.subarray(0, n)); } finally { closeSync(fd); }
-    } catch { return; }
-    const at = resumeAt(saved, { harness: t.harness, size, head });
+    let ends: { head: string; tail: string | undefined } | undefined;
+    try { ends = endsOf(t.path, saved.offset); } catch { return; }
+    if (!ends) return;
+    const at = resumeAt(saved, { harness: t.harness, size, ...ends });
     if (!at) return;
     Object.assign(t, { offset: at, line: at, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness, saved.reader) });
     this.stats.resumed++;
@@ -755,19 +773,14 @@ export class Outside {
   // The places of the transcripts read further since the last keep, in one write (every SAVE_MS while watching,
   // and when the watch stops). Places older than the days watched go.
   private keepReads() {
-    const due = [...this.files.values()].filter((t) => t.dirty && t.found && !t.ignored && t.line > 0);
+    const due = [...this.files.values()].filter((t) => t.dirty && t.found && t.session && !t.ignored && t.line > 0);
     if (!due.length) return;
     const now = Date.now();
     try {
-      const put = this.d.store.db.query("INSERT OR REPLACE INTO outside_reads (path, harness, offset, head_len, head, reader, ts) VALUES (?, ?, ?, ?, ?, ?, ?)");
-      const heads = due.map((t) => {
-        try {
-          const fd = openSync(t.path, "r");
-          try { const b = new Uint8Array(headLen(t.line)); const n = readSync(fd, b, 0, b.length, 0); return n === b.length ? headHash(b) : undefined; } finally { closeSync(fd); }
-        } catch { return undefined; }
-      });
+      const put = this.d.store.db.query("INSERT OR REPLACE INTO outside_reads (path, harness, offset, head_len, head, tail, reader, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+      const ends = due.map((t) => { try { return endsOf(t.path, t.line); } catch { return undefined; } });
       this.d.store.db.transaction(() => {
-        due.forEach((t, i) => { const h = heads[i]; if (h) put.run(t.path, t.harness, t.line, headLen(t.line), h, JSON.stringify(t.reader.save()), now); t.dirty = false; });
+        due.forEach((t, i) => { const e = ends[i]; if (e?.tail) put.run(t.path, t.harness, t.line, headLen(t.line), e.head, e.tail, JSON.stringify(t.reader.save()), now); t.dirty = false; });
         this.d.store.db.query("DELETE FROM outside_reads WHERE ts < ?").run(now - Math.max(1, this.cfg.days) * DAY);
       })();
     } catch (e) { this.d.trouble?.(e, "keeping where another harness's sessions were read"); }
@@ -802,7 +815,12 @@ export class Outside {
       if (f.kind !== "interactive" || !offered(f)) { t.ignored = true; t.reader = readerOf(t.harness); return; }
       t.found = f;
     }
-    if (size < t.offset) Object.assign(t, { offset: 0, line: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness), synced: -1, dirty: true });
+    if (size < t.offset) {
+      Object.assign(t, { offset: 0, line: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness), synced: -1, dirty: true });
+      // (Its kept place is of the file before: a restart before the next keep reads it from the start.)
+      t.saved = null;
+      try { this.d.store.db.query("DELETE FROM outside_reads WHERE path = ?").run(t.path); } catch (e) { this.d.trouble?.(e, "forgetting where another harness's session was read"); }
+    }
     // A transcript first read since the start goes on from where a daemon before stopped reading it.
     if (t.offset === 0) this.resume(t, size);
     // Antigravity's run status, read with what the transcript gained (its list changes with it).

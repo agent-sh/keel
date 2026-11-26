@@ -1,7 +1,7 @@
 // The watcher over fixture stores of Claude Code and Codex in a scratch folder: what it watches,
 // what it reads of a file that grows, what its copy appends, and what the owner's settings change.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -201,6 +201,65 @@ describe("outside sessions", () => {
         expect(third.slice(0, 4)).toEqual(second);
         expect(third.length).toBe(5);
         expect(r.store.event(third[4]!.event_id)?.parent).toBe(second[3]!.event_id);
+      } finally { o.stop(); }
+    } finally { r.done(); }
+  });
+
+  test("a kept place goes with a file cut while no daemon watched, a file that shrinks, and a deleted session", async () => {
+    const r = rig();
+    try {
+      const cwd = join(r.dir, "w");
+      mkdirSync(cwd);
+      const folder = join(r.claude, "-w");
+      mkdirSync(folder);
+      await until(() => (r.o as any).watchers.has(folder));
+      const path = join(folder, "c8.jsonl");
+      const t = transcript(path, cwd, "c8");
+      t.user("deploy it");
+      t.reply("m1", "deployed");
+      t.end();
+      const s = await until(() => sessionOf(r.store, "c8")?.outside?.state === "done" ? sessionOf(r.store, "c8") : undefined);
+      const kept = () => r.store.db.query<{ offset: number }, [string]>("SELECT offset FROM outside_reads WHERE path = ?").get(path);
+      r.o.stop();
+      const at = kept()!.offset;
+      expect(at).toBe(statSync(path).size);
+
+      // While no daemon watches, the last record is cut and the file grows past the place again: its first bytes
+      // are the same, the bytes before the place are not, so it is read from the start.
+      const text = readFileSync(path, "utf8");
+      writeFileSync(path, text.slice(0, text.lastIndexOf("\n", text.length - 2) + 1));
+      t.reply("m2", "a longer reply than the record it replaces, to pass the kept place");
+      expect(statSync(path).size).toBeGreaterThan(at);
+      let o = new Outside({ store: r.store, bus: new Bus(), workspace: r.dir, settings: () => r.settings, viewed: () => false });
+      o.start();
+      try {
+        // (A session that was done is read when its file grows.)
+        await until(() => (o as any).watchers.has(folder));
+        t.end();
+        await until(() => o.stats.first_reads >= 1 ? true : undefined);
+        expect(o.stats.resumed).toBe(0);
+        const whole = readerOf("claude");
+        for (const l of readFileSync(path, "utf8").split("\n")) if (l.trim()) whole.push(JSON.parse(l));
+        await until(() => sessionOf(r.store, "c8")?.usage.output === whole.facts().usage["claude-opus-4-5"]!.output ? true : undefined);
+        // It shrinks while watched: the place kept of it before goes at once.
+        (o as any).keepReads();
+        expect(kept()).toBeTruthy();
+        writeFileSync(path, text.slice(0, 200));
+        await until(() => kept() ? undefined : true);
+      } finally { o.stop(); }
+
+      // A deleted session takes its file's place with it.
+      writeFileSync(path, text);
+      o = new Outside({ store: r.store, bus: new Bus(), workspace: r.dir, settings: () => r.settings, viewed: () => false });
+      o.start();
+      try {
+        await until(() => (o as any).watchers.has(folder));
+        t.end();
+        await until(() => o.stats.reads >= 1 ? true : undefined);
+        (o as any).keepReads();
+        expect(kept()).toBeTruthy();
+        r.store.deleteSession(s!.id);
+        expect(kept()).toBeNull();
       } finally { o.stop(); }
     } finally { r.done(); }
   });

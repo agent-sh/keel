@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { agyReader, claudeReader, codexReader, READER_V, readerOf, type OutsideHarness } from "./facts.ts";
-import { headHash, headLen, HEAD_BYTES, lineEnd, resumeAt, type SavedRead } from "./reads.ts";
+import { headHash, headLen, HEAD_BYTES, lineEnd, resumeAt, tailHash, tailLen, TAIL_BYTES, type SavedRead } from "./reads.ts";
 
 const at = (s: number) => new Date(Date.UTC(2026, 10, 20, 10, 0, s)).toISOString();
 const cbase = { cwd: "/w/app", sessionId: "c1", isSidechain: false };
@@ -61,18 +61,31 @@ describe("a reader read on from a saved state", () => {
 
 describe("where a transcript is read from after a restart", () => {
   const reader = { v: READER_V, h: "codex" as const };
-  const saved: SavedRead = { harness: "codex", offset: 5000, head_len: HEAD_BYTES, head: "h1", reader };
+  const saved: SavedRead = { harness: "codex", offset: 5000, head_len: HEAD_BYTES, head: "h1", tail: "t1", reader };
   test("the saved place, when the file is the one it was saved of", () => {
-    expect(resumeAt(saved, { harness: "codex", size: 5000, head: "h1" })).toBe(5000);
-    expect(resumeAt(saved, { harness: "codex", size: 90_000, head: "h1" })).toBe(5000);
+    expect(resumeAt(saved, { harness: "codex", size: 5000, head: "h1", tail: "t1" })).toBe(5000);
+    expect(resumeAt(saved, { harness: "codex", size: 90_000, head: "h1", tail: "t1" })).toBe(5000);
   });
   test("its start otherwise: none saved, shorter, written again from its start, another harness, another version", () => {
-    expect(resumeAt(undefined, { harness: "codex", size: 9000, head: "h1" })).toBe(0);
-    expect(resumeAt(saved, { harness: "codex", size: 4999, head: "h1" })).toBe(0);
-    expect(resumeAt(saved, { harness: "codex", size: 9000, head: "h2" })).toBe(0);
-    expect(resumeAt(saved, { harness: "claude", size: 9000, head: "h1" })).toBe(0);
-    expect(resumeAt({ ...saved, reader: { ...reader, v: READER_V + 1 } }, { harness: "codex", size: 9000, head: "h1" })).toBe(0);
-    expect(resumeAt({ ...saved, offset: 0 }, { harness: "codex", size: 9000, head: "h1" })).toBe(0);
+    expect(resumeAt(undefined, { harness: "codex", size: 9000, head: "h1", tail: "t1" })).toBe(0);
+    expect(resumeAt(saved, { harness: "codex", size: 4999, head: "h1", tail: "t1" })).toBe(0);
+    expect(resumeAt(saved, { harness: "codex", size: 9000, head: "h2", tail: "t1" })).toBe(0);
+    expect(resumeAt(saved, { harness: "claude", size: 9000, head: "h1", tail: "t1" })).toBe(0);
+    expect(resumeAt({ ...saved, reader: { ...reader, v: READER_V + 1 } }, { harness: "codex", size: 9000, head: "h1", tail: "t1" })).toBe(0);
+    expect(resumeAt({ ...saved, offset: 0 }, { harness: "codex", size: 9000, head: "h1", tail: "t1" })).toBe(0);
+  });
+  test("its start when the bytes before the place changed (a file cut and grown again), or do not end a line", () => {
+    expect(resumeAt(saved, { harness: "codex", size: 9000, head: "h1", tail: "t2" })).toBe(0);
+    expect(resumeAt(saved, { harness: "codex", size: 9000, head: "h1", tail: undefined })).toBe(0);
+    // A place kept before its tail was: never used.
+    expect(resumeAt({ ...saved, tail: "" }, { harness: "codex", size: 9000, head: "h1", tail: "" })).toBe(0);
+    const e = new TextEncoder();
+    expect(tailHash(e.encode('{"a":1}\n'))).toBeString();
+    expect(tailHash(e.encode('{"a":1}\n{"b"'))).toBeUndefined();
+    expect(tailHash(new Uint8Array())).toBeUndefined();
+    expect(tailHash(e.encode('{"a":1}\n'))).not.toBe(tailHash(e.encode('{"a":2}\n')));
+    expect(tailLen(10)).toBe(10);
+    expect(tailLen(1 << 20)).toBe(TAIL_BYTES);
   });
   test("the place after the last whole line, exact in bytes whatever the text", () => {
     const b = new TextEncoder().encode('{"a":"é"}\n{"b":"日本"}\n{"c":"cut');
