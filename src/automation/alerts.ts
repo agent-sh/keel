@@ -1040,10 +1040,11 @@ export function tickSnoozes() {
 }
 
 // Whether the session (or one of its agents) has a card only the owner can
-// answer: a pending approval, a question not yet answered, a plan to approve.
+// answer: a pending approval, a question not yet answered, a plan to approve. A question asked in prose
+// (`asks_owner`) is no card: nothing there to answer but a message, so it holds nothing back.
 export function hasOpenCard(sessionId: string): boolean {
   const s = D().store.session(sessionId);
-  return !!s && sessionState(s).watch === "need";
+  return !!s && sessionState(s.settings.asks_owner ? { ...s, settings: { ...s.settings, asks_owner: null } } : s).watch === "need";
 }
 
 // A session was archived: what it holds unread is read, so the count drops and each channel takes back what it

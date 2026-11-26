@@ -261,8 +261,10 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   // A running turn whose every call waits on the owner with no card this file knows by name
   // (a program's inner card, a call blocked on agents that ask): the engine's one answer.
   const owner = turn && !asks.length && e.waitsOnOwner?.(s.id) ? { asking: true, owner: true } : {};
-  // A question its last unattended turn ended asking the owner in prose, owed until he writes (src/server/routes/marks.ts).
-  const said = !s.parent_id && s.settings.asks_owner ? { said: { text: s.settings.asks_owner.text, since: s.settings.asks_owner.ts } } : {};
+  // A question its last unattended turn ended asking the owner in prose, owed until he writes or a later unattended
+  // turn ends asking nothing (src/server/routes/marks.ts). While a turn runs the session is at work: the turn may
+  // answer it, and its end says.
+  const said = !s.parent_id && !turn && s.settings.asks_owner ? { said: { text: s.settings.asks_owner.text, since: s.settings.asks_owner.ts } } : {};
   return { ...owner, asks, agents: l.counts.get(s.id) ?? 0, parked: waitingBelow, pending, ...live, ...running, ...queue, ...(held ? { held } : {}), ...said, failure: failureOf(l.d.store, s) };
 }
 

@@ -3,7 +3,7 @@
 // owner speaks here again. Daemon state in the session's settings, so every
 // client (the page, the phone, the command line) agrees; setting a mark does
 // not move the session in the list.
-import { isPeerMessage, ownerPrompt } from "../../core/owner.ts";
+import { isPeerMessage, ownerPrompt, PEER_PREFIX } from "../../core/owner.ts";
 import { closingAsk, replyText } from "../../core/closing-ask.ts";
 import * as alerts from "../../automation/alerts.ts";
 import type { Session } from "../../core/types.ts";
@@ -183,27 +183,44 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
   });
 
   // A question an unattended turn of a top session ended asking the owner in prose (src/core/closing-ask.ts) is
-  // owed until the owner writes there: kept with the session, so its state says "needs you" across restarts. A
-  // turn the owner's words started or steered asks nothing this way: he is there (on the live store, those replies
-  // that ended in a question were greetings). One point read a turn's end: its last reply.
-  const ownerIn = new Set<string>();
+  // owed until the owner writes there, or until a later unattended turn ends asking nothing (it went on: what it
+  // asked is behind it). Kept with the session, so its state says "needs you" across restarts. A turn the owner's
+  // words started or steered asks nothing this way: he is there (on the live store, those replies that ended in a
+  // question were greetings). Who started a turn is read from its own events, as the engine reads it
+  // (Engine.byOwner): the prompts back to the turn before, a restart's cut turn and its continuation one turn.
+  // One point read a turn's end: its last reply.
+  const turnIns = store.db.query<{ kind: string; origin: string | null; ikind: string | null; owned: number | null; reason: string | null; peer: number }, [string, number]>(
+    `SELECT kind, data ->> '$.origin' AS origin, data ->> '$.kind' AS ikind, data ->> '$.owned' AS owned, data ->> '$.reason' AS reason,
+       substr(COALESCE(data ->> '$.text', ''), 1, ${PEER_PREFIX.length}) = '${PEER_PREFIX.replace(/'/g, "''")}' AS peer
+     FROM events WHERE session_id = ? AND seq < ? AND kind IN ('user', 'turn_end') ORDER BY seq DESC`);
+  const ownerTurn = (id: string, endSeq: number): boolean => {
+    let continued = false;
+    for (const e of turnIns.iterate(id, endSeq)) {
+      if (e.kind === "turn_end") { if (continued && e.reason === "restart") { continued = false; continue; } return false; }
+      if (e.origin === "restart") continued = true;
+      if ((ownerPrompt({ kind: e.ikind ?? undefined, origin: e.origin ?? undefined }) && !e.peer) || e.owned === 1) return true;
+      if (e.ikind === "task") return false;
+    }
+    return false;
+  };
   bus.on((f) => {
     if (f.t !== "event") return;
     const { kind, session_id: id, data } = f.event;
     if (kind === "user") {
       if (!ownerPrompt(data) || isPeerMessage(f.event)) return;
-      ownerIn.add(id);
       if (store.session(id)?.settings.asks_owner) { store.mergeSettings(id, { asks_owner: null }); emit(id); }
       return;
     }
     if (kind !== "turn_end") return;
-    const owner = ownerIn.delete(id);
     const s = store.session(id);
-    if (owner || !s || s.parent_id || data.reason !== "end_turn" || !f.event.parent) return;
+    if (!s || s.parent_id || data.reason !== "end_turn" || !f.event.parent) return;
+    if (ownerTurn(id, f.event.seq)) return;
     const reply = store.event(f.event.parent);
-    if (reply?.kind !== "assistant") return;
-    const text = closingAsk(replyText(reply.data));
-    if (!text) return;
+    const text = reply?.kind === "assistant" ? closingAsk(replyText(reply.data)) : undefined;
+    if (!text || !reply) {
+      if (s.settings.asks_owner) { store.mergeSettings(id, { asks_owner: null }); emit(id); }
+      return;
+    }
     store.mergeSettings(id, { asks_owner: { id: reply.id, seq: reply.seq, ts: reply.ts, text } });
     emit(id);
   });

@@ -37,6 +37,34 @@ test("a reply that ends on a statement, a question told of, a quote, code or a b
   expect(closingAsk("")).toBeUndefined();
 });
 
+test("a question told to an agent, tracked, in a table, under a heading or after a status line asks the owner nothing", () => {
+  // The coordinator's account of what it asked its agents.
+  expect(closingAsk("The lane's tests are red. I told the lane: can you rebase onto main and run them again?")).toBeUndefined();
+  expect(closingAsk("Sent the reviewer a message: does the fix hold on a 30k session?")).toBeUndefined();
+  expect(closingAsk("Waiting on the agent's answer to: why did the build fail?")).toBeUndefined();
+  expect(closingAsk("Next I will ask the reviewer whether the pin holds. Does it hold on a cold cache?")).toBeUndefined();
+  expect(closingAsk("Open items I am tracking:\n- why does the flake come back on the dev desk?")).toBeUndefined();
+  // A table cell and a heading are labels.
+  expect(closingAsk("| Lane | Status |\n|---|---|\n| a | Do you want it landed? |")).toBeUndefined();
+  expect(closingAsk("Done with the batch.\n\n## Next?")).toBeUndefined();
+  // The reply thinking aloud after a status line, and a question it answers itself.
+  expect(closingAsk("Nine lanes are working. Should I go on?")).toBeUndefined();
+  expect(closingAsk("Should I go on? Yes: the next lane starts now.")).toBeUndefined();
+  expect(closingAsk("Landed. See https://example.com/x?y=1")).toBeUndefined();
+  // A decision with a waiting word in it is still the owner's.
+  expect(closingAsk("**Decision for you:** after how many days should a session that waits on nothing be archived? Undo stays on its row.")).toBe("Decision for you: after how many days should a session that waits on nothing be archived?");
+});
+
+test("a long reply is judged by its end, in time linear in its length", () => {
+  const t = performance.now();
+  expect(closingAsk("Done.\n" + "    \n".repeat(64000) + "Ok?")).toBe("Ok?");
+  expect(closingAsk("Done.\n" + "\n".repeat(64000) + "Do you want it?")).toBe("Do you want it?");
+  expect(firstLine("\n".repeat(64000) + "Done.")).toBe("Done.");
+  // A fence opened before the end's window is still code.
+  expect(closingAsk("```\n" + "x\n".repeat(4000) + "Continue?")).toBeUndefined();
+  expect(performance.now() - t).toBeLessThan(500);
+});
+
 test("a reply's first line is its first words without their marks", () => {
   expect(firstLine("## Landing 275\n\nThe resource fixes are installed.")).toBe("Landing 275");
   expect(firstLine("**Landed** `abc123`: the fix is live.\nMore.")).toBe("Landed abc123: the fix is live.");

@@ -63,7 +63,7 @@ export const MARK_READ = "Mark as read";
 
 // What a session needs from the owner, by the daemon's reason.
 export const NEEDS: Record<string, string> = {
-  approval: "an approval", question: "a question", plan: "a plan", secret: "a secret", owner: "an answer", resume: "a turn to resume", unsent: "a message not sent",
+  approval: "an approval", question: "a question", plan: "a plan", secret: "a secret", owner: "an answer", resume: "a turn to resume", unsent: "a message not sent", prose: "an answer to its question",
 };
 // What a wait is on, by its kind.
 export const WAITS_FOR: Record<string, string> = {

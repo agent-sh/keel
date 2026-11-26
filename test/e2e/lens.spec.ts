@@ -104,6 +104,19 @@ test("a session with agents opens on the conversation, its stretches folded and 
     await expect.poll(async () => (await stateOf()).watch, { timeout: 15_000 }).toBe("work");
     await expect(lens.locator('[data-lens-item="reply"]').last()).toContainText("Not yet.", { timeout: 30_000 });
     await expect(lens.getByTestId("lens-run-came").filter({ hasText: "Asks you" })).toHaveCount(0);
+    // A loop's run asks him again, and the next run that asks nothing pays it too: the session went on past it.
+    const loopRun = async (prompt: string) => {
+      const loop = (await (await api.post(`${d.url}/api/loops`, { data: { session_id: id, name: "Lane check", schedule: "1h", prompt } })).json()).loop as { id: string };
+      expect((await api.post(`${d.url}/api/loops/${loop.id}/run`)).ok()).toBe(true);
+      // (Its turn ended.)
+      await expect.poll(async () => ((await (await api.get(`${d.url}/api/loops/${loop.id}/runs`)).json()).loop as { last_status?: string }).last_status, { timeout: 30_000 }).toBe("ok");
+      await api.delete(`${d.url}/api/loops/${loop.id}`);
+    };
+    await loopRun("script:say The lanes are moving.\\n\\nDo you want the parser lanes landed today?");
+    await expect.poll(async () => { const s = await stateOf(); return `${s.watch} ${s.why}`; }, { timeout: 30_000 }).toBe("need prose");
+    await loopRun("script:say The lanes are on their way.");
+    await expect.poll(async () => (await stateOf()).watch, { timeout: 30_000 }).toBe("work");
+    await expect(lens.getByTestId("lens-run-came").filter({ hasText: "Asks you" })).toHaveCount(0);
 
     // The full stream is a choice away, and kept for this session across a reload. (It is what the
     // session showed before the lens: every report, every call.)
