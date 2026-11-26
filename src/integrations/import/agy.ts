@@ -19,7 +19,7 @@
 // conversation's own upload folder when it is there. A
 // conversation kept as binary steps only has no transcript and is not listed.
 // Nothing here writes.
-import { Database } from "bun:sqlite";
+import { constants, Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { damageNotes, headTail, readLines } from "./files.ts";
@@ -141,9 +141,15 @@ export function agyListed(store: string, ids?: string[]): Map<string, Listed> | 
   if (!existsSync(list)) return null;
   let db: Database | undefined;
   try {
-    db = new Database(list, { readonly: true });
-    // (A whole list waits for a writer as the Imports page did; a lookup of the live watcher waits less.)
-    db.exec(`PRAGMA busy_timeout = ${ids ? 200 : 2000}`);
+    // Never a write in Antigravity's folder: a read-only open of a list with no write-ahead log makes one (and its
+    // shared memory file), so that list is opened immutable; one with a log has a writer at work (or one that did
+    // not close it) and is read through it, read-only.
+    db = existsSync(list + "-wal")
+      ? new Database(list, { readonly: true })
+      : new Database(`file:${list.split("/").map(encodeURIComponent).join("/")}?immutable=1`, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
+    // (A whole list waits for a writer as the Imports page did; a lookup of the live watcher, on the loop, waits for
+    // none: a list being written is asked again later.)
+    db.exec(`PRAGMA busy_timeout = ${ids ? 0 : 2000}`);
     const cols = new Set(db.query<{ name: string }, []>("PRAGMA table_info(conversation_summaries)").all().map((c) => c.name));
     // (One text for any number of ids: the ids go as one JSON value.)
     const sql = `${LISTED.replace(" FROM", `${cols.has("status") ? ", status" : ""} FROM`)}${ids ? " WHERE conversation_id IN (SELECT value FROM json_each(?))" : ""}`;
@@ -194,11 +200,14 @@ const failureOf = (r: any, content: string) => [typeof r.error === "string" ? r.
 
 // Antigravity's steps as Keel's events, as they are read from the transcript (the import reads the whole file, the
 // watcher of live sessions what it gained: src/integrations/outside/service.ts). Steps are numbered, and the
-// numbering is the order: a parallel call's results can be written before the step that made the calls. A step
-// written again under a number it already used is a rewind (the owner went back to an earlier step there): it and
-// every step after it are replaced. `push` keeps a step; `settle` converts the steps kept, in their order. A step
-// that comes, after a settle, under a number already converted (a rewind, a step written late) sets `rewound`: the
-// conversion is made again from the file's start.
+// numbering is the order: a tool's result step can be written before the step that made the call. A step written
+// again under a number it already used is a rewind (the owner went back to an earlier step there): it and every step
+// after it are replaced. `push` keeps a step; `settle` converts the run of kept steps that follows the last one
+// converted with no gap, and holds the rest until the gap fills. Numbers do skip, so a gap is passed over when the
+// turn ends (`settle(true)`: the file's end on import, a quiet file or a turn that is not working live) or when
+// HOLD_STEPS steps wait behind it. A step under a number already converted sets `rewound` (the conversion is made
+// again from the file's start), and so does a step under a number that was passed over and comes after all.
+const HOLD_STEPS = 64;
 export class AgyConvert {
   b = new Builder();
   rewound = false;
@@ -206,6 +215,8 @@ export class AgyConvert {
   models = new Set<string>();
   private kept = new Map<number, { r: any; ts: number }>();
   private done = new Set<number>();
+  // The gaps passed over, as [from, to) number ranges.
+  private skipped: [number, number][] = [];
   private next = 0;
   private lines = 0;
   // Calls get their results in the order they were made; ids are ours.
@@ -216,18 +227,27 @@ export class AgyConvert {
     if (!r || typeof r !== "object") return;
     const k = Number.isInteger(r.step_index) ? r.step_index : this.lines;
     this.lines++;
-    if (k < this.next || this.done.has(k)) { this.rewound = true; return; }
+    if (this.done.has(k) || this.skipped.some(([a, z]) => k >= a && k < z)) { this.rewound = true; return; }
     if (this.kept.has(k)) for (const n of [...this.kept.keys()]) if (n >= k) this.kept.delete(n);
     this.kept.set(k, { r, ts: timeMs(r.created_at) || fallbackTs });
   }
 
-  settle() {
-    const steps = [...this.kept.entries()].sort((a, b) => a[0] - b[0]);
-    this.kept.clear();
-    for (const [k, { r, ts }] of steps) {
-      this.step(r, ts);
-      this.done.add(k);
-      this.next = Math.max(this.next, k + 1);
+  // Steps kept and not converted yet: a gap holds them.
+  get held() { return this.kept.size; }
+
+  settle(end = false) {
+    for (;;) {
+      for (let s = this.kept.get(this.next); s; s = this.kept.get(this.next)) {
+        this.kept.delete(this.next);
+        this.step(s.r, s.ts);
+        this.done.add(this.next);
+        this.next++;
+      }
+      if (!this.kept.size || (!end && this.kept.size < HOLD_STEPS)) return;
+      // The gap is passed over: its numbers were skipped.
+      const first = Math.min(...this.kept.keys());
+      this.skipped.push([this.next, first]);
+      this.next = first;
     }
   }
 
@@ -291,7 +311,7 @@ export async function readAgy(f: Found): Promise<Read> {
   const c = new AgyConvert(f.path);
   const lines = readLines(await Bun.file(f.path).text());
   for (const r of lines.records) c.push(r, st.mtimeMs);
-  c.settle();
+  c.settle(true);
   c.close(st.mtimeMs);
   const b = c.b;
   notes.push(...damageNotes(lines));

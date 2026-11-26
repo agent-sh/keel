@@ -1006,13 +1006,18 @@ export class Outside {
         this.live.set(sessionId, (l = this.fresh(row, l)));
         if (!(await this.readInto(l, row.path, st.size, st.mtimeMs, ok))) return;
       }
-      (l.conv as AgyConvert).settle();
     }
     if (this.live.get(sessionId) !== l) return;
     // While it works, its last event may still grow (a reply's next block, a round's next result): it waits.
     // While it waits on the owner or is done, nothing more comes to it: the question it asks is shown.
     const working = (t ? this.factsOf(t).said.state : store.session(sessionId)?.outside?.state) === "working";
     const quiet = Date.now() - st.mtimeMs >= QUIET_MS;
+    if (l.conv instanceof AgyConvert) {
+      // Steps behind a gap wait for it to fill (a result is written before the step that made its call); a turn
+      // that ended passes it over. Looked at again once the file is quiet.
+      l.conv.settle(quiet || !working);
+      if (l.conv.held) this.whenQuiet(sessionId, st.mtimeMs);
+    }
     const events = l.conv.b.events;
     const base = l.base, len = base + events.length, stored = l.ids.length;
     const held = working && !quiet && len > base;

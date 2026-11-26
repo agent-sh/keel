@@ -2,10 +2,10 @@
 // the transcript under brain/<id>/.system_generated/logs, a prompt's media in .user_uploaded.
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agySessions, readAgy } from "./agy.ts";
+import { agyListed, agySessions, readAgy } from "./agy.ts";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -66,4 +66,25 @@ test("an Antigravity conversation lists with its folder, model and subagent, and
   expect(r.events.some((e) => e.kind === "note" && String(e.data.text).includes("quota exceeded"))).toBe(true);
   expect(r.events.filter((e) => e.kind === "assistant").map((e) => e.data.model)).toEqual(["agy-model-a", "agy-model-b"]);
   expect(r.notes.join(" ")).toContain("agy-model-a, agy-model-b");
+});
+
+// Antigravity keeps its list in write-ahead-log mode. A read-only open of it when no log is there makes the log and
+// its shared memory file in Antigravity's folder: the list is read with nothing written beside it, a folder with an
+// odd name included.
+test("Antigravity's list is read with nothing written in its folder", () => {
+  const store = join(mkdtempSync(join(tmpdir(), "agy-list-")), "a store ?#%");
+  mkdirSync(store);
+  try {
+    const db = new Database(join(store, "conversation_summaries.db"), { create: true });
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("CREATE TABLE conversation_summaries (conversation_id text PRIMARY KEY, title text NOT NULL DEFAULT '', preview text NOT NULL DEFAULT '', last_modified_time datetime NOT NULL, workspace_uris text NOT NULL, status text NOT NULL DEFAULT '', parent_conversation_id text)");
+    db.query("INSERT INTO conversation_summaries (conversation_id, title, last_modified_time, workspace_uris, status) VALUES ('c1', 'Pears', '2026-11-20T10:00:00Z', '[]', 'CASCADE_RUN_STATUS_IDLE')").run();
+    db.close();
+    expect(readdirSync(store)).toEqual(["conversation_summaries.db"]);
+    expect(agyListed(store, ["c1"])?.get("c1")).toMatchObject({ title: "Pears", status: "CASCADE_RUN_STATUS_IDLE" });
+    expect(agyListed(store)?.size).toBe(1);
+    expect(readdirSync(store)).toEqual(["conversation_summaries.db"]);
+  } finally {
+    rmSync(join(store, ".."), { recursive: true, force: true });
+  }
 });

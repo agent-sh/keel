@@ -1,7 +1,7 @@
 // The watcher over fixture stores of Claude Code and Codex in a scratch folder: what it watches,
 // what it reads of a file that grows, what its copy appends, and what the owner's settings change.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -355,6 +355,46 @@ describe("outside sessions", () => {
       expect(answer.parent).toBe(first[2]!.id);
       expect(answer.data.blocks[0].text).toBe("Quince, and a pear.");
       db.close();
+    } finally { r.done(); }
+  });
+
+  // Antigravity writes a tool's result step before the step that made the call. A read between the two holds the
+  // result for its call: no reread from the start, no branch. Its list is read without a write in its folder.
+  test("an Antigravity result written before its call is held for it, and the list is read with nothing written beside it", async () => {
+    const r = rig({}, true);
+    try {
+      const cli = join(r.agy, "antigravity-cli");
+      mkdirSync(join(cli, "brain"), { recursive: true });
+      const list = join(cli, "conversation_summaries.db");
+      const db = new Database(list, { create: true });
+      db.exec("CREATE TABLE conversation_summaries (conversation_id text PRIMARY KEY, title text NOT NULL DEFAULT '', preview text NOT NULL DEFAULT '', last_modified_time datetime NOT NULL, workspace_uris text NOT NULL, status text NOT NULL DEFAULT '', parent_conversation_id text NOT NULL DEFAULT '')");
+      const cwd = join(r.dir, "w");
+      mkdirSync(cwd);
+      const id = "bbbb1111-0000-4000-8000-00000000000a";
+      const listed = (status: string) => db.query("INSERT OR REPLACE INTO conversation_summaries (conversation_id, title, last_modified_time, workspace_uris, status) VALUES (?, 'Pear notes', ?, ?, ?)").run(id, new Date().toISOString(), JSON.stringify([`file://${cwd}`]), status);
+      await until(() => (r.o as any).watchers.has(join(cli, "brain")));
+      const logs = join(cli, "brain", id, ".system_generated", "logs");
+      const step = (x: object) => appendFileSync(join(logs, "transcript_full.jsonl"), JSON.stringify({ status: "DONE", created_at: new Date().toISOString(), ...x }) + "\n");
+      listed("CASCADE_RUN_STATUS_RUNNING");
+      mkdirSync(logs, { recursive: true });
+      await until(() => (r.o as any).watchers.has(logs));
+      step({ step_index: 0, type: "USER_INPUT", source: "USER_EXPLICIT", content: "<USER_REQUEST>Which fruit?</USER_REQUEST>" });
+      step({ step_index: 2, type: "VIEW_FILE", content: "pear" });
+      const s = await until(() => sessionOf(r.store, id));
+      await r.o.sync(s.id);
+      const copies = (r.o as any).stats.full_copies;
+      step({ step_index: 1, type: "PLANNER_RESPONSE", model: "agy-model", tool_calls: [{ name: "view_file", args: { AbsolutePath: "notes.md" } }] });
+      step({ step_index: 3, type: "PLANNER_RESPONSE", model: "agy-model", content: "A pear." });
+      listed("CASCADE_RUN_STATUS_IDLE");
+      await until(() => sessionOf(r.store, id)?.outside?.state === "done");
+      await r.o.sync(s.id);
+      const events = stored(r.store, s.id).map((x) => r.store.event(x.event_id)!);
+      expect(events.map((e) => e.kind)).toEqual(["user", "assistant", "tool_result", "assistant"]);
+      expect(events[2]!.data.results[0]).toMatchObject({ tool_use_id: events[1]!.data.blocks[0].id, content: "pear" });
+      expect(events.map((e) => e.parent)).toEqual([null, events[0]!.id, events[1]!.id, events[2]!.id]);
+      expect((r.o as any).stats.full_copies).toBe(copies);
+      db.close();
+      expect(readdirSync(cli).filter((f) => f.startsWith("conversation_summaries.db")).sort()).toEqual(["conversation_summaries.db"]);
     } finally { r.done(); }
   });
 });
