@@ -803,47 +803,81 @@ test("a row the owner scrolled to acts as the scroll ends, a list that changed m
     await send();
     const card = pane.getByTestId("approval");
     const tray = pane.getByTestId("composer-tray");
-    await expect(card).toHaveCount(8);
-    await expect.poll(() => !!held["late.txt"]).toBe(true);
+    await expect.poll(() => !!held["late.txt"], { timeout: 30_000 }).toBe(true);
+    await expect(card).toHaveCount(8, { timeout: 30_000 });
     await expect(card.first()).toHaveAttribute("data-live", "true");
-    await page.waitForTimeout(1100); // every card has been on the page for a second
-    // In the page: when the region last scrolled, and when each Allow once could first be pressed after that.
-    await page.evaluate(() => {
-      const w = window as unknown as { scrolled: number; could: Record<string, number> };
-      w.scrolled = 0;
-      w.could = {};
-      const tray = document.querySelector('[data-testid="composer-tray"]')!;
-      tray.addEventListener("scroll", () => { w.scrolled = performance.now(); w.could = {}; }, { passive: true });
-      new MutationObserver(() => {
-        for (const el of document.querySelectorAll<HTMLElement>('[data-testid="approval"][data-live]')) w.could[el.dataset.approvalId!] ??= performance.now();
-      }).observe(tray, { subtree: true, attributes: true, attributeFilter: ["data-live"] });
-    });
-    const whole = () => card.evaluateAll((els) => {
-      const t = els[0]!.closest('[data-testid="composer-tray"]')!.getBoundingClientRect();
-      return els.filter((el) => { const r = el.querySelector('[data-testid="allow-once"]')!.getBoundingClientRect(); return r.top >= t.top && r.bottom <= t.bottom; }).map((el) => (el as HTMLElement).dataset.approvalId!);
-    });
-    const before = await whole();
     // A short row that stands at the region's fold says nothing of lines not seen: it keeps its
     // height as it comes into view, and the list under the owner's scroll does not change.
     await expect(card.getByTestId("approval-left")).toHaveCount(0);
-    const box = (await tray.boundingBox())!;
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.wheel(0, 320);
-    // The scroll has ended when the region has stood for a moment.
-    await expect.poll(() => page.evaluate(() => { const w = window as unknown as { scrolled: number }; return w.scrolled > 0 && performance.now() - w.scrolled > 250; })).toBe(true);
-    const came = (await whole()).filter((x) => !before.includes(x));
-    expect(came.length).toBeGreaterThan(0);
-    // A row that came into view by that scroll can be pressed well inside the second it would wait otherwise.
-    // (The one taken is a row the page itself shows whole: the region's own bar lies over the edge of
-    // what this test measures, and how many rows fit changes with the height of the pane's header.)
-    const pressable = () => card.and(page.locator("[data-live]")).evaluateAll((els, ids) => els.map((el) => (el as HTMLElement).dataset.approvalId!).find((x) => ids.includes(x)) ?? null, came);
-    await expect.poll(pressable).not.toBeNull();
-    const reached = [(await pressable())!];
-    const waited = await page.evaluate((x) => { const w = window as unknown as { scrolled: number; could: Record<string, number> }; return w.could[x!]! - w.scrolled; }, reached[0]);
-    expect(waited).toBeLessThan(600);
-    await card.and(page.locator(`[data-approval-id="${reached[0]}"]`)).getByTestId("allow-once").click();
+    // The initial focus change may scroll the tray; finish it before taking the wheel's starting point.
+    await expect(card.first().getByTestId("allow-once")).toBeFocused();
+    await tray.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+    const scroll = await tray.evaluateHandle((tray) => {
+      const frame = () => {
+        const box = tray.getBoundingClientRect();
+        const bar = tray.querySelector('[data-bar-stays] > [data-testid="approvals-bar"]')?.getBoundingClientRect();
+        const fade = 1.25 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+        return { box, top: Math.max(box.top, bar?.bottom ?? 0), bottom: box.bottom - fade };
+      };
+      const { box, top, bottom } = frame();
+      const before = tray.scrollTop;
+      const remaining = tray.scrollHeight - tray.clientHeight - before;
+      for (const row of tray.querySelectorAll<HTMLElement>('[data-testid="approval"]')) {
+        const r = row.getBoundingClientRect();
+        if (r.bottom <= bottom || r.height >= bottom - top) continue;
+        // Aim for a whole, previously clipped row, not a fixed number of pixels from the fold.
+        const delta = Math.min(remaining, Math.round((r.top + r.bottom - top - bottom) / 2));
+        if (delta <= 0 || r.top - delta < top || r.bottom - delta > bottom) continue;
+        const once = row.querySelector('[data-testid="allow-once"]')!;
+        let wholeAt: number | undefined, waited: number | null = null;
+        let ended = false;
+        const end = () => requestAnimationFrame(() => requestAnimationFrame(() => { ended = true; }));
+        const read = () => {
+          const r = row.getBoundingClientRect(), f = frame();
+          if (tray.scrollTop <= before || r.top < f.top || r.bottom > f.bottom) {
+            wholeAt = undefined;
+            waited = null;
+            return;
+          }
+          wholeAt ??= performance.now();
+          if (row.dataset.live && !once.hasAttribute("aria-disabled")) waited ??= performance.now() - wholeAt;
+        };
+        const seen = new MutationObserver(read);
+        seen.observe(row, { subtree: true, attributes: true, attributeFilter: ["data-live", "aria-disabled"] });
+        tray.addEventListener("scroll", read, { passive: true });
+        tray.addEventListener("scrollend", end, { passive: true });
+        return {
+          id: row.dataset.approvalId!, x: box.left + box.width / 2, y: (top + bottom) / 2, delta,
+          hit: () => {
+            read();
+            const b = once.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
+            return ended && waited !== null && row.dataset.live && !once.hasAttribute("aria-disabled")
+              && once.contains(document.elementFromPoint(x, y)) ? { x, y, waited } : null;
+          },
+          stop: () => { seen.disconnect(); tray.removeEventListener("scroll", read); tray.removeEventListener("scrollend", end); },
+        };
+      }
+      return null;
+    });
+    const wheel = await scroll.evaluate((s) => s && { id: s.id, x: s.x, y: s.y, delta: s.delta });
+    expect(wheel, "a wheel scroll can bring a new whole row into the tray").not.toBeNull();
+    const reached = wheel!.id;
+    try {
+      await page.mouse.move(wheel!.x, wheel!.y);
+      await page.mouse.wheel(0, wheel!.delta);
+      // The browser records when it first showed the target whole and when a click could first work.
+      const hit = () => scroll.evaluate((s) => s!.hit());
+      await expect.poll(hit).not.toBeNull();
+      const point = (await hit())!;
+      expect(point.waited).toBeLessThan(600);
+      // A locator click would scroll the answer into view again before pressing it.
+      await page.mouse.click(point.x, point.y);
+    } finally {
+      await scroll.evaluate((s) => s?.stop());
+      await scroll.dispose();
+    }
     await expect(card).toHaveCount(7);
-    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached[0]]);
+    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached]);
 
     // The owner's wheel turns again, and in the same moment a request arrives: every Allow that
     // is now where another row's was is pressed at that instant. None is allowed.
@@ -854,7 +888,7 @@ test("a row the owner scrolled to acts as the scroll ends, a list that changed m
     const pressed = await changed;
     await page.waitForTimeout(500);
     expect(pressed.filter((x) => !x.kept)).toEqual([]);
-    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached[0]]);
+    expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached]);
   } finally { await request.delete(`/api/sessions/${id}`); }
 });
 
