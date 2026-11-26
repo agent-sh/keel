@@ -100,6 +100,10 @@ test("a queue lands what passed on the exact tree, and a branch that fails or co
 
   // The Branches panel shows the queue: what landed and what left, in both themes.
   await page.goto(`/s/${coord}`);
+  // The turn the outcome started is folded into one line of the conversation: it is opened first.
+  const run = page.getByTestId("lens-run").last();
+  await expect(run).toBeVisible({ timeout: 30_000 });
+  if ((await run.getAttribute("data-open")) === null) await run.getByTestId("lens-run-toggle").click();
   await expect(page.getByTestId("landing-notice")).toBeVisible();
   await openPanel(page, "branches");
   const panel = page.getByTestId("branches-panel");

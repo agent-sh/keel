@@ -164,17 +164,22 @@ function WorktreeSetupFile({ session }: { session: Session }) {
 function HeldFile({ f, cwd, on, onDone }: { f: File; cwd: string; on: (path: string) => string; onDone: () => void }) {
   const [diff, setDiff] = useState<Diff | null>(null);
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
   const Icon = ICON[f.kind];
   useEffect(() => {
     if (f.state === "gone") return;
     api<Diff>(on(`/api/trust/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(f.path)}`)).then(setDiff).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
   }, [f.path, f.sha256]);
+  // The press shows where it was made: the button waits while the request is on its way, and a refusal is
+  // said beside it, above the diff (under a long diff nobody saw it, and pressed again).
   const trust = async () => {
+    if (busy) return;
     setErr("");
+    setBusy(true);
     try {
       await api(on("/api/trust"), { method: "POST", body: JSON.stringify({ cwd, files: [{ path: f.path, sha256: diff?.sha256 ?? f.sha256 }] }) });
       onDone();
-    } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
+    } catch (e) { setErr(`Not trusted: ${failed(e, { at: "TrustPanel" })}`); } finally { setBusy(false); }
   };
   return (
     <div className="k-held-file overflow-hidden rounded-xl border border-warn/40 bg-raised" data-testid="held-file" data-kind={f.kind}>
@@ -183,15 +188,15 @@ function HeldFile({ f, cwd, on, onDone }: { f: File; cwd: string; on: (path: str
         <span className="min-w-0 flex-1 truncate font-mono text-caption">{f.rel}</span>
         <span className="text-micro text-faint">{KIND[f.kind]} · {f.state === "changed" ? "changed" : f.state === "new" ? "new" : "gone"}</span>
         {!f.refused && (
-          <button data-testid="trust-file" onClick={trust} className="h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90">
+          <button data-testid="trust-file" onClick={trust} disabled={busy} aria-busy={busy} className="h-7 shrink-0 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90 disabled:opacity-60">
             {f.state === "gone" ? "Forget it" : "Trust this version"}
           </button>
         )}
       </div>
+      {err && <p className="px-3 pb-2 text-caption text-danger" data-testid="trust-error">{err}</p>}
       {diff && f.kind !== "skill" && <div className="border-t border-line p-2"><DiffView files={[{ path: diff.rel, status: f.state === "new" ? "A" : "M", added: diff.patch.added, removed: diff.patch.removed }]} patch={diff.patch.text} /></div>}
       {f.refused && <p className="border-t border-line px-3 py-2 text-caption text-warn" data-testid="trust-refused">{f.refused}</p>}
       {diff && f.kind === "skill" && !f.refused && <p className="border-t border-line px-3 py-2 text-caption text-muted">The skill's files changed. Read its folder before trusting it.</p>}
-      {err && <p className="px-3 pb-2 text-caption text-danger">{err}</p>}
     </div>
   );
 }

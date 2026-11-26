@@ -40,11 +40,13 @@ export { relaunchArgv };
 // session the owner is at, alerts they have seen, the unsent draft of a message
 // box, which a reload after the restart brings back), what the owner answers
 // a running turn (the drain is waiting for that turn; the passkey check is
-// for an answer from a remote device), and a stop.
+// for an answer from a remote device), the owner's trust of a repository's
+// instruction file or skill (a pin: it starts nothing, and the card that asks
+// for it comes with the landing a restart follows), and a stop.
 const DRAIN_PASSES = new RegExp(
   "^/api/(?:" +
     "(?:errors|awake|drain)(?:/|$)" +
-    "|presence$|connection$|alerts/read$" +
+    "|presence$|connection$|alerts/read$|trust$" +
     "|owner-presence/authenticate/(?:start|finish)$" +
     "|sessions/[^/]+/(?:" +
       "files/exist|call-marks|interrupt|as-agent/stop|presence|draft(?:/files/[^/]+)?" +

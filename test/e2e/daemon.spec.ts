@@ -3,7 +3,7 @@ import { specEnv } from "./own-daemon.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
+import { HAIKU, shoot, ask, openPanel, scriptBash } from "./shots.ts";
 
 // Feature: the daemon keeps the machine awake while a turn runs, and a restart
 // from Settings > Daemon lets the running turn finish first; a restart that
@@ -133,6 +133,9 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
 // sent as a POST) and links them, a prompt the daemon turns away waits above
 // the box without becoming a record in Errors, the approval given from the
 // page lets its turn finish, and the drain ends with the reply on its way.
+// The owner's trust of a repository's changed instruction file is taken too:
+// it starts nothing, and its card comes with the landing a restart follows. A
+// press that is refused says so beside the button, above the diff.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 function ownDaemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
@@ -167,6 +170,16 @@ test("a draining daemon still answers reads and the answers its running turns wa
     await expect.poll(async () => (await get(`/api/sessions/${session.id}`)).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
     await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch made.txt" } }])}` });
     await expect.poll(async () => (await get(`/api/sessions/${session.id}/approvals`)).approvals.length, { timeout: 30_000 }).toBe(1);
+    // A repository whose instruction file changed since it was pinned: held, for the owner to trust.
+    const repo = join(state, "repo");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    writeFileSync(join(repo, "AGENTS.md"), "# Rules\n\nAnswer in one line.\n");
+    const inRepo = ((await (await call("/api/sessions", { model: "scripted:stand-in", title: "Held file", workspace: repo })).json()) as any).session;
+    const fileOf = async () => (await get(`/api/trust?cwd=${encodeURIComponent(repo)}`)).files.find((f: any) => f.rel === "AGENTS.md");
+    expect((await fileOf()).state).toBe("trusted");
+    writeFileSync(join(repo, "AGENTS.md"), "# Rules\n\nAnswer in two lines.\n");
+    expect((await fileOf()).state).toBe("changed");
     // A card that only waits on the owner does not hold a drain. A turn at work does: another session's reply, until its gate opens.
     const gate = join(state, "gate");
     const busy = ((await (await call("/api/sessions", { model: "scripted:stand-in", title: "At work while draining", workspace: join(state, "work"), text: `script:hold ${gate}` })).json()) as any).session;
@@ -227,6 +240,32 @@ test("a draining daemon still answers reads and the answers its running turns wa
     // The message is still kept, and was posted once: the page asks whether Keel takes work before it sends again.
     await expect(kept).toHaveAttribute("data-state", "waiting");
     expect(refused).toEqual(["POST /api/sessions/:id/messages"]);
+    // The held file is trusted from its panel while the daemon drains.
+    const other = await page.context().newPage();
+    // (The workbench, as the specs' own daemon gets it from the config: this daemon is another origin.)
+    await other.addInitScript(() => localStorage.setItem("keel.workbench", "true"));
+    await other.goto(`${d.url}/s/${inRepo.id}`);
+    await openPanel(other, "trust");
+    const held = other.getByTestId("trust-panel").getByTestId("held-file");
+    await expect(held.getByTestId("diff-view")).toContainText("two lines");
+    await held.getByTestId("trust-file").click();
+    await expect(other.getByTestId("trust-panel").getByTestId("trust-clear")).toBeVisible();
+    expect((await fileOf()).state).toBe("trusted");
+    expect((await get("/api/daemon")).draining).toBeTruthy();
+    // A press the daemon refuses says so beside the button, above the diff.
+    writeFileSync(join(repo, "AGENTS.md"), "# Rules\n\nAnswer in three lines.\n");
+    await other.reload();
+    await openPanel(other, "trust");
+    await expect(held.getByTestId("diff-view")).toContainText("three lines");
+    await other.route((u) => u.pathname === "/api/trust", (route) => route.request().method() === "POST"
+      ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "the file changed since it was shown: look at it again" }) })
+      : route.fallback());
+    await held.getByTestId("trust-file").click();
+    const said = held.getByTestId("trust-error");
+    await expect(said).toHaveText("Not trusted: the file changed since it was shown: look at it again");
+    expect((await said.boundingBox())!.y).toBeLessThan((await held.getByTestId("diff-view").boundingBox())!.y);
+    await shoot(other, "daemon-06-trust-refused");
+    await other.close();
     // That turn ends, and the drain with it.
     writeFileSync(gate, "");
     await expect.poll(() => d.proc.exitCode, { timeout: 30_000 }).toBe(0);
