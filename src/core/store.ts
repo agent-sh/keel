@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS queue (
 // session '' is the outward rows that name no session. `seal_cards`: each version of an approval card as it was
 // stored (the card's own row is changed by its answer). `seal_days`: each day's heads of the sessions that moved
 // since the day before, and `seal_roots`: the day's root over them.
+// What readers answered a session's reading jobs, kept two hours so a job a restart cut reads only the rest
+// (src/engine/reader-kept.ts): `reader_kept` an answer by its request, `reader_jobs` how far each call's job got.
+// No foreign key: the rows are written in batches, and one for a session deleted meanwhile is skipped by the write.
+export const READER_KEPT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS reader_kept (key TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, text TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS reader_kept_ts ON reader_kept(ts);
+CREATE INDEX IF NOT EXISTS reader_kept_session ON reader_kept(session_id);
+CREATE TABLE IF NOT EXISTS reader_jobs (session_id TEXT NOT NULL, call_id TEXT NOT NULL, ts INTEGER NOT NULL, read INTEGER NOT NULL, total INTEGER NOT NULL, PRIMARY KEY (session_id, call_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS reader_jobs_ts ON reader_jobs(ts);
+`;
+
 const SEAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS seal_heads (session_id TEXT NOT NULL, kind TEXT NOT NULL, head BLOB NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session_id, kind)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS seal_cards (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL, prev BLOB NOT NULL);
@@ -862,6 +873,7 @@ export class Store {
     if (!this.columnExists("events", "prev")) this.db.exec("ALTER TABLE events ADD COLUMN prev BLOB");
     if (!this.columnExists("sessions", "seal")) this.db.exec("ALTER TABLE sessions ADD COLUMN seal BLOB");
     this.db.exec(SEAL_SCHEMA);
+    this.db.exec(READER_KEPT_SCHEMA);
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"], ["read_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
@@ -1041,6 +1053,8 @@ export class Store {
       // (The days' heads stay: they are what says the session existed and what its chain was.)
       this.db.query("DELETE FROM seal_cards WHERE session_id = ?").run(id);
       this.db.query("DELETE FROM seal_heads WHERE session_id = ?").run(id);
+      this.db.query("DELETE FROM reader_kept WHERE session_id = ?").run(id);
+      this.db.query("DELETE FROM reader_jobs WHERE session_id = ?").run(id);
     })();
     this.forget(id);
     forgetSession(id);

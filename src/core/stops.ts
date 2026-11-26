@@ -6,6 +6,12 @@ import { ownerStop, stopSays } from "./stoppers.ts";
 
 // A call cut while its tool ran.
 export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
+// A reading job (AskReaders) a restart cut: what its readers answered is kept (src/engine/reader-kept.ts), so the
+// same call sent again reads only the parts left. `read` of `total` parts, from the job's last progress; none known
+// when the job had told none yet.
+export const READ_CUT = "Interrupted by a daemon restart while the readers read.";
+export const readCut = (read?: number, total?: number, hours = 2): string =>
+  `${READ_CUT} ${total ? `${read ?? 0} of ${total} parts were read, and their answers are kept for ${hours} hours.` : `The answers of the parts read before the cut are kept for ${hours} hours.`} Send the same call again unchanged (the same paths and the same question) to read only the ${total ? `${total - (read ?? 0)} parts left` : "parts left"}; a call with other paths or another question may read every part again.`;
 // A call cut while it ran a command whose fate is known (src/tools/jobs.ts
 // cutCommand): the result starts with this and says what became of the
 // command: it runs on, it was stopped, or it ended and how.
@@ -57,7 +63,7 @@ const CUT: readonly string[] = [RESTART_CUT, QUESTION_CUT, APPROVAL_CUT];
 export const stopKind = (content: unknown): "stopped" | "cut" | undefined =>
   typeof content !== "string" ? undefined
     : content === STOPPED_BEFORE || content === STOPPED_WHILE || content === STOPPED_WHILE_CHANGING || content.startsWith(BEFORE) || content.startsWith(WHILE) ? "stopped"
-      : CUT.includes(content) || content.startsWith(RESTART_RAN) ? "cut" : undefined;
+      : CUT.includes(content) || content.startsWith(RESTART_RAN) || content.startsWith(READ_CUT) ? "cut" : undefined;
 
 // A call the turn never ran for a reason of the turn's own: its reply was cut at the
 // output limit inside the call (its input may be incomplete), or the step budget was

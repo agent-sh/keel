@@ -42,7 +42,7 @@ export type ReaderHost = {
   shut?(m: ModelInfo): string | undefined;
   // The answers of this session's earlier requests, by the request (src/engine/reader-kept.ts): a job a restart cut
   // and the turn sent again reads only the parts no reader answered yet.
-  kept?: { get(prompt: string): KeptAnswer | undefined; put(prompt: string, a: KeptAnswer): void };
+  kept?: { get(prompt: string, model: string): KeptAnswer | undefined; put(prompt: string, model: string, a: KeptAnswer): void };
 };
 
 export type PartState = { k: number; covers: string; chars: number; model?: string; state: "waiting" | "reading" | "read" | "nothing" | "unread"; error?: string };
@@ -123,7 +123,11 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     kept.push(m);
     room -= m.text.length;
   }
-  // What one request holds besides the question: a part, or a group of findings.
+  // What one request holds besides the question: a part, or a group of findings. Sized by the first choice
+  // before any route is found shut (a shut route is skipped only when asked), so a route shut after a restart
+  // leaves every part's text as it was and its kept answers are found; a change of the choices themselves (the
+  // owner's readers, a model gone from its listing) may resize the parts, and the job is then read again: a lost
+  // saving, never a wrong answer.
   const perRequest = chunkChars(first, question.length);
   const chunks = chunkMaterial(kept, perRequest);
   const parts: PartState[] = chunks.map((c, i) => ({ k: i + 1, covers: c.parts.map(partRef).join(", "), chars: c.chars, state: "waiting" }));
@@ -142,8 +146,11 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const ask = async (prompt: string, what: Record<string, unknown>, onModel?: (m: ModelInfo) => void, onKept?: (model: string) => void): Promise<{ text: string; input: number } | { error: string }> => {
     if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
     // Answered before (the same request, a restart ago): nothing is sent.
-    const had = host.kept?.get(prompt);
-    if (had) { used.add(had.model); onKept?.(had.model); return { text: had.text, input: had.input }; }
+    // By each choice's own answer (another reader's answer is not this one's), a shut route's included: its answer is still good.
+    for (const m of choices) {
+      const had = host.kept?.get(prompt, m.id);
+      if (had) { used.add(had.model); onKept?.(had.model); return { text: had.text, input: had.input }; }
+    }
     let last = "no reader model";
     let sent = false;
     for (const m of choices) {
@@ -162,7 +169,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
         used.add(m.name);
         billed.add(m.billing);
         const input = r.usage.input + r.usage.cache_read + r.usage.cache_write;
-        try { host.kept?.put(prompt, { text, model: m.name, input }); } catch (e) { host.capture(e, { at: "keeping a reader's answer" }); }
+        try { host.kept?.put(prompt, m.id, { text, model: m.name, input }); } catch (e) { host.capture(e, { at: "keeping a reader's answer" }); }
         return { text, input };
       } catch (e) {
         if (signal.aborted) throw e;

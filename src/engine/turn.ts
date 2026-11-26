@@ -107,8 +107,10 @@ const callWords = (u: ToolUseBlock) => {
 const outcomeOf = (session: string, callId: string) => allHooks().map((h) => h.callOutcome?.(session, callId)).find(Boolean);
 // What a call a restart cut is answered with. An error, except when what the
 // call was for is known to be stored (`done`): then the answer says so.
-const cutResult = (session: string, u: { id: string; name: string }): { content: string; is_error: boolean } => {
+// A reading job's cut says how many of its parts are kept and to send the same call again (`reading`: ReaderKept.cutWords).
+const cutResult = (session: string, u: { id: string; name: string }, reading?: (session: string, call: string) => string): { content: string; is_error: boolean } => {
   if (asksOwner(u.name)) return { content: QUESTION_CUT, is_error: true };
+  if (reading && READER_TOOLS.has(u.name)) return { content: reading(session, u.id), is_error: true };
   const o = outcomeOf(session, u.id);
   if (o && typeof o === "object" && "done" in o) return { content: o.done, is_error: false };
   return { content: o === "not_run" || o === "waiting" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT, is_error: true };
@@ -3761,7 +3763,7 @@ export class Engine {
       const by = this.stoppedBy.get(ctx.sessionId);
       return {
         type: "tool_result", tool_use_id: u.id,
-        ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u) : { content: running ? stoppedWhile(by, !tools.find((t) => t.name === u.name)?.readOnly) : stoppedBefore(by), is_error: true }),
+        ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u, this.cutReading) : { content: running ? stoppedWhile(by, !tools.find((t) => t.name === u.name)?.readOnly) : stoppedBefore(by), is_error: true }),
       };
     };
     if (ctx.signal.aborted) return interrupted();
@@ -5139,6 +5141,8 @@ export class Engine {
   // one that no longer does (closed already, or its turn was parked since) or
   // that runs a turn now is left alone. Safe to call again.
   closeCut(openAtBoot: string[]) {
+    // Readers' answers older than they are kept go at the start (and on the kept store's own timer after).
+    try { this.readerKept.start(); } catch (e) { this.errors.capture("server", e, { at: "pruning readers' answers" }); }
     for (const id of openAtBoot) {
       const session = this.store.session(id);
       if (!session || session.phase !== "working" || this.running.has(id)) continue;
@@ -5167,7 +5171,7 @@ export class Engine {
           const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
           // A call whose card is still open is left for the continued turn (owedCalls).
           const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && !waitsOnOwner(id, b)) : []));
-          if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, ...cutResult(id, u) })) }));
+          if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, ...cutResult(id, u, this.cutReading) })) }));
           // It ran until the daemon went down (its last sign of life, or the
           // turn's own last event when that is later), not until this start.
           const down = Math.min(Date.now(), Math.max(this.wentDown ?? 0, line.at(-1)!.ts));
@@ -5404,8 +5408,12 @@ export class Engine {
   }
 
   // The answers of reader requests, kept across a restart (src/engine/reader-kept.ts).
+  // An answer is stored as every stored text is: concealed, and through the store's redact.
   private keptAnswers?: ReaderKept;
-  private get readerKept(): ReaderKept { return (this.keptAnswers ??= new ReaderKept(this.store.db)); }
+  private get readerKept(): ReaderKept {
+    return (this.keptAnswers ??= new ReaderKept(this.store.db, { seal: (s, text) => this.store.redact(s, "reader", conceal(text, s)) }));
+  }
+  private cutReading = (session: string, call: string) => this.readerKept.cutWords(session, call);
 
   private readerHost(id: string, callId?: string): ReaderHost {
     const session = this.store.session(id)!;
@@ -5417,9 +5425,13 @@ export class Engine {
       small: this.ownSmall(id, "reader"),
       shut: (m) => shutWords(this.providers.shut(m.id)),
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
-      kept: { get: (prompt) => this.readerKept.get(id, prompt), put: (prompt, a) => this.readerKept.put(id, prompt, a) },
+      kept: { get: (prompt, model) => this.readerKept.get(id, model, prompt), put: (prompt, model, a) => this.readerKept.put(id, model, prompt, a) },
       capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
-      progress: callId ? (p) => this.bus.emit({ t: "feature", name: "readers", session_id: id, data: { call_id: callId, ...p } }) : undefined,
+      progress: callId ? (p) => {
+        // How far the job got, kept for the cut's words if a restart cuts it.
+        this.readerKept.job(id, callId, p.parts.filter((x) => x.state === "read" || x.state === "nothing").length, p.parts.length);
+        this.bus.emit({ t: "feature", name: "readers", session_id: id, data: { call_id: callId, ...p } });
+      } : undefined,
       ask: async (m, prompt, sig) => {
         // The job's first request: the owner's named readers ahead of this one that the folder does not
         // allow would have read instead, and are said once (an allowed reader reads in their place).
