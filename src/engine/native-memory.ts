@@ -235,7 +235,7 @@ export function instructionChain(cwd: string, roots: Roots, o: { marks?: Marks; 
 
 // --- Codex: config ------------------------------------------------------------
 
-export type CodexConfig = { memories: boolean; use: boolean; version?: "v1" | "v2"; fallback: string[] };
+export type CodexConfig = { memories: boolean; use: boolean; version?: "v1" | "v2"; dualWrite?: boolean; fallback: string[] };
 // The summary the prompt carries: Codex's own bound, 2,500 tokens, at four bytes a token.
 export const SUMMARY_TOKENS = 2_500;
 
@@ -249,6 +249,7 @@ export function codexConfig(roots: Roots): CodexConfig {
     memories: t?.features?.memories === true,
     use: m.use_memories !== false,
     version: m.version === "v1" || m.version === "v2" ? m.version : undefined,
+    ...(typeof m.dual_write === "boolean" ? { dualWrite: m.dual_write } : {}),
     fallback: names,
   };
 }
@@ -312,7 +313,9 @@ export function claudeBlock(dir: string, index: string | null, more: boolean, st
 // The folder of Codex's memories for this home, and whether the model is to use them.
 export function codexMemories(roots: Roots, cfg = codexConfig(roots)): { base: string; version: "v1" | "v2" } | null {
   if (!cfg.memories || !cfg.use) return null;
-  const version = cfg.version ?? (existsSync(join(roots.codex, "memories")) ? "v1" : "v2");
+  // As Codex's config load chooses: an explicit version; else v1 when dual-write is turned off or a v1
+  // folder exists (a profile with v1 context keeps it); else, a fresh profile, v2.
+  const version = cfg.version ?? (cfg.dualWrite === false || existsSync(join(roots.codex, "memories")) ? "v1" : "v2");
   return { base: join(roots.codex, version === "v1" ? "memories" : "memories_v2"), version };
 }
 

@@ -1,7 +1,7 @@
 // The native memory layout of each model family, on a scratch home: which files a Claude or a GPT
 // model's session reads, where its memory folder is, what its prompt carries and where it may write.
 import { expect, test } from "bun:test";
-import { linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv, tempTree } from "../../test/env.ts";
 import { autoMemory, codexConfig, codexMemories, cutSummary, nativeMemory, nativePlaces, nativeWrites, notesOf, OnceSet, instructionChain, slugOf, withoutPorted, type Roots } from "./native-memory.ts";
@@ -83,10 +83,23 @@ test("Codex memories are off unless the config turns them on; the version follow
   expect(codexMemories(roots)).toBeNull();
   put(join(roots.codex, "config.toml"), "[features]\nmemories = true\n");
   expect(codexMemories(roots)).toEqual({ base: join(roots.codex, "memories_v2"), version: "v2" });
+  // A fresh profile that turned dual-write off stays on v1, as Codex's own config load does; the ad-hoc write goes there too.
+  put(join(roots.codex, "config.toml"), "[features]\nmemories = true\n[memories]\ndual_write = false\n");
+  expect(codexMemories(roots)).toEqual({ base: join(roots.codex, "memories"), version: "v1" });
+  expect(nativeWrites("gpt", roots.home, roots)).toEqual([join(roots.codex, "memories", "extensions", "ad_hoc", "notes")]);
+  expect(nativeMemory("gpt", roots.home, { top: true, roots })).toBeNull(); // no summary yet: no block
+  put(join(roots.codex, "memories", "memory_summary.md"), "- a fact\n");
+  expect(nativeMemory("gpt", roots.home, { top: true, roots })!.writes).toEqual([join(roots.codex, "memories", "extensions", "ad_hoc", "notes")]);
+  put(join(roots.codex, "config.toml"), '[features]\nmemories = true\n[memories]\ndual_write = false\nversion = "v2"\n');
+  expect(codexMemories(roots)!.version).toBe("v2");
+  rmSync(join(roots.codex, "memories"), { recursive: true, force: true });
+  put(join(roots.codex, "config.toml"), "[features]\nmemories = true\n");
   mkdirSync(join(roots.codex, "memories"), { recursive: true });
   expect(codexMemories(roots)).toEqual({ base: join(roots.codex, "memories"), version: "v1" });
   put(join(roots.codex, "config.toml"), '[features]\nmemories = true\n[memories]\nversion = "v2"\n');
   expect(codexMemories(roots)!.version).toBe("v2");
+  put(join(roots.codex, "config.toml"), '[features]\nmemories = true\n[memories]\nversion = "v1"\n');
+  expect(codexMemories(roots)!.version).toBe("v1");
   put(join(roots.codex, "config.toml"), "[features]\nmemories = true\n[memories]\nuse_memories = false\n");
   expect(codexMemories(roots)).toBeNull();
 });
