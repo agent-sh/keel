@@ -117,16 +117,31 @@ function useCard() {
   return { card, bind, hide };
 }
 
-// Up and Down step through the entries, Home and End reach the ends. A row is
+// Up and Down step through the entries, Home and End reach the ends.
+// Page Up and Page Down step to the first row of the previous or next group. A row is
 // one Tab stop: Right goes to its own actions (open beside, archive), Left
 // comes back to it.
 function stepRows(e: KeyboardEvent<HTMLElement>) {
-  if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
   const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="session-row"]')];
   const at = document.activeElement as HTMLElement;
   const row = at.closest<HTMLElement>('[data-testid="session-row"]');
   const i = row ? rows.indexOf(row) : -1;
   if (i < 0) return;
+  if (e.key === "PageUp" || e.key === "PageDown") {
+    if (e.shiftKey || composing(e)) return;
+    const group = row!.closest("[data-session-group]");
+    if (!group) return;
+    const first = new Map<Element, HTMLElement>();
+    for (const r of rows) {
+      const g = r.closest("[data-session-group]");
+      if (g && !first.has(g) && (!r.hasAttribute("data-gone") || g === group) && r.getClientRects().length) first.set(g, r);
+    }
+    const dest = [...first.keys()];
+    e.preventDefault();
+    first.get(dest[dest.indexOf(group) + (e.key === "PageDown" ? 1 : -1)]!)?.focus();
+    return;
+  }
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     const stops = [row!, ...row!.querySelectorAll<HTMLElement>(".k-row-act")];
     if (stops.length < 2 || !stops.includes(at)) return;
@@ -615,7 +630,7 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
     above = b;
   }
   return (
-    <div className="flex flex-col gap-px">
+    <div className="flex flex-col gap-px" data-session-group="">
       {shown.map((s) => (
         <div key={s.id}>
           <Row s={s} active={current === s.id} where={where} gone={gone.has(s.id)} calm={calm.has(s.id)} said={ago(s.updated, now)} />
@@ -1238,7 +1253,7 @@ function Index({ current }: { current: string | null }) {
         </p>
       )}
       <ListCtx.Provider value={{ watches, gone: from.gone, narrow, key: listKey, fluid }}>
-      <nav ref={nav} className="k-index" data-testid="session-list" data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
+      <nav ref={nav} className="k-index" data-testid="session-list" data-held={held || undefined} aria-label="Sessions" aria-keyshortcuts="PageUp PageDown" onKeyDown={stepRows} {...hand.on}>
         {pinned.length > 0 && (
           <PinnedGroup list={pinned} current={current} every={!!q} />
         )}
