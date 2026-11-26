@@ -151,8 +151,11 @@ export function App() {
     // loads at the first open when the page has not settled yet): asked again on the next frames, for a few seconds.
     let raf = 0;
     const t0 = performance.now();
+    // The keys start on the session shown, but the list opens at its top: the rows that call the owner come
+    // first, and a phone on its side has room for a few rows only, so a scroll to the open row hid them.
     const enter = () => {
-      (el.querySelector<HTMLElement>('[aria-current="page"]') ?? stops()[0])?.focus();
+      (el.querySelector<HTMLElement>('[aria-current="page"]') ?? stops()[0])?.focus({ preventScroll: true });
+      for (const sc of el.querySelectorAll<HTMLElement>(".k-list-scroll")) sc.scrollTop = 0;
       if (!el.contains(document.activeElement) && performance.now() - t0 < 5000) raf = requestAnimationFrame(enter);
     };
     enter();

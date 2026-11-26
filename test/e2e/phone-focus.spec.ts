@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { ask, calls, create, drop, folder, scripted } from "./answering.ts";
+import { approvals, ask, calls, create, drop, folder, scripted } from "./answering.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: Focus on a phone (ui/src/lib/focus.ts), the default there as at a desk. A session is the
@@ -103,6 +103,40 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         await shoot(page, `phone-focus-02-card-${size.width}`);
       } finally {
         await drop(request, coord, asker);
+      }
+    });
+
+    // The list opens at its top, where the rows that call the owner are, also when the open row is far
+    // down it: on its side a phone has room for a few rows, and a scroll to the open row hid them.
+    test("the list opens with the rows that call in view, the keys on the open row", async ({ page, request }) => {
+      await scripted(request);
+      const ws = folder(`phone-focus-drawer-${size.width}`);
+      const resting: string[] = [];
+      for (let i = 0; i < 7; i++) resting.push(await create(request, `Resting session ${i + 1}`, ws));
+      const asker = await create(request, "Asks before it touches the release", ws);
+      try {
+        await request.put(`/api/sessions/${asker}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        await request.post(`/api/sessions/${asker}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "touch release.txt" } }]) } });
+        await expect.poll(async () => (await approvals(request, asker)).filter((a) => a.state === "pending").length, { timeout: 30_000 }).toBeGreaterThan(0);
+        // The oldest resting session is open: its row is the list's last.
+        await page.goto(`/s/${resting[0]}`);
+        const pane = page.locator(".k-station[data-helm]");
+        await expect(pane.getByTestId("station-title")).toBeVisible({ timeout: 30_000 });
+        await pane.getByTestId("show-sidebar").tap();
+        const rail = page.getByTestId("sidebar");
+        const open = rail.locator(`[data-testid="session-row"][data-session="${resting[0]}"]`);
+        await expect(open).toBeFocused();
+        const calling = rail.locator(`[data-testid="session-row"][data-session="${asker}"]`);
+        await expect(calling).toBeVisible();
+        await page.waitForTimeout(400);
+        await shoot(page, `phone-focus-03-list-${size.width}`);
+        const top = await rail.locator(".k-list-scroll").evaluate((e) => e.scrollTop);
+        expect(top, "the list is at its top").toBe(0);
+        const box = (await rail.locator(".k-list-scroll").boundingBox())!, r = (await calling.boundingBox())!;
+        expect(r.y >= box.y - 1 && r.y + r.height <= box.y + box.height + 1, "the row that calls is in view").toBe(true);
+        await page.keyboard.press("Escape");
+      } finally {
+        await drop(request, asker, ...resting);
       }
     });
   });
