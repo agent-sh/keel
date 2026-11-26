@@ -3,7 +3,7 @@
 // it changed. Not an alert and not counted anywhere: Home and the Inbox list them, nothing else reads them.
 import { useEffect, useSyncExternalStore } from "react";
 import type { LandCard } from "../../../src/board/card.ts";
-import { api, onFeature, scope } from "./store.ts";
+import { api, onFeature, readAtOpen, scope } from "./store.ts";
 import { navigate, savePref } from "./ui.ts";
 
 // An approved branch no card shows: its board's rows left it out (src/integrations/mobile/landings.ts).
@@ -24,11 +24,13 @@ function set(r: Partial<Ready>) {
 
 let bound = false;
 let views = 0;
-const read = () => api<Ready>("/api/landings").then(set);
-function bind() {
-  if (bound) return;
+let reading: Promise<void> | undefined;
+const read = () => reading ??= api<Ready>("/api/landings").then(set).finally(() => { reading = undefined; });
+function bind(): boolean {
+  if (bound) return false;
   bound = true;
-  onFeature({ frame: (f) => { if (f.name === "landings") set(f.data as Ready); }, reconnect: () => { if (views) read().catch(() => {}); } });
+  onFeature({ frame: (f) => { if (f.name === "landings") set(f.data as Ready); }, reconnect: readAtOpen(() => views ? read() : Promise.resolve(), "ready to land") });
+  return true;
 }
 const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 
@@ -36,12 +38,11 @@ const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 // the page hears the feed (a frame only when the list changed); it reads the list as the view comes up, since frames
 // of the time between were not sent.
 export function useReadyToLand(): Ready {
-  bind();
   const got = useSyncExternalStore(subscribe, () => now);
   useEffect(() => {
-    views++;
+    const first = ++views === 1;
     const stop = scope.feed("landings");
-    read().catch(() => {});
+    if (!bind() && first) read().catch(() => {});
     return () => { views--; stop(); };
   }, []);
   return got;
