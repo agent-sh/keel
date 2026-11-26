@@ -233,6 +233,10 @@ test("no number of other values or names hides the one that leads to a protected
     "for A in 1 2 3 4 5 6 7 8 /home/u/.ssh; do cd $A; cat id_rsa; done", `for D in ${rep(40, (i) => `d${i} `)}/home/u/own; do echo x > $D/.git/config; done`,
     `${rep(300, (i) => `n${i}=$(pwd); `)}p=/home/u/own/.git; q=$p; K=$q; cat ${rep(300, (i) => `$n${i}/f `)}> $K/config`,
   ]) expect([command.slice(0, 80), shell(command), shell(command, "full-auto")]).toEqual([command.slice(0, 80), "owner", "ask-high"]);
+  // A value the line also writes out does not hide one a builtin reads into the name.
+  for (const command of ["D=/tmp; read D; echo x >> $D/.bashrc", 'D=/tmp; printf -v D %s "$1"; echo x >> $D/.bashrc', "D=/tmp; : ${D:=x}; echo x >> $D/.bashrc"])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-high", "ask-high"]);
+  expect([shell("x=1; read x; echo $x > out.txt"), shell("f=a.txt; read f; cat $f", "full-auto")]).toEqual(["ask-low", "allow"]);
   // A value that doubles at each step is not built: past the length of a path it is more than is read.
   const doubling = `a0=x; true && a0=y; ${rep(20, (i) => `a${i + 1}=$a${i}$a${i}; `)}cat $a20/f`;
   expect([shell(doubling), shell(doubling, "full-auto")]).toEqual(["ask-high", "ask-high"]);

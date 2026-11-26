@@ -1082,11 +1082,12 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // values hides one. A line past a bound is not known to name nothing protected: it asks as high risk, as a
 // command with more files than the rules read does.
 // (`memo`: what each name may stand for, worked out once; `busy`: the names being worked out, each with what is
-// found for it so far, so one set from itself (`D=$D/sub`) reads what the line gave it before; `deep`: how many
+// found for it so far, so one set from itself (`D=$D/sub`) reads what the line gave it before; `taken`: the names
+// the line gives a value its words do not show (a `read`, a `printf -v`, a `${D:=..}`); `deep`: how many
 // names deep the reading is; `given` and `looped`: where the line's words give each name a value, and the loops
 // that take it through their words; `cost`: what is left of the bound, and what each path looked at came to.)
 type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null> };
-type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; deep: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string }[]>; looped?: Map<string, number[]>; from?: { scope: Line; at: number } };
+type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; deep: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string }[]>; looped?: Map<string, number[]>; from?: { scope: Line; at: number } };
 // (`shown`: every part of the path is in the line's words, with what the written-out line would be told of it.)
 type Unspelt = { word: string; path: string; rule: string; reads?: true; shown?: { why: string; by?: string; api?: string } };
 // (A value the words do not show: a candidate that starts with it stands in some folder.)
@@ -1104,8 +1105,8 @@ const UP = /(^|\/)\.\.(\/|$)/;
 // (A candidate as a path: its quotes off, a wildcard as one name.)
 const clean = (c: string) => c.replace(/["'\x02]/g, "").replace(/[*?[\]{}\x01]/g, "_");
 function scopeOf(parts: Simple[], pre: Laid, home: string, cost: Cost, from?: Line["from"]): Line {
-  const sets = new Set<string>();
-  return { parts, pre, vals: valuesOf(parts, pre.runs, home, undefined, sets), sets, memo: new Map(), busy: new Map(), deep: 0, cost, ...(from ? { from } : {}) };
+  const sets = new Set<string>(), taken = new Set<string>();
+  return { parts, pre, vals: valuesOf(parts, pre.runs, home, undefined, sets, taken), sets, taken, memo: new Map(), busy: new Map(), deep: 0, cost, ...(from ? { from } : {}) };
 }
 // Where the words of a line give each name a value, read once.
 function givenOf(s: Line): NonNullable<Line["given"]> {
@@ -1161,7 +1162,9 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
     // what it prints: `f=$(sqlite3 store.db "select log ...")` names the store and gives a log's path.)
     for (const c of q.how?.[q.dyn?.indexOf(k) ?? -1]?.subs.flat() ?? []) if (PRINTS.test(baseName(c.words[0]))) for (const a of c.words.slice(1)) if (!a.startsWith("-")) out.push(...wordStands(a, j, s, home).map(loose));
   }
-  // (A name a builtin reads a value into, or a loop over words the parser did not keep.)
+  // (A name a builtin reads a value into, a loop over words the parser did not keep, a `${D:=..}`: a value the
+  // words do not show, whatever else the line gives the name.)
+  if (s.taken.has(n)) out.push(SOMEWHERE);
   const all = each(out.length || s.cost.over ? out : [SOMEWHERE], s);
   s.deep--;
   s.busy.delete(n);
