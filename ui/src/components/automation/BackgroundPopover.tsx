@@ -105,9 +105,17 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
 // The popup of the session's background work: agents (each opens its session, with Stop), waits, loops. The
 // button above opens it from the header, the agents line in the session's dock from above the box.
 type Background = ReturnType<typeof useBackground>;
-export function BackgroundPopup({ sessionId, agents, waits, loops, side }: Pick<Background, "agents" | "waits" | "loops"> & { sessionId: string; side?: "top" | "bottom" }) {
+export function BackgroundPopup({ sessionId, agents: listed, waits, loops, side }: Pick<Background, "agents" | "waits" | "loops"> & { sessionId: string; side?: "top" | "bottom" }) {
   const sessions = useStore((s) => s.sessions);
   const told = useToldStates();
+  // An agent that waits on the owner stands first, with the agents below it, before the names that work or ended:
+  // the one to answer is never under a list of finished ones. The rest keep their order, the newest first.
+  const agents = useMemo(() => {
+    const groups: (typeof listed)[] = [];
+    for (const a of listed) { if (a.depth === 1 || !groups.length) groups.push([a]); else groups.at(-1)!.push(a); }
+    const asks = (g: typeof listed) => g.some((a) => agentSaid(a, told[a.session_id]).watch === "need");
+    return [...groups.filter(asks), ...groups.filter((g) => !asks(g))].flat();
+  }, [listed, told]);
   // Live agents and the ones that ended lately or since the owner looked; "N earlier" opens the rest a page at a time.
   const seen = useAgentsSeen();
   const now = useNow(agents.length > 0);
@@ -131,7 +139,7 @@ export function BackgroundPopup({ sessionId, agents, waits, loops, side }: Pick<
               const title = sessions[a.session_id]?.title || a.title;
               return (
                 // The row opens the agent; Stop is a control of its own beside it. Every row keeps Stop's place, so the words line up.
-                <div key={a.id} className="flex items-center gap-1 rounded-lg pr-2 hover:bg-hover" data-testid="bg-agent" data-watch={st.watch} data-depth={a.depth} style={a.depth > 1 ? { paddingInlineStart: `${(a.depth - 1) * 1}rem` } : undefined}>
+                <div key={a.id} className="k-bg-agent flex items-center gap-1 rounded-lg pr-2 hover:bg-hover" data-testid="bg-agent" data-watch={st.watch} data-depth={a.depth} style={a.depth > 1 ? { paddingInlineStart: `${(a.depth - 1) * 1}rem` } : undefined}>
                   <div
                     role="button"
                     tabIndex={0}

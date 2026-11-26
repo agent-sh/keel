@@ -110,6 +110,13 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(page.getByTestId("dock-agents-count")).toHaveText("7");
     await expect(agentsLine.getByTestId("dock-agent")).toHaveCount(0);
     expect((await popped()).filter((w) => w !== "done" && w !== "fail").sort()).toEqual(["need", "wait", "wait", "work", "work", "work"]);
+    // The one that waits on the owner stands first, over the ones that work or ended; a done one's dot is grey, so
+    // the colour in the list is who waits, fails or works.
+    expect((await popped())[0]).toBe("need");
+    await dock.click();
+    expect(await named.and(page.locator('[data-watch="done"]')).first().locator(".k-mark").evaluate((el) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = "var(--st-idle)"; const idle = getComputedStyle(p).color; p.remove(); return getComputedStyle(el).backgroundColor === idle; })).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
     await dock.click();
     for (const l of LANES.filter((x) => x.word !== "Done")) await expect(named.filter({ hasText: l.title }).locator(".k-mark"), `named: ${l.title}`).toBeVisible();
     await expect(named.filter({ hasText: "Summarize the open issues" })).toHaveAttribute("data-watch", "done");

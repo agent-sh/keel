@@ -1837,6 +1837,8 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* It draws its state's mark (Mark.tsx), still: a list of finishes does not spin. Read, it steps back. */
 .k-alert-icon .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-alert-icon[data-read] .k-mark { opacity: 0.45; }
+/* The same in a session's list of agents: the ones that are done are grey, so the colour is who waits, fails or works. */
+.k-bg-agent[data-watch="done"] .k-mark { background: var(--st-idle); transform: scale(0.75); }
 /* A finished turn asks nothing: its mark is a small grey dot, so a column of them is not a column of green. The
    colour in the list is what needs the owner and what failed. */
 .k-alert-icon[data-watch="done"] .k-mark { width: 0.375rem; height: 0.375rem; background: var(--st-idle); }
