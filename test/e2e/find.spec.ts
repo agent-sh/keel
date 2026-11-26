@@ -86,13 +86,25 @@ test("the find bar counts every match of a conversation and goes to each, folded
     await expect(page.locator(`[data-testid="user-message"]#e-${mid!.id}`)).toBeInViewport({ timeout: 30_000 });
     await expect.poll(async () => (await marked(page)).now).toBe(WORD);
 
-    // Enter again, and Shift+Enter back: each place is reached again from where the other is.
+    // Enter again reaches the folded call from far away.
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("find-count")).toHaveText("3 of 3");
-    await expect(page.locator(`[data-testid="tool-call"][data-call="${call}"]`).last().getByText(WORD)).toBeInViewport({ timeout: 30_000 });
+    await expect(card.getByText(WORD)).toBeInViewport({ timeout: 30_000 });
+
+    // Reading elsewhere does not drop the current match. The middle row is redrawn as it comes
+    // into view; back at the end, the matching call stays open and its text stays marked.
+    const middle = page.locator(`#e-${mid!.id}`);
+    await middle.evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await expect(page.locator(`[data-testid="user-message"]#e-${mid!.id}`)).toBeInViewport();
+    await expect(card).not.toBeInViewport();
+    await expect(card).toHaveAttribute("data-open", "");
+    await expect.poll(async () => (await marked(page)).now).toBe(WORD);
+
+    // Shift+Enter back releases the call's block and reaches the middle prompt as a Find match.
     await page.keyboard.press("Shift+Enter");
     await expect(page.getByTestId("find-count")).toHaveText("2 of 3");
     await expect(page.locator(`[data-testid="user-message"]#e-${mid!.id}`)).toBeInViewport({ timeout: 30_000 });
+    await expect(card).toHaveCount(0);
 
     // A text that is nowhere says so.
     await page.getByTestId("find-input").fill(`${WORD}zz`);

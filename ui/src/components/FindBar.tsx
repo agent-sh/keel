@@ -10,7 +10,7 @@
 // late or held as light boxes far from the view) draws the place's block;
 // the text is then found in the drawn row and brought into view.
 import { ChevronDown, ChevronUp, LoaderCircle, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import type { StoredEvent } from "../../../src/core/types.ts";
 import { findKey, fold, placeAgain, placesOf, rangesOf, tally, unitsOf, type Outside, type Place } from "../lib/find.ts";
 import { composing, isMac } from "../lib/keys.ts";
@@ -91,6 +91,7 @@ function placeEls(c: HTMLElement, p: Place): HTMLElement[] | null {
   return els.length ? els : null;
 }
 
+export type FindMatch = Pick<Place, "ev" | "call">;
 export type FindProps = {
   sessionId: string;
   events: readonly StoredEvent[];
@@ -103,6 +104,8 @@ export type FindProps = {
   content: RefObject<HTMLDivElement | null>;
   // Brings a range into the view (Transcript.tsx: the reader's own move).
   bring: (r: DOMRect) => void;
+  // Keep the current match drawn after the jump that reached it is over.
+  pinMatch?: (match: FindMatch | null) => void;
   // A request to take the keyboard (each open of the find key).
   ask: number;
   onClose: () => void;
@@ -114,7 +117,7 @@ export type FindProps = {
   from?: number;
 };
 
-export function FindBar({ sessionId, events, head, before, after, whole, content, bring, ask, onClose, reach: reachIn, stands: standsIn, from }: FindProps) {
+export function FindBar({ sessionId, events, head, before, after, whole, content, bring, pinMatch, ask, onClose, reach: reachIn, stands: standsIn, from }: FindProps) {
   const input = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
   const [needle, setNeedle] = useState("");
@@ -154,6 +157,12 @@ export function FindBar({ sessionId, events, head, before, after, whole, content
   const [cur, setCur] = useState<Place | null>(null);
   const at = cur ? placeAgain(list, cur) : -1;
   const now = at >= 0 ? list[at]! : null;
+  const ev = now?.ev, call = now?.call;
+  useLayoutEffect(() => {
+    if (!ev || !pinMatch) return;
+    pinMatch({ ev, call });
+    return () => pinMatch(null);
+  }, [ev, call, pinMatch]);
 
   // Where a place's match stands once its row is drawn and its call open: marked as the current one.
   const markNow = (p: Place): Range | null | undefined => {

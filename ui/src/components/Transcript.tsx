@@ -23,6 +23,7 @@ import { announce } from "../lib/announce.ts";
 import { useAgentCount, useToldState } from "../lib/watch.ts";
 import { composing } from "../lib/keys.ts";
 import { useFindAsk } from "../lib/find-ask.ts";
+import type { FindMatch } from "./FindBar.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { preloadSettled } from "../lib/preload.ts";
@@ -1735,6 +1736,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   // The page's own Find (FindBar.tsx) on the find key (lib/find-ask.ts says whose key it is).
   const { ask: findAsk, close: closeFind } = useFindAsk(scroller, sessionId);
+  const [findMatch, pinFindMatch] = useState<FindMatch | null>(null);
   // A match brought into the view as the reader's own move (the view stops following the end);
   // one in view already moves nothing.
   const bringFound = (r: DOMRect) => {
@@ -2042,10 +2044,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // sending the images again) is not offered there.
   const short_ = !!reading?.end;
   // What needs its block drawn now: a jump and a place put back (looked for in the frame their
-  // events are drawn in), the prompt the keyboard moves to, where what is new starts, the keyboard
-  // and a selection.
+  // events are drawn in), the prompt the keyboard moves to, where what is new starts, the keyboard,
+  // a selection and Find's current match (even after the jump has settled).
   const pins = new Set<number>();
-  for (const id of [want, at?.id, back && !back.end ? back.ev : undefined, fresh?.ev]) { const k = keyOf(id); if (k !== undefined) pins.add(k); }
+  const matchRow = findMatch?.call ? built.uses.get(findMatch.call) : findMatch?.ev;
+  for (const id of [want, at?.id, back && !back.end ? back.ev : undefined, fresh?.ev, matchRow]) { const k = keyOf(id); if (k !== undefined) pins.add(k); }
   for (const k of hands.sel ? hands.sel.split(" ") : []) pins.add(Number(k));
   if (hands.focus !== null) pins.add(hands.focus);
   pinsRef.current = pins;
@@ -2163,8 +2166,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       {finding && <p role="status" data-testid="finding-place" className="k-place-wait">Finding your place</p>}
       {findAsk > 0 && events.length > 0 && (
         <Suspense fallback={null}>
-          <FindBar sessionId={sessionId} events={events} head={reading?.other ? reading.head ?? undefined : undefined} before={events[0]!.seq} after={reading?.end ? events.at(-1)!.seq : undefined}
-            whole={!more} content={content} bring={bringFound} ask={findAsk} onClose={closeFind} />
+          <FindBar key={sessionId} sessionId={sessionId} events={events} head={reading?.other ? reading.head ?? undefined : undefined} before={events[0]!.seq} after={reading?.end ? events.at(-1)!.seq : undefined}
+            whole={!more} content={content} bring={bringFound} pinMatch={pinFindMatch} ask={findAsk} onClose={closeFind} />
         </Suspense>
       )}
       {/* The way to where what is new starts, while that line is not in view, stands at the conversation's
