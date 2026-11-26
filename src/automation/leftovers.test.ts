@@ -727,3 +727,54 @@ test("the landed pass removes each listed landed worktree, the branch only of a 
   expect(branchesOf(r)).not.toContain(whole!.wt.branch);
   expect([open, hid, nest, stash].every((k) => existsSync(k!.wt.path))).toBe(true);
 });
+
+// What the second review found: a branch that undid part of its landed work after the base took it merges to the
+// base's tree, yet its last word is the undo; a commit made on a detached HEAD is named only by the folder's reflog.
+test("a branch that undid landed work is not whole, a detached HEAD's commit keeps its folder, and a new landing row reads again", async () => {
+  const { r, store, made: [undone, unfiled, detached, queued] } = await landRepo("land-undo", ["undone", "unfiled", "detached", "queued"]);
+  // The base took both commits; the branch then reverted the second.
+  edit(undone!.wt.path, 6, "six", "Change six");
+  edit(undone!.wt.path, 8, "eight", "Change eight");
+  edit(r, 4, "four", "Change four on main");
+  git(r, "cherry-pick", `${undone!.wt.branch}~1`, undone!.wt.branch);
+  git(undone!.wt.path, "revert", "--no-edit", "HEAD");
+  expect(git(r, "merge-tree", "--write-tree", "main", undone!.wt.branch).split("\n")[0]).toBe(git(r, "rev-parse", "main^{tree}").trim());
+  expect(await undone!.own()).not.toContain("landed with another patch");
+  expect(branchesOf(r)).toContain(undone!.wt.branch);
+  // The base took a change and a new file; the branch then removed the file again.
+  edit(unfiled!.wt.path, 2, "two", "Change two");
+  put(unfiled!.wt.path, ["x"], "x.txt"); git(unfiled!.wt.path, "add", "x.txt"); git(unfiled!.wt.path, "commit", "-qm", "Add x");
+  git(r, "cherry-pick", `${unfiled!.wt.branch}~1`, unfiled!.wt.branch);
+  git(unfiled!.wt.path, "rm", "-q", "x.txt"); git(unfiled!.wt.path, "commit", "-qm", "Remove x again");
+  // Landed whole, but a commit made on a detached HEAD of its worktree is on no ref.
+  put(detached!.wt.path, ["d"], "d.txt"); git(detached!.wt.path, "add", "d.txt"); git(detached!.wt.path, "commit", "-qm", "Add d");
+  git(r, "cherry-pick", detached!.wt.branch);
+  git(detached!.wt.path, "checkout", "-q", "--detach");
+  put(detached!.wt.path, ["d, detached"], "d.txt"); git(detached!.wt.path, "commit", "-qam", "Made detached");
+  git(detached!.wt.path, "checkout", "-q", detached!.wt.branch);
+  // Not landed; then the landing queue lands it as a commit that holds it with an edit.
+  put(queued!.wt.path, ["q"], "q.txt"); git(queued!.wt.path, "add", "q.txt"); git(queued!.wt.path, "commit", "-qm", "Add q");
+  const qtip = git(queued!.wt.path, "rev-parse", "HEAD").trim();
+  expect(await leftovers.landedOn(store, r, qtip)).toBeUndefined();
+  put(r, ["q, as landed"], "q.txt"); git(r, "add", "q.txt"); git(r, "commit", "-qm", "Land the queued work");
+  store.db.exec("CREATE TABLE IF NOT EXISTS landing_queue (id TEXT PRIMARY KEY, repo TEXT, branch TEXT, pos INTEGER, tip TEXT, state TEXT, landed TEXT, updated INTEGER)");
+  const ctx = { store, isRunning: () => false, workspace: r };
+  const tipNow = git(r, "rev-parse", "HEAD").trim();
+  // (read once at this base tip with no row, then the row comes: the kept answer is not the one given)
+  expect(await leftovers.landedOn(store, r, qtip)).toBeUndefined();
+  store.db.query("INSERT INTO landing_queue (id, repo, branch, pos, tip, state, landed, updated) VALUES ('q1', ?, ?, 1, ?, 'landed', ?, ?)").run(r, queued!.wt.branch, qtip, tipNow, Date.now());
+  expect(await leftovers.landedOn(store, r, qtip)).toMatchObject({ how: "changed" });
+  const s = await leftovers.survey(ctx);
+  const row = (p: string) => s.worktrees.find((w) => w.path === p)!;
+  expect(row(undone!.wt.path).landed?.how).not.toBe("whole");
+  expect(row(unfiled!.wt.path).landed?.how).not.toBe("whole");
+  expect(row(detached!.wt.path).removable).toBe(false);
+  expect(row(detached!.wt.path).why).toContain("only its HEAD's reflog reaches");
+  const listed = [undone, unfiled].map((k) => { const w = row(k!.wt.path); return { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, how: w.landed!.how }; });
+  const out = await leftovers.removeLanded(ctx, listed);
+  expect(out.deleted).toEqual([]);
+  expect(branchesOf(r)).toEqual(expect.arrayContaining([undone!.wt.branch, unfiled!.wt.branch]));
+  // At its end, too, the detached commit keeps the worktree and branch.
+  expect(await detached!.own()).toContain("only its HEAD's reflog reaches");
+  expect(existsSync(detached!.wt.path)).toBe(true);
+});

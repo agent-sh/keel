@@ -174,6 +174,8 @@ async function landingBase(top: string): Promise<string | undefined> {
 // says it landed, or git could not tell (the safe side).
 const landedKept = new Map<string, rules.Landed | null>();
 const BASE_LOG = 3000;
+// The most commits of a branch whose every suffix is merged (one merge each) before it can be called whole.
+const SUFFIX_MAX = 200;
 const low = async (dir: string, args: string[], o: { env?: Record<string, string>; input?: string; timeout?: number } = {}) => git(dir, args, { read: true, low: true, timeout: 30_000, ...o });
 const lowOut = async (dir: string, args: string[]) => { const r = await low(dir, args); return r.code === 0 ? r.out : undefined; };
 export async function landedOn(store: Store, top: string, tip: string, base?: string): Promise<rules.Landed | undefined> {
@@ -183,15 +185,17 @@ export async function landedOn(store: Store, top: string, tip: string, base?: st
   if (!baseTip || !/^[0-9a-f]{40,64}$/.test(tip)) return undefined;
   const w = locate(top);
   if (!w) return undefined;
-  const key = `${w.common} ${tip} ${baseTip}`;
+  // The landing record is part of the key: a new queue row or verdict for the tip reads it again.
+  const [row, reviewed] = await Promise.all([queuedAs(store, tip), reviewedYes(store, tip)]);
+  const key = `${w.common} ${tip} ${baseTip} ${row ?? "-"} ${reviewed ? 1 : 0}`;
   const known = landedKept.get(key);
   if (known !== undefined) return known ?? undefined;
-  const found = await landedRead(store, top, w.common, tip, baseTip).catch(() => undefined);
+  const found = await landedRead(store, top, w.common, tip, baseTip, row, reviewed).catch(() => undefined);
   if (landedKept.size > 4096) landedKept.clear();
   landedKept.set(key, found ?? null);
   return found;
 }
-async function landedRead(store: Store, top: string, common: string, tip: string, baseTip: string): Promise<rules.Landed | undefined> {
+async function landedRead(store: Store, top: string, common: string, tip: string, baseTip: string, row: string | undefined, reviewed: boolean): Promise<rules.Landed | undefined> {
   const ahead = (await lowOut(top, ["rev-list", "--count", `${baseTip}..${tip}`, "--"]))?.trim();
   if (ahead === undefined || !/^\d+$/.test(ahead) || ahead === "0") return undefined;
   const empty = (await low(top, ["hash-object", "-t", "tree", "--stdin"], { input: "" })).out.trim();
@@ -210,24 +214,37 @@ async function landedRead(store: Store, top: string, common: string, tip: string
     mkdirSync(join(objects, "info"), { recursive: true });
     const env = { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(common, "objects") };
     // The branch merged on `at` gives `at`'s own tree: `at` holds every line of it.
-    const holds = async (at: string) => {
-      const [mt, t] = await Promise.all([
-        low(top, ["--attr-source", empty, "-c", "core.attributesFile=/dev/null", "merge-tree", "--write-tree", "--no-messages", at, tip], { env, timeout: 60_000 }),
-        lowOut(top, ["rev-parse", `${at}^{tree}`]),
-      ]);
-      return mt.code === 0 && !!t && mt.out.trim().split("\n")[0] === t.trim();
+    // `from`: the merge base to take (git's own by default).
+    const merged = async (at: string, from?: string) => {
+      const mt = await low(top, ["--attr-source", empty, "-c", "core.attributesFile=/dev/null", "merge-tree", "--write-tree", "--no-messages", ...(from ? [`--merge-base=${from}`] : []), at, tip], { env, timeout: 60_000 });
+      return mt.code === 0 ? mt.out.trim().split("\n")[0] : undefined;
     };
-    if (changes && (await holds(baseTip))) return { how: "whole", at: baseTip };
+    const holds = async (at: string) => {
+      const [m, t] = await Promise.all([merged(at), lowOut(top, ["rev-parse", `${at}^{tree}`])]);
+      return !!m && !!t && m === t.trim();
+    };
+    // Whole: the base's tip holds the branch, and so does every suffix of it. A branch that undid part of its landed
+    // work after the base took it (a revert, a file removed again) merges to the base's tree too, yet its last word
+    // is the undo; merged from each of its own commits, its later commits must change nothing of the base either.
+    // Past SUFFIX_MAX commits it is not read, and not whole.
+    const whole = async () => {
+      if (!(await holds(baseTip))) return false;
+      const own = (await lowOut(top, ["rev-list", `${baseTip}..${tip}`, "--"]))?.split("\n").filter(Boolean);
+      if (!own || own.length > SUFFIX_MAX) return false;
+      const bt = (await lowOut(top, ["rev-parse", `${baseTip}^{tree}`]))?.trim();
+      for (const c of own.slice(1)) if (!bt || (await merged(baseTip, c)) !== bt) return false;
+      return true;
+    };
+    if (changes && (await whole())) return { how: "whole", at: baseTip };
     const mine = (await lowOut(top, ["log", "--format=%s", `${baseTip}..${tip}`, "--"]))?.split("\n").filter(Boolean);
     const theirs = (await lowOut(top, ["log", "--first-parent", `--max-count=${BASE_LOG}`, "--format=%H%x00%s", `${fork}..${baseTip}`, "--"]))?.split("\n").filter(Boolean).map((l) => { const [sha, subject] = l.split("\0"); return { sha: sha!, subject: subject ?? "" }; });
     if (!mine || !theirs) return undefined;
     const subjects = new Set(mine);
     // The commit the landing queue landed it as counts only while the base holds it (a base reset before it does not).
-    const row = await queuedAs(store, tip);
     const queued = row && /^[0-9a-f]{40,64}$/.test(row) && (await low(top, ["merge-base", "--is-ancestor", row, baseTip])).code === 0 ? row : undefined;
     if (changes) for (const at of rules.candidatesOf(theirs, subjects, queued)) if (at !== baseTip && (await holds(at))) return { how: "earlier", at };
     const on = new Set(theirs.map((c) => c.subject));
-    const rec = rules.recordOf({ commits: subjects.size, matched: [...subjects].filter((s) => on.has(s)).length, newest: theirs.find((c) => subjects.has(c.subject))?.sha, queued, reviewed: await reviewedYes(store, tip) });
+    const rec = rules.recordOf({ commits: subjects.size, matched: [...subjects].filter((s) => on.has(s)).length, newest: theirs.find((c) => subjects.has(c.subject))?.sha, queued, reviewed });
     return rec ? { how: "changed", ...rec } : undefined;
   } finally {
     rmSync(objects, { recursive: true, force: true });
@@ -407,6 +424,24 @@ async function hiddenEdits(dir: string): Promise<number | undefined> {
   return n;
 }
 
+// Commits only the worktree's own HEAD reflog reaches (made on a detached HEAD): removing the folder drops that
+// log, and with it the last name of their work. A commit the branch's own reflog names (one rebased or reset
+// away on the branch) is the branch's history, which the folder's removal leaves. Read as background work.
+const REFLOG_MAX = 2000;
+const reflogWords = (n: number) => `${n === 1 ? "a commit only its HEAD's reflog reaches" : `${n} commits only its HEAD's reflog reaches`} (made on a detached HEAD) would be lost`;
+async function reflogOnly(path: string, branch: string): Promise<number | undefined> {
+  const shas = async (ref: string) => {
+    const log = await low(path, ["reflog", "show", `--max-count=${REFLOG_MAX}`, "--format=%H", ref, "--"]);
+    if (log.code !== 0) return /does not have any commits|unknown revision|bad revision|ambiguous argument/i.test(log.err) ? [] : undefined;
+    return [...new Set(log.out.split("\n").filter((l) => /^[0-9a-f]{40,64}$/.test(l)))];
+  };
+  const [head, own] = await Promise.all([shas("HEAD"), shas(`refs/heads/${branch}`)]);
+  if (!head || !own) return undefined;
+  if (!head.length) return 0;
+  const n = await low(path, ["rev-list", "--count", "--ignore-missing", "--stdin"], { input: `${head.join("\n")}\n--not\n--all\n${own.join("\n")}\n` });
+  return n.code === 0 && /^\d+$/.test(n.out.trim()) ? Number(n.out.trim()) : undefined;
+}
+
 // A stash entry made on the branch: its work is not on the branch, and the entry says the branch's name.
 async function stashOn(repo: string, branch: string): Promise<string | undefined> {
   const out = await run(repo, ["stash", "list", "--format=%gd%x00%gs"]);
@@ -439,12 +474,17 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
   const hidden = st.exists ? await hiddenEdits(w.path) : 0;
   const inner = st.inner?.length ? `${st.inner.length === 1 ? "a repository inside it holds" : `${st.inner.length} repositories inside it hold`} work of its own (${st.inner.slice(0, 3).join(", ")})`
     : nested?.length ? `${nested.length === 1 ? "an ignored folder holds a repository" : `ignored folders hold ${nested.length} repositories`} (${nested.slice(0, 3).join(", ")})` : undefined;
-  const busy = moved ?? await stashOn(w.repo_root, w.branch) ?? (st.exists ? busyIn(await openSessions(c.store), cwds(), w.path, sessionId, live) : undefined);
+  let busy = moved ?? await stashOn(w.repo_root, w.branch) ?? (st.exists ? busyIn(await openSessions(c.store), cwds(), w.path, sessionId, live) : undefined);
   const unknown = unique === undefined ? "its commits could not be counted" : look === undefined || nested === undefined ? "its ignored files could not be looked through" : hidden === undefined ? "the files git is told not to look at could not be compared" : undefined;
   const dirty = Math.max(st.dirty, look?.dirty ?? 0) + (hidden ?? 0);
   // Commits only its branch holds: the base may still hold their work (a rebase or cherry-pick that changed the patch).
   const landed = unique && sha && !unknown && !inner && !busy && !dirty ? await landedOn(c.store, w.repo_root, sha) : undefined;
-  const fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown, landed });
+  let fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown, landed });
+  // Read only for a worktree that would go: commits only its HEAD's reflog reaches keep it.
+  if (fate.act === "remove" && st.exists) {
+    const lone = await reflogOnly(w.path, w.branch);
+    if (lone !== 0) { busy = lone === undefined ? "its HEAD's reflog could not be read" : reflogWords(lone); fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown, landed }); }
+  }
   if (fate.act === "remove") {
     // (Read before the worktree and branch go.)
     const lends = !!over && !!sha && !!(await uniqueOf(at, sha, [w.branch, ...others]));
@@ -605,6 +645,9 @@ async function landedHeld(top: string, path: string, branch: string, ignored: st
   const nested = await reposUnder(path, ignored);
   if (nested === undefined) return "its ignored files could not be looked through";
   if (nested.length) return `${nested.length === 1 ? "an ignored folder holds a repository" : `ignored folders hold ${nested.length} repositories`} (${nested.slice(0, 3).join(", ")})`;
+  const lone = await reflogOnly(path, branch);
+  if (lone === undefined) return "its HEAD's reflog could not be read";
+  if (lone) return reflogWords(lone);
   return await stashOn(top, branch);
 }
 
@@ -838,6 +881,8 @@ export async function removeLanded(c: Ctx, items: LandedSeen[]): Promise<{ remov
         const ags = await agentsBy(c.store);
         const live = (await openSessions(c.store)).find((x) => !ended(ags.get(x.id)) && contains(realOf(t.path), realOf(x.workspace)));
         if (live) throw new Error(`not removed: the session "${live.title || live.id}" works in it now`);
+        const proc = workingIn(cwds(), t.path);
+        if (proc) throw new Error(`not removed: ${proc} now`);
         await dropTree(c, t);
         out.removed.push(seen.path);
         out.bytes += t.bytes ?? 0;
