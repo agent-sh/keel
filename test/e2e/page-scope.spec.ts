@@ -19,23 +19,30 @@ const LINGER_MS = 20_000; // ui/src/lib/scope.ts
 // `earlier`: the page speaks to the daemon as a tab of an earlier build does (one that was open
 // when the daemon was restarted into this build): its resume names the sessions it holds and says
 // nothing of `only`, and it never asks for one more session or lets one go.
-type Tap = { got: any[]; sent: any[]; opened: number; cut: () => Promise<void> };
+type Tap = { got: any[]; sent: any[]; replayed: number[]; opened: number; cut: () => Promise<void> };
 async function tap(page: Page, earlier = false): Promise<Tap> {
   let route: WebSocketRoute | undefined;
-  const t: Tap = { got: [], sent: [], opened: 0, cut: async () => { await route?.close({ code: 4000, reason: "cut by the test" }); } };
+  const t: Tap = { got: [], sent: [], replayed: [], opened: 0, cut: async () => { await route?.close({ code: 4000, reason: "cut by the test" }); } };
   await page.routeWebSocket(/\/ws$/, (ws) => {
     const server = ws.connectToServer();
     route = ws;
-    t.opened++;
+    const socket = ++t.opened;
     ws.onMessage((m) => {
       let f: any;
       try { f = JSON.parse(String(m)); } catch { return void server.send(m); }
       if (earlier && (f.op === "sub" || f.op === "unsub")) return;
       if (earlier && f.op === "resume") f = { op: "resume", cursors: f.cursors };
-      t.sent.push({ socket: t.opened, ...f });
+      t.sent.push({ socket, ...f });
       server.send(earlier ? JSON.stringify(f) : m);
     });
-    server.onMessage((m) => { try { t.got.push(JSON.parse(String(m))); } catch {} ws.send(m); });
+    server.onMessage((m) => {
+      try {
+        const f = JSON.parse(String(m));
+        t.got.push(f);
+        if (f.t === "replayed") t.replayed.push(socket);
+      } catch {}
+      ws.send(m);
+    });
   });
   return t;
 }
@@ -216,11 +223,13 @@ test("a tab of an earlier build draws a streaming reply once", async ({ page, re
   const t = await tap(page, true);
   await page.goto(`/s/${shown}`);
   await expect(pane(page, shown).getByTestId("assistant-text").last()).toHaveText("A first short turn.");
+  // The snapshot can draw the reply before the first socket finishes its replay.
+  await expect.poll(() => t.replayed, { timeout: 15_000 }).toEqual([1]);
   // Its socket opens again (the daemon was restarted under it): the resume names the session it holds, with no `only`.
   await t.cut();
   await expect.poll(() => t.opened, { timeout: 15_000 }).toBe(2);
   await expect.poll(() => t.sent.find((m) => m.socket === 2 && m.op === "resume"), { timeout: 10_000 }).toEqual({ socket: 2, op: "resume", cursors: { [shown]: expect.any(Number) } });
-  await expect.poll(() => t.got.filter((f) => f.t === "replayed").length, { timeout: 10_000 }).toBe(2);
+  await expect.poll(() => t.replayed, { timeout: 10_000 }).toEqual([1, 2]);
   const from = t.got.length;
   await stream(request, shown, 12);
   await stream(request, other, 12);
@@ -250,25 +259,6 @@ test("a tab of an earlier build draws a streaming reply once", async ({ page, re
   await drop(request, shown, other);
 });
 
-// The first row of a session's conversation whose top is inside its pane's reading area, and where it stands.
-const placeIn = (page: Page, id: string) => page.evaluate((id) => {
-  const pane = document.querySelector(`section.k-station[data-holds="${id}"], section.k-station[data-station="${id}"]`)!;
-  const sc = [...pane.querySelectorAll<HTMLElement>(".k-reading")].find((el) => el.closest('[data-view="own"]')) ?? pane.querySelector<HTMLElement>(".k-reading")!;
-  const r = sc.getBoundingClientRect();
-  const rows = [...sc.innerText.matchAll(/row-(\d{4})/g)].map((m) => Number(m[1]));
-  const walker = document.createTreeWalker(sc, NodeFilter.SHOW_TEXT);
-  let first: { row: string; y: number } | null = null;
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    const m = /row-(\d{4})/.exec(n.textContent ?? "");
-    if (!m) continue;
-    const range = document.createRange();
-    range.selectNode(n);
-    const q = range.getBoundingClientRect();
-    if (q.top >= r.top && q.height > 0) { first = { row: m[0], y: Math.round(q.top - r.top) }; break; }
-  }
-  return { first, oldest: rows.length ? Math.min(...rows) : null, top: Math.round(sc.scrollTop) };
-}, id);
-
 test("a pane read far up keeps its place under a look while its session works on", async ({ page, request }) => {
   test.setTimeout(300_000);
   await scripted(request);
@@ -280,36 +270,50 @@ test("a pane read far up keeps its place under a look while its session works on
   await request.put(`/api/sessions/${reader}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   const rows = (from: number, n: number) => calls(Array.from({ length: n }, (_, i) => ({ name: "Bash", input: { command: `echo row-${String(from + i).padStart(4, "0")}` } })));
   const idle = () => expect.poll(async () => (await (await request.get(`/api/sessions/${reader}?events=0`)).json()).session.phase, { timeout: 120_000, intervals: [500] }).not.toBe("working");
+  const send = async (from: number, n: number) => {
+    const reply = await request.post(`/api/sessions/${reader}/messages`, { data: { text: rows(from, n) } });
+    expect(reply.ok()).toBe(true);
+    const { event } = await reply.json() as { event: { id: string } };
+    await idle();
+    return event.id;
+  };
   // A long session: more than the page holds of one that nobody reads (three turns of ninety calls).
-  for (let turn = 0; turn < 3; turn++) { await request.post(`/api/sessions/${reader}/messages`, { data: { text: rows(turn * 90, 90) } }); await idle(); }
+  const ids: string[] = [];
+  for (let turn = 0; turn < 3; turn++) ids.push(await send(turn * 90, 90));
   await request.post(`/api/sessions/${looked}/messages`, { data: { text: "script:say The other one." } });
   await open(page, [reader, beside]);
-  // Up, as a reader goes, until the older parts are in; then a little down: a place far above the end.
-  const b = (await pane(page, reader).boundingBox())!;
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
-  for (let i = 0; i < 14; i++) { await page.mouse.wheel(0, -3000); await page.waitForTimeout(350); }
-  await page.waitForTimeout(1_200);
-  await page.mouse.wheel(0, 2500);
-  await page.waitForTimeout(900);
-  const before = await placeIn(page, reader);
-  expect(before.first, "a row of the session is at the top of the view").not.toBeNull();
-  expect(Number(before.first!.row.slice(4))).toBeLessThan(200);
+  // Go back to the first prompt (reading older parts), then forward one. The place is a
+  // particular prompt, not a pixel distance that depends on how many work lines are folded.
+  const p = pane(page, reader);
+  const prompt = (n: number) => p.locator(`[data-testid="user-message"][data-event-id="${ids[n - 1]}"]`);
+  await expect(p.getByTestId("load-earlier")).toBeAttached();
+  for (const n of [3, 2, 1]) {
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect(p.getByTestId("prompt-place")).toHaveText(`Prompt ${n} of 3`, { timeout: 15_000 });
+    await expect(prompt(n)).toBeFocused();
+  }
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(p.getByTestId("prompt-place")).toHaveText("Prompt 2 of 3");
+  const marker = prompt(2);
+  await expect(marker).toBeFocused();
+  await expect(marker).toBeInViewport();
+  const offset = () => marker.evaluate((el) => el.getBoundingClientRect().top - el.closest(".k-reading")!.getBoundingClientRect().top);
+  const before = await offset();
+  await expect(p.getByTestId("jump-latest")).toHaveText("Latest");
 
   // A look at another session, and the session under it takes three more steps.
   await row(page, looked).click();
   const slot0 = page.getByTestId("bridge").locator(':scope > [data-slot="0"]');
   await expect(slot0).toHaveAttribute("data-look", "");
-  await request.post(`/api/sessions/${reader}/messages`, { data: { text: rows(900, 3) } });
-  await idle();
-  await page.waitForTimeout(800);
+  const next = await send(900, 3);
   await slot0.getByTestId("look-back").click();
   await expect(slot0).not.toHaveAttribute("data-look", "");
-  await page.waitForTimeout(1_500);
-  // The same row at the same place, and nothing above it was let go.
-  const after = await placeIn(page, reader);
-  expect(after.first?.row).toBe(before.first!.row);
-  expect(Math.abs(after.first!.y - before.first!.y)).toBeLessThan(4);
-  expect(after.oldest).toBe(before.oldest);
+  // The same prompt at the same place, and nothing above it was let go.
+  await expect(p.locator(`[data-event-id="${next}"]`)).toBeAttached();
+  await expect(marker).toBeInViewport();
+  await expect.poll(async () => Math.abs(await offset() - before)).toBeLessThan(4);
+  await expect(p.locator(`[data-event-id="${ids[0]}"]`)).toBeAttached();
+  await expect(p.getByTestId("load-earlier")).toHaveCount(0);
   await shoot(page, "page-scope-04-place-kept-under-a-look");
   await drop(request, reader, beside, looked);
 });
