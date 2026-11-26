@@ -53,6 +53,11 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(bar.getByTestId("outside-holder")).toHaveText("Free");
     const input = bar.getByTestId("outside-input");
     await expect(input).toHaveAttribute("placeholder", "Answer here: Keel resumes this session in Codex");
+    // The lines under the head (the box, the note) start where the head's words do.
+    const left = async (id: string) => (await bar.getByTestId(id).boundingBox())!.x;
+    const words = await left("outside-state");
+    expect(Math.abs((await left("outside-compose")) - words)).toBeLessThan(1);
+    expect(Math.abs((await left("outside-note")) - words)).toBeLessThan(1);
     await shoot(page, "outside-answer-free");
 
     // A send: Codex resumes the thread and asks before it runs a command.

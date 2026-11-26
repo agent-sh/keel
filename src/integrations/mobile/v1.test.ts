@@ -1795,3 +1795,15 @@ test("the phone's drafts hold the reply a session of its own streams, never one 
   expect(JSON.stringify(drafts)).not.toContain("CANARY-DRAFT");
   expect(drafts.some((d) => d.chat_id === out.id)).toBe(false);
 });
+
+// Whether a session's reply streams to the phone is kept per session, and its session frame asks again: a session
+// whose reply was drafted before it became one another harness runs drafts nothing after.
+test("a session that becomes another harness's streams nothing more to the phone", async () => {
+  const s = session("Turns outside");
+  bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "drafted while it was mine" } as any);
+  const moved = store.updateSession(s.id, { outside: { harness: "codex", source_id: "src-turned", state: "working", since: Date.now(), files: 0, failures: 0 } });
+  bus.emit({ t: "session", session: moved } as any);
+  bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "CANARY-TURNED from Codex" } as any);
+  const drafts = (await call("GET", "/v1/sync?since=0")).body.drafts as { chat_id: string; text: string }[];
+  expect(JSON.stringify(drafts)).not.toContain("CANARY-TURNED");
+});

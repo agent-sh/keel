@@ -1951,6 +1951,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* A session another harness runs, in the composer's place (OutsideBar.tsx): its state in words, what it
    spent and changed on one quiet line, and the one way on. */
 .k-outside { display: grid; gap: 0.375rem; padding: 0.625rem 0.75rem 0.5rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); }
+/* The lines under the head start where its words do: the mark (0.625rem) and the gap (0.625rem). */
 .k-outside-head { display: flex; align-items: center; gap: 0.625rem; }
 .k-outside-head > .k-mark { flex-shrink: 0; }
 .k-outside-state { font-size: var(--text-ui); font-weight: 600; color: var(--fg); overflow-wrap: anywhere; }
@@ -1967,14 +1968,14 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside-files-btn:hover { color: var(--fg); }
 .k-outside-files-btn svg { width: 0.875rem; height: 0.875rem; }
 .k-outside-failed { color: var(--st-fail-ink); }
-.k-outside-files { display: grid; gap: 0.125rem; max-height: 9rem; overflow-y: auto; margin-left: 1.5rem; padding: 0.375rem 0.5rem; border-radius: var(--radius-sm); background: var(--sunken); font: var(--text-micro)/1.5 var(--font-mono); color: var(--fg); }
+.k-outside-files { display: grid; gap: 0.125rem; max-height: 9rem; overflow-y: auto; margin-left: 1.25rem; padding: 0.375rem 0.5rem; border-radius: var(--radius-sm); background: var(--sunken); font: var(--text-micro)/1.5 var(--font-mono); color: var(--fg); }
 .k-outside-files li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.k-outside-note { margin-left: 1.5rem; font-size: var(--text-micro); color: var(--faint); }
+.k-outside-note { margin-left: 1.25rem; font-size: var(--text-micro); color: var(--faint); }
 /* Who holds it now: one word among its facts, the holder named while another process has it. */
 .k-outside-holder { color: var(--muted); }
 .k-outside-holder:not([data-kind="free"]) { color: var(--fg); font-weight: 600; }
 /* The box of a session answered in place: the text, then Stop and Send. */
-.k-outside-compose { display: flex; align-items: flex-end; gap: 0.5rem; margin-left: 1.5rem; padding: 0.375rem 0.375rem 0.375rem 0.625rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg); }
+.k-outside-compose { display: flex; align-items: flex-end; gap: 0.5rem; margin-left: 1.25rem; padding: 0.375rem 0.375rem 0.375rem 0.625rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg); }
 .k-outside-compose:focus-within { border-color: var(--ring); }
 .k-outside-input { flex: 1; min-width: 0; min-height: 1.75rem; padding: 0.25rem 0; resize: none; background: transparent; font-size: var(--text-ui); line-height: 1.4; color: var(--fg); outline: none; }
 .k-outside-input::placeholder { color: var(--faint); }
@@ -1983,7 +1984,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* What Keel said of the session (a form it declined, a Codex it cannot answer): read, not a footnote. */
 .k-outside-said { color: var(--muted); }
 /* Sends Codex does not hold yet, and the ones it did not take, with what to do. */
-.k-outside-sends { display: grid; gap: 0.25rem; margin-left: 1.5rem; }
+.k-outside-sends { display: grid; gap: 0.25rem; margin-left: 1.25rem; }
 .k-outside-send { display: flex; align-items: center; gap: 0.625rem; min-width: 0; font-size: var(--text-caption); color: var(--muted); }
 .k-outside-send-text { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .k-outside-send-said { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }

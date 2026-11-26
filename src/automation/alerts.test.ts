@@ -727,7 +727,14 @@ test("at a start, the questions a Codex child of the last daemon asked are close
   alerts.raise("question", mine, "Question: Keel work", "Which day?", { call_id: "codex-like", open_session: mine, ask_id: "a2" });
   alerts.raise("question", s, "Question: Codex work", "Answered", { call_id: "codex-n0-q1", open_session: s, ask_id: "a0" });
   alerts.keepOutcome("ask_id", "a0", s, "answered");
+  // Just outside the prefix's range, on either side.
+  alerts.raise("question", s, "Question: Codex work", "Before", { call_id: "codex", open_session: s, ask_id: "a3" });
+  alerts.raise("question", s, "Question: Codex work", "After", { call_id: "codex.1", open_session: s, ask_id: "a4" });
   expect(alerts.closeAsks("codex-", (id) => !!store.session(id)?.outside)).toBe(1);
+  expect([alerts.list({}).find((a) => a.data?.ask_id === "a3")!.data.outcome, alerts.list({}).find((a) => a.data?.ask_id === "a4")!.data.outcome]).toEqual([undefined, undefined]);
+  // Read by a range of the call id's index, not a scan of the questions.
+  const plan = store.db.query<{ detail: string }, [string, string]>(`EXPLAIN QUERY PLAN ${alerts.CLOSE_ASKS}`).all("codex-", "codex.").map((r) => r.detail).join("; ");
+  expect(plan).toContain("alerts_call_id");
   const by = (ask: string) => alerts.list({}).find((a) => a.data?.ask_id === ask)!;
   expect([by("a1").read, by("a1").data.outcome]).toEqual([true, "not answered"]);
   expect([by("a2").read, by("a2").data.outcome]).toEqual([false, undefined]);

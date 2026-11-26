@@ -16,15 +16,16 @@ import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
 import { descendants, statFields } from "./writer.ts";
-import { CodexApp, holdsMessage, lastRecord, threadFacts, type CardGate } from "./codex-app.ts";
+import { CodexApp, holdsMessage, lastRecord, recordsFrom, threadFacts, turnEnded, type CardGate } from "./codex-app.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-codex-app-"));
 ownEnv({ KEEL_IMPORT_CODEX_DIR: undefined, KEEL_IMPORT_CLAUDE_DIR: undefined });
 afterAll(() => rmSync(top, { recursive: true, force: true }));
 const STANDIN = join(import.meta.dir, "../../../test/e2e/fixtures/codex-app-server.ts");
 const LAUNCHER = join(import.meta.dir, "../../../test/e2e/fixtures/codex-launcher.ts");
-// What reads processes here: /proc (Linux). Elsewhere those tests are skipped by name.
-const PROC = existsSync("/proc/self/task");
+// What reads processes here: /proc with each thread's children file (Linux, CONFIG_PROC_CHILDREN). Elsewhere those
+// tests are skipped by name.
+const PROC = existsSync(`/proc/self/task/${process.pid}/children`) && existsSync("/proc/locks");
 
 const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> => {
   const end = Date.now() + ms;
@@ -64,7 +65,7 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; lock
   let real = opts.realGate ? new Gate(store, bus) : undefined;
   let gate: CardGate = real ?? stub;
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
-  const make = () => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => opts.bin ?? STANDIN, home: () => codex, trouble: (e) => { throw e; } }));
+  const make = (more: { cutAsks?: () => void } = {}) => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => opts.bin ?? STANDIN, home: () => codex, trouble: (e) => { throw e; }, ...more }));
   make();
   const thread = `019a0000-0000-7000-8000-${String(k).padStart(12, "0")}`;
   const rollout = join(day, `rollout-${now.toISOString().slice(0, 19).replaceAll(":", "-")}-${thread}.jsonl`);
@@ -312,7 +313,9 @@ describe("a Codex session answered in place", () => {
       expect(other.signalCode).toBeNull();
       expect(decoy.exitCode).toBeNull();
       expect(decoy.signalCode).toBeNull();
-      expect(r.store.db.query("SELECT * FROM outside_procs").all()).toEqual([]);
+      // The rows of what is gone go; the row of a process that still lives (not Keel's to end) stays.
+      await until(() => r.store.db.query("SELECT * FROM outside_procs").all().length === 1);
+      expect(r.store.db.query("SELECT session_id FROM outside_procs").all()).toEqual([{ session_id: "not-a-session" }]);
     } finally { other.kill(); orphan.kill(); decoy.kill(); if (native) try { process.kill(native, "SIGKILL"); } catch {} r.done(); }
   }, 30_000);
 
@@ -333,6 +336,80 @@ describe("a Codex session answered in place", () => {
       expect(gone(native)).toBe(true);
       expect(r.store.db.query("SELECT * FROM outside_procs").all()).toEqual([]);
     } finally { if (native) try { process.kill(native, "SIGKILL"); } catch {} r.done(); }
+  }, 30_000);
+
+  test.skipIf(!PROC)("what Codex starts under it (an MCP server's helper, a job of the turn) outlives the child: at a turn's end and at a forced Stop", async () => {
+    const r = rig();
+    const left: number[] = [];
+    const lives = (pid: number) => { try { return statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))?.state !== "Z"; } catch { return false; } };
+    try {
+      const s = await r.session();
+      const file = join(r.codex, "standin-helpers");
+      writeFileSync(file, "");
+      const pids = (n: number) => until(() => { const l = readFileSync(file, "utf8").split("\n").filter(Boolean).map((x) => Number(x.split(" ")[1])); return l.length >= n && l; });
+      // A turn that ends: the child goes, what it started stays.
+      r.app().send(s.id, "fix the build", "k1");
+      const [helper, job] = await pids(2);
+      left.push(helper!, job!);
+      const child = (r.app() as any).runs.get(s.id).conn.pid as number;
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(lives(child)).toBe(false);
+      expect([lives(helper!), lives(job!)]).toEqual([true, true]);
+      // A Codex that stops answering, ended by a second Stop: the same.
+      r.app().send(s.id, "stuck now", "k2");
+      const [, , helper2, job2] = await pids(4);
+      left.push(helper2!, job2!);
+      await until(() => r.frames.some((f) => f.t === "delta" && f.session_id === s.id && f.text.includes("Stuck")), 15_000);
+      const child2 = (r.app() as any).runs.get(s.id).conn.pid as number;
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(lives(child2)).toBe(false);
+      expect([lives(helper!), lives(job!), lives(helper2!), lives(job2!)]).toEqual([true, true, true, true]);
+    } finally { for (const p of left) try { process.kill(p, "SIGKILL"); } catch {} r.done(); }
+  }, 40_000);
+
+  test("a Stop of the next turn the same child runs asks Codex again: the first Stop's mark ends with its turn", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      const app = r.app() as any;
+      const heard0 = app.heard.bind(app);
+      let next = false;
+      // The owner's next message lands as the stopped turn ends: the same child runs it.
+      app.heard = (run: any, method: string, p: any) => { if (method === "turn/completed" && !next) { next = true; app.send(s.id, "wait two", "k2"); } return heard0(run, method, p); };
+      r.app().send(s.id, "wait one", "k1");
+      const working = () => r.frames.filter((f) => f.t === "delta" && f.session_id === s.id && f.text.startsWith("Working")).length;
+      await until(() => working() === 1, 15_000);
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => working() === 2, 15_000);
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 15_000);
+      const log = readFileSync(`${r.rollout}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).method);
+      expect(log.filter((m) => m === "thread/resume").length).toBe(1);
+      expect(log.filter((m) => m === "turn/interrupt").length).toBe(2);
+      expect(readFileSync(r.rollout, "utf8").split('"type":"turn_aborted"').length - 1).toBe(2);
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a Stop of a child that is already ending ends it now, and asks Codex nothing", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "stuck now", "k1");
+      await until(() => r.frames.some((f) => f.t === "delta" && f.session_id === s.id && f.text.includes("Stuck")), 15_000);
+      const app = r.app() as any;
+      const run = app.runs.get(s.id);
+      const asked: string[] = [];
+      const request0 = run.conn.request.bind(run.conn);
+      run.conn.request = (m: string, p: unknown) => { asked.push(m); return request0(m, p); };
+      // Its end began (its input closes after thread/unsubscribe), and the Codex does not answer.
+      void app.end(run);
+      await until(() => asked.includes("thread/unsubscribe"));
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(asked).not.toContain("turn/interrupt");
+    } finally { r.done(); }
   }, 30_000);
 
   test("a send that lands while the child ends goes with one new child, never two", async () => {
@@ -371,6 +448,32 @@ describe("a Codex session answered in place", () => {
     writeFileSync(f, out);
     expect(await lastRecord(f, "turn_context", 100)).toBeUndefined();
     expect(await lastRecord(`${f}.none`, "turn_context")).toBeUndefined();
+  });
+
+  test("what a thread gained since a send is read a part at a time, the loop free, and only its marked lines decoded", async () => {
+    const f = join(top, "grown.jsonl");
+    const line = (type: string, payload: object) => JSON.stringify({ type, payload }) + "\n";
+    const out = line("response_item", { type: "function_call_output", output: "é".repeat(20_000) });
+    const before = line("event_msg", { type: "user_message", message: "before the send" });
+    writeFileSync(f, before + out.repeat(500) + line("event_msg", { type: "user_message", message: "שלום, go on" }) + out.repeat(500) + line("event_msg", { type: "task_complete", turn_id: "t1" }));
+    let ticks = 0;
+    const tick = setInterval(() => ticks++, 0);
+    let got: any[] = [];
+    try { got = await recordsFrom(f, before.length); } finally { clearInterval(tick); }
+    expect(ticks).toBeGreaterThan(0);
+    // Only the marked lines: the message and the turn's end, none of the outputs, nothing before the offset.
+    expect(got.map((r) => r.payload.type)).toEqual(["user_message", "task_complete"]);
+    expect(holdsMessage(got, "שלום, go on") && turnEnded(got, "שלום, go on")).toBe(true);
+    // Parts that cut a line (and a character) anywhere; a mark quoted inside a string decodes to nothing of its
+    // kind; a last line still being written; no file.
+    writeFileSync(f, line("response_item", { type: "function_call_output", output: 'it said "type":"user_message" here' }) + line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "é go on" }] }) + '{"type":"event_msg","payload":{"type":"task_compl');
+    for (const part of [5, 33, 64, 4096]) {
+      const r = await recordsFrom(f, 0, part);
+      expect(holdsMessage(r, "é go on")).toBe(true);
+      expect(turnEnded(r, "é go on")).toBe(false);
+      expect(holdsMessage(r, "here")).toBe(false);
+    }
+    expect(await recordsFrom(`${f}.none`, 0)).toEqual([]);
   });
 
   test("who holds the rows a page shows is read from one look at /proc/locks a tick", async () => {
@@ -431,9 +534,13 @@ describe("a Codex session answered in place", () => {
       const card = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0]);
       r.app().stop();
       r.nextGate();
-      r.make().start();
+      let cut = 0;
+      r.make({ cutAsks: () => void cut++ }).start();
+      expect(cut).toBe(1);
       expect(r.gate()!.approval(card.id)).toMatchObject({ state: "cancelled", reason: "Keel restarted while Codex worked: the turn stopped there" });
-      expect(r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }, { id: "c", state: "cut" }]);
+      const states = () => r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all();
+      await until(() => !states().some((x) => x.state === "started"));
+      expect(states()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }, { id: "c", state: "cut" }]);
       expect(r.app().sends(s.id).map((x) => x.said)).toEqual(["Keel restarted while it went, and the session does not hold it: send it again", "Keel restarted while Codex worked: the turn stopped there"]);
       expect(r.app().dismiss(s.id, "c")).toBe(true);
       expect(readFileSync(r.rollout, "utf8").match(/it did not/g)).toBeNull();

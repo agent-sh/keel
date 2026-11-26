@@ -16,8 +16,12 @@
 //   - anything else: a command it asks to run (make test), then a reply naming
 //     the decision.
 // Every request it got is appended to <rollout>.standin.log, one JSON line each.
+// With a file $CODEX_HOME/standin-helpers, it starts what a real Codex starts under it that is not Keel's to end:
+// at its start a detached helper (as an MCP server leaves), and in each turn a background job (as a command of
+// the turn puts in the background), each in a session of its own; their pids are appended to that file.
 //   bun codex-app-server.ts app-server
-import { appendFileSync, readdirSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const home = process.env.CODEX_HOME ?? "";
@@ -28,6 +32,14 @@ const waits = new Map<number, (r: any) => void>();
 let turn: { id: string; stop?: () => void; stopped?: boolean } | undefined;
 let deaf = false;
 process.on("SIGTERM", () => { if (!deaf) process.exit(0); });
+const helpers = join(home, "standin-helpers");
+const leave = (what: string) => {
+  if (!existsSync(helpers)) return;
+  const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+  p.unref();
+  appendFileSync(helpers, `${what} ${p.pid}\n`);
+};
+leave("helper");
 
 const out = (m: object) => process.stdout.write(JSON.stringify(m) + "\n");
 const note = (method: string, params: object) => out({ method, params });
@@ -63,6 +75,7 @@ async function run(turnId: string, text: string) {
   record("event_msg", { type: "task_started", turn_id: turnId });
   record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text }] });
   record("event_msg", { type: "user_message", message: text });
+  leave("job");
   await sleep(100);
   if (/^stuck\b/i.test(text)) {
     deaf = true;

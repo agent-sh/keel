@@ -25,7 +25,7 @@
 // was delivered; not found, it says so and waits for the owner to send it
 // again. One that never started goes when the daemon is back, if the thread is
 // still free.
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { AcpConnection } from "../../acp/rpc.ts";
 import type { Bus } from "../../core/bus.ts";
 import type { Store } from "../../core/store.ts";
@@ -37,10 +37,10 @@ import type { ToolCall } from "../../engine/hooks.ts";
 import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools/interact.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import { headTail } from "../import/files.ts";
-import { splitGrown } from "./facts.ts";
 import { alive, codexKeepsLocks, descendants, procOf, type Proc } from "./writer.ts";
 
 type Json = any;
+type ProcRow = { session_id: string; pid: number; start: string };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS outside_sends (
@@ -168,17 +168,42 @@ export async function lastRecord(path: string, type: string, part = 1024 * 1024)
   } catch { return undefined; }
 }
 
-// The records of a file from a byte offset on (the bytes a send started at): what the thread gained since.
-function recordsFrom(path: string, offset: number): Json[] {
-  let fd: number | undefined;
+// What a send's delivery is read from: the user's messages and the turn's end. A line that holds none of these
+// marks is never decoded (a long turn's tool output is most of a rollout's bytes).
+const MARKS = ['"type":"user_message"', '"role":"user"', '"type":"task_complete"', '"type":"turn_aborted"'].map((m) => Buffer.from(m));
+
+// The records of a file from a byte offset on (the bytes a send started at) that say a message or a turn's end:
+// what the thread gained since. Read a part at a time off the loop; the bytes are searched as bytes and only a
+// line with a mark is decoded, so a long thread holds the loop for no part.
+export async function recordsFrom(path: string, offset: number, part = 1024 * 1024): Promise<Json[]> {
   try {
-    fd = openSync(path, "r");
-    const size = fstatSync(fd).size;
-    const from = Math.max(0, Math.min(offset, size));
-    const buf = Buffer.alloc(size - from);
-    readSync(fd, buf, 0, buf.length, from);
-    return splitGrown("", buf.toString("utf8") + "\n").records;
-  } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
+    const file = Bun.file(path);
+    const size = statSync(path).size;
+    let at = Math.max(0, Math.min(offset, size));
+    const out: Json[] = [];
+    let rest = Buffer.alloc(0);
+    while (at < size) {
+      const end = Math.min(size, at + part);
+      const got = Buffer.from(await file.slice(at, end).arrayBuffer());
+      at = end;
+      const buf = rest.length ? Buffer.concat([rest, got]) : got;
+      // A part's last line may be cut (a character too): its bytes are read with the next part. The file's end
+      // is read whole (a last line still being written parses when it is whole).
+      const whole = at >= size ? buf.length : buf.lastIndexOf(10) + 1;
+      marked(buf.subarray(0, whole), out);
+      rest = Buffer.from(buf.subarray(whole));
+    }
+    return out;
+  } catch { return []; }
+}
+
+function marked(buf: Buffer, out: Json[]) {
+  const starts = new Set<number>();
+  for (const m of MARKS) for (let i = buf.indexOf(m); i >= 0; i = buf.indexOf(m, i + m.length)) starts.add(buf.lastIndexOf(10, i) + 1);
+  for (const s of [...starts].sort((a, b) => a - b)) {
+    const e = buf.indexOf(10, s);
+    try { out.push(JSON.parse(buf.subarray(s, e < 0 ? buf.length : e).toString("utf8"))); } catch {}
+  }
 }
 
 // How long a request that only moves the child along (initialize, turn/interrupt, thread/unsubscribe) may take
@@ -212,11 +237,12 @@ type Run = {
   interrupting?: boolean;
   // Sends given to this child whose delivery is checked at the turn's end.
   given: Set<string>;
-  // The processes under the child, learned once it resumed and again when it is ended: a launcher (the npm
-  // package's codex.js) runs the native codex as its child, and the native holds the writer lock.
+  // The processes under the child that serve the protocol, learned once it resumed and again when it is ended: a
+  // launcher (the npm package's codex.js) runs the native codex as its child, and the native holds the writer lock.
+  // Nothing else under it (Codex's MCP servers, a job of the owner's turn) is Keel's to end.
   under: Proc[];
   exited: boolean;
-  // The child is ending or ended: a send waits for `over` (it is gone, and so is everything under it) and goes
+  // The child is ending or ended: a send waits for `over` (it is gone, and so is the native under it) and goes
   // with the next one.
   closing?: boolean;
   killing?: Promise<void>;
@@ -444,9 +470,9 @@ export class CodexApp {
           ...(f.provider ? { modelProvider: f.provider } : {}), ...(f.cwd ? { cwd: f.cwd } : {}),
           ...(f.approval ? { approvalPolicy: f.approval } : {}), ...(f.sandbox ? { sandbox: f.sandbox } : {}),
         });
-        // What runs under the child now (a launcher's native codex, which holds the lock): kept, so a next
+        // What serves under the child now (a launcher's native codex, which holds the lock): kept, so a next
         // daemon ends it too when this one could not.
-        run.under = descendants(conn.pid);
+        run.under = servers(conn.pid);
         if (run.under.length) this.keep(sessionId, run.under);
         this.d.outside.retell(sessionId);
         return true;
@@ -488,7 +514,7 @@ export class CodexApp {
           // The Stop was for this turn: a Stop of the next one asks Codex first again.
           run.interrupting = false;
           run.items.clear();
-          this.check(run);
+          void this.check(run).catch((e) => this.d.trouble(e, "checking a Codex send"));
           // A send that came while the turn ended goes in a turn of its own; else the child ends now.
           if (!this.sends(run.sessionId).some((s) => s.state === "stored")) void this.end(run);
         }
@@ -497,11 +523,13 @@ export class CodexApp {
   }
 
   // Each send given to this child: delivered when the rollout holds it.
-  private check(run: Run, last = false) {
+  private async check(run: Run, last = false) {
     for (const id of [...run.given]) {
       const s = this.byId(id);
       if (!s || s.state !== "started") { run.given.delete(id); continue; }
-      if (holdsMessage(recordsFrom(run.path, s.offset ?? 0), s.text)) { this.set(id, "delivered"); run.given.delete(id); }
+      const held = holdsMessage(await recordsFrom(run.path, s.offset ?? 0), s.text);
+      if (this.byId(id)?.state !== "started") { run.given.delete(id); continue; }
+      if (held) { this.set(id, "delivered"); run.given.delete(id); }
       else if (last) { this.set(id, "lost", { said: "Codex ended before the session held it: send it again" }); run.given.delete(id); }
     }
   }
@@ -593,13 +621,13 @@ export class CodexApp {
     return run.ending;
   }
 
-  // The child ends now, and everything under it: SIGTERM to the child (a launcher passes it on), then SIGKILL
-  // to whatever of them is still there after END_MS.
+  // The child ends now, and the native under it: SIGTERM to the child (a launcher passes it on), then SIGKILL
+  // to whatever of them is still there after END_MS. What Codex started (MCP servers, the turn's jobs) is left.
   private kill(run: Run): Promise<void> {
     run.closing = true;
     run.killing ??= (async () => {
       run.stopped.abort();
-      run.under = merged(run.under, run.exited ? [] : descendants(run.conn.pid));
+      run.under = merged(run.under, run.exited ? [] : servers(run.conn.pid));
       run.conn.close();
       const end = Date.now() + END_MS;
       while (Date.now() < end && (!run.exited || run.under.some((p) => alive(p.pid, p.start)))) await Bun.sleep(25);
@@ -616,19 +644,25 @@ export class CodexApp {
     for (const p of procs) put.run(sessionId, p.pid, p.start);
   }
 
-  // A child an earlier daemon left running, or a process under it: the same pid, started at the same moment,
-  // running app-server. Never a process Keel did not start. Resolves when every one has ended.
-  private async orphans(): Promise<void> {
-    const rows = this.d.store.db.query<{ session_id: string; pid: number; start: string }, []>("SELECT session_id, pid, start FROM outside_procs").all();
-    const serves = (pid: number) => { try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes("app-server"); } catch { return false; } };
+  // A child an earlier daemon left running, or the native under it: the same pid, started at the same moment,
+  // running app-server. Never a process Keel did not start, nor one Codex started. Resolves when every one has ended.
+  private async orphans(rows: ProcRow[]): Promise<void> {
     let left: Proc[] = [];
     for (const c of rows) {
       if (!alive(c.pid, c.start) || !serves(c.pid)) continue;
       // What it started since its row was kept (a native the daemon did not live to see).
-      left = merged(left, [{ pid: c.pid, start: c.start }, ...descendants(c.pid).filter((p) => serves(p.pid))]);
+      left = merged(left, [{ pid: c.pid, start: c.start }, ...servers(c.pid)]);
     }
-    this.d.store.db.query("DELETE FROM outside_procs WHERE rowid IN (SELECT value FROM json_each(?))").run(JSON.stringify(this.d.store.db.query<{ rowid: number }, []>("SELECT rowid FROM outside_procs").all().map((r) => r.rowid)));
     await reap(left, END_MS);
+    if (this.closed) return;
+    // A row goes once its process is gone: one that outlived its SIGKILL is still there for the next look.
+    this.forget(rows);
+  }
+
+  // The rows of processes that are gone (ended, or their pid taken again by another start).
+  private forget(rows: ProcRow[]) {
+    const del = this.d.store.db.query("DELETE FROM outside_procs WHERE session_id = ? AND pid = ? AND start = ?");
+    for (const r of rows) if (!alive(r.pid, r.start)) del.run(r.session_id, r.pid, r.start);
   }
 
   private async gone(run: Run) {
@@ -639,9 +673,10 @@ export class CodexApp {
       // A launcher that ended leaves what it started (a native codex that holds the lock): it ends too.
       await reap(run.under, END_MS);
       if (this.closed) return;
-      this.d.store.db.query("DELETE FROM outside_procs WHERE session_id = ?").run(run.sessionId);
+      this.forget(this.d.store.db.query<ProcRow, [string]>("SELECT session_id, pid, start FROM outside_procs WHERE session_id = ?").all(run.sessionId));
       if (this.runs.get(run.sessionId) === run) this.runs.delete(run.sessionId);
-      this.check(run, true);
+      await this.check(run, true);
+      if (this.closed) return;
       this.d.outside.retell(run.sessionId);
       // A send stored while this child ended goes with a new one (one child: the others wait on `over` and take it).
       for (const s of this.sends(run.sessionId)) if (s.state === "stored") void this.deliver(run.sessionId, s.id).catch((e) => this.d.trouble(e, "answering a Codex session in place"));
@@ -663,20 +698,28 @@ export class CodexApp {
     // And so does a question it asked: its alert says it was not answered, and waits no more.
     try { this.d.cutAsks?.(); } catch (e) { this.d.trouble(e, "closing the questions a Codex child asked before the restart"); }
     const owed: Send[] = [];
+    const started: { send: Send; path: string }[] = [];
     for (const s of this.d.store.db.query<Send, []>("SELECT * FROM outside_sends WHERE state IN ('stored', 'started') ORDER BY created").all()) {
       const row = this.d.outside.row(s.session_id);
       if (!row) { this.set(s.id, "lost", { said: "its session is no longer followed" }); continue; }
-      if (s.state === "started") {
-        const after = recordsFrom(row.path, s.offset ?? 0);
+      if (s.state === "started") started.push({ send: s, path: row.path });
+      else owed.push(s);
+    }
+    // Read now: a child this daemon starts from here on is not one an earlier daemon left.
+    const left = this.d.store.db.query<ProcRow, []>("SELECT session_id, pid, start FROM outside_procs").all();
+    const looked = (async () => {
+      for (const { send: s, path } of started) {
+        const after = await recordsFrom(path, s.offset ?? 0);
+        if (this.closed || this.byId(s.id)?.state !== "started") continue;
         if (holdsMessage(after, s.text)) this.set(s.id, turnEnded(after, s.text) ? "delivered" : "cut", turnEnded(after, s.text) ? {} : { said: CUT });
         else this.set(s.id, "lost", { said: "Keel restarted while it went, and the session does not hold it: send it again" });
-        continue;
       }
-      owed.push(s);
-    }
+    })().catch((e) => this.d.trouble(e, "looking for a Codex send in its rollout after a restart"));
     // A send that never started goes once Keel's own children an earlier daemon left have ended (their locks
     // with them).
-    void this.orphans().catch((e) => this.d.trouble(e, "ending a Codex child an earlier daemon left")).then(() => {
+    const ended = this.orphans(left).catch((e) => this.d.trouble(e, "ending a Codex child an earlier daemon left"));
+    void Promise.all([looked, ended]).then(() => {
+      if (this.closed) return;
       for (const s of owed) void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Codex session in place"));
     });
   }
@@ -688,6 +731,15 @@ export class CodexApp {
     this.runs.clear();
   }
 }
+
+// Whether a process serves the app-server protocol: its arguments hold `app-server` (Keel's child, and the native
+// codex a launcher starts with the same arguments). What Codex itself starts under it (an MCP server, a helper that
+// server left, a job a command of the owner's turn put in the background) does not, and is never signalled.
+function serves(pid: number): boolean {
+  try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes("app-server"); } catch { return false; }
+}
+// What under a child serves the protocol: a launcher's native, which holds the thread's writer lock.
+const servers = (pid: number): Proc[] => descendants(pid).filter((p) => serves(p.pid));
 
 const merged = (a: Proc[], b: Proc[]): Proc[] => [...a, ...b.filter((p) => !a.some((q) => q.pid === p.pid && q.start === p.start))];
 

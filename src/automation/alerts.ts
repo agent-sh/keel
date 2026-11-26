@@ -1156,10 +1156,17 @@ export function readWhere(key: string, value: string, askedIn?: string) {
 // The questions a child of an earlier daemon asked for a session answered in place (their call ids begin with
 // `prefix`, codex-app.ts): the child ended with that daemon, so none of them waits on the owner any more. Each
 // is kept as not answered and read. Only an outside session's: a call id of Keel's own is never one of them.
+// The first text past every one that starts with a prefix (the prefix with its last character one higher): the
+// end of the prefix's range in the text order SQLite compares by.
+const upTo = (prefix: string) => prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+
+export const CLOSE_ASKS = `SELECT id, ${ASKED_IN} AS sid, json_extract(data, '$.ask_id') AS ask FROM alerts WHERE far_id IS NULL AND kind = 'question' AND json_extract(data, '$.expired') IS NULL AND json_extract(data, '$.outcome') IS NULL AND json_extract(data, '$.call_id') >= ?1 AND json_extract(data, '$.call_id') < ?2`;
 export function closeAsks(prefix: string, outside: (sessionId: string) => boolean): number {
-  const rows = D().store.db.query<{ id: string; sid: string | null; ask: string | null }, [string]>(
-    `SELECT id, ${ASKED_IN} AS sid, json_extract(data, '$.ask_id') AS ask FROM alerts WHERE far_id IS NULL AND kind = 'question' AND json_extract(data, '$.expired') IS NULL AND json_extract(data, '$.outcome') IS NULL AND substr(json_extract(data, '$.call_id'), 1, length(?1)) = ?1`,
-  ).all(prefix).filter((r) => r.sid && r.ask && outside(r.sid));
+  // A range on the indexed call id (alerts_call_id), never a scan of every question.
+  const rows = D().store.db.query<{ id: string; sid: string | null; ask: string | null }, [string, string]>(
+    CLOSE_ASKS,
+
+  ).all(prefix, upTo(prefix)).filter((r) => r.sid && r.ask && outside(r.sid));
   for (const r of rows) keepOutcome("ask_id", r.ask!, r.sid!, "not answered");
   const unread = rows.map((r) => r.id).filter((id) => D().store.db.query("SELECT 1 FROM alerts WHERE id = ? AND read = 0").get(id));
   if (unread.length) markRead({ ids: unread });
