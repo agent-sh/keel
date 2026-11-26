@@ -1,0 +1,40 @@
+
+  [38;2;99;168;248m>_ [1m[39mOpenAI Codex[0;2m (v0.172.0)[0m
+     [2m~/work[0m
+[2m  permissions: [0;1m[38;5;5mYOLO mode[0m
+
+[2m  To get started, describe a task or try one of these commands:[0m
+
+  /init[2m - create an AGENTS.md file with instructions for Codex[0m
+  /status[2m - show current session configuration[0m
+  /permissions[2m - choose what Codex is allowed to do[0m
+  /model[2m - choose what model and reasoning effort to use[0m
+  /review[2m - review any changes and find issues[0m
+
+
+
+
+
+
+  [1mMentions[0m
+  [2mFiles, directories, plugins, skills and tasks[0m
+
+  [1;4m All Results [0m [2m Filesystem Only [0m [2m Plugins [0m
+
+  [2mREA[0m
+
+[1;7m› Daybreak Defense Factory  Find and fix vulnerabilities                                                          Plugin
+[0m  [38;2;99;168;248madspi[1mre[0m[38;2;99;168;248mr-[1ma[0m[38;2;99;168;248mds-agent[2m[39m        claude-cowork                                                                         [0m[38;2;99;168;248mPlugin
+[39m  [38;2;99;168;248mGoogle Calendar[2m[39m           Manage Google Calendar events                                                         [0m[38;2;99;168;248mPlugin
+[39m  [38;2;99;168;248mChrome[2m[39m                    Control Chrome with ChatGPT                                                           [0m[38;2;99;168;248mPlugin
+[39m  [38;2;99;168;248mCodex Security[2m[39m            Security scanning for your codebase                                                   [0m[38;2;99;168;248mPlugin
+[39m  [38;2;99;168;248mGoogle Drive[2m[39m              Drive, Docs, Sheets or Slides                                                         [0m[38;2;99;168;248mPlugin
+[39m  [38;2;99;168;248mmarketing[2m[39m                 claude-cowork                                                                         [0m[38;2;99;168;248mPlugin
+[39m  [38;2;99;168;248munified-computer-use[2m[39m      openai-bundled                                                                        [0m[38;2;99;168;248mPlugin
+↓[39m
+  [1menter/tab[0;2m insert · [0;1mesc[0;2m close · [0;1m↑/↓[0;2m select · [0;1m←/→[0;2m filter[0m
+
+[1m›[0m @REA
+
+  [38;2;246;226;183mGPT-6.2-Sol high[39m · [38;2;200;169;238mStandard[39m · [38;2;171;223;167m~/work[39m · [38;2;242;181;144mContext 100% left[39m · [38;2;233;144;169mweekly 100% left[39m
+

@@ -6,7 +6,7 @@
 //   colours a command or a shell line). A send is refused.
 // "empty": the box was found and holds nothing, or only its placeholder (every character faint or grey).
 // "unread": no box was found on the screen (a window the agent view cannot read, a dialog in its place, a harness
-//   whose box is not known here, a Codex box whose first line is empty with a line under it). A model's send goes,
+//   whose box is not known here, a Codex box whose first line shows neither text nor its placeholder). A model's send goes,
 //   its words kept loosely (src/drive/sent-read.ts keysInto); the owner's composer refuses it
 //   (src/integrations/outside/terminal.ts).
 //
@@ -29,18 +29,20 @@ const ESC = /^\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])/;
 type Style = { faint: boolean; grey: boolean; inverse: boolean; other: boolean };
 const PLAIN: Style = { faint: false, grey: false, inverse: false, other: false };
 
-// A grey foreground: bright black, the 256-colour greys (8, 232 to 255, the grey of the cube's diagonal), or a
-// true colour whose channels are close to each other.
+// A placeholder's grey foreground: bright black, the mid-range 256-colour greys (8, 240 to 250, and 102 and 145 of
+// the cube's diagonal), or a true colour whose channels are close to each other with a mean of 100 to 200. White,
+// black and the near ones are a theme's text colour, so text drawn in them is typed.
 function greyOf(codes: string[], i: number): { grey: boolean; used: number } {
   const c = codes[i]!;
   if (c === "90") return { grey: true, used: 1 };
   if (c === "38" && codes[i + 1] === "5") {
     const n = Number(codes[i + 2]);
-    return { grey: n === 8 || n >= 232 || [59, 102, 145, 188].includes(n), used: 3 };
+    return { grey: n === 8 || (n >= 240 && n <= 250) || n === 102 || n === 145, used: 3 };
   }
   if (c === "38" && codes[i + 1] === "2") {
     const rgb = [3, 4, 5].map((k) => Number(codes[i + k - 1]));
-    return { grey: Math.max(...rgb) - Math.min(...rgb) < 24, used: 5 };
+    const mean = (rgb[0]! + rgb[1]! + rgb[2]!) / 3;
+    return { grey: Math.max(...rgb) - Math.min(...rgb) < 24 && mean >= 100 && mean <= 200, used: 5 };
   }
   return { grey: false, used: 1 };
 }
@@ -64,11 +66,24 @@ function apply(st: Style, params: string): Style {
       s.other = !g.grey;
       i += g.used;
       continue;
-    } else if (c === "48") { s.other = true; i += codes[i + 1] === "5" ? 3 : codes[i + 1] === "2" ? 5 : 1; continue; }
+    } else if (c === "48" || c === "58") { s.other = true; i += codes[i + 1] === "5" ? 3 : codes[i + 1] === "2" ? 5 : 1; continue; }
     else s.other = true;
     i++;
   }
   return s;
+}
+
+// An SGR's parameters with ';' between every code. A colon group of a direct colour (kitty, ITU T.416:
+// `38:2::r:g:b`, or `38:2:cs:r:g:b`) carries a colour-space field that the semicolon form has not: it is dropped.
+function sgrParams(params: string): string {
+  return params
+    .split(";")
+    .map((p) => {
+      const q = p.split(":");
+      if (["38", "48", "58"].includes(q[0]!) && q[1] === "2" && q.length === 6) q.splice(2, 1);
+      return q.join(";");
+    })
+    .join(";");
 }
 
 // The text after the marker in a raw line, and how it is drawn: "plain" (the terminal's own colour, as typed text
@@ -92,7 +107,7 @@ function after(raw: string, marker: RegExp): { text: string; look: Look } | unde
   for (let i = 0; i < raw.length && seen < to; ) {
     const rest = raw.slice(i);
     const sgr = /^\x1b\[([0-9;:]*)m/.exec(rest);
-    if (sgr) { st = apply(st, sgr[1]!.replace(/:/g, ";")); i += sgr[0].length; continue; }
+    if (sgr) { st = apply(st, sgrParams(sgr[1]!)); i += sgr[0].length; continue; }
     const esc = ESC.exec(rest);
     if (esc) { i += esc[0].length; continue; }
     const ch = String.fromCodePoint(raw.codePointAt(i)!);
@@ -108,9 +123,18 @@ function after(raw: string, marker: RegExp): { text: string; look: Look } | unde
   return { text, look };
 }
 
-function claude(lines: string[]): Box {
+// The screen without its blank lines at the end: a fresh session draws its box near the top of a tall screen.
+function trimmed(lines: string[]): string[] {
+  let n = lines.length;
+  while (n > 0 && !stripAnsi(lines[n - 1]!).trim()) n--;
+  return lines.slice(0, n);
+}
+
+function claude(all: string[]): Box {
+  const lines = trimmed(all);
   const plain = lines.map((l) => stripAnsi(l));
-  const marker = /^\s*│?\s*[>❯](?= |$) ?/u;
+  // Claude Code 2.1.332 writes a no-break space after its glyph, earlier builds a space.
+  const marker = /^\s*│?\s*[>❯](?=[ \u00a0]|$)[ \u00a0]?/u;
   for (let i = plain.length - 1; i >= Math.max(1, plain.length - BOTTOM); i--) {
     if (!marker.test(plain[i]!) || !RULE.test(plain[i - 1]!)) continue;
     let end = i + 1;
@@ -125,7 +149,8 @@ function claude(lines: string[]): Box {
   return "unread";
 }
 
-function codex(lines: string[]): Box {
+function codex(all: string[]): Box {
+  const lines = trimmed(all);
   const plain = lines.map((l) => stripAnsi(l));
   const marker = /^\s*›(?= |$) ?/u;
   for (let i = plain.length - 1; i >= Math.max(0, plain.length - BOTTOM); i--) {
@@ -135,8 +160,9 @@ function codex(lines: string[]): Box {
     const head = after(lines[i]!, marker);
     if (!head) return "unread";
     if (head.text && head.look !== "placeholder") return "draft";
-    // Nothing on its first line: empty only when no line follows it directly, since a draft may go on below.
-    return !plain[i + 1]?.trim() ? "empty" : "unread";
+    // Empty only when its first line shows the placeholder: a bare `›` may open a draft whose first lines are
+    // empty (Ctrl-J), its text further down among lines that look like the footer's.
+    return head.text && head.look === "placeholder" ? "empty" : "unread";
   }
   return "unread";
 }

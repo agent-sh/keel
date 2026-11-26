@@ -41,12 +41,62 @@ test("the input box is read from the screen: a draft, an empty box, a placeholde
   expect(boxOf("codex", ["› migrate the schema", "• Running bun run migrate", "  applied 3 of 5 migrations"])).toBe("unread");
   expect(boxOf("codex", ["• Ran it", "", `› ${dim("Ask Codex to do anything")}`, "", "  ? for shortcuts"])).toBe("empty");
   expect(boxOf("codex", ["history", "", "› \x1b[2mAsk Codex to do anything\x1b[22m"])).toBe("empty");
-  expect(boxOf("codex", ["history", "", "› "])).toBe("empty");
-  expect(boxOf("codex", ["history", "", "›", "", "  ? for shortcuts"])).toBe("empty");
+  // A bare `›` may open a draft whose first lines are empty: only its placeholder reads empty.
+  expect(boxOf("codex", ["history", "", "› "])).toBe("unread");
+  expect(boxOf("codex", ["history", "", "›", "", "  ? for shortcuts"])).toBe("unread");
   expect(boxOf("codex", ["history", "", "› \x1b[36mhalf a thought\x1b[39m"])).toBe("draft");
   // An empty first line with a line under it may be a draft that goes on below.
   expect(boxOf("codex", ["history", "", "› ", "  the rest of a draft"])).toBe("unread");
   expect(boxOf("agy", [rule, "> typed", rule])).toBe("unread");
+});
+
+test("only mid-range greys are a placeholder's colour; white, black and a kitty colour group are read as drawn", () => {
+  const cl = (s: string) => boxOf("claude", ["x", rule, `> ${s}`, rule, "  ? for shortcuts"]);
+  const fg = (code: string, s: string) => `\x1b[${code}m${s}\x1b[39m`;
+  for (const code of ["38;2;255;255;255", "38;2;0;0;0", "38;2;230;230;230", "38;5;255", "38;5;232", "38;5;188", "38;5;59"]) {
+    expect([code, cl(fg(code, "half a thought"))]).toEqual([code, "draft"]);
+  }
+  expect(boxOf("codex", ["history", "", `› ${fg("38;2;255;255;255", "half a thought")}`])).toBe("draft");
+  for (const code of ["38;2;153;153;153", "38;5;246", "38;5;240", "38;5;250", "38;5;8", "38;5;102", "38;5;145", "90"]) {
+    expect([code, cl(fg(code, 'Try "x"'))]).toEqual([code, "empty"]);
+  }
+  expect(cl(`\x1b[38:2::153:153:153mTry "x"\x1b[39m`)).toBe("empty");
+  expect(cl(`\x1b[38:2::255:255:255mhalf a thought\x1b[39m`)).toBe("draft");
+  // Faint text beside typed text is a draft.
+  expect(cl(`half ${dim("a thought")}`)).toBe("draft");
+});
+
+// Screens captured from Codex 0.172.0 and Claude Code 2.1.332 in a scratch terminal (40 rows, the agent view's
+// `live` lines; the working folder and the footer's figures replaced): each state of the box as typed by keys.
+test("the captured screens of Claude Code 2.1.332 and Codex 0.172.0 read as their boxes show", () => {
+  const want: Record<string, string> = {
+    // Claude Code: a no-break space after `❯`, and a fresh session's box near the top of the screen.
+    "claude-empty": "empty", // its placeholder, faint word by word
+    "claude-cleared": "empty", // typed, then cleared: the placeholder again
+    "claude-final": "empty",
+    "claude-draft": "draft",
+    "claude-at": "draft", // an @ mention typed
+    "claude-paste": "draft", // a paste folded to a line
+    "claude-slash": "unread", // a slash command: its menu puts the box past the screen's last lines
+    "claude-emptyfirst": "draft", // Ctrl-J then text: the first line empty
+    "claude-twoempty": "draft",
+    // Codex: empty only with its faint placeholder on the first line.
+    "codex-empty": "empty",
+    "codex-cleared": "empty",
+    "codex-final": "empty",
+    "codex-draft": "draft",
+    "codex-at": "draft",
+    "codex-paste": "draft",
+    "codex-slash": "draft",
+    "codex-emptyfirst": "unread", // a bare `›` with the draft's second line under it
+    "codex-twoempty": "unread", // Ctrl-J Ctrl-J then text: the text two lines down
+    "codex-spaces": "unread", // spaces typed, then Ctrl-J Ctrl-J
+    "codex-bang": "unread", // shell mode: its box opens with `!`
+  };
+  for (const [name, box] of Object.entries(want)) {
+    const lines = readFileSync(join(import.meta.dir, "screens", `${name}.txt`), "utf8").replace(/\n$/, "").split("\n");
+    expect([name, boxOf(name.split("-")[0]!, lines)]).toEqual([name, box]);
+  }
 });
 
 // A stand-in agent view with one live Claude Code session showing `screen`.
