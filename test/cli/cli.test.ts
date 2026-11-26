@@ -527,10 +527,17 @@ describe("admin commands", () => {
     asked.length = 0;
     const ran = await k(["upgrade", "--no-wait", "--timeout", "5"]);
     expect({ up: [up.code, up.out.split("\n").slice(0, 3)], re: [re.code, re.out], ran: [ran.code, ran.out, asked.at(-1)] }).toEqual({
-      up: [0, ["keel upgrade [--timeout SECONDS] [--no-wait] [--url URL]", "  Restarts the daemon from the binary already at its path, the same as keel restart.", "  It installs nothing: put a new binary there first."]],
-      re: [0, "keel restart [--timeout SECONDS] [--no-wait] [--url URL]\n  Stops new work, stops each running turn at its next step (a model request on its way gets up to 120 s by default), waits up to 60 s more for the commands a turn is still waiting on, parks the turns so they continue after the start, then starts the daemon again from its binary.\n"],
+      up: [0, ["keel upgrade [--timeout SECONDS] [--now] [--no-wait] [--url URL]", "  Restarts the daemon from the binary already at its path, the same as keel restart.", "  It installs nothing: put a new binary there first."]],
+      re: [0, "keel restart [--timeout SECONDS] [--now] [--no-wait] [--url URL]\n  Stops new work, stops each running turn at its next step (a model request on its way gets up to 120 s by default), waits up to 60 s more for the commands a turn is still waiting on, parks the turns so they continue after the start, then starts the daemon again from its binary.\n  While you are at a page the restart waits until you step away (30 minutes at most), joined with any other restart\n  asked meanwhile, and the command ends at once saying so. --now restarts at once (an urgent build).\n"],
       ran: [0, "draining: 0 turns running, up to 5 s\n", 'POST /api/drain {"timeout_seconds":5,"restart":true,"reason":"keel upgrade from a terminal"}'],
     });
+    // A restart the daemon holds for the owner to step away ends the command at once, saying so; --now asks for it at once.
+    answers = { "/api/daemon": { pid: 1 }, "/api/drain": { running: [], waiting: { since_ms: 0, until_ms: 1_800_000, asks: 2, reasons: ["a", "b"], timeout_ms: 120_000 } } };
+    const held = await k(["restart"]);
+    expect([held.code, held.out.startsWith("waiting: the restart waits while you are at a page: it goes when you step away, by "), held.out.includes("2 restarts joined into one")]).toEqual([0, true, true]);
+    answers = { "/api/daemon": { pid: 1 }, "/api/drain": { running: [] } };
+    await k(["restart", "--now", "--no-wait"]);
+    expect(asked.at(-1)).toBe('POST /api/drain {"timeout_seconds":120,"restart":true,"now":true,"reason":"keel restart from a terminal"}');
   }, 30_000);
 
   test("usage --days takes a number of days above 0, and nothing else", async () => {

@@ -130,6 +130,8 @@ export const bindPresence = (p: Presence) => void (bound = p);
 export const ownerSeen = (idleMs: number, now = Date.now()) => bound?.seen(now - Math.max(idleMs, 0), now);
 // The owner is away by the digest's rule: when they last did something, or null while they are here.
 export const ownerAwaySince = (now = Date.now()): number | null => bound?.awaySince(now) ?? null;
+// The owner is at a page now: an input in one within the gap. Never seen, or no record bound: not here.
+export const ownerHere = (now = Date.now()): boolean => !!bound && bound.lastSeen !== null && bound.awaySince(now) === null;
 
 // --- the digest
 export type DigestRow = {

@@ -53,7 +53,8 @@ export async function askRestart(st: Turns, reason: string) {
   });
   if (!ok) return;
   if (draining) return tipSay(null, "Keel is already restarting or stopping", 2400);
-  await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, reason }) });
+  // The owner's own restart goes at once: it never waits for them to step away.
+  await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, now: true, reason }) });
 }
 
 // The same from Search and commands, with the turns as the daemon counts them now.

@@ -93,7 +93,7 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   const b = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Parked and continued", text: ask("Run `sleep 20` with your shell tool in the foreground, then reply with the word continued.", scriptBash("sleep 20")) } })).json()).session;
   await expect.poll(async () => (await events(request, b.id)).some((e) => e.kind === "assistant"), { timeout: 60_000 }).toBe(true);
   const reloadedAgain = selfReload(page, hmr);
-  await request.post("/api/drain", { data: { restart: true, timeout_seconds: 1 } });
+  await request.post("/api/drain", { data: { restart: true, now: true, timeout_seconds: 1 } });
   await expect.poll(async () => { const d = await daemon(request); return d && d.pid !== pid1 ? d.pid : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
   await expect.poll(async () => (await events(request, b.id)).some((e) => e.kind === "user" && e.data.origin === "restart"), { timeout: 30_000 }).toBe(true);
   await expect.poll(async () => (await events(request, b.id)).filter((e) => e.kind === "turn_end").length, { timeout: 120_000 }).toBeGreaterThanOrEqual(2);

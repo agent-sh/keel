@@ -4,9 +4,9 @@
 // reloading, so nothing typed is lost).
 import { HardDrive, RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { drainWords, setDrain, useDrain } from "../lib/drain.ts";
+import { drainWords, setDrain, setRestartWait, useDrain, useRestartWait, waitWords } from "../lib/drain.ts";
 import { shell } from "../lib/shell.ts";
-import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
+import { api, downSince, onFeature, readAtOpen, reportError, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { clock } from "../lib/utils.ts";
 
@@ -16,6 +16,8 @@ const AWAY_AFTER_MS = 1_000;
 export function AdminBand() {
   // A drain is said from the daemon's first word of it (a stop signal, a restart asked for), with the turns it waits for.
   const draining = useDrain();
+  // A restart asked while the owner is here waits until they step away (src/admin/restart-wait.ts).
+  const waiting = useRestartWait();
   // The store's disk does not answer: since when, and whether nothing new is saved by now.
   const [disk, setDisk] = useState<{ full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null>(null);
   const [updated, setUpdated] = useState(false);
@@ -24,13 +26,14 @@ export function AdminBand() {
   const shellAway = useUI((s) => s.shellAway);
   const shellNote = useUI((s) => s.shellNote);
   useEffect(() => {
-    const check = () => api<{ build_id: string; draining: any; running?: number; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
+    const check = () => api<{ build_id: string; draining: any; restart_waiting?: any; running?: number; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
       build.current ??= b.build_id;
       setDrain(b.draining, b.running);
+      setRestartWait(b.restart_waiting);
       setDisk(b.store ?? null);
     });
-    return onFeature({ frame: (f) => { if (f.name === "daemon") { setDrain(f.data.draining, f.data.running); setDisk(f.data.store ?? null); } else if (f.name === "store") setDisk(f.data ?? null); }, reconnect: readAtOpen(check, "daemon status") });
+    return onFeature({ frame: (f) => { if (f.name === "daemon") { setDrain(f.data.draining, f.data.running); setRestartWait(f.data.restart_waiting); setDisk(f.data.store ?? null); } else if (f.name === "store") setDisk(f.data ?? null); }, reconnect: readAtOpen(check, "daemon status") });
   }, []);
   // A request the daemon turned away while draining (reportError says so): shown for a moment.
   const [refused, setRefused] = useState(false);
@@ -138,6 +141,18 @@ export function AdminBand() {
         <RotateCw className="size-3.5 shrink-0 text-brass" />
         <span className="truncate">{shellNote}</span>
         <button type="button" onClick={() => setUI({ shellNote: null })} className="k-btn shrink-0">OK</button>
+      </div>
+    );
+  }
+  // A restart that waits for the owner: one quiet line, with the two things to do about it.
+  if (waiting && !draining && !updated && connected) {
+    return (
+      <div role="status" data-testid="restart-waiting" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in"
+        title={waiting.reasons.length ? `Asked: ${waiting.reasons.join("; ")}` : undefined}>
+        <RotateCw className="size-3.5 shrink-0 text-faint" />
+        <span className="truncate text-muted">{waitWords(waiting, (ms) => clock(ms))}</span>
+        <button type="button" data-testid="restart-waiting-now" className="k-btn shrink-0" onClick={() => void api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, now: true, reason: "the waiting restart, asked now from the page" }) }).catch(reportError)}>Restart now</button>
+        <button type="button" data-testid="restart-waiting-off" className="k-btn shrink-0" onClick={() => void api("/api/drain/waiting", { method: "DELETE" }).catch(reportError)}>Not now</button>
       </div>
     );
   }

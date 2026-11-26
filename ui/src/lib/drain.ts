@@ -26,3 +26,20 @@ export function drainWords(d: Drain): string {
   const what = d.restart ? "Keel is restarting" : "Keel is stopping";
   return d.running > 0 ? `${what}: ${d.running} turn${d.running === 1 ? "" : "s"} at work.` : `${what}.`;
 }
+
+// A restart asked while the owner is at a page waits until they step away (src/admin/restart-wait.ts):
+// the band says so, with when it goes at the latest. Null when none waits.
+export type RestartWait = { since_ms: number; until_ms: number; asks: number; reasons: string[] };
+let wait: RestartWait | null = null;
+export function setRestartWait(w: RestartWait | null | undefined) {
+  const next = w ?? null;
+  if (JSON.stringify(next) === JSON.stringify(wait)) return;
+  wait = next;
+  subs.forEach((f) => f());
+}
+export const useRestartWait = (): RestartWait | null => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => wait);
+
+// "A restart waits until you step away, by 14:32." With how many were joined into it.
+export function waitWords(w: RestartWait, hhmm: (ms: number) => string): string {
+  return `A restart waits until you step away, by ${hhmm(w.until_ms)}${w.asks > 1 ? `. ${w.asks} restarts joined into one` : ""}.`;
+}

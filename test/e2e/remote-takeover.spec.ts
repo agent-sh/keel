@@ -393,7 +393,7 @@ test("resume from an ssh machine: a wait until idle survives a daemon restart", 
 
     // The daemon restarts while the original still works.
     const before = await pid();
-    await request.post("/api/drain", { data: { restart: true, timeout_seconds: 0 } });
+    await request.post("/api/drain", { data: { restart: true, now: true, timeout_seconds: 0 } });
     await expect.poll(async () => { const now = await pid(); return now && now !== before ? now : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
     expect(alive(original)).toBe(true);
     await expect.poll(async () => (await look().catch(() => ({}))).wait, { timeout: 60_000 }).toMatchObject({ state: "waiting", deadline_ms: wait.deadline_ms, started_ms: wait.started_ms, process: wait.process });

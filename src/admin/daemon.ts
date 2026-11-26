@@ -26,6 +26,8 @@ import { StallProfiler } from "./stall-profile.ts";
 import { join } from "node:path";
 import { liveJobs } from "../tools/jobs.ts";
 import { COMMAND_WAIT_MS, commandsBegin, commandsEnd, type Front, waitForCommands } from "./drain-commands.ts";
+import { ownerHere } from "./away.ts";
+import { dueNow, join as joinRestart, joinedReason, LOOK_MS, type RestartWaiting } from "./restart-wait.ts";
 
 export * from "../core/daemon-lock.ts";
 export { relaunchArgv };
@@ -125,6 +127,11 @@ export class Daemon {
   // The last restart that was called off (what had to hold before it did not),
   // until the next drain: the page and `keel restart` say so.
   restartFailed: { ts_ms: number; error: string } | null = null;
+  // A restart that waits for the owner to step away (src/admin/restart-wait.ts), with every ask joined into it.
+  restartWaiting: RestartWaiting | null = null;
+  private restartLook?: ReturnType<typeof setInterval>;
+  // Whether the owner is at a page now (the away detector's word); a test gives its own.
+  here: (now: number) => boolean = ownerHere;
   // The process was told to stop (a signal): it stops, whatever a restart was doing.
   private stopping = false;
   private beforeExit: (() => void | Promise<void>)[] = [];
@@ -283,6 +290,8 @@ export class Daemon {
       // The store's disk does not answer (src/core/checkpoint.ts): since when, and whether the store takes no writes by now.
       store: this.disk(),
       restart_failed: this.restartFailed,
+      // A restart asked while the owner is at a page: it goes when they step away, or at `until_ms`.
+      restart_waiting: this.restartWaiting,
       stalls: this.stalls,
       // The thread that looks at the main one when the loop is held, or why there is none.
       stall_watch: this.sight ? { running: this.sight.running, ...(this.sight.tid ? { tid: this.sight.tid } : {}), ...(this.sight.why ? { off: this.sight.why } : {}) } : null,
@@ -322,6 +331,49 @@ export class Daemon {
     this.emit();
   }
 
+  // A restart asked: at once when `now` says it must not wait or the owner is not at a page, else it waits
+  // for them to step away, joined with any restart already waiting. A stop is never held: drain() itself.
+  // Answers the wait when it waits, null when the restart began.
+  restart(opts: { timeoutMs: number; reason?: string; now?: boolean }, at = Date.now()): RestartWaiting | null {
+    if (this.draining) { void this.drain({ timeoutMs: opts.timeoutMs, restart: true, reason: opts.reason }); return null; }
+    const w = joinRestart(this.restartWaiting, { at, timeoutMs: opts.timeoutMs, reason: opts.reason });
+    const due = opts.now ? "now" : dueNow(w, this.here(at), at);
+    if (due) {
+      // The ones that waited go with it: one restart, every reason.
+      const joined = this.restartWaiting;
+      this.settleWait();
+      void this.drain({ timeoutMs: w.timeout_ms, restart: true, reason: joined ? joinedReason(w, due) : opts.reason });
+      return null;
+    }
+    this.restartWaiting = w;
+    if (!this.restartLook) {
+      this.restartLook = setInterval(() => this.lookAgain(), LOOK_MS);
+      this.restartLook.unref?.();
+    }
+    say(`restart asked${opts.reason ? ` (${opts.reason})` : ""}: it waits while the owner is at a page, ${w.asks} asked`);
+    this.emit();
+    return w;
+  }
+
+  private lookAgain(now = Date.now()) {
+    const w = this.restartWaiting;
+    if (!w) return this.settleWait();
+    const due = this.draining ? "now" : dueNow(w, this.here(now), now);
+    if (!due) return;
+    this.settleWait();
+    if (!this.draining) void this.drain({ timeoutMs: w.timeout_ms, restart: true, reason: joinedReason(w, due) });
+  }
+
+  // The waiting restart is called off (the owner said not now), or it began.
+  settleWait(): boolean {
+    clearInterval(this.restartLook);
+    this.restartLook = undefined;
+    const had = !!this.restartWaiting;
+    this.restartWaiting = null;
+    if (had) this.emit();
+    return had;
+  }
+
   // Stops taking work, lets each running turn reach its next step boundary (the model requests on their way
   // are waited for until the deadline: src/engine/drain-wait.ts), waits a minute more for the commands in
   // front of them (drain-commands.ts), makes the backup beside that, and the
@@ -334,6 +386,8 @@ export class Daemon {
       this.emit();
       return this.finished;
     }
+    // A restart that waited is this drain now (a stop asked meanwhile stops: it does not wait for the owner either).
+    this.settleWait();
     this.draining = { since_ms: Date.now(), restart: opts.restart, deadline_ms: Date.now() + opts.timeoutMs };
     lifeDraining();
     this.restartFailed = null;

@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import { unitFor, updateUnit } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../core/daemon-lock.ts";
 import { restartSummary, restartTurnLine, type RestartTurn } from "../admin/life-rows.ts";
+import { waitingWords } from "../admin/restart-wait.ts";
 import { parseBind } from "../core/bind.ts";
 import { configDir } from "../providers/config.ts";
 import { authHeaders, clean, findDaemon, refusal } from "./client.ts";
@@ -98,6 +99,7 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type:
     d.restart_failed ? `restart  called off at ${time(d.restart_failed.ts_ms)}. ${d.restart_failed.error}` : "",
     // The last start: when the daemon before it went down, how, and each turn that cut.
     ...(d.last_start && (d.last_start.before || d.last_start.turns.length) ? [`start    ${restartSummary(d.last_start)}`, ...d.last_start.turns.map((t: RestartTurn) => `           ${restartTurnLine(t)}${t.state === "held" && t.why ? `\n             ${t.why}` : ""}`)] : []),
+    d.restart_waiting ? `restart  ${waitingWords(d.restart_waiting, (ms) => time(ms))}` : "",
     a ? `awake    ${a.held ? `held (${a.reason})` : a.available ? "not held" : `not available${a.refused ? `: ${a.refused}` : ""}`}, mode ${a.mode}${a.on_battery ? ", on battery" : ""}` : "",
   ].filter(Boolean).join("\n"));
   return 0;
@@ -137,14 +139,16 @@ async function follow(url: string, oldPid: number, back: boolean, limitMs: numbe
 }
 
 const drainCmd = (restart: boolean, upgrade = false) =>
-  wrap(`keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} [--timeout SECONDS] [--no-wait] [--url URL]\n  ${upgrade ? "Restarts the daemon from the binary already at its path, the same as keel restart.\n  It installs nothing: put a new binary there first.\n  " : ""}Stops new work, stops each running turn at its next step (a model request on its way gets up to 120 s by default), waits up to 60 s more for the commands a turn is still waiting on, parks the turns so they continue after the start, then ${restart ? "starts the daemon again from its binary" : "stops the daemon"}.`,
-    { timeout: { type: "string" }, "no-wait": { type: "boolean" } },
+  wrap(`keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} [--timeout SECONDS]${restart ? " [--now]" : ""} [--no-wait] [--url URL]\n  ${upgrade ? "Restarts the daemon from the binary already at its path, the same as keel restart.\n  It installs nothing: put a new binary there first.\n  " : ""}Stops new work, stops each running turn at its next step (a model request on its way gets up to 120 s by default), waits up to 60 s more for the commands a turn is still waiting on, parks the turns so they continue after the start, then ${restart ? "starts the daemon again from its binary" : "stops the daemon"}.${restart ? "\n  While you are at a page the restart waits until you step away (30 minutes at most), joined with any other restart\n  asked meanwhile, and the command ends at once saying so. --now restarts at once (an urgent build)." : ""}`,
+    { timeout: { type: "string" }, "no-wait": { type: "boolean" }, ...(restart ? { now: { type: "boolean" as const } } : {}) },
     async (v) => {
       const url = urlOf(v.url);
       const d = await call(url, "/api/daemon");
       const t = v.timeout === undefined ? 120 : Number(v.timeout);
       if (!(t >= 0)) throw new Error("--timeout is a number of seconds");
-      const r = await call(url, "/api/drain", { method: "POST", body: JSON.stringify({ timeout_seconds: t, restart, reason: `keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} from a terminal` }) });
+      const r = await call(url, "/api/drain", { method: "POST", body: JSON.stringify({ timeout_seconds: t, restart, ...(restart && (v as { now?: boolean }).now ? { now: true } : {}), reason: `keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} from a terminal` }) });
+      // The daemon holds it for the owner to step away: nothing to follow now.
+      if (r.waiting) return (console.log(`waiting: ${waitingWords(r.waiting, (ms) => time(ms))}`), 0);
       console.log(`draining: ${r.running.length} turns running, up to ${t} s`);
       note(r.notes);
       if (v["no-wait"]) return 0;

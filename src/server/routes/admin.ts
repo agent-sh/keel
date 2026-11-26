@@ -167,6 +167,8 @@ export const adminRoutes: RouteModule = (deps) => {
         pid: process.pid,
         started_ms: daemon.started,
         draining: daemon.draining,
+        // A restart that waits for the owner to step away: the band says so.
+        restart_waiting: daemon.restartWaiting,
         // The sessions with a turn running: what a drain waits for, said with it.
         running: daemon.runningSessions().length,
         // The store's disk does not answer (src/core/checkpoint.ts): the page says so across its top.
@@ -281,17 +283,27 @@ export const adminRoutes: RouteModule = (deps) => {
     "/api/drain": {
       POST: async (req: Request) => {
         const b = (await body(req)) ?? {};
-        if (typeof b !== "object" || (b.timeout_seconds !== undefined && !(Number(b.timeout_seconds) >= 0)) || (b.restart !== undefined && typeof b.restart !== "boolean")) {
-          return json({ error: "the body is { timeout_seconds?: number, restart?: boolean, reason?: string }" }, 400);
+        if (typeof b !== "object" || (b.timeout_seconds !== undefined && !(Number(b.timeout_seconds) >= 0)) || (b.restart !== undefined && typeof b.restart !== "boolean") || (b.now !== undefined && typeof b.now !== "boolean")) {
+          return json({ error: "the body is { timeout_seconds?: number, restart?: boolean, now?: boolean, reason?: string }" }, 400);
         }
         const running = daemon.runningSessions();
         // `reason`: why it was asked, a few words for the log (keel restart and the page say who asked).
         const reason = typeof b.reason === "string" && b.reason.trim() ? b.reason.replace(/\s+/g, " ").trim().slice(0, 120) : undefined;
-        daemon.drain({ timeoutMs: (b.timeout_seconds ?? DRAIN_DEFAULT_S) * 1000, restart: !!b.restart, reason });
+        const timeoutMs = (b.timeout_seconds ?? DRAIN_DEFAULT_S) * 1000;
+        // A restart that does not say `now` waits while the owner is at a page (src/admin/restart-wait.ts).
+        if (b.restart) {
+          const waiting = daemon.restart({ timeoutMs, reason, now: b.now === true });
+          if (waiting) return json({ ok: true, running, restart: true, waiting });
+        } else daemon.drain({ timeoutMs, restart: false, reason });
         // (`notes`: what this stop or restart does not do, known as it begins: no backup when the store's disk does not answer.)
         const notes = daemon.draining?.notes;
         return json({ ok: true, running, restart: !!b.restart, ...(notes?.length ? { notes } : {}) });
       },
+    },
+
+    // The restart that waits for the owner to step away: called off. (A restart now is POST /api/drain with now.)
+    "/api/drain/waiting": {
+      DELETE: () => json({ ok: true, cancelled: daemon.settleWait() }),
     },
 
     "/api/awake": {
