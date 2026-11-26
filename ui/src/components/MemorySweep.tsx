@@ -20,7 +20,10 @@ export function said(s: System): { gave: string; used: string } {
   const f = s.figures;
   if (s.id === "tacit") return { gave: `${plural(f.recalls!, "recall")}, ${plural(f.facts!, "fact")}, ${fmtTokens(f.tokens!)} tokens`, used: f.checked ? `${f.named} of ${f.checked} facts named${f.rules ? `; ${f.followed} of ${plural(f.rules, "rule")} followed, ${f.broken} broken` : ""}` : "nothing to judge yet" };
   if (s.id === "helper") return { gave: `${plural(f.recalls!, "recall")}; ${plural(f.records!, "record")} kept`, used: f.checked ? `${f.recalls_used} of ${f.checked} recalls used; ${f.stale} stale` : `nothing recalled; ${f.stale} stale` };
-  if (s.id === "momentum") return { gave: plural(f.acts!, "nudge"), used: f.ended! + f.interrupted! + f.failed! ? `${f.ended} ended on their own, ${f.interrupted} stopped, ${f.failed} failed` : "nothing followed yet" };
+  if (s.id === "momentum") {
+    const seen = [f.ended! + f.interrupted! + f.failed! ? `turns it reached: ${f.ended} ended on their own, ${f.interrupted} stopped, ${f.failed} failed` : "", f.stops ? `${f.stops} stop${f.stops === 1 ? "" : "s"} seen` : "", f.pending ? `${f.pending} not seen yet` : ""].filter(Boolean);
+    return { gave: plural(f.acts!, "nudge"), used: seen.join("; ") || "nothing followed yet" };
+  }
   const m = s.measure;
   return { gave: s.on ? `loaded in ${plural(f.sessions!, "session")}; ${plural(f.notes!, "note")}` : (s.note ?? "off"), used: [m?.given ? `${m.used} of ${m.given} facts used` : "", f.sessions ? `${f.accessed ?? 0} of ${plural(f.sessions, "session")} opened its files` : ""].filter(Boolean).join("; ") || "no session loaded it" };
 }

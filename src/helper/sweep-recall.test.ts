@@ -1,7 +1,7 @@
 // The sweep's recall figures: facts of a native memory, what later steps used of them, the mistakes a
 // note forbids made anyway, the one improvement of a system, and when a number moved.
 import { expect, test } from "bun:test";
-import { indexFacts, judge, lineOf, moved, nextOf, recallOf, stepOf, summaryFacts, STEPS_MAX } from "./sweep-recall.ts";
+import { indexFacts, judge, lineOf, moved, nextOf, nudgeOutcomes, recallOf, stepOf, summaryFacts, STEPS_MAX } from "./sweep-recall.ts";
 
 const step = (text: string, ...calls: { name: string; input: unknown }[]) => stepOf({ blocks: [{ type: "text", text }, ...calls.map((c, i) => ({ type: "tool_use", id: `c${i}`, ...c }))] });
 
@@ -74,4 +74,22 @@ test("the helper's line names each measured system once and leaves out the empty
   expect(lineOf([{ label: "a", short: "tacit", measure: { given: 10, used: 3, mistakes: 0, tokens: 1 } }, { label: "b", short: "Claude", measure: { given: 4, used: 1, mistakes: 2, tokens: 0 } }, { label: "c", short: "Codex", measure: { given: 0, used: 0, mistakes: 0, tokens: 0 } }]))
     .toBe("tacit 30% used; Claude 25% used, 2 repeats");
   expect(lineOf([])).toBe("nothing recalled to judge");
+});
+
+test("a nudge is credited to the turn it was delivered into: a held queue earns the running turn nothing, two nudges in one turn are one outcome", () => {
+  const acts = [
+    { id: 1, ts: 100, action: "queue" }, // queued while turn A runs; delivered after it
+    { id: 2, ts: 400, action: "steer" }, // steered into turn B
+    { id: 3, ts: 700, action: "interrupt" },
+    { id: 4, ts: 900, action: "queue" }, // never delivered
+  ];
+  const users = [{ seq: 5, ts: 300 }, { seq: 7, ts: 450 }];
+  const ends = [
+    { id: "A", seq: 3, ts: 200, reason: "end_turn", stopped_by: null },
+    { id: "B", seq: 9, ts: 600, reason: "interrupted", stopped_by: "owner" },
+    { id: "C", seq: 12, ts: 800, reason: "interrupted", stopped_by: "supervisor" },
+  ];
+  expect(nudgeOutcomes(acts, users, ends)).toEqual({ ended: 0, interrupted: 1, failed: 0, stops: 1, pending: 1, turns: ["B"] });
+  // No acts: nothing judged.
+  expect(nudgeOutcomes([], users, ends)).toEqual({ ended: 0, interrupted: 0, failed: 0, stops: 0, pending: 0, turns: [] });
 });

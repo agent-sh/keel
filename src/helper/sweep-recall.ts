@@ -162,3 +162,43 @@ export function lineOf(systems: readonly { label: string; short: string; measure
   });
   return parts.length ? parts.join("; ") : "nothing recalled to judge";
 }
+
+// --- what followed a supervisor's nudge ---------------------------------------------------
+
+export type Act = { id: number; ts: number; action: string };
+// A user event momentum's text became (origin "momentum"), and a turn's end.
+export type Delivered = { seq: number; ts: number };
+export type TurnEnd = { id: string; seq: number; ts: number; reason: string | null; stopped_by: string | null };
+export type Nudges = { ended: number; interrupted: number; failed: number; stops: number; pending: number; turns: string[] };
+
+// The outcome of one session's nudges, each credited to the turn it was delivered into: a queue or a
+// steer to the first of momentum's messages stored at or after it that no earlier nudge took, then
+// to the end of the turn that read it; an interrupt to the turn end after it that says the supervisor
+// stopped it. Two nudges read by one turn are one outcome. A nudge with no delivery, or a delivery
+// no turn has ended yet, is pending: unobserved, never a success. Observed outcomes, not their cause.
+export function nudgeOutcomes(acts: readonly Act[], delivered: readonly Delivered[], ends: readonly TurnEnd[]): Nudges {
+  const out: Nudges = { ended: 0, interrupted: 0, failed: 0, stops: 0, pending: 0, turns: [] };
+  const taken = new Set<number>(), turns = new Map<string, TurnEnd>();
+  const byTs = [...acts].sort((a, b) => a.ts - b.ts || a.id - b.id);
+  const msgs = [...delivered].sort((a, b) => a.seq - b.seq), fin = [...ends].sort((a, b) => a.seq - b.seq);
+  for (const a of byTs) {
+    if (a.action === "interrupt") {
+      const e = fin.find((x) => x.ts >= a.ts && x.stopped_by === "supervisor");
+      if (e) out.stops++; else out.pending++;
+      continue;
+    }
+    const m = msgs.find((x) => x.ts >= a.ts && !taken.has(x.seq));
+    if (!m) { out.pending++; continue; }
+    taken.add(m.seq);
+    const e = fin.find((x) => x.seq > m.seq);
+    if (!e) { out.pending++; continue; }
+    turns.set(e.id, e);
+  }
+  for (const e of turns.values()) {
+    out.turns.push(e.id);
+    if (e.reason === "interrupted") out.interrupted++;
+    else if (e.reason === "error" || e.reason === "failed") out.failed++;
+    else out.ended++;
+  }
+  return out;
+}

@@ -10,14 +10,15 @@
 // - Claude Code's auto memory: its index facts a loading session's next steps used, of the facts loaded
 //   (src/helper/sweep-recall.ts); with no steps to judge, access: the loading sessions that read or wrote a file of it;
 // - Codex's memories: the same, for its summary and folder;
-// - momentum: nudges after which the session's next turn ended on its own, of the nudges sent.
+// - momentum: the turns its nudges were delivered into that ended on their own, of those that ended
+//   (a nudge not delivered or not ended yet is pending: unobserved; observed outcomes, not their cause).
 // A system with nothing in the window says so (`helped: null`), never a zero.
 import { existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
 import { notesOf, type NoteFile } from "../engine/native-memory.ts";
 import { bytesPerToken } from "../engine/compact.ts";
-import { bansIn, indexFacts, judge, lineOf, moved, nextOf, recallOf, stepOf, summaryFacts, SESSIONS_MAX, STEPS_MAX, type Measure, type Next, type Recall } from "./sweep-recall.ts";
+import { bansIn, indexFacts, judge, lineOf, moved, nextOf, nudgeOutcomes, recallOf, stepOf, summaryFacts, SESSIONS_MAX, STEPS_MAX, type Act, type Delivered, type Measure, type Next, type Nudges, type Recall, type TurnEnd } from "./sweep-recall.ts";
 
 export const DAY = 86_400_000;
 // What a fact must have been given before the sweep says it never helped, in the days it looks back.
@@ -56,7 +57,7 @@ export type PathRow = { path: string; asked: number; recalls: number; empty: num
 export type FactRow = { name: string; given: number; sessions: number; checked: number; used: number; rule: number; followed: number; broken: number; tokens: number; last: number };
 export type RecordRow = { key: string; value: string; kind: string; source: string; ts: number; updated: number; used: number };
 export type NativeRow = { system: string; action: string; rows: number; sessions: number; bytes: number };
-export type ActRow = { action: string; ok: number; ended: number; interrupted: number; failed: number };
+export type ActRow = { action: string; ok: number };
 
 const sum = (rows: PathRow[], k: keyof PathRow) => rows.reduce((n, r) => n + num(r[k]), 0);
 
@@ -92,12 +93,10 @@ export function nativeSystem(id: "claude" | "codex", log: NativeRow[], dirs: { d
   return { id, label: id === "claude" ? "Claude Code auto memory" : "Codex memories", on, ...(note ? { note } : {}), figures: f, helped: share(f.accessed, f.sessions!) };
 }
 
-export function momentumSystem(rows: ActRow[], on: boolean): System {
-  const n = (k: keyof ActRow) => rows.reduce((s, r) => s + num(r[k]), 0);
-  const acts = rows.reduce((s, r) => s + r.ok, 0);
-  const f: Figures = { acts, steer: rows.find((r) => r.action === "steer")?.ok ?? 0, queue: rows.find((r) => r.action === "queue")?.ok ?? 0, interrupt: rows.find((r) => r.action === "interrupt")?.ok ?? 0, ended: n("ended"), interrupted: n("interrupted"), failed: n("failed") };
-  const judged = f.ended! + f.interrupted! + f.failed!;
-  return { id: "momentum", label: "Supervisor (momentum)", on, figures: f, helped: share(f.ended!, judged) };
+export function momentumSystem(rows: ActRow[], o: Nudges, on: boolean): System {
+  const ok = (a: string) => rows.find((r) => r.action === a)?.ok ?? 0;
+  const f: Figures = { acts: rows.reduce((s, r) => s + r.ok, 0), steer: ok("steer"), queue: ok("queue"), interrupt: ok("interrupt"), ended: o.ended, interrupted: o.interrupted, failed: o.failed, stops: o.stops, pending: o.pending };
+  return { id: "momentum", label: "Supervisor (momentum)", on, figures: f, helped: share(o.ended, o.ended + o.interrupted + o.failed) };
 }
 
 // --- offers ------------------------------------------------------------------------
@@ -331,16 +330,20 @@ export async function sweep(d: SweepDeps): Promise<Card> {
   const claudeDirs = found.filter((x) => x.system === "claude").map((x) => ({ dir: x.dir, notes: x.notes, index: x.index }));
   const codexDirs = found.filter((x) => x.system === "codex").map((x) => ({ dir: x.dir, notes: x.notes, index: x.index }));
   const reads = new Set(db.query<{ file: string }, [number]>("SELECT DISTINCT file FROM native_memory_log WHERE action IN ('read', 'wrote') AND file != '' AND ts >= ?").all(now - 90 * DAY).map((r) => r.file));
-  // What followed each nudge: the session's next turn end.
-  const byAct: ActRow[] = [];
-  for (const a of acts) {
-    const row: ActRow = { action: a.action, ok: a.ok, ended: 0, interrupted: 0, failed: 0 };
-    for (const n of db.query<{ session_id: string; ts: number }, [string, number, number]>("SELECT session_id, ts FROM momentum_acts WHERE action = ? AND ts >= ? AND ts < ?").all(a.action, since, now)) {
-      const e = db.query<{ reason: string | null }, [string, number]>("SELECT data ->> '$.reason' AS reason FROM events WHERE session_id = ? AND kind = 'turn_end' AND ts > ? ORDER BY ts LIMIT 1").get(n.session_id, n.ts);
-      if (!e) continue;
-      if (e.reason === "interrupted") row.interrupted++; else if (e.reason === "error" || e.reason === "failed") row.failed++; else row.ended++;
+  // What followed each nudge: the turn it was delivered into (src/helper/sweep-recall.ts nudgeOutcomes), read per session.
+  const nudges: Nudges = { ended: 0, interrupted: 0, failed: 0, stops: 0, pending: 0, turns: [] };
+  if (acts.length) {
+    const list = await d.sql<Act & { session_id: string }>("SELECT id, session_id, ts, action FROM momentum_acts WHERE ts >= ? AND ts < ? ORDER BY ts", [since, now]);
+    for (const sid of new Set(list.map((a) => a.session_id))) {
+      const mine = list.filter((a) => a.session_id === sid), from = mine[0]!.ts;
+      const [users, ends] = await Promise.all([
+        d.sql<Delivered>("SELECT seq, ts FROM events WHERE session_id = ? AND kind = 'user' AND ts >= ? AND data ->> '$.origin' = 'momentum' ORDER BY seq", [sid, from]),
+        d.sql<TurnEnd>("SELECT id, seq, ts, data ->> '$.reason' AS reason, data ->> '$.stopped_by' AS stopped_by FROM events WHERE session_id = ? AND kind = 'turn_end' AND ts >= ? ORDER BY seq", [sid, from]),
+      ]);
+      const o = nudgeOutcomes(mine, users, ends);
+      for (const k of ["ended", "interrupted", "failed", "stops", "pending"] as const) nudges[k] += o[k];
+      nudges.turns.push(...o.turns);
     }
-    byAct.push(row);
   }
   const claudeOn = !!found.length || nlog.some((r) => r.system === "claude");
   const [claudeRecall, codexRecall] = await Promise.all([nativeRecall(d, "claude", since, now), nativeRecall(d, "codex", since, now)]);
@@ -349,7 +352,7 @@ export async function sweep(d: SweepDeps): Promise<Card> {
     measured(helperSystem(paths, records, now)),
     measured(nativeSystem("claude", nlog, claudeDirs, claudeOn, claudeOn ? undefined : "no session has loaded it yet", accessed("claude")), [], claudeRecall),
     measured(nativeSystem("codex", nlog, codexDirs, nlog.some((r) => r.system === "codex"), nlog.some((r) => r.system === "codex") ? undefined : "off, or no session has loaded it yet", accessed("codex")), [], codexRecall),
-    measured(momentumSystem(byAct, d.momentum.on)),
+    measured(momentumSystem(acts, nudges, d.momentum.on)),
   ];
   const id = Bun.randomUUIDv7();
   const offers = offersFrom({ facts, records, native: claudeDirs, reads, now, sweep: id });

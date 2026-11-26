@@ -52,11 +52,14 @@ test("the card's figures per system come from the day's rows, and a system with 
   log.note("b", "claude", "wrote", join(nd, "y.md"), 0, at);
   put(join(nd, "MEMORY.md"), "- [x](xnote.md): one\n");
   put(join(nd, "xnote.md"), "---\ntype: user\n---\nx");
-  // Momentum: two nudges; the turn after the first ended on its own, the owner stopped the one after the second.
+  // Momentum: a queue held while turn A ran, read by turn B after it, and a steer into B that the owner
+  // stopped: one outcome, B's. A's end is not the queue's. A last queue was never delivered.
   const s = store.createSession({ model: "p:m", workspace: dir });
-  const act = store.db.query("INSERT INTO momentum_acts (session_id, ts, action) VALUES (?, ?, 'steer')");
-  act.run(s.id, at); act.run(s.id, at + 5000);
+  const act = store.db.query("INSERT INTO momentum_acts (session_id, ts, action) VALUES (?, ?, ?)");
+  act.run(s.id, at, "queue"); act.run(s.id, at + 3000, "steer"); act.run(s.id, at + 8000, "queue");
   store.append(s.id, "turn_end", { reason: "end_turn" }, undefined, at + 1000);
+  store.append(s.id, "user", { text: "[momentum] go on", origin: "momentum" }, undefined, at + 2000);
+  store.append(s.id, "user", { text: "[momentum] and check", origin: "momentum" }, undefined, at + 3500);
   store.append(s.id, "turn_end", { reason: "interrupted" }, undefined, at + 6000);
   const card = await sweep({ sql, store, tacit: { on: true, falls: 1 }, momentum: { on: true }, now });
   const by = Object.fromEntries(card.systems.map((x) => [x.id, x]));
@@ -70,8 +73,8 @@ test("the card's figures per system come from the day's rows, and a system with 
   expect(by.claude!.helped).toBe(0.5);
   expect(by.codex!.helped).toBeNull();
   expect(by.codex!.on).toBe(false);
-  expect(by.momentum!.figures).toMatchObject({ acts: 2, steer: 2, ended: 1, interrupted: 1 });
-  expect(by.momentum!.helped).toBe(0.5);
+  expect(by.momentum!.figures).toMatchObject({ acts: 3, steer: 1, queue: 2, ended: 0, interrupted: 1, pending: 1 });
+  expect(by.momentum!.helped).toBe(0);
   expect(card.offers.map((o) => o.kind)).toEqual(["drop_record"]);
 });
 

@@ -52,6 +52,8 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     await expect(by("codex")).toContainText("no session has loaded it yet");
     await expect(by("codex").getByTestId("sweep-helped")).toHaveCount(0);
     await expect(by("momentum")).toContainText("1 nudge");
+    // Its one nudge was never delivered into a turn: unobserved, not a success.
+    await expect(by("momentum")).toContainText("1 not seen yet");
     await expect(next("tacit")).toContainText("code-word");
 
     // Three offers: the stale record, the fact never named, the index that misses a note.
