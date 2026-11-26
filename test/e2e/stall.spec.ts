@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 // Feature: the daemon says when it was itself unresponsive. Code that holds
 // its event loop (here the scripted model's `script:block`, a busy loop inside
@@ -154,7 +156,7 @@ test("each stall names what took the time: a child it waited for, its own code, 
   await shoot(page, "stall-03-daemon-list");
 });
 
-test("a stall that begins in code nothing times, with the daemon idle, is still recorded", async ({ page, request }) => {
+test("a stall that begins in code nothing times, with the daemon idle, is still recorded", async ({ request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   test.skip(process.platform !== "linux", "the watcher reads Linux's /proc");
@@ -162,20 +164,25 @@ test("a stall that begins in code nothing times, with the daemon idle, is still 
   // The stalls of this start, the newest first, as Settings > Daemon lists them.
   const list = async () => (await (await request.get("/api/daemon")).json()).stalls as { ts_ms: number; ms: number; what: string; kind: string }[];
   const t0 = Date.now();
-  // The turn answers at once; a timer of its own holds the loop for 2.6 s, nine seconds later.
+  // The turn answers at once. Allow one full idle watcher interval before the measured
+  // stall clears the two-second reporting threshold.
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
+  mkdirSync(ws, { recursive: true });
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Holds the daemon later" } })).json();
-  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:block-later 2600 9000" } });
-  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.settings.last_end, { timeout: 30_000 }).toBe("end_turn");
-  // Nothing is asked of the daemon meanwhile: it goes idle (no turn, no request for five seconds), its
-  // timer rests until something is due, and the stall falls inside that rest.
-  await page.waitForTimeout(14_000);
+  const done = join(ws, `idle-stall-${session.id}`);
+  try {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:block-later 3600 9000 ${done}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.settings.last_end, { timeout: 30_000 }).toBe("end_turn");
+    // Wait outside the daemon so no request can wake its idle timer during the stall.
+    await expect.poll(() => existsSync(done), { timeout: 30_000 }).toBe(true);
+  } finally { rmSync(done, { force: true }); }
   await expect.poll(async () => (await list()).filter((x) => x.ts_ms > t0).length, { timeout: 15_000 }).toBe(1);
   const stall = (await list())[0]!;
   expect(stall).toMatchObject({ kind: "compute", what: "blocked by its own code, outside anything it times" });
   expect(stall.ms).toBeGreaterThanOrEqual(2000);
-  expect(stall.ms).toBeLessThan(4000);
+  expect(stall.ms).toBeLessThan(5000);
   // Its log line: how long, what, and no turn or request with it (the daemon was idle).
   const lines = ((await (await request.get(`/api/logs?since_ms=${t0}&level=error&q=${encodeURIComponent("Daemon unresponsive")}`)).json()).lines as any[]).map((l) => l.text as string);
   expect(lines.length).toBe(1);
-  expect(lines[0]).toMatch(/Daemon unresponsive for [23]\.\d s: blocked by its own code, outside anything it times$/);
+  expect(lines[0]).toMatch(/Daemon unresponsive for [234]\.\d s: blocked by its own code, outside anything it times$/);
 });

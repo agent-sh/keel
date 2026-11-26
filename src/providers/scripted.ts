@@ -886,13 +886,14 @@ export class ScriptedProvider implements Provider {
         return reply("Answered after holding the daemon.");
       }
       case "block-later": {
-        // `script:block-later <ms> <after_ms>`: answers at once, and holds the
+        // `script:block-later <ms> <after_ms> [done_file]`: answers at once, and holds the
         // loop that long from a timer after `after_ms`, as a callback nothing
         // times does when the daemon has gone idle again.
-        const [, ms, after] = owner.match(/script:block-later\s+(\d+)\s+(\d+)/) ?? [];
+        const [, ms, after, done] = owner.match(/script:block-later[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(\S+))?/) ?? [];
         setTimeout(() => {
           const until = performance.now() + Math.min(Number(ms ?? 1500), 30_000);
           for (;;) if (performance.now() >= until) break;
+          if (done) writeFileSync(done, "");
         }, Math.min(Number(after ?? 8000), 120_000));
         return reply("Answered; the daemon is held later.");
       }
