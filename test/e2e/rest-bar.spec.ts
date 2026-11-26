@@ -185,6 +185,7 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
       await expect(page.getByTestId("menu-close")).toHaveAttribute("title", /\((Alt|⌥) W\)$/);
       if (width !== 1920) await shoot(page, `rest-bar-05-alone-${width}`);
       await page.keyboard.press("Escape");
+      await expect(page.getByTestId("menu-close")).toBeHidden();
       // Pinned and alone, the head keeps the pressed pin and nothing else: it is the pane's one cue that the session is pinned.
       await request.patch(`/api/sessions/${a}`, { data: { pinned: true } });
       await expect(head.getByTestId("station-pin")).toBeVisible();
@@ -204,6 +205,7 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
       await expect(page.getByTestId("menu-rename")).toBeVisible();
       await expect(page.getByTestId("menu-pin")).toHaveCount(0);
       await page.keyboard.press("Escape");
+      await expect(page.getByTestId("menu-rename")).toBeHidden();
       await setPanes(page, 1);
     }
   } finally {
