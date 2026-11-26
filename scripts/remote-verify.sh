@@ -41,7 +41,8 @@
 # committed, no host, a tool missing there), 3 when the host is too busy to start (a load
 # over 20, or no free place within the wait: at most four runs are on a host at once; KEEL_VERIFY_MAX_LOAD and
 # KEEL_VERIFY_MAX_RUNS change both; a landing queue's own run, KEEL_LAND_QUEUE=1 in its environment, has a place
-# of its own that no other run takes and is not refused for the load). The last line, a refusal's too, is the outcome with that
+# of its own that no other run takes and is not refused for the load, also when it falls back to a common place;
+# the variable is advisory: any run can set it, which costs no more than a place). The last line, a refusal's too, is the outcome with that
 # code: `remote-verify: Summary: every stage passed (exit 0)`, so a wait on the output can
 # match `remote-verify: Summary:` and know the run is over.
 set -euo pipefail
@@ -192,8 +193,9 @@ while [ "$got" = 0 ]; do
   run sleep 10; waited=$((waited + 10))
 done
 load=$(cut -d' ' -f1 /proc/loadavg)
-# (A landing's run is not refused: the landing would fail for it, and its run is niced like every other.)
-if [ "$got" != land ] && awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l > m) }'; then say "this host's load is $load (over $MAX_LOAD): not started"; exit 3; fi
+# (A landing's run is not refused for load, in its kept place or a common one: the landing would fail for it, and its
+# run is niced like every other.)
+if [ "${KEEL_VERIFY_LAND:-0}" != 1 ] && awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l > m) }'; then say "this host's load is $load (over $MAX_LOAD): not started"; exit 3; fi
 
 # Folders of commits and runs older than KEEP_DAYS go, unless a run holds them.
 old() { find "$1" -mindepth 1 -maxdepth 1 -type d -mtime +$((KEEP_DAYS - 1)) 2> /dev/null; }

@@ -427,7 +427,8 @@ under `~/.cache/keel-work/bun/research/`.
   through its own queue: the land block runs typecheck, both conventions tests, the touched tests
   (`scripts/touched-tests.ts`) and the scripts stage on the clone's verify host (`git config keel.verifyHost`; the
   queue gives its commands `KEEL_LAND_QUEUE=1`, and `scripts/remote-verify.sh` keeps a place on the host for them
-  that no other run takes),
+  that no other run takes; the variable is advisory, any run can set it, and it buys no more than that place and
+  no refusal for the host's load),
   pushes to origin, and `.keel/land-install.sh` builds the landed commit from a checkout of its own and installs
   over the compiled daemon that landed it what changed (`scripts/install-kind.ts`): nothing when no file the
   binary is compiled from (its import graph, `src/core/api-stamp.ts`), no file of the build and no toolchain file

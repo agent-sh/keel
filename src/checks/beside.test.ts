@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { askHost, changed, commandOf, gapOf, reachOf, stillGreen, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
+import { askHost, changed, outcomeOf, pathsOf, preloadOf, commandOf, gapOf, reachOf, stillGreen, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
 import { parseChecks } from "./named.ts";
 
 test("the steps of a window are one run, one run at a time, and a turn's end runs what waits at once", () => {
@@ -232,13 +232,51 @@ test("a test that passed stands while nothing it reaches changed: its imports to
   const green = ["src/a.test.ts", "src/d.test.ts", "src/walk.test.ts"];
   // A change three imports down touches a.test.ts; a doc touches nothing.
   expect(stillGreen(green, ["src/lib/index.ts"], reach)).toEqual(["src/d.test.ts"]);
-  expect(stillGreen(green, ["docs/x.md"], reach)).toEqual(green);
+  expect(stillGreen(green, ["tools/other.ts"], reach)).toEqual(green);
   expect(stillGreen(green, ["src/c.ts"], reach)).toEqual(["src/a.test.ts"]);
   // A test file changed is not green any more.
   expect(stillGreen(green, ["src/d.test.ts"], reach)).toEqual(["src/a.test.ts"]);
-  // A fixture beside a file of the reach is read (and the walk of src reads it too); another kind of test never stands.
-  expect(stillGreen(green, ["src/lib/data.json"], reach)).toEqual(["src/d.test.ts"]);
-  expect(stillGreen(["t/a.sh", "src/a.test.ts"], ["docs/x.md"], reach)).toEqual(["src/a.test.ts"]);
+  // Another kind of test never stands.
+  expect(stillGreen(["t/a.sh", "src/a.test.ts"], ["tools/other.ts"], reach)).toEqual(["src/a.test.ts"]);
   // A file not read yet ends the walk there: what it imports is not known, so nothing past it is counted.
   expect([...reachOf("src/a.test.ts", (p) => (p === "src/a.ts" ? undefined : refs[p]), files).files].sort()).toEqual(["src/a.test.ts", "src/a.ts"]);
+});
+
+// The review's cases (a probe over this repository): a test reads more than it imports.
+test("nothing stands when a change touches what a test reads beside its imports: a path it names, the preload, a file at the top, a file that is no module", () => {
+  const files = ["package.json", "bunfig.toml", "bun.lock", "tsconfig.json", "test/preload.ts", "test/env.ts", "test/fixtures/z/req.json", "test/e2e/fixtures/standin.ts", "test/e2e/fixtures/standin-lib.ts", "src/x/run.ts", "src/x/spawn.test.ts", "src/x/fix.test.ts", "src/x/plain.test.ts", "src/x/plain.ts", "src/other.ts", "docs/x.md"];
+  const text: Record<string, string> = {
+    "src/x/spawn.test.ts": `const RUN = join(import.meta.dir, "run.ts");\nconst S = join(import.meta.dirname, "../../test/e2e/fixtures/standin.ts");`,
+    "src/x/fix.test.ts": `const req = await Bun.file(join(import.meta.dir, "../../test/fixtures/z/req.json")).json();`,
+    "src/x/plain.test.ts": `import { p } from "./plain.ts";`,
+    "src/x/plain.ts": `// shows require('./f') in a comment, which names no file\nexport const p = 1;`,
+    "src/x/run.ts": ``, "src/other.ts": ``, "test/fixtures/z/req.json": `{}`,
+    "test/e2e/fixtures/standin.ts": `import "./standin-lib.ts";`, "test/e2e/fixtures/standin-lib.ts": ``,
+    "test/preload.ts": `import "./env.ts";`, "test/env.ts": ``,
+  };
+  const refsOf = (p: string) => (p in text ? refsIn(text[p]!, p) : undefined);
+  const reach = (t: string) => reachOf(t, refsOf, files);
+  const every = reachOf("test/preload.ts", refsOf, files);
+  expect(preloadOf(`[test]\nroot = "./src"\npreload = ["./test/preload.ts"]`)).toEqual(["test/preload.ts"]);
+  expect(pathsOf(`join(import.meta.dir, "run.ts")`, "src/x/a.test.ts")).toContain("src/x/run.ts");
+  const green = ["src/x/spawn.test.ts", "src/x/fix.test.ts", "src/x/plain.test.ts"];
+  // A module a test spawns by its path, and what that module imports, are read.
+  expect(stillGreen(green, ["src/x/run.ts"], reach, every)).toEqual(["src/x/fix.test.ts", "src/x/plain.test.ts"]);
+  expect(stillGreen(green, ["test/e2e/fixtures/standin-lib.ts"], reach, every)).toEqual(["src/x/fix.test.ts", "src/x/plain.test.ts"]);
+  // A file that is no module (a fixture, a document), a file at the top, the preload and what it imports: nothing stands.
+  for (const f of ["test/fixtures/z/req.json", "docs/x.md", "package.json", "bunfig.toml", "bun.lock", "tsconfig.json", "test/preload.ts", "test/env.ts"]) expect(stillGreen(green, [f], reach, every)).toEqual([]);
+  // A module nothing reads leaves them standing; a comment's require names nothing, so plain's reach is whole.
+  expect(stillGreen(green, ["src/other.ts"], reach, every)).toEqual(green);
+  // A reached file that could not be read, or an import that names no file of the tree: the test does not stand.
+  expect(stillGreen(green, ["src/other.ts"], (t) => reachOf(t, (p) => (p === "src/x/plain.ts" ? undefined : refsOf(p)), files), every)).toEqual(["src/x/spawn.test.ts", "src/x/fix.test.ts"]);
+  expect(stillGreen(["src/x/plain.test.ts"], ["src/other.ts"], (t) => reachOf(t, (p) => (p === "src/x/plain.ts" ? refsIn(`import "./gone.ts";`, p) : refsOf(p)), files), every)).toEqual([]);
+  // A preload whose reach is not known whole leaves nothing standing.
+  expect(stillGreen(green, ["src/other.ts"], reach, { ...every, open: true })).toEqual([]);
+});
+
+test("a file that failed to load is not passed: passed is a file named with a passed test and nothing failed under it", () => {
+  const out = ["src/a.test.ts:", "", "# Unhandled error between tests", "error: Cannot find module './nope.ts'", "", "src/b.test.ts:", "(pass) y [0.03ms]", "", "src/c.test.ts:", "(pass) z", "(fail) w", "", " 2 pass", " 2 fail"].join("\n");
+  const o = outcomeOf(out, ["src/a.test.ts", "src/b.test.ts", "src/c.test.ts", "src/d.test.ts"]);
+  expect(o.passed).toEqual(["src/b.test.ts"]);
+  expect(o.failed.sort()).toEqual(["src/a.test.ts", "src/c.test.ts"]);
 });

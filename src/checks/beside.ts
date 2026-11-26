@@ -89,9 +89,11 @@ export const besideOf = (checks: readonly Check[]): Check[] => checks.filter((c)
 // `import "x"`, `import("x")`, `require("x")` and `export ... from "x"` that
 // starts with ".", resolved from the test's folder (paths from the top).
 const SPEC = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'](\.{1,2}\/[^"'\n]*)["']/g;
+// A comment's words are no import (a comment that shows `require('./f')` names no file), so comments go first.
+const COMMENTS = /\/\*[\s\S]*?\*\/|(^|[\s;{}(),])\/\/[^\n]*/g;
 export function importsOf(text: string, from: string): string[] {
   const out = new Set<string>();
-  for (const m of text.matchAll(SPEC)) out.add(posix.normalize(posix.join(posix.dirname(from), m[1]!)));
+  for (const m of text.replace(COMMENTS, "$1").matchAll(SPEC)) out.add(posix.normalize(posix.join(posix.dirname(from), m[1]!)));
   return [...out];
 }
 // A file is what an import names: the same path, or the path with one of the
@@ -161,9 +163,31 @@ export function treeReadsOf(text: string, from: string): string[] {
 }
 const under = (folder: string, file: string) => folder === "." || file.startsWith(`${folder}/`);
 
+// The tree files a text names by a path in a string: a module or a JSON file a test spawns, opens or hands a
+// child by its path (`join(import.meta.dir, "run.ts")`, `"../../test/fixtures/x.json"`). Each is taken from the
+// file's own folder and from the top, as the code may join it to either; what names no tree file is dropped by
+// reachOf.
+const PATH_LIT = /["'`]([\w@.\-/]*[\w-]\.(?:[cm]?[jt]sx?|json))["'`]/g;
+export function pathsOf(text: string, from: string): string[] {
+  const out = new Set<string>();
+  for (const m of (EXT.test(from) ? text.replace(COMMENTS, "$1") : text).matchAll(PATH_LIT)) {
+    const lit = m[1]!;
+    for (const p of [posix.join(posix.dirname(from), lit), lit]) { const n = posix.normalize(p); if (!n.startsWith("..") && !n.startsWith("/")) out.add(n); }
+  }
+  return [...out];
+}
+
 // What a test file reaches, read from its text once per content (the runner keeps it by the file's blob).
-export type Refs = { imports: string[]; reads: string[] };
-export const refsIn = (text: string, from: string): Refs => ({ imports: importsOf(text, from), reads: treeReadsOf(text, from) });
+export type Refs = { imports: string[]; reads: string[]; paths?: string[] };
+export const refsIn = (text: string, from: string): Refs => ({ imports: importsOf(text, from), reads: treeReadsOf(text, from), paths: pathsOf(text, from) });
+
+// The files bun loads before every test file (bunfig.toml's `[test] preload`), from the top. `dir`: the
+// bunfig's folder.
+export function preloadOf(bunfig: string, dir = "."): string[] {
+  const m = /^\s*preload\s*=\s*(\[[^\]]*\]|"[^"\n]*"|'[^'\n]*')/m.exec(bunfig);
+  if (!m) return [];
+  return [...m[1]!.matchAll(/["']([^"'\n]+)["']/g)].map((x) => posix.normalize(posix.join(dir, x[1]!))).filter((p) => !p.startsWith(".."));
+}
 
 // The test files a change touches, of one check that runs test files, the most
 // direct first: the changed tests themselves and the ones still red from the
@@ -199,38 +223,66 @@ export function testsFor(changed: readonly string[], tests: readonly string[], r
 }
 
 // What a test file reads of the tree: itself, the files it imports and what they import, to the end (by
-// relative path; a package is not the tree's), and the folders it walks. `refsOf`: what a file reaches
-// (undefined: not read, so nothing more is known through it); `files`: the tree's files.
-export function reachOf(test: string, refsOf: (path: string) => Refs | undefined, files: readonly string[]): { files: Set<string>; folders: string[] } {
+// relative path; a package is not the tree's), the module and JSON files a reached file names by a path in a string
+// (pathsOf), and the folders it walks. `refsOf`: what a file reaches (undefined: not read, so nothing more is known
+// through it); `files`: the tree's files. `open`: the reach is not known whole: a module or JSON file of the tree in
+// it could not be read, or a relative import names no file of the tree.
+export type Reach = { files: Set<string>; folders: string[]; open?: boolean };
+const READ = /\.(?:[cm]?[jt]sx?|json)$/;
+export function reachOf(test: string, refsOf: (path: string) => Refs | undefined, files: readonly string[]): Reach {
   const byBare = new Map<string, string>();
   for (const f of files) { byBare.set(f, f); byBare.set(f.replace(EXT, ""), f); if (/\/index\.[cm]?[jt]sx?$/.test(f)) byBare.set(posix.dirname(f), f); }
   const resolve = (spec: string) => byBare.get(spec) ?? byBare.get(spec.replace(EXT, ""));
+  const tree = new Set(files);
   const seen = new Set<string>(), folders: string[] = [];
+  let open = false;
   const todo = [test];
   while (todo.length) {
     const f = todo.pop()!;
     if (seen.has(f)) continue;
     seen.add(f);
     const r = refsOf(f);
-    if (!r) continue;
+    if (!r) { if (READ.test(f)) open = true; continue; }
     folders.push(...r.reads);
-    for (const spec of r.imports) { const to = resolve(spec); if (to && !seen.has(to)) todo.push(to); }
+    for (const spec of r.imports) { const to = resolve(spec); if (!to) open = true; else if (!seen.has(to)) todo.push(to); }
+    for (const p of r.paths ?? []) if (tree.has(p) && !seen.has(p)) todo.push(p);
   }
-  return { files: seen, folders };
+  return { files: seen, folders, ...(open ? { open } : {}) };
 }
 // The test files of `green` (they passed on the tree checked last, or on one before it) that still stand: nothing
 // they read changed in `change` (the tree's difference from the one checked last). A test that reads a file the
 // change deleted reads a changed file. Only a JavaScript or TypeScript test can stand: what another kind reads is
-// not known from its text. A file that is no module, changed in a folder of the reach, is read (a fixture the test
-// opens by its path). Pure: the reach comes from reachOf.
-export function stillGreen(green: readonly string[], change: readonly string[], reach: (test: string) => { files: Set<string>; folders: string[] }): string[] {
+// not known from its text, nor is a test whose reach is open. Nothing stands when the change touches a file every
+// test may read: a file at the top (package.json, bunfig.toml, tsconfig.json, the lock file), a file bun preloads
+// or what it reaches (`every`), or any file that is no module (a fixture, a script, a document a test opens by a
+// path its text does not spell). Pure: the reach comes from reachOf.
+export function stillGreen(green: readonly string[], change: readonly string[], reach: (test: string) => Reach, every: Reach | null = null): string[] {
+  if (!change.length) return green.filter((t) => EXT.test(t));
+  if (every?.open) return [];
+  if (change.some((f) => !f.includes("/") || !EXT.test(f) || every?.files.has(f) || every?.folders.some((d) => under(d, f)))) return [];
   return green.filter((t) => {
     if (!EXT.test(t)) return false;
-    if (!change.length) return true;
     const r = reach(t);
-    const dirs = new Set([...r.files].map((f) => posix.dirname(f)));
-    return !change.some((f) => r.files.has(f) || r.folders.some((d) => under(d, f)) || (!EXT.test(f) && dirs.has(posix.dirname(f))));
+    if (r.open) return false;
+    return !change.some((f) => r.files.has(f) || r.folders.some((d) => under(d, f)));
   });
+}
+
+// What a run's output says of each test file, from a runner that names each file before its tests (bun: `path:`):
+// failed, a file with a failed test or an error under its name (a file that fails to load prints no failed test);
+// passed, a file named with a passed test and nothing failed under it. A file the output does not name is neither.
+export function outcomeOf(out: string, tests: readonly string[]): { failed: string[]; passed: string[] } {
+  const set = new Set(tests);
+  const failed = new Set<string>(), ok = new Set<string>();
+  let file: string | undefined;
+  for (const l of out.split("\n")) {
+    const h = /^(\S+):$/.exec(l.trim());
+    if (h) { const f = h[1]!.replace(/^\.\//, ""); file = set.has(f) ? f : undefined; continue; }
+    if (!file) continue;
+    if (/^\(fail\) /.test(l) || /^# Unhandled error/.test(l) || /^error:/.test(l)) failed.add(file);
+    else if (/^\(pass\) /.test(l)) ok.add(file);
+  }
+  return { failed: [...failed], passed: [...ok].filter((f) => !failed.has(f)) };
 }
 
 // How many test files one run takes: the most direct of what a change touches.

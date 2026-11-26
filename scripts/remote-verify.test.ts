@@ -67,3 +67,24 @@ test("a landing queue's run takes the place kept for it while every other place 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+// The kept place taken by another landing: this one falls back to a common place and is still not refused for load.
+test("a landing whose kept place is taken goes to a common place and is not refused for the host's load", async () => {
+  const home = mkdtempSync(join(tmpdir(), "rv-place-"));
+  const locks = join(home, "v", "locks");
+  const held = Bun.spawn(["bash", "-c", `mkdir -p '${locks}' && exec 9> '${locks}/place-land' && flock -n 9 && echo held && read -r _`], { stdin: "pipe", stdout: "pipe" });
+  try {
+    const reader = held.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("held");
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), KEEL_VERIFY_MAX_RUNS: "1", KEEL_VERIFY_MAX_LOAD: "0", KEEL_VERIFY_LAND: "1" };
+    const p = Bun.spawnSync(["bash", script, "__remote", "v", "r1", "0".repeat(40), "0", "", "0"], { env, stdout: "pipe", stderr: "pipe" });
+    const out = p.stdout.toString();
+    expect(out).not.toContain("not started");
+    expect(out).toContain("could not check out");
+    expect(existsSync(join(locks, "place-1"))).toBe(true);
+  } finally {
+    held.stdin.end();
+    held.kill();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

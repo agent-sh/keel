@@ -14,7 +14,7 @@
 import { during } from "../admin/activity.ts";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, posix } from "node:path";
 import { settings } from "../admin/settings.ts";
 import { localTime } from "../core/clock.ts";
 import { git } from "../core/git.ts";
@@ -30,7 +30,7 @@ import { INSTALL_MS, mainTop, packagesFor, readsIn, runCommand, type Ran } from 
 import * as cache from "./package-cache.ts";
 import { setupLineOf } from "../landing/pairs.ts";
 import { timed } from "../admin/stall.ts";
-import { askHost, BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, gapOf, hostLoadOf, limitOf, PER_HOUR, reachOf, stillGreen, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Green, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
+import { askHost, BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, gapOf, hostLoadOf, limitOf, PER_HOUR, reachOf, stillGreen, noticeText, parentWords, outcomeOf, perFile, PICK_MAX, placeOf, preloadOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Green, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
 import { countsOf } from "./counts.ts";
 import { baseFor, inFlight } from "./runs.ts";
 import { baseOf, holdCheckCache, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
@@ -255,7 +255,7 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
     let standing: string[] = [];
     if (check.tests?.length) {
       const was = lane.green[check.name];
-      if (step && was && was.inputs === inputs && was.files.length) standing = await standingGreen(scratch, copy, was.files, step);
+      if (step && was && was.inputs === inputs && was.files.length) standing = await standingGreen(scratch, copy, was.files, step, check.dir);
       greens[check.name] = { inputs, files: standing };
       const stands = new Set(standing);
       const all = timed(() => "checks beside: the tests a change touches", () => testsFor(change, testFilesOf(check, copy.files), (p) => refs.get(copy.blobs.get(p) ?? ""), lane.carry))
@@ -301,8 +301,9 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
     const missing = result === "fail" ? setupLineOf(r.ran.out, r.ran.code) : undefined;
     if (missing) { setups.push({ name: check.name, line: missing, check, command, t0, log: r.log }); continue; }
     if (tests.length && result !== "stopped") {
-      const failed = new Set(result === "fail" ? failedFiles(r.ran.out, tests) : []);
-      greens[check.name] = { inputs, files: [...new Set([...standing, ...tests.filter((t) => !failed.has(t))])] };
+      // A pass passed every file; of a failed run only the files its output names as passed, with nothing failed under them.
+      const passed = result === "pass" ? tests : outcomeOf(r.ran.out, tests).passed;
+      greens[check.name] = { inputs, files: [...new Set([...standing, ...passed])] };
     }
     const row = record({ name: check.name, command, dir: check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result, exit: r.ran.timedOut ? null : r.ran.code, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: repo.top, cpu_ms: r.ran.cpu_ms });
     if (result !== "fail") continue;
@@ -328,42 +329,50 @@ async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo;
   return { tree, told: t.told, said, ran: didRun };
 }
 
-// The test files of `green` whose reach (what they import, to the end, and the folders they walk) the change does
-// not touch. Each file of the reach is read once a content, off the loop's long stretches.
-async function standingGreen(scratch: string, copy: Copy, green: readonly string[], change: readonly string[]): Promise<string[]> {
+// The test files of `green` whose reach (what they import, to the end, what they name by a path, and the folders
+// they walk) the change does not touch, nor the files bun preloads for every test (bunfig.toml in the check's
+// folder). Each file of the reach is read once a content, off the loop's long stretches.
+async function standingGreen(scratch: string, copy: Copy, green: readonly string[], change: readonly string[], dir = "."): Promise<string[]> {
   const known = new Set(copy.files);
   const refsOf = (p: string) => refs.get(copy.blobs.get(p) ?? "");
-  // What each reached file imports, read as the walk finds it.
-  for (const t of green) {
-    if (!known.has(t)) continue;
+  const bunfig = posix.join(dir, "bunfig.toml");
+  let preload: string[] = [];
+  if (known.has(bunfig)) {
+    try { preload = preloadOf(await Bun.file(join(scratch, bunfig)).text(), dir); } catch { return []; } // gone meanwhile: nothing is known to stand
+  }
+  // What each reached file names, read as the walk finds it.
+  const walk = async (root: string) => {
     for (let more = true; more;) {
       more = false;
-      const r = reachOf(t, refsOf, copy.files);
+      const r = reachOf(root, refsOf, copy.files);
       for (const f of r.files) {
         const blob = copy.blobs.get(f);
-        if (!blob || refs.has(blob) || !/\.(?:[cm]?[jt]sx?)$/.test(f)) continue;
+        if (!blob || refs.has(blob) || !/\.(?:[cm]?[jt]sx?|json)$/.test(f)) continue;
         let text: string;
-        try { text = await Bun.file(join(scratch, f)).text(); } catch { continue; } // gone meanwhile
+        try { text = await Bun.file(join(scratch, f)).text(); } catch { continue; } // gone meanwhile: the reach stays open
         refs.set(blob, refsIn(text, f));
         more = true;
       }
     }
+  };
+  for (const t of [...preload, ...green]) if (known.has(t)) await walk(t);
+  // The preload's reach, every file bun loads before each test; one it cannot find leaves nothing standing.
+  const every = { files: new Set<string>(), folders: [] as string[], open: preload.some((p) => !known.has(p)) };
+  for (const p of preload) {
+    if (!known.has(p)) continue;
+    const r = reachOf(p, refsOf, copy.files);
+    for (const f of r.files) every.files.add(f);
+    every.folders.push(...r.folders);
+    if (r.open) every.open = true;
   }
-  return stillGreen(green.filter((t) => known.has(t)), change, (t) => reachOf(t, refsOf, copy.files));
+  return stillGreen(green.filter((t) => known.has(t)), change, (t) => reachOf(t, refsOf, copy.files), every);
 }
 
-// The test files whose tests failed, from a runner that names each file before its tests (bun: `path:`),
-// else the first half of the files the run took. Run again with the next selection until they pass.
+// The test files whose tests failed (a file that failed to load included), else the first half of the files the
+// run took. Run again with the next selection until they pass.
 function failedFiles(out: string, tests: readonly string[]): string[] {
-  const set = new Set(tests);
-  const got = new Set<string>();
-  let file: string | undefined;
-  for (const l of out.split("\n")) {
-    const h = /^(\S+):$/.exec(l.trim());
-    if (h) { const f = h[1]!.replace(/^\.\//, ""); file = set.has(f) ? f : undefined; continue; }
-    if (file && /^\(fail\) /.test(l)) got.add(file);
-  }
-  return got.size ? [...got] : tests.slice(0, Math.ceil(PICK_MAX / 2));
+  const { failed } = outcomeOf(out, tests);
+  return failed.length ? failed : tests.slice(0, Math.ceil(PICK_MAX / 2));
 }
 
 // What each test file of the beside checks reaches (src/checks/beside.ts refsIn), read off the loop's long
