@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "checkers": 2,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "target": "ESNext",
     "module": "Preserve",
