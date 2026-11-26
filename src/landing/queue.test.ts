@@ -165,7 +165,7 @@ test("land.push names a remote: a path is refused and nothing is pushed there", 
 });
 
 test("the after step runs on the landed tip, not on the branch the main checkout has out", async () => {
-  const t = setup({ land: { after: "cat marker.txt >> \"$KEEL_LAND_REPO/../after.log\"; git rev-parse HEAD >> \"$KEEL_LAND_REPO/../after.log\"" } });
+  const t = setup({ land: { after: "cat marker.txt >> \"$KEEL_LAND_REPO/../after.log\"; git rev-parse HEAD >> \"$KEEL_LAND_REPO/../after.log\"; echo keel-land-installed: page" } });
   t.branch("keel/a", 1, "line 1 ALPHA", t.session("a", t.coord));
   g(t.repo, "checkout", "-q", "-b", "feature", "main");
   writeFileSync(join(t.repo, "marker.txt"), "the owner's feature branch\n");
@@ -174,6 +174,8 @@ test("the after step runs on the landed tip, not on the branch the main checkout
   await t.land(["keel/a"]);
   expect(t.rows()[0]!.state).toBe("landed");
   expect(readFileSync(join(t.dir, "after.log"), "utf8")).toBe(`main\n${t.main()}\n`);
+  // The install it said it made is kept with the batch: what the work board counts as running.
+  expect(t.store.db.query("SELECT after_install FROM landing_batches").all()).toEqual([{ after_install: "page" }]);
   expect(g(t.repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
   expect(g(t.repo, "worktree", "list").split("\n")).toHaveLength(1);
 });
