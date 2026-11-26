@@ -5,6 +5,7 @@
 // what was not covered (src/engine/readers.ts). Claude gets a Claude Code
 // style name, the other families a snake_case one.
 import { lstatSync, mkdirSync, statSync } from "node:fs";
+import { open, unlink } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atCwd, canonical, realOf } from "../core/paths.ts";
 import { credentialFor, hold, type HoldContext } from "./files.ts";
@@ -92,7 +93,9 @@ function wholeLines(text: string): { text: string; after: string } {
   const at = text.lastIndexOf("\n");
   if (at < 0) return { text, after: `its first ${text.length} characters` };
   const kept = text.slice(0, at + 1);
-  return { text: kept, after: `line ${kept.split("\n").length - 1}` };
+  let line = 0;
+  for (let i = kept.indexOf("\n"); i >= 0; i = kept.indexOf("\n", i + 1)) line++;
+  return { text: kept, after: `line ${line}` };
 }
 
 // `budget`: characters the job keeps at most (default: what the session's
@@ -259,6 +262,23 @@ const sourcesIn = (line: string) => {
   return !part ? 1 : Number(/, (\d+) sources$/.exec(part)?.[1] ?? part.split(", ").length);
 };
 
+// Findings no reader could compile: save every part as it is produced by
+// the spool, rather than joining the entire job into another string.
+async function saveFindings(ctx: ToolContext, blocks: AsyncIterable<string>) {
+  const dir = join(ctx.spillDir, "readers");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${Date.now()}-${Bun.randomUUIDv7()}-findings.md`);
+  const f = await open(path, "wx", 0o600);
+  try {
+    try { for await (const block of blocks) await f.writeFile(conceal(block, ctx.sessionId)); }
+    finally { await f.close(); }
+  } catch (e) {
+    await unlink(path).catch(() => {});
+    throw e;
+  }
+  return path;
+}
+
 async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
   const question = String(input?.question ?? "").trim();
   if (!question) return fail("Give the question: what to find or answer in the material. The readers see only it and the material.");
@@ -274,7 +294,7 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
     const skippedNote = not.length ? `\n[Not read, so not covered:\n- ${not.join("\n- ")}]` : "";
     return { content: `${whole}\n\n[Short enough to read whole (${chars} chars): no reader was used.]${skippedNote}`, shown: { readers: { question, whole: true, sources: items.length, chars, skipped: not, unread_sources: skipped.length } } };
   }
-  const o = await ctx.readMaterial(items, question, ctx.callId);
+  const o = await ctx.readMaterial(items, question, ctx.callId, { saveFindings: (blocks) => saveFindings(ctx, blocks) });
   // What the card counts: the sources not read (or not read whole), not the lines that name them.
   const unreadSources = o.unread.reduce((n, l) => n + sourcesIn(l), 0) + skipped.length;
   o.unread = await unreadLines([...o.unread, ...skipped], ctx.spillDir, ctx.callId);
@@ -284,14 +304,7 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
     const spilled = await spill(wholeText(items), ctx.spillDir, "readers");
     return { content: `[No reader could read the material for this request; it follows as it is.]\n${coverageNote(o, items.length, saved)}\n\n${spilled}`, shown };
   }
-  // Findings no reader could compile: the preview goes to the model, all of them to a file.
-  let findings: string | undefined;
-  if (o.uncompiled) {
-    findings = join(ctx.spillDir, "readers", `${Date.now()}-findings.md`);
-    mkdirSync(join(ctx.spillDir, "readers"), { recursive: true });
-    await Bun.write(findings, conceal(o.uncompiled.findings));
-  }
-  return { content: `${o.text}\n\n${coverageNote(o, items.length, saved, findings)}`, shown };
+  return { content: `${o.text}\n\n${coverageNote(o, items.length, saved, o.uncompiled?.path)}`, shown };
 }
 
 const DESCRIPTION =

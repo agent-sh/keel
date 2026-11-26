@@ -9,14 +9,15 @@
 // come back as a preview within what a tool result holds.
 import { addUsage, emptyUsage, type Usage } from "../core/types.ts";
 import type { KeptAnswer } from "./reader-kept.ts";
+import { ReaderSpool, type AnswerRange } from "./reader-spool.ts";
 import type { ModelInfo, Price } from "../providers/types.ts";
 import { bytesPerToken } from "./compact.ts";
 import { during } from "../admin/activity.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { OUTPUT_CAP } from "../tools/spill.ts";
 import {
-  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, coversShort, type Checked, type Finding, findingsPreview, fitsOne, groupFindings, holds,
-  materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, readersAtOnce, readerChoices, readRate, type Chunk, type Material,
+  checkAnswer, checkedNote, chunkChars, compileFrame, coversShort, type Checked, type Finding, findingsPreview, fitsChars, groupFindings, holds,
+  materialCap, NOTHING, partPrompt, partRef, planChunks, READ_CHUNK_CHARS, readersAtOnce, readerChoices, readRate, renderChunk, type Chunk, type Material,
 } from "./reader.ts";
 
 // The owner's small models, best first: they read before any other choice.
@@ -43,6 +44,7 @@ export type ReaderHost = {
   // The answers of this session's earlier requests, by the request (src/engine/reader-kept.ts): a job a restart cut
   // and the turn sent again reads only the parts no reader answered yet.
   kept?: { get(prompt: string, model: string): KeptAnswer | undefined; put(prompt: string, model: string, a: KeptAnswer): void };
+  scratch: { dir: string; session?: string };
 };
 
 export type PartState = { k: number; covers: string; chars: number; model?: string; state: "waiting" | "reading" | "read" | "nothing" | "unread"; error?: string };
@@ -62,7 +64,7 @@ export type ReadOutcome = {
   // Set when several parts had findings and no reader could compile them:
   // every part's findings in part order (for a file), why, and how many parts
   // the preview in `text` shows whole, shows the start of, and leaves out.
-  uncompiled?: { findings: string; error: string; whole: number; cut: number; left: number };
+  uncompiled?: ({ findings: string; path?: undefined } | { findings?: undefined; path: string }) & { error: string; whole: number; cut: number; left: number };
   checked?: Checked;       // the answer held against the material
   skipped?: string[];      // reader choices whose route takes no work now, each with why
   none?: boolean;          // `others`: no model but the session's own could read, and nothing was asked
@@ -90,9 +92,18 @@ export async function readBudget(host: Pick<ReaderHost, "models" | "current" | "
 // parts are the answer in part order, with no compile step (each stands for its own lines); `others`: only
 // models other than the session's own read, and none that costs more to read with than it (a reader on the
 // session's model, or a dearer one, costs more than the session reading the text itself).
-export type ReadOpts = { prompt?: (chunk: Chunk, k: number, n: number) => string; join?: boolean; others?: boolean };
+export type ReadOpts = {
+  prompt?: (chunk: Chunk, k: number, n: number) => string; join?: boolean; others?: boolean;
+  saveFindings?: (blocks: AsyncIterable<string>) => Promise<string>;
+};
 
 export async function readMaterial(host: ReaderHost, items: Material[], question: string, signal: AbortSignal, opts: ReadOpts = {}): Promise<ReadOutcome> {
+  const spool = new ReaderSpool(host.scratch.dir, host.scratch.session);
+  try { return await readJob(host, items, question, signal, opts, spool); }
+  finally { await spool.close(); }
+}
+
+async function readJob(host: ReaderHost, items: Material[], question: string, signal: AbortSignal, opts: ReadOpts, spool: ReaderSpool): Promise<ReadOutcome> {
   const env = host.env ?? process.env;
   const [models, cur] = await Promise.all([host.models(), host.current()]);
   const list = (m: ModelInfo) => host.listPrice?.(m);
@@ -116,7 +127,9 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
       const cut = m.text.lastIndexOf("\n", room);
       const text = m.text.slice(0, cut > 0 ? cut : room);
       kept.push({ ...m, text });
-      unread.push(`${m.source} after line ${(m.first ?? 1) - 1 + text.split("\n").length} (past what one job reads, ${cap} characters)`);
+      let line = m.first ?? 1;
+      for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) line++;
+      unread.push(`${m.source} after line ${line} (past what one job reads, ${cap} characters)`);
       room = 0;
       continue;
     }
@@ -129,7 +142,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   // owner's readers, a model gone from its listing) may resize the parts, and the job is then read again: a lost
   // saving, never a wrong answer.
   const perRequest = chunkChars(first, question.length);
-  const chunks = chunkMaterial(kept, perRequest);
+  const chunks = planChunks(kept, perRequest);
   const parts: PartState[] = chunks.map((c, i) => ({ k: i + 1, covers: c.parts.map(partRef).join(", "), chars: c.chars, state: "waiting" }));
   let usage = emptyUsage();
   // Prompt tokens of the request that read each part, as the provider counted
@@ -182,12 +195,19 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     return { error: last };
   };
 
-  const found: { k: number; covers: string; text: string }[] = [];
-  const readOne = async (c: Chunk, i: number) => {
+  type Filed = { covers: string } & (AnswerRange | { text: string; chars: number });
+  const found: (Filed & { k: number })[] = [];
+  const store = async (text: string) => chunks.length === 1 || opts.join ? { text, chars: text.length } : spool.put(text);
+  const body = (f: Filed) => "text" in f ? f.text : spool.get(f);
+  const readOne = async (i: number) => {
     const p = parts[i]!;
     p.state = "reading";
     tell();
-    const r = await ask(opts.prompt?.(c, i + 1, chunks.length) ?? partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); }, (name) => { p.model = name; });
+    const prompt = () => {
+      const c = renderChunk(chunks[i]!);
+      return opts.prompt?.(c, i + 1, chunks.length) ?? partPrompt(c, question, i + 1, chunks.length);
+    };
+    const r = await ask(prompt(), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); }, (name) => { p.model = name; });
     if (!("error" in r)) partTokens += r.input;
     if ("error" in r) {
       p.state = "unread";
@@ -196,7 +216,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
       p.state = "nothing";
     } else {
       p.state = "read";
-      found.push({ k: i + 1, covers: p.covers, text: r.text });
+      found.push({ k: i + 1, covers: p.covers, ...await store(r.text) });
     }
     tell();
   };
@@ -204,9 +224,15 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   // `n` runs side by side, at most `atOnce` at a time.
   const sideBySide = async (n: number, run: (i: number) => Promise<void>) => {
     let next = 0;
-    await Promise.all(Array.from({ length: Math.min(atOnce, n) }, async () => { while (next < n) await run(next++); }));
+    let failed = false;
+    // Wait for the requests in flight before closing their spool on a failure.
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(atOnce, n) }, async () => {
+      try { while (!failed && next < n) await run(next++); }
+      catch (e) { failed = true; throw e; }
+    }));
+    for (const r of settled) if (r.status === "rejected") throw r.reason;
   };
-  await sideBySide(chunks.length, (i) => readOne(chunks[i]!, i));
+  await sideBySide(chunks.length, readOne);
   found.sort((a, b) => a.k - b.k);
   // In part order, whichever failed first, and before the material past the cap, which follows every part.
   // A part of many small files is named by its first and last source and how many it holds, not by every one.
@@ -217,36 +243,42 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     const none = parts.filter((p) => p.state === "nothing").map((p) => p.covers);
     // The request that writes the answer. The parts that held nothing are
     // named while the request holds the names, else counted.
-    const answer = (items: Finding[]) => {
-      const named = compilePrompt(question, items, none);
-      return fitsOne(first, named) ? named : compilePrompt(question, items, [`${none.length} other parts`]);
+    const answer = (items: Filed[]) => {
+      const named = compileFrame(question, none);
+      return fitsChars(first, named.size(items)) ? named : compileFrame(question, [`${none.length} other parts`]);
+    };
+    const promptFor = async (frame: ReturnType<typeof compileFrame>, items: Filed[]) => {
+      // One compile request's worth, never all the findings of an oversized job.
+      const findings: Finding[] = [];
+      for (const f of items) findings.push({ covers: f.covers, text: await body(f) });
+      return frame.prompt(findings);
     };
     // One request while the reader's window holds every finding, below its first price tier.
     let error: string | undefined;
     const one = answer(found);
-    if (fitsOne(first, one)) {
-      const r = await ask(one, { part: "compile" });
+    if (fitsChars(first, one.size(found))) {
+      const r = await ask(await promptFor(one, found), { part: "compile" });
       if (!("error" in r)) return r;
       error = r.error;
     }
     // It does not, or that request failed: neighbours are merged group by
     // group, stage by stage, until one request holds what is left. Every stage
     // has fewer findings than the one before.
-    let items: Finding[] = found;
+    let items: Filed[] = found;
     for (let stage = 1; ; stage++) {
       const groups = groupFindings(items, perRequest);
-      if (groups.length === 1 && stage > 1) return ask(answer(items), { part: "compile" });
+      if (groups.length === 1 && stage > 1) return ask(await promptFor(answer(items), items), { part: "compile" });
       if (groups.length === 1 || groups.length === items.length) return { error: error ?? `the findings are too long to merge in one request to ${first.name}` };
-      const merged: Finding[] = new Array(groups.length);
+      const merged: Filed[] = new Array(groups.length);
       let failed: string | undefined;
       await sideBySide(groups.length, async (i) => {
         // One group failed: the rest are not sent.
         if (failed) return;
         const g = groups[i]!;
         if (g.length === 1) { merged[i] = g[0]!; return; }
-        const r = await ask(compilePrompt(question, g, [], { k: i + 1, n: groups.length }), { part: `compile stage ${stage}, group ${i + 1}/${groups.length}` });
+        const r = await ask(await promptFor(compileFrame(question, [], { k: i + 1, n: groups.length }), g), { part: `compile stage ${stage}, group ${i + 1}/${groups.length}` });
         if ("error" in r) failed ??= r.error;
-        else merged[i] = { covers: `group ${i + 1} of ${groups.length}, merged`, text: r.text };
+        else merged[i] = { covers: `group ${i + 1} of ${groups.length}, merged`, ...await store(r.text) };
       });
       if (failed) return { error: failed };
       items = merged;
@@ -259,21 +291,35 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   if (found.length === 0) {
     text = parts.some((p) => p.state === "nothing") ? "Nothing in the material bears on the request." : "";
   } else if (found.length === 1) {
-    text = found[0]!.text;
+    text = await body(found[0]!);
   } else if (opts.join) {
-    text = found.map((f) => f.text).join("\n\n");
+    text = found.map((f) => "text" in f ? f.text : "").join("\n\n");
   } else {
     tell(true);
     const r = await compile();
     if ("error" in r) {
       const preview = findingsPreview(found, OUTPUT_CAP);
-      text = preview.text;
-      uncompiled = { findings: found.map((f) => `Findings of part ${f.k} (${f.covers}):\n${f.text}`).join("\n\n"), error: r.error, whole: preview.whole, cut: preview.cut, left: preview.left };
+      const blocks: string[] = [];
+      for (const p of preview.blocks) blocks.push(p.head + (await body(p.f)).slice(0, p.chars));
+      text = blocks.join("\n\n");
+      async function* findings() {
+        for (const [i, f] of found.entries()) {
+          signal.throwIfAborted();
+          yield `${i ? "\n\n" : ""}Findings of part ${f.k} (${f.covers}):\n${await body(f)}`;
+        }
+      }
+      const info = { error: r.error, whole: preview.whole, cut: preview.cut, left: preview.left };
+      if (opts.saveFindings) uncompiled = { path: await opts.saveFindings(findings()), ...info };
+      else {
+        const all: string[] = [];
+        for await (const block of findings()) all.push(block);
+        uncompiled = { findings: all.join(""), ...info };
+      }
     } else { text = r.text; compiled = true; }
   }
   tell();
   // The answer is held against what a reader read, not against a part every reader failed on.
-  const readSpans = chunks.flatMap((c, i) => (parts[i]!.state === "read" || parts[i]!.state === "nothing" ? c.parts.map((p) => ({ source: p.source, from: p.from, to: p.to })) : []));
+  const readSpans = chunks.flatMap((c, i) => (parts[i]!.state === "read" || parts[i]!.state === "nothing" ? c.parts.map(({ source, from, to, start, end }) => ({ source, from, to, start, end })) : []));
   const rate = readRate(cur, list);
   const chars = chunks.reduce((n, c, i) => n + (parts[i]!.state === "read" || parts[i]!.state === "nothing" ? c.parts.reduce((k, p) => k + p.chars, 0) : 0), 0);
   const tokens = partTokens || chars / bytesPerToken(cur.id);

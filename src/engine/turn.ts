@@ -2904,13 +2904,16 @@ export class Engine {
           if ((first || silent) && !quiet) { first = silent = false; this.status(id, { kind: "idle" }); }
           last = Date.now();
           if (!quiet) this.outputs.set(id, last);
-          const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
-          p.text += d.text;
-          if (d.kind === "tool_input" && d.name) p.name = d.name;
-          // A block the stream moved on from is whole.
-          if (lastAt !== undefined && lastAt !== d.index) { const was = partial.get(lastAt); if (was) was.done = true; }
-          lastAt = d.index;
-          partial.set(d.index, p);
+          // Readers only use the provider's completed blocks, never a second copy of the stream.
+          if (purpose !== "reader") {
+            const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
+            p.text += d.text;
+            if (d.kind === "tool_input" && d.name) p.name = d.name;
+            // A block the stream moved on from is whole.
+            if (lastAt !== undefined && lastAt !== d.index) { const was = partial.get(lastAt); if (was) was.done = true; }
+            lastAt = d.index;
+            partial.set(d.index, p);
+          }
           for (const h of timing) try { h.requestDelta!(session, req, d); } catch (e) { this.errors.capture("server", e, { hook: "measure", session: id }); }
           if (!quiet) this.deltas.push(id, d);
         }))).finally(() => { if (!quiet) this.deltas.end(id); });
@@ -5597,6 +5600,8 @@ export class Engine {
       small: this.ownSmall(id, "reader"),
       shut: (m) => shutWords(this.providers.shut(m.id)),
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
+      // An in-flight reader must not recreate the spill folder of a session just deleted.
+      scratch: { dir: join(this.store.stateDir, "tmp", "readers"), session: id },
       kept: { get: (prompt, model) => this.readerKept.get(id, model, prompt), put: (prompt, model, a) => this.readerKept.put(id, model, prompt, a) },
       capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
       progress: callId ? (p) => {

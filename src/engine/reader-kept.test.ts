@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import { READ_CUT, stopKind } from "../core/stops.ts";
 import { expect, test } from "bun:test";
+import { tempTree } from "../../test/env.ts";
 import type { ModelInfo } from "../providers/types.ts";
 import { drainWaitsFor, type DrainTurn } from "./drain-wait.ts";
 import { NOTHING } from "./reader.ts";
@@ -20,8 +21,10 @@ import { readMaterial, type ReaderHost } from "./readers.ts";
 const m = (id: string, input: number): ModelInfo => ({ id: `p:${id}`, provider: "p", model: id, name: id, family: "claude", context: 200_000, output: 8_000, efforts: [], billing: "per_token", price: { input, output: input * 5 } as any });
 const big = m("big", 5), small = m("small", 0.1);
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1} `.padEnd(40, "x")).join("\n");
+const scratch = { dir: tempTree("reader-kept-") };
 
 const host = (kept: ReaderKept, asked: string[], stopAfter?: { n: number; abort: AbortController }): ReaderHost => ({
+  scratch,
   models: async () => [big, small], current: async () => big, capture: () => {}, env: { KEEL_READERS_AT_ONCE: "1" },
   kept: { get: (p, model) => kept.get("s", model, p), put: (p, model, a) => kept.put("s", model, p, a) },
   ask: async (_model, prompt) => {

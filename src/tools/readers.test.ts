@@ -125,6 +125,7 @@ test("a stop ends the gathering: nothing more is fetched", async () => {
 // A reader that reports long findings for every part and cannot compile them.
 const model: ModelInfo = { id: "p:r", provider: "p", model: "r", name: "r", family: "claude", context: 400_000, output: 8_000, efforts: [], billing: "per_token", price: { input: 1, output: 5 } as any };
 const noCompile: ReaderHost = {
+  scratch: { dir: DIR },
   models: async () => [model], current: async () => model, capture: () => {},
   ask: async (_m, prompt) => {
     if (prompt.startsWith("Readers each")) throw new Error("throttled");
@@ -138,7 +139,7 @@ test("when the findings cannot be compiled the working model gets a bounded prev
   mkdirSync(dir);
   for (let i = 1; i <= 3; i++) writeFileSync(join(dir, `f${i}.log`), rows(1_400, `f${i}`));
   const ctx = ctxOf();
-  ctx.readMaterial = (items, q) => readMaterial(noCompile, items, q, ctx.signal);
+  ctx.readMaterial = (items, q, _call, opts) => readMaterial(noCompile, items, q, ctx.signal, opts);
   const out = await AskReaders.run({ question: "where is the evidence?", paths: ["logs"] }, ctx);
   const text = out.content as string;
   const parts = (out.shown as any).readers.parts.length;

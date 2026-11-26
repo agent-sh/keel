@@ -1,6 +1,7 @@
 // Which model reads for a session: the owner's choice, else the cheapest of the
 // session's provider and family that holds the text, never a dearer one.
 import { expect, test } from "bun:test";
+import { tempTree } from "../../test/env.ts";
 import type { ModelInfo } from "../providers/types.ts";
 import { checkAnswer, checkedNote, chunkChars, chunkMaterial, materialCap, NOTHING, partBlock, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices, READERS_AT_ONCE } from "./reader.ts";
 import { coverageNote, readBudget, readMaterial, readSource, type ReaderHost } from "./readers.ts";
@@ -15,6 +16,7 @@ const older = m("older", 0.1, { release: "2024-01-01" });
 const tiny = m("tiny", 0.05, { context: 32_000 });
 const other = m("other", 0.01, { family: "gpt" });
 const all = [big, small, older, tiny, other, m("elsewhere", 0.01, { provider: "q", id: "q:x" })];
+const scratch = { dir: tempTree("reader-spool-") };
 
 test("the cheapest of the same provider and family that fits, newest of equals", () => {
   expect(pickReader(all, big, 10_000, {}).id).toBe("p:tiny");
@@ -72,12 +74,14 @@ test("material is split into balanced chunks; whole files stay whole; a long fil
 
 test("a line longer than a part is cut into pieces under its own number", () => {
   const chunks = chunkMaterial([{ source: "min.js", text: "x".repeat(30_000) }], 10_000);
+  expect(chunks.every((c) => c.chars <= 10_000)).toBe(true);
   const rows = chunks.flatMap((c) => c.parts.flatMap((p) => p.body.split("\n")));
   expect(rows.every((r) => r.startsWith("1\t"))).toBe(true);
   expect(rows.reduce((n, r) => n + r.length - 2, 0)).toBe(30_000);
 });
 
 const host = (fail: Set<string>, seen: string[], refuse = new Set<string>()): ReaderHost => ({
+  scratch,
   models: async () => all, current: async () => big, capture: (_e, c) => void seen.push(`captured ${c.model} ${c.part}`), env: { KEEL_READERS_AT_ONCE: "2" },
   ask: async (model, prompt) => {
     seen.push(`${model.id} ${prompt.startsWith("Readers each") ? "compile" : (/part (\d+) of/.exec(prompt)?.[1] ?? "1")}`);
@@ -141,6 +145,7 @@ const listed = (model: ModelInfo, prompt: string) => Math.ceil(prompt.length / 2
 function fanIn(compile: "merge" | "fail", atOnce = "4") {
   const asked: { model: ModelInfo; prompt: string; compile: boolean }[] = [];
   const h: ReaderHost = {
+    scratch,
     models: async () => [big, wide], current: async () => big, capture: () => {}, env: { KEEL_READER_MODEL: "p:wide", KEEL_READERS_AT_ONCE: atOnce },
     ask: async (model, prompt) => {
       const isCompile = prompt.startsWith("Readers each");
@@ -169,16 +174,29 @@ test("many long findings are compiled in stages: no request is over the reader's
 
 test("findings no reader could compile come back as a bounded preview, every part's start in it, with the whole kept for a file", async () => {
   const { h, asked, items } = fanIn("fail");
-  const o = await readMaterial(h, items, "where is the evidence?", new AbortController().signal);
+  let size = 0, saved = 0;
+  const path = "/state/spill/readers/findings.md";
+  const o = await readMaterial(h, items, "where is the evidence?", new AbortController().signal, {
+    saveFindings: async (blocks) => {
+      for await (const block of blocks) {
+        expect(block).toContain(`Findings of part ${++saved} (`);
+        expect(block).toContain(`"EVIDENCE-${saved} is here" (f${saved}.log:7)`);
+        size += block.length;
+      }
+      return path;
+    },
+  });
   expect(asked.filter((a) => !listed(a.model, a.prompt)).map((a) => `${a.model.id} ${a.prompt.length}`)).toEqual([]);
   expect(o.compiled).toBe(false);
   const all = 12 * (`"EVIDENCE-1 is here" (f1.log:7)\n`.length + 25 * 800);
   expect(o.text.length).toBeLessThan(all / 4);
   expect(o.text.length).toBeLessThanOrEqual(30_000);
   for (let k = 1; k <= 12; k++) expect(o.text).toContain(`"EVIDENCE-${k} is here" (f${k}.log:7)`);
-  expect(o.uncompiled).toMatchObject({ whole: 0, cut: 12, left: 0 });
-  expect(o.uncompiled!.findings.length).toBeGreaterThan(all);
-  const note = coverageNote(o, 12, undefined, "/state/spill/readers/findings.md");
+  expect(o.uncompiled).toMatchObject({ path, whole: 0, cut: 12, left: 0 });
+  expect(o.uncompiled?.findings).toBeUndefined();
+  expect(saved).toBe(12);
+  expect(size).toBeGreaterThan(all);
+  const note = coverageNote(o, 12, undefined, path);
   expect(note).toContain("could not be compiled");
   expect(note).toContain("the start of the findings of 12 parts, in part order");
   expect(note).toContain("Keel checked the preview against the files");
@@ -213,6 +231,13 @@ test("an answer is checked against the material: quotes word for word at the lin
   expect(checkedNote(checkAnswer("no quotes and no references here", items))).toBe("");
 });
 
+test("a short reading can cite a page deep in a large file", () => {
+  const items = [{ source: "src/output.ts", text: "a note on another line\nThe command finished successfully.\n", first: 1_000_000, total: 2_000_000 }];
+  const read = [{ source: "src/output.ts", from: 1_000_001, to: 1_000_001 }];
+  const answer = '- (output.ts:1000001, :1000000) “The command finished successfully.”';
+  expect(checkAnswer(answer, items, read)).toMatchObject({ refs: 2, valid: 1, quotes: 1, verbatim: 1, atLine: 1 });
+});
+
 test("a quote counts as at the line cited only word for word, case included, on the lines cited, in a file the path names alone, in a part a reader read", () => {
   const items = [
     { source: "x/a.md", text: "# X\nThe retry budget is seven attempts per job.\nOther text." },
@@ -244,6 +269,7 @@ test("a quote counts as at the line cited only word for word, case included, on 
 
 test("a job holds its answer against the parts its readers read: a quote from a part every reader failed on is not confirmed", async () => {
   const h: ReaderHost = {
+    scratch,
     models: async () => [big], current: async () => big, capture: () => {},
     ask: async (_m, prompt) => {
       if (/part 2 of/.test(prompt)) throw new Error("throttled");
@@ -257,6 +283,7 @@ test("a job holds its answer against the parts its readers read: a quote from a 
 
 test("parts no reader read are listed in part order, whichever failed first", async () => {
   const h: ReaderHost = {
+    scratch,
     models: async () => [big], current: async () => big, capture: () => {}, env: { KEEL_READERS_AT_ONCE: "3" },
     ask: async (_m, prompt) => {
       const k = /part (\d+) of/.exec(prompt)![1];
@@ -276,6 +303,7 @@ test("parts no reader read are listed in part order, whichever failed first", as
 test("the characters a job reports are the ones a reader read: a part that held nothing counts, a part every reader failed on does not", async () => {
   const files = [{ source: "a.log", text: lines(3_500) }, { source: "b.log", text: lines(3_400) + "\n" }, { source: "c.log", text: lines(3_300) }];
   const job = (fail: (k: string) => boolean) => readMaterial({
+    scratch,
     models: async () => [big], current: async () => big, capture: () => {},
     ask: async (_m, prompt) => {
       const k = /part (\d+) of/.exec(prompt)![1]!;
@@ -297,6 +325,7 @@ test("readers at once: the default unless the override is a positive whole numbe
   const most = async (override: string | undefined) => {
     let now = 0, top = 0;
     const o = await readMaterial({
+      scratch,
       models: async () => [big], current: async () => big, capture: () => {}, env: { KEEL_READERS_AT_ONCE: override },
       ask: async () => {
         top = Math.max(top, ++now);
@@ -338,6 +367,7 @@ test("findings one request to the reader holds are compiled in one request, thou
   const roomy = m("roomy", 5, { context: 400_000 });
   const compiles: number[] = [];
   const h: ReaderHost = {
+    scratch,
     models: async () => [roomy], current: async () => roomy, capture: () => {},
     ask: async (_m, prompt) => {
       const usage = { input: 1000, output: 20, cache_read: 0, cache_write: 0 };
@@ -365,6 +395,7 @@ test("a part is sized with the wrapper a reader gets around each file, so a read
   const narrow = m("narrow", 5, { context: 32_000 });
   let sent = 0;
   const o = await readMaterial({
+    scratch,
     models: async () => [narrow], current: async () => narrow, capture: () => {},
     ask: async () => { sent++; return { text: NOTHING, usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } }; },
   }, files.slice(0, 600), "which file sets value 7?", new AbortController().signal);
@@ -401,6 +432,7 @@ test("the check of an answer against many sources does not walk every part read 
 test("a page with a part no reader read keeps the answer of the parts that were read", async () => {
   const page = Array.from({ length: 3 }, () => lines(3_500)).join("\n");
   const job = (fail: (k: string) => boolean, found = "The header is compact-2026-09-04.") => readSource({
+    scratch,
     models: async () => [big], current: async () => big, capture: () => {},
     ask: async (_m, prompt) => {
       const k = /part (\d+) of/.exec(prompt)?.[1] ?? "compile";
