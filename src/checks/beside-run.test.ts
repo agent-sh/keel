@@ -15,7 +15,7 @@ import { scratchName, BESIDE_DIR, type AgentState } from "./beside.ts";
 import { bindLedger, keyOf, ofSession, record, repoOf, treeOf } from "./ledger.ts";
 import { baseFor, beforeCall, dropCall } from "./runs.ts";
 import { patchSettings } from "../admin/settings.ts";
-import { config as heavyConfig, pool } from "../tools/heavy.ts";
+import { config as heavyConfig, pool, type Slot } from "../tools/heavy.ts";
 
 const dir = tempTree("keel-beside-run-");
 const store = new Store(join(dir, "state"));
@@ -264,19 +264,32 @@ test("a run that waited for a heavy slot while the agent changed its files gives
   expect(patchSettings({ heavy: { patterns: [{ pattern: "t\\.sh", cores: 1, memory_mb: 0 }], slots: 1 } }).ok).toBe(true);
   // Another session's command of the pattern holds the only slot.
   const holder = pool.count({ session: "other", command: "sh t.sh hold" })!;
+  const cancel = new AbortController();
+  let blocker: Slot | "aborted" | undefined;
+  const waitForSlotRequest = async () => {
+    for (const end = Date.now() + 10_000; !pool.waits(session.id); await Bun.sleep(25)) if (Date.now() > end) throw new Error("the run beside never asked for a slot");
+    return pool.waitingSince(session.id);
+  };
   try {
     write("lib.sh", "x=2\n");
     step(session);
-    for (const end = Date.now() + 30_000; !pool.waits(session.id); await Bun.sleep(25)) if (Date.now() > end) throw new Error("the run beside never asked for a slot");
-    const asked = pool.waitingSince(session.id)!;
+    const asked = await waitForSlotRequest();
     // The agent goes on while that run waits: its files now are not the ones the waiting run copied.
     write("lib.sh", "x=3\n");
     step(session);
+    // The next check takes the slot the stale run gives back, keeping the replacement in line
+    // long enough to read its place.
+    const next = pool.take({ session: "next", who: "beside", command: "sh t.sh next", signal: cancel.signal });
     holder.release();
-    await idle(session.id);
+    blocker = await next;
+    expect(blocker).toBeObject();
+    expect(await waitForSlotRequest()).toBe(asked);
   } finally {
+    cancel.abort();
+    if (blocker && blocker !== "aborted") blocker.release();
     holder.release();
-    patchSettings({ heavy: { patterns: was.patterns, slots: was.slots } });
+    try { await idle(session.id); }
+    finally { patchSettings({ heavy: { patterns: was.patterns, slots: was.slots } }); }
   }
   // One run, on the files as they are now: the one that waited ran nothing.
   const rows = ofSession(session.id).filter((r) => r.by === "beside");
