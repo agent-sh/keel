@@ -10,8 +10,8 @@
 //
 // A word is found as itself, never as part of a longer word: `buildbox` is in `buildbox.lan` and not in `buildboxes`.
 // A short word (four characters or fewer) or a common one is not found inside a longer name written with - _ or .
-// (`pico` is not in `model-pico-large`), and no word is found where a URL names its owner (`github.com/<owner>/`):
-// that name is public by being there.
+// (`pico` is not in `model-pico-large`). A host term in the model position of `provider:model` is not a hit either.
+// No word is found where a URL names its owner (`github.com/<owner>/`): that name is public by being there.
 
 import { detect } from "./secrets.ts";
 
@@ -47,6 +47,21 @@ function inLongerName(text: string, at: number, len: number): boolean {
   const before = text[at - 1], after = text[at + len];
   if (before && "-_.".includes(before) && text[at - 2] && IN_NAME.test(text[at - 2]!)) return true;
   return !!after && "-_.".includes(after) && !!text[at + len + 1] && IN_NAME.test(text[at + len + 1]!);
+}
+
+const PROVIDER_CHAR = /[\p{L}\p{N}_.-]/u;
+const ID_EDGE = /[\s"'`<>()\[\]{},;|&]/;
+const COPY_COMMAND = /(?:^|[\s/;|&"'`])(?:scp|rsync)[ \t]/;
+// Only a standalone model ID, not host:path, user@host:path or a piece of a URL or path.
+// A bare copy operand can look identical to a model ID: keep the hit on copy
+// command lines or when the line continues a command above it.
+function modelPart(text: string, at: number, len: number): boolean {
+  if (at < 2 || text[at - 1] !== ":" || !IN_NAME.test(text[at - 2]!) || !IN_NAME.test(text[at]!)) return false;
+  const after = text[at + len];
+  if (after && !ID_EDGE.test(after)) return false;
+  let start = at - 2;
+  while (start > 0 && PROVIDER_CHAR.test(text[start - 1]!)) start--;
+  return IN_NAME.test(text[start]!) && (start === 0 || text[start - 1] === "=" || ID_EDGE.test(text[start - 1]!));
 }
 // A match in the owner's place of an address: `github.com/<here>/`.
 function urlOwner(text: string, at: number, len: number): boolean {
@@ -131,7 +146,20 @@ export function matcher(words: Words): Matcher {
         seen.set(key, found);
         out.push(found);
       };
-      if (termRe) for (const m of text.matchAll(termRe)) if (fits(text, m)) add("host", m[0], m.index);
+      let copyLine = -1, copying = false;
+      if (termRe) for (const m of text.matchAll(termRe)) {
+        if (!fits(text, m)) continue;
+        if (strict.has(m[0].toLowerCase()) && modelPart(text, m.index, m[0].length)) {
+          const n = lineOf(m.index);
+          if (n !== copyLine) {
+            copyLine = n;
+            const start = starts[n]!;
+            copying = /\\\r?\n$/.test(text.slice(Math.max(0, start - 3), start)) || COPY_COMMAND.test(text.slice(start, starts[n + 1]));
+          }
+          if (!copying) continue;
+        }
+        add("host", m[0], m.index);
+      }
       if (projRe) for (const m of text.matchAll(projRe)) if (fits(text, m)) add("project", m[0], m.index);
       if (homeRe) for (const m of text.matchAll(homeRe)) add("path", m[0], m.index);
       if (idx.size) {
