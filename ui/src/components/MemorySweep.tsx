@@ -102,7 +102,7 @@ export function MemorySweep() {
             const w = said(s);
             return (
               <Row key={s.id} name={s.label} testid="sweep-system" data-system={s.id}
-                detail={s.next ? <p className="text-caption text-muted" data-testid="sweep-next">Next: {s.next.text}</p> : undefined}>
+                detail={s.next ? <p className="text-caption text-muted" data-testid="sweep-next" data-system={s.id}>Next: {s.next.text}</p> : undefined}>
                 <Cell col={cols[1]!}>{w.gave}</Cell>
                 <Cell col={cols[2]!}>{w.used}</Cell>
                 <Cell col={cols[3]!}><span data-testid="sweep-repeats">{repeats(s)}</span></Cell>

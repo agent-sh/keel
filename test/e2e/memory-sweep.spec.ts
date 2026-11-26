@@ -34,6 +34,8 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
 
     // A figure per system, from the seeded day.
     const by = (id: string) => page.locator(`[data-testid="sweep-system"][data-system="${id}"]`);
+    // Each system's next step stands in the row's own area under it.
+    const next = (id: string) => page.locator(`[data-testid="sweep-next"][data-system="${id}"]`);
     await expect(by("tacit")).toContainText("2 recalls, 10 facts");
     await expect(by("tacit")).toContainText("4 of 10 facts named");
     await expect(by("tacit").getByTestId("sweep-helped")).toHaveText("40%");
@@ -45,12 +47,12 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     await expect(by("claude")).toContainText("2 of 3 facts used");
     await expect(by("claude").getByTestId("sweep-repeats")).toHaveText("1 repeat");
     await expect(by("claude").getByTestId("sweep-helped")).toHaveText("67%");
-    await expect(by("claude").getByTestId("sweep-next")).toContainText("`git stash` ran after a note forbade it in 1 session");
+    await expect(next("claude")).toContainText("`git stash` ran after a note forbade it in 1 session");
     await expect(by("tacit").getByTestId("sweep-repeats")).toHaveText("none");
     await expect(by("codex")).toContainText("no session has loaded it yet");
     await expect(by("codex").getByTestId("sweep-helped")).toHaveCount(0);
     await expect(by("momentum")).toContainText("1 nudge");
-    await expect(by("tacit").getByTestId("sweep-next")).toContainText("code-word");
+    await expect(next("tacit")).toContainText("code-word");
 
     // Three offers: the stale record, the fact never named, the index that misses a note.
     const offers = page.getByTestId("sweep-offer");
