@@ -427,9 +427,9 @@ describe("what the guard's diff costs", () => {
     const sparse = before.split("\n").map((l, i) => (i >= 99 && i < 7_900 && i % 10 === 9 ? l.replace("compute(", "calc(") : l)).join("\n");
     Bun.gc(true);
     const rss = process.memoryUsage().rss, t0 = performance.now();
-    expect(touched(before, after)).toEqual([{ from: 1, to: 8_000 }]);
+    expect(touched(before, after)).toEqual([{ from: 1, to: 8_000, coarse: true }]);
     // Between the first and the last changed line every line counts as changed.
-    expect(touched(before, sparse)).toEqual([{ from: 100, to: 7_900 }]);
+    expect(touched(before, sparse)).toEqual([{ from: 100, to: 7_900, coarse: true }]);
     expect(touched(before, before.replace(`${row(4_000)}\n`, `${row(4_000)}\n${"// added\n".repeat(DIFF_LINES + 1)}`))).toEqual([{ from: 4_000, to: 4_001, insert: true }]);
     // The lines outside the middle keep what was known of them, under their new numbers; the middle is
     // known after the edit only when all of it was known before.
@@ -450,12 +450,36 @@ describe("what the guard's diff costs", () => {
     await Read.run({ file_path: p, limit: 3_000 }, ctx);
     const every = { file_path: p, old_string: "the value of line", new_string: "line", replace_all: true };
     const t0 = performance.now();
-    expect(text(await Edit.run(every, ctx))).toContain("lines 1-119, 123-8000 that this edit changes are not among the lines it showed");
+    // Told to send it again, not to read eight thousand lines first.
+    const no = text(await Edit.run(every, ctx));
+    expect(no).toContain("this edit changes lines spread between 1 and 8000, too many to compare one by one, among them lines it did not show. If you mean the change for every place it matches, send this same edit again as it is: it is applied (this one edit only). To look at some of them first, Read it with raw: true (offset and limit name a range).");
+    expect(no).not.toContain("Read them first");
     expect((await Edit.run(every, ctx)).is_error).toBeFalsy();
     expect(performance.now() - t0).toBeLessThan(1_500);
     expect(readFileSync(p, "utf8")).toContain("const v8000 = 8000; // line 8000\n");
     // What it wrote over lines it did not have is not known to it line by line.
     expect(knownOf(ctx, p)!.lines).toEqual([]);
+  });
+  test("a few changes spread over thousands of lines: the same edit sent again applies, with no read of the lines between", async () => {
+    const { ctx } = rig({ marks: "@@ 1-40" });
+    const p = file(Array.from({ length: 4_000 }, (_, i) => (i % 500 === 250 ? "const flag = OLD;" : line(i + 1))).join("\n") + "\n");
+    await Read.run({ file_path: p }, ctx);
+    const every = { file_path: p, old_string: "= OLD;", new_string: "= NEW;", replace_all: true };
+    const no = text(await Edit.run(every, ctx));
+    expect(no).toContain("this edit changes lines spread between 251 and 3751, too many to compare one by one");
+    expect(no).toContain("send this same edit again as it is");
+    expect(no).not.toMatch(/limit \d+/);
+    // Another edit of lines it does not have is still refused in its turn; the same wide edit then applies.
+    expect(text(await Edit.run({ file_path: p, old_string: line(3_000), new_string: "x" }, ctx))).toContain("Read them first (Read with raw: true, offset 3000, limit 1)");
+    expect((await Edit.run(every, ctx)).is_error).toBe(true);
+    expect((await Edit.run(every, ctx)).is_error).toBeFalsy();
+    expect(readFileSync(p, "utf8")).not.toContain("= OLD;");
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 1, to: 40 }]);
+    // Gemini's replace says it in its own tool's words.
+    const g = rig();
+    const q = file(Array.from({ length: 4_000 }, (_, i) => (i % 500 === 250 ? "const flag = OLD;" : line(i + 1))).join("\n") + "\n");
+    await read_file.run({ file_path: q }, g.ctx);
+    expect(text(await replace.run({ file_path: q, old_string: "= OLD;", new_string: "= NEW;", allow_multiple: true }, g.ctx))).toContain("To look at some of them first, use read_file with raw: true (start_line and end_line name a range).");
   });
 });
 

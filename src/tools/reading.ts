@@ -91,10 +91,11 @@ function middle(before: string, after: string): Middle {
 // The lines of `before` an edit changes, as runs: the lines it removes or
 // replaces, and for lines it only adds, the two lines it adds them between
 // (`insert`: knowing either is knowing where they go).
-export type Touch = Span & { insert?: boolean };
+// `coarse`: a middle too long to diff, where which of its lines the edit changes is not known.
+export type Touch = Span & { insert?: boolean; coarse?: true };
 export function touched(before: string, after: string): Touch[] {
   const m = middle(before, after);
-  if (!m.ops) return m.a.length ? [{ from: m.pre + 1, to: m.pre + m.a.length }] : m.b.length ? [{ from: m.pre, to: m.pre + 1, insert: true }] : [];
+  if (!m.ops) return m.a.length ? [{ from: m.pre + 1, to: m.pre + m.a.length, coarse: true }] : m.b.length ? [{ from: m.pre, to: m.pre + 1, insert: true }] : [];
   const out: Touch[] = [];
   let line = m.pre; // lines of `before` passed
   let run: { at: number; removed: number } | undefined;
@@ -168,11 +169,20 @@ export function editGuard(ctx: Pick<ToolContext, "seen">, p: string, mtime: numb
   const k = knownOf(ctx, p);
   if (!k) return undefined;
   if (k.mtime !== mtime) { k.lines = []; k.mtime = mtime; k.refused = undefined; }
-  const miss = missing(k.lines, touched(before, after), splitLines(before).length);
+  const touches = touched(before, after);
+  const miss = missing(k.lines, touches, splitLines(before).length);
   if (!miss.length) return undefined;
   const key = String(Bun.hash(edit));
   if (k.refused === key) { k.refused = undefined; return undefined; }
   k.refused = key;
+  // Changes spread over more lines than are compared one by one (a replace of every match): which of the
+  // lines between the first and the last change it touches is not known, and reading them all would cost
+  // more than the edit. The model is asked to confirm it by sending it again, not to read thousands of lines.
+  const wide = touches.find((t) => t.coarse);
+  if (wide) {
+    return `Not applied yet: you have ${p} as a compiled reading, and this edit changes lines spread between ${wide.from} and ${wide.to}, too many to compare one by one, among them lines it did not show. ` +
+      `If you mean the change for every place it matches, send this same edit again as it is: it is applied (this one edit only). To look at some of them first, ${form.how}.`;
+  }
   const says = (s: Span) => (s.from === s.to ? `${s.from}` : `${s.from}-${s.to}`);
   const all = { from: miss[0]!.from, to: miss.at(-1)!.to };
   return `Not applied: you have ${p} as a compiled reading, and line${miss.length === 1 && miss[0]!.from === miss[0]!.to ? "" : "s"} ${miss.slice(0, 4).map(says).join(", ")}${miss.length > 4 ? ", ..." : ""} ` +
