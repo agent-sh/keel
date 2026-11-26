@@ -3,9 +3,11 @@ import type { Locator } from "./isolate.ts";
 import { openPanel, shoot } from "./shots.ts";
 
 // Feature: the secondary surfaces are one container. A side panel, the Errors
-// drawer, the Inbox, the Loops dialog and the Settings page each have the ink
-// band on top, a head of one height that names the surface in the title face,
-// and (all but the page, whose way out is Back) the same close at its right end.
+// drawer, the Inbox, the Loops dialog and the Settings page each have a head of
+// one height that names the surface in the title face, and (all but the page,
+// whose way out is Back) the same close at its right end. The ink band is on
+// top of the ones that stand over the bridge and says which is in front: the
+// panel beside its conversation and the page have none.
 test("side panel, Errors, Inbox, Loops and Settings share one container grammar", async ({ page, request }) => {
   const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
   const { session } = await (await request.post("/api/sessions", { data: { model, title: "One container grammar" } })).json();
@@ -43,8 +45,16 @@ test("side panel, Errors, Inbox, Loops and Settings share one container grammar"
 
   const got: Record<string, Awaited<ReturnType<typeof read>>> = {};
   await openPanel(page, "files");
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-mode", "beside");
   got.panel = await read(page.getByTestId("side-panel"));
   await shoot(page, "surfaces-01-side-panel");
+  // In a window with no room beside the conversation the panel is a sheet over it, and has the band.
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-mode", "sheet");
+  got.sheet = await read(page.getByTestId("side-panel"));
+  await shoot(page, "surfaces-01-side-sheet");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-mode", "beside");
   await page.getByTestId("errors-button").first().click();
   got.errors = await read(page.getByTestId("errors-panel"));
   await shoot(page, "surfaces-02-errors");
@@ -63,11 +73,15 @@ test("side panel, Errors, Inbox, Loops and Settings share one container grammar"
   await shoot(page, "surfaces-05-settings");
   console.log(Object.entries(got).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n"));
 
-  const names = ["panel", "errors", "inbox", "loops", "settings"] as const;
-  for (const key of ["band", "head", "title", "surface"] as const) {
+  const names = ["panel", "sheet", "errors", "inbox", "loops", "settings"] as const;
+  for (const key of ["head", "title", "surface"] as const) {
     expect(new Set(names.map((n) => got[n]![key])).size, `${key}: ${names.map((n) => got[n]![key]).join(" | ")}`).toBe(1);
   }
-  expect(got.panel!.band).not.toBe("none");
+  // The band: one band on what is over the bridge, none on what has its own place in the window.
+  const over = ["sheet", "errors", "inbox", "loops"] as const;
+  expect(new Set(over.map((n) => got[n]!.band)).size, `band: ${over.map((n) => got[n]!.band).join(" | ")}`).toBe(1);
+  expect(got.errors!.band).not.toBe("none");
+  expect([got.panel!.band, got.settings!.band]).toEqual(["none", "none"]);
   // A surface's name is in the text face, as a heading: the narrow mono is for a call sign and a key only.
   expect(got.panel!.title).not.toContain("Martian Mono");
   expect(got.panel!.title).toContain("Plex Sans");

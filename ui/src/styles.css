@@ -625,12 +625,16 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 
 /* ---------- Secondary surfaces: one container grammar ----------
    A side panel, a drawer, a floating panel, a dialog and a page are one thing at
-   different sizes. The ink band across the top; a head that says what it is in
-   the title face, a quiet note beside it, its own controls, and the way out at
-   the right end (a page's way out is Back, at the left); then the body, on the
-   raised surface. One that floats over the bridge adds the edge, the corner and
-   the shadow. */
-.k-surface { display: flex; flex-direction: column; min-height: 0; border-top: 0.1875rem solid var(--band); background: var(--raised); }
+   different sizes. A head that says what it is in the title face, a quiet note
+   beside it, its own controls, and the way out at the right end (a page's way
+   out is Back, at the left); then the body, on the raised surface. One that
+   stands over the bridge (a drawer, a dialog, a panel as a sheet over its
+   conversation) has the ink band across its top, and one that floats adds the
+   edge, the corner and the shadow. The band says which surface is in front: a
+   panel beside its conversation, a page and a panel's own window have a place
+   of their own, nothing behind them, and no band. */
+.k-surface { display: flex; flex-direction: column; min-height: 0; background: var(--raised); }
+.k-surface[data-mode="sheet"] { border-top: 0.1875rem solid var(--band); }
 /* Nothing can be lifted off the raised surface: in light it is already white. What a
    page would raise there (a card, a field, a chosen option) is set into it instead,
    on the page's paper, so it separates by its surface and not by a hairline alone. */

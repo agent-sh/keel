@@ -1564,8 +1564,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 
 /* ---------- Settings: a station of its own ---------- */
 .k-settings { background: var(--bg); container: settings / inline-size; }
-/* A page's head is the surface head with the band on it; its way out is Back, on the left. */
-.k-page-head { position: relative; box-sizing: content-box; padding: 0 1rem 0 0.5rem; border-top: 0.1875rem solid var(--band); background: var(--raised); }
+/* A page's head is the surface head, with no band (a page is in front of nothing); its way out is Back, on the left. */
+.k-page-head { position: relative; box-sizing: content-box; padding: 0 1rem 0 0.5rem; background: var(--raised); }
 /* Narrow, by the page's own width: a bar names the section and is its title;
    it opens the search and the grouped list in place of the section. */
 .k-settings-main { display: flex; flex: 1; min-height: 0; flex-direction: column; }
