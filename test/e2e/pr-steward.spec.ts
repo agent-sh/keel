@@ -76,6 +76,7 @@ test("PR Steward fixes a failed check, ends when it is green, reads only trusted
 
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${d.url}/s/${id}`);
+    await page.getByTestId("focus-leave").click();
     const chip = async () => {
       await page.getByTestId("worktree-chip").click();
       await expect(page.getByTestId("steward")).toBeVisible();
