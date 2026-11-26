@@ -8,7 +8,8 @@ import { composing } from "../lib/keys.ts";
 import { news } from "../lib/news.ts";
 import { boxOf } from "../lib/quote.ts";
 import { reportError } from "../lib/store.ts";
-import { side, type SideState } from "../lib/side.ts";
+import { side, sideDrafts, type SideState } from "../lib/side.ts";
+import { draftOf, setDraft } from "../lib/side-drafts.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 
@@ -21,7 +22,10 @@ export function SideQuestions({ session }: { session: Session }) {
   const error = use((s) => s.error[session.id]);
   const failedQ = use((s) => s.failed[session.id]);
   const branched = use((s) => s.branched[session.id]);
-  const [text, setText] = useState("");
+  // The unsent question is the thread's, kept in this tab while the panel is closed or another session shown.
+  const [text, setWords] = useState(() => draftOf(sideDrafts, session.id, current));
+  const setText = (t: string) => { setDraft(sideDrafts, session.id, current, t); setWords(t); };
+  useEffect(() => { setWords(draftOf(sideDrafts, session.id, current)); }, [session.id, current]);
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { if (!threads) side.load(session.id).catch(reportError); }, [session.id]);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [threads, pending]);

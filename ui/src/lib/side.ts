@@ -7,6 +7,7 @@ import { registerCommand } from "./keys.ts";
 import { news } from "./news.ts";
 import { api, getState } from "./store.ts";
 import { getUI, savePref } from "./ui.ts";
+import { dropDrafts, moveDraft, type SideDrafts } from "./side-drafts.ts";
 
 export type SideExchange = { id: number; thread_id: string; question: string; answer: string; ts: number; model: string; usage: Usage; ran_tools: boolean };
 export type SideThread = { id: string; created_ms: number; exchanges: SideExchange[] };
@@ -27,13 +28,18 @@ let st: SideState = { threads: {}, current: {}, pending: {}, error: {}, failed: 
 const chain = new Map<string, Promise<unknown>>();
 const subs = new Set<() => void>();
 const set = (p: Partial<SideState>) => { st = { ...st, ...p }; subs.forEach((f) => f()); };
+// Unsent questions, per session and thread, for this tab (side-drafts.ts).
+export const sideDrafts: SideDrafts = new Map();
 
 export const side = {
   state: () => st,
   subscribe: (f: () => void) => (subs.add(f), () => void subs.delete(f)),
   async load(id: string) {
     const { threads } = await api<{ threads: SideThread[] }>(`/api/sessions/${id}/side`);
-    set({ threads: { ...st.threads, [id]: threads }, current: { ...st.current, [id]: st.current[id] ?? threads.at(-1)?.id } });
+    const current = st.current[id] ?? threads.at(-1)?.id;
+    // (Words typed before the threads came are the thread's a follow-up continues.)
+    if (!st.current[id]) moveDraft(sideDrafts, id, undefined, current);
+    set({ threads: { ...st.threads, [id]: threads }, current: { ...st.current, [id]: current } });
   },
   ask(id: string, question: string): Promise<void> {
     const at = cleared.get(id) ?? 0;
@@ -54,6 +60,7 @@ export const side = {
         // The answer goes to its thread; the thread a follow-up continues moves
         // only if the owner did not pick another meanwhile (New thread).
         const still = st.current[id] === asked;
+        if (still) moveDraft(sideDrafts, id, asked, r.thread_id);
         set({ threads: { ...st.threads, [id]: list }, current: still ? { ...st.current, [id]: r.thread_id } : st.current, branched: { ...st.branched, [id]: r.branched || undefined } });
         // An answer that lands while another panel (or another session) is shown is news for the Side questions panel.
         const ui = getUI();
@@ -74,11 +81,15 @@ export const side = {
     chain.set(id, p);
     return p;
   },
-  newThread: (id: string) => set({ current: { ...st.current, [id]: undefined }, branched: { ...st.branched, [id]: undefined } }),
+  newThread: (id: string) => {
+    moveDraft(sideDrafts, id, st.current[id], undefined);
+    set({ current: { ...st.current, [id]: undefined }, branched: { ...st.branched, [id]: undefined } });
+  },
   dismissFailed: (id: string) => set({ failed: { ...st.failed, [id]: undefined }, error: { ...st.error, [id]: undefined } }),
   async clear(id: string) {
     await api(`/api/sessions/${id}/side`, { method: "DELETE" });
     cleared.set(id, (cleared.get(id) ?? 0) + 1);
+    dropDrafts(sideDrafts, id);
     set({ threads: { ...st.threads, [id]: [] }, current: { ...st.current, [id]: undefined }, pending: { ...st.pending, [id]: undefined }, failed: { ...st.failed, [id]: undefined }, branched: { ...st.branched, [id]: undefined } });
   },
 };

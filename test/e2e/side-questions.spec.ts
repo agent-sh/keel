@@ -337,3 +337,64 @@ test("a side answer is marked while another panel shows, and goes into the messa
     await page.unroute(side);
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });
+
+// An unsent side question stays with its session and thread in this tab: the panel closed and opened again, or
+// another session shown and this one again, brings it back; it is never the message box's words and never a turn,
+// and sending one leaves the other session's draft alone.
+test("an unsent side question stays with its session and thread", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const make = async (text: string) => (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", text } })).json()).session;
+  const [a, b] = [await make("first a"), await make("first b")];
+  const idle = (id: string) => expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.phase, { timeout: 20_000 }).toBe("idle");
+  try {
+    await idle(a.id);
+    await idle(b.id);
+    const events = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.length;
+    const before = [await events(a.id), await events(b.id)];
+    // (A switch inside the page: a reload is a new tab's memory.)
+    const show = async (id: string) => {
+      await page.evaluate((to) => { history.pushState({}, "", `/s/${to}`); dispatchEvent(new PopStateEvent("popstate")); }, id);
+      await expect(page).toHaveURL(new RegExp(`/s/${id}$`));
+      await openPanel(page, "side");
+    };
+    await page.goto(`/s/${a.id}`);
+    await openPanel(page, "side");
+    const input = page.getByTestId("side-questions").getByTestId("side-input");
+    await input.fill("Which file did you read for a?");
+    await show(b.id);
+    await expect(input).toHaveValue("");
+    await input.fill("What failed in b?");
+    await openPanel(page, "files");
+    await expect(input).toHaveCount(0);
+    await openPanel(page, "side");
+    await expect(input).toHaveValue("What failed in b?");
+    await show(a.id);
+    await expect(input).toHaveValue("Which file did you read for a?");
+    await expect(page.getByTestId("composer")).toHaveValue("");
+    await shots(page, "side-03-draft");
+    // Sending a's leaves b's draft and both message boxes alone.
+    await input.press("Enter");
+    await expect(page.getByTestId("side-exchange")).toHaveCount(1, { timeout: 20_000 });
+    await expect(input).toHaveValue("");
+    await show(b.id);
+    await expect(input).toHaveValue("What failed in b?");
+    await expect(page.getByTestId("composer")).toHaveValue("");
+    expect([await events(a.id), await events(b.id)]).toEqual(before);
+  } finally {
+    await request.delete(`/api/sessions/${a.id}`);
+    await request.delete(`/api/sessions/${b.id}`);
+  }
+});
+
+// Each picture in both themes at the desk size and at a laptop's 1320x860 with the text at 90%.
+async function shots(page: import("@playwright/test").Page, name: string) {
+  await shoot(page, `${name}-1920x1040`);
+  const was = page.viewportSize()!;
+  await page.setViewportSize({ width: 1320, height: 860 });
+  await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "0.9"));
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  await shoot(page, `${name}-1320x860-s90`);
+  await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1"));
+  await page.setViewportSize(was);
+}
