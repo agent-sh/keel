@@ -15,6 +15,7 @@ import { answer, allPendingQuestions } from "../../tools/interact.ts";
 import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
+import { homeDir } from "../../core/paths.ts";
 import { descendants, lockHolder, readLocks, statFields } from "./writer.ts";
 import { CodexApp, commandWords, holdsMessage, lastRecord, permissionLines, recordsFrom, threadFacts, turnEnded, type CardGate } from "./codex-app.ts";
 
@@ -238,6 +239,10 @@ describe("a Codex session answered in place", () => {
         expect([c, (await command(c)).risk]).toEqual([c, "high"]);
       // A credential it reads goes to Codex's provider, not through Keel's vault: the folder's own .env too.
       expect((await command("cat .env")).risk).toBe("high");
+      // As Codex sends them, inside its shell's -c: the script is read as a line of its own.
+      for (const c of [`cat ${homeDir()}/.ssh/id_ed25519`, `bash -lc 'cat ${homeDir()}/.ssh/id_ed25519'`, "/bin/bash -lc 'cat .env'", `bash -lc 'echo x >> ~/.bashrc'`])
+        expect([c, (await command(c)).risk]).toEqual([c, "high"]);
+      expect((await command("/bin/bash -lc 'make test'")).risk).toBe("low");
       expect((await command("make test")).risk).toBe("low");
       // A command it does not name, and more permissions, are the owner's to weigh: high.
       expect((await command("")).risk).toBe("high");

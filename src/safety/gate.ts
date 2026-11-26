@@ -297,6 +297,20 @@ const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.
 // A card that opens in Full auto too, and goes to no judge: a write with the owner's account beyond his namespaces, and a
 // tool whose server requires his answer on every call.
 const staysOwners = (a: Ask) => a.account !== undefined || !!a.interaction;
+// The script of a command that is a shell started with -c on it and nothing more (`bash -lc 'make test'`), as
+// another harness sends what it runs; undefined for any other line.
+export function shellScript(command: string): string | undefined {
+  const parts = splitCommand(command);
+  const p = parts?.length === 1 ? parts[0]! : undefined;
+  if (!p || p.redirects || p.dyn?.length || p.nested || p.heredoc) return undefined;
+  const [sh, ...rest] = p.words;
+  if (!sh || !/^(ba|z|da|k|)sh$/.test(basename(sh))) return undefined;
+  let i = 0;
+  let c = false;
+  while (i < rest.length - 1 && /^-[a-z]+$/.test(rest[i]!)) { c ||= rest[i]!.includes("c"); i++; }
+  return c && i === rest.length - 1 ? rest[i] : undefined;
+}
+
 function callClass(call: ToolCall, target: Target): CallClass {
   // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
   // Its path keys, and every string anywhere in the input that is a path or a file: URL by itself.
@@ -2232,7 +2246,9 @@ export class Gate {
   private harnessRisk(session: Session, call: ToolCall): { risk: "high" | "low"; why?: string } {
     const c = callClass(call, null);
     if (c.kind === "shell" ? !c.command.trim() : c.kind !== "edit") return { risk: "high" };
-    const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, unconfined: true } : c, undefined, undefined, undefined, "ask", true);
+    // (A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`: the script is what is judged,
+    // read as a line of its own, so what the rules read at a line's top (credential reads, writes) is read in it.)
+    const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, command: shellScript(c.command) ?? c.command, unconfined: true } : c, undefined, undefined, undefined, "ask", true);
     return "ask" in d ? { risk: d.ask.risk, why: d.ask.why } : "deny" in d ? { risk: "high", why: d.deny } : { risk: "low" };
   }
 
