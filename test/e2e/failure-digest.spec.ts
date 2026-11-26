@@ -86,12 +86,20 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     expect(one.map((g) => g.kind).sort()).toEqual(["agent", "provider"]);
 
     await page.goto(`/s/${id}`);
+    // (A session with agents opens on its conversation; the notice is in the full stream.)
+    await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
     const card = page.getByTestId("failure-notice");
     await expect(card).toHaveCount(1);
-    await expect(card).toContainText("Failures, grouped by cause");
+    // The notice is one line, as an agent's report is: its glyph says something failed and its words count the
+    // causes (one cause is named there instead). What the model was told opens on a press.
+    await card.scrollIntoViewIfNeeded();
+    await expect(card.locator(".k-heard-line")).toHaveText(/^Failures\s*8 failures, 2 causes$/);
+    await expect(page.getByTestId("failure-entries")).toHaveCount(0);
+    expect((await card.boundingBox())!.height).toBeLessThanOrEqual(32);
+    await shoot(page, "failure-digest-00-notice-line");
+    await card.locator(".k-heard-line").click();
     await expect(page.getByTestId("failure-entries")).toContainText("5 agents failed on one cause (billing)");
     await expect(page.getByTestId("agent-report")).toHaveCount(2);
-    await card.scrollIntoViewIfNeeded();
     await shoot(page, "failure-digest-01-notice");
   } finally {
     await request.delete(`/api/sessions/${id}`);
@@ -139,9 +147,11 @@ test("an agent that repeated a shared cause is told with its own failure, not th
     ]);
 
     await page.goto(`/s/${id}`);
+    await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
     const card = page.getByTestId("failure-notice");
-    await expect(page.getByTestId("failure-entries")).toContainText(entries[1]!.trim());
     await card.scrollIntoViewIfNeeded();
+    await card.locator(".k-heard-line").click();
+    await expect(page.getByTestId("failure-entries")).toContainText(entries[1]!.trim());
     await shoot(page, "failure-digest-02-own-failure");
   } finally {
     await request.delete(`/api/sessions/${id}`);

@@ -195,8 +195,9 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await park.click();
     await expect(park).toContainText("Watch CI on main waits for");
     await expect(park.getByTestId("agent-park-id")).toHaveText(`Agent ${ci.id}`);
-    // The failure notice says the class in the word the rows use for it.
-    await expect(station(page, coord).getByTestId("failure-entries").first()).toContainText("1 agent failed (billing)");
+    // The failure notice says the class in the word the rows use for it: one cause is named on its closed line.
+    await expect(station(page, coord).getByTestId("failure-notice").first().locator(".k-heard-line")).toContainText("1 agent failed (billing)");
+    await expect(station(page, coord).getByTestId("failure-entries")).toHaveCount(0);
 
     // Three of its eight agents work: the head says its word alone, the line over the box names the three by their dots
     // and the total is the word Agents', and the pill says the five still out in the agents' line's words (three work, two wait).

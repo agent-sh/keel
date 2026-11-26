@@ -72,6 +72,8 @@ function failuresOf(text: string, meta: Record<string, any>) {
     after: m[2]!.trim(),
     rest: (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim(),
     sub: `${n} failure${n === 1 ? "" : "s"}, ${groups.length} cause${groups.length === 1 ? "" : "s"}`,
+    // One cause is named on the closed line, in its entry's own words; more are counted.
+    one: groups.length === 1,
   };
 }
 
@@ -251,9 +253,12 @@ export function InputNotice({ e }: { e: StoredEvent }) {
       </Collapsible.Root>
     );
   });
-  // What failed around the session, one entry per cause: open, since it is what needs a look.
+  // What failed around the session, one entry per cause. A line like every other thing the harness brought in:
+  // the model was told and answers for it under the line. Its glyph is the one mark that something failed, the
+  // line names the cause when there is one, and the entries (written for the model) open on a press.
+  const cause = fails?.one ? fails.body.split("\n").find((l) => l.startsWith("- "))?.slice(2) : undefined;
   const failCard = fails && (
-    <Shell icon={AlertTriangle} tone="danger" label="Failures, grouped by cause" sub={fails.sub} testid="failure-notice" defaultOpen>
+    <Shell icon={AlertTriangle} tone="danger" label={cause ? STATE_WORD.fail : "Failures"} sub={cause ?? fails.sub} testid="failure-notice">
       <div className="flex max-h-80 flex-col gap-2 overflow-auto rounded-md bg-code p-2.5 font-mono text-caption text-muted">
         {/* An entry's first line hangs; who failed, each with its own failure, sits under it, and stays there when a line wraps. */}
         <div data-testid="failure-entries">
