@@ -982,7 +982,7 @@ test("a card says which call of the reply it is and names the calls behind it th
     await expect(pane.getByTestId("approval-call")).toHaveText(["1 of 4", "2 of 4", "3 of 4", "4 of 4"]);
     await expect(pane.getByTestId("approval-later")).toHaveCount(0);
     // The force push is put away with Later: it has no card now, and the first card names it, marked.
-    await card.filter({ hasText: "--force" }).getByTestId("ask-later").click();
+    await card.filter({ hasText: "--force" }).getByRole("button", { name: "Later", exact: true }).click();
     await expect(card).toHaveCount(3);
     await expect(pane.getByTestId("approval-call")).toHaveText(["1 of 4", "2 of 4", "3 of 4"]);
     const later = pane.getByTestId("approval-later");

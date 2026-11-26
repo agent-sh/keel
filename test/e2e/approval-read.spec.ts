@@ -350,8 +350,12 @@ test("a long command is read by keys: Enter opens it, End reads it to its end, E
         await press(" ");
         await expect.poll(unseen).toBeLessThan(first);
         await expect(page.getByTestId("composer")).toHaveValue("");
-        await expect(list).toBeFocused();
-        for (let i = 0; i < 6 && (await unseen()) > 0; i++) { await press(" "); await page.waitForTimeout(250); }
+        // One Space may read the rest; only an unfinished read keeps the keyboard on the list.
+        for (let left = await unseen(); left > 0; left = await unseen()) {
+          await expect(list).toBeFocused();
+          await press(" ");
+          await expect.poll(unseen).toBeLessThan(left);
+        }
       }
       await expect.poll(unseen, { timeout: 5000 }).toBe(0);
       expect(await states(request, s.id)).toBe("pending");
