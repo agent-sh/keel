@@ -43,7 +43,10 @@ export type Probe = {
 // Identifiers a summary should keep word for word: paths, file names,
 // hashes, PR and issue numbers, CONSTANT names (Compact-Bench's details, as
 // the research probe on real sessions read them).
-const ANCHOR = /(?:[\w.-]+\/)+[\w.-]+\.\w{1,5}|\b[\w-]+\.(?:ts|tsx|rs|py|go|md|json|sh|css|toml|yaml|yml|tsv)\b|\b[0-9a-f]{8,40}\b|#\d{2,6}\b|\b[A-Z][A-Z0-9_]{5,}\b/g;
+// Try a path only at the start of its run, or just after a matched issue
+// number (which may have used up its first segment). Starting again at every
+// character or segment rescans the same suffix when there is no extension.
+const ANCHOR = /(?:(?<![\w.-]|[\w.-]\/)|(?<=#\d{2,6}\b\/?))(?:[\w.-]+\/)+[\w.-]+\.\w{1,5}|\b[\w-]+\.(?:ts|tsx|rs|py|go|md|json|sh|css|toml|yaml|yml|tsv)\b|\b[0-9a-f]{8,40}\b|#\d{2,6}\b|\b[A-Z][A-Z0-9_]{5,}\b/g;
 // A secret's placeholder (its hex name is not the work's) and a bare run of
 // digits (a time, a count) are not identifiers.
 export const anchorsOf = (text: string): Set<string> => new Set((text.replace(/\[secret:[0-9a-f]+\]/g, " ").match(ANCHOR) ?? []).filter((a) => !/^\d+$/.test(a)));

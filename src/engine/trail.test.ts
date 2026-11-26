@@ -159,3 +159,10 @@ test("a command killed or cut says it stopped, a long one is cut at a word, and 
   expect(trailText(t)).toContain("- make serve -> stopped");
   expect([...anchorsOf("token [secret:1a2b3c4d] at 20261123 for deadbeef1 in MAX_ROWS")]).toEqual(["deadbeef1", "MAX_ROWS"]);
 });
+
+test("a long reply with no file extension does not keep rescanning the same text for paths", () => {
+  const reply = `${"x".repeat(80_000)} ${"part/".repeat(10_000)}final`;
+  expect([...anchorsOf(`${reply} './src/one.ts' or /src/two.ts or prefix//three/four.ts or #123/src/five.ts`)]).toEqual([
+    "./src/one.ts", "src/two.ts", "three/four.ts", "#123", "src/five.ts",
+  ]);
+});
