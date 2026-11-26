@@ -61,7 +61,7 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; lock
   o.start();
   const cards: { name: string; input: any; why: string; shown?: string; notice?: string }[] = [];
   let decide: (name: string) => { deny: string } | void = () => undefined;
-  const stub = { askOnce: async (_s, call, name, why, _held, shown, notice) => { cards.push({ name, input: call.input, why, shown, ...(notice ? { notice } : {}) }); return decide(name); }, approvals: () => [], settled: () => {} } as CardGate;
+  const stub = { askOnce: async (_s, call, name, why, _held, shown, notice) => { cards.push({ name, input: call.input, why, shown, ...(notice ? { notice } : {}) }); return decide(name); }, approvals: () => [], settled: () => {}, harnessAnswers: () => [] } as CardGate;
   let real = opts.realGate ? new Gate(store, bus) : undefined;
   let gate: CardGate = real ?? stub;
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
@@ -562,6 +562,12 @@ describe("a Codex session answered in place", () => {
       expect(holdsMessage(r, "here")).toBe(false);
     }
     expect(await recordsFrom(`${f}.none`, 0)).toEqual([]);
+    // A writer that puts spacing after its colons (any JSON serializer may): the same records.
+    writeFileSync(f, JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "spaced" } }).replaceAll('":', '": ') + "\n" + '{"type": "event_msg", "payload": {"type" :\t"task_complete"}}\n');
+    const spaced = await recordsFrom(f, 0);
+    expect(holdsMessage(spaced, "spaced") && turnEnded(spaced, "spaced")).toBe(true);
+    writeFileSync(f, '{"type": "turn_context", "payload": {"turn_id": "t9"}}\n' + out);
+    expect((await lastRecord(f, "turn_context", 64))?.payload.turn_id).toBe("t9");
   });
 
   test("a daemon that stops while a send's delivery is read checks nothing more: its store may be closed", async () => {

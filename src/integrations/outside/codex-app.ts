@@ -77,7 +77,7 @@ export type Send = { id: string; session_id: string; key: string; text: string; 
 
 // What of the gate the driver uses: the one-call card, and the open cards it closes at a start.
 export type Answered = { state: "allowed" | "denied"; reason?: string };
-export type CardGate = Pick<Gate, "askOnce" | "approvals" | "settled">;
+export type CardGate = Pick<Gate, "askOnce" | "approvals" | "settled" | "harnessAnswers">;
 
 export type CodexAppDeps = {
   store: Store;
@@ -178,7 +178,7 @@ export async function lastRecord(path: string, type: string, part = 1024 * 1024)
   try {
     let end = statSync(path).size;
     const file = Bun.file(path);
-    const mark = Buffer.from(`"type":"${type}"`);
+    const mark = Buffer.from(`"${type}"`);
     let rest = Buffer.alloc(0);
     while (end > 0) {
       const from = Math.max(0, end - part);
@@ -191,6 +191,7 @@ export async function lastRecord(path: string, type: string, part = 1024 * 1024)
       for (let at = buf.length; at > cut + 1; ) {
         at = buf.lastIndexOf(mark, at - 1);
         if (at <= cut) break;
+        if (!keyed(buf, at, TYPE)) continue;
         const s = buf.lastIndexOf(10, at) + 1;
         const e = buf.indexOf(10, at);
         try { const r = JSON.parse(buf.subarray(s, e < 0 ? buf.length : e).toString("utf8")); if (r?.type === type) return r; } catch {}
@@ -204,7 +205,20 @@ export async function lastRecord(path: string, type: string, part = 1024 * 1024)
 
 // What a send's delivery is read from: the user's messages and the turn's end. A line that holds none of these
 // marks is never decoded (a long turn's tool output is most of a rollout's bytes).
-const MARKS = ['"type":"user_message"', '"role":"user"', '"type":"task_complete"', '"type":"turn_aborted"'].map((m) => Buffer.from(m));
+// (A mark is a value and its key, with any spacing JSON allows between them: a writer may put a space after the colon.)
+const TYPE = Buffer.from('"type"');
+const MARKS = ([["type", "user_message"], ["role", "user"], ["type", "task_complete"], ["type", "turn_aborted"]] as const).map(([k, v]) => ({ key: Buffer.from(`"${k}"`), value: Buffer.from(`"${v}"`) }));
+const SPACE = new Set([32, 9, 10, 13]);
+// Whether the value at `i` is the value of `key`: the key, a colon, and only spacing between.
+function keyed(buf: Buffer, i: number, key: Buffer): boolean {
+  let j = i - 1;
+  while (j >= 0 && SPACE.has(buf[j]!)) j--;
+  if (buf[j] !== 58) return false;
+  j--;
+  while (j >= 0 && SPACE.has(buf[j]!)) j--;
+  const from = j - key.length + 1;
+  return from >= 0 && buf.subarray(from, j + 1).equals(key);
+}
 
 // The records of a file from a byte offset on (the bytes a send started at) that say a message or a turn's end:
 // what the thread gained since. Read a part at a time off the loop; the bytes are searched as bytes and only a
@@ -233,7 +247,7 @@ export async function recordsFrom(path: string, offset: number, part = 1024 * 10
 
 function marked(buf: Buffer, out: Json[]) {
   const starts = new Set<number>();
-  for (const m of MARKS) for (let i = buf.indexOf(m); i >= 0; i = buf.indexOf(m, i + m.length)) starts.add(buf.lastIndexOf(10, i) + 1);
+  for (const m of MARKS) for (let i = buf.indexOf(m.value); i >= 0; i = buf.indexOf(m.value, i + m.value.length)) if (keyed(buf, i, m.key)) starts.add(buf.lastIndexOf(10, i) + 1);
   for (const s of [...starts].sort((a, b) => a - b)) {
     const e = buf.indexOf(10, s);
     try { out.push(JSON.parse(buf.subarray(s, e < 0 ? buf.length : e).toString("utf8"))); } catch {}
@@ -348,11 +362,8 @@ export class CodexApp {
   // call's line in the mirror says it (the rollout itself says only what the call returned).
   answers(sessionId: string): Record<string, Answered> {
     const out: Record<string, Answered> = {};
-    for (const a of this.d.gate()?.approvals({ session: sessionId }) ?? []) {
-      if (!a.call_id.startsWith("codex-") || typeof a.input?.item !== "string") continue;
-      if (a.state === "allowed") out[a.input.item] = { state: "allowed" };
-      else if (a.state === "denied") out[a.input.item] = { state: "denied", ...(a.reason ? { reason: a.reason } : {}) };
-    }
+    for (const a of this.d.gate()?.harnessAnswers(sessionId, "codex-") ?? [])
+      out[a.item] = a.state === "denied" && a.reason ? { state: "denied", reason: a.reason } : { state: a.state };
     return out;
   }
 

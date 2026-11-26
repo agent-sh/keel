@@ -1324,6 +1324,14 @@ export class Gate {
     return cardOrder(rows.map((r) => JSON.parse(r.data) as Approval));
   }
 
+  // What the owner answered on the cards of calls another harness asked about (their ids start with `prefix`), by
+  // the item each names: only those columns, read on the session's index, never every card's whole data.
+  harnessAnswers(sessionId: string, prefix: string): { item: string; state: "allowed" | "denied"; reason: string | null }[] {
+    return this.store.db.query<{ item: string; state: "allowed" | "denied"; reason: string | null }, [string, string]>(
+      "SELECT json_extract(data, '$.input.item') AS item, state, json_extract(data, '$.reason') AS reason FROM approvals WHERE session_id = ? AND state IN ('allowed', 'denied') AND substr(json_extract(data, '$.call_id'), 1, length(?2)) = ?2 AND json_type(data, '$.input.item') = 'text' ORDER BY created, id",
+    ).all(sessionId, prefix);
+  }
+
   // The cards the owner's helper answered, newest first (Settings > Helper lists them).
   // (Read through approvals_helper, which holds the helper's rows alone: never a pass over every card.)
   helperAnswers(limit = 50): Approval[] {
