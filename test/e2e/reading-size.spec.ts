@@ -2,9 +2,9 @@ import { expect, test } from "./isolate.ts";
 import type { Page } from "./isolate.ts";
 import { shoot, setPanes } from "./shots.ts";
 
-// Feature: the conversation is read at the body's size. On a desk the root is
-// 16 px at the default text size: a reply and the owner's words are 15 px and
-// the chrome 13 px, in every pane. A pane among four at 1920 px gives up
+// Feature: the conversation is read at the body's size. On a desk, at the
+// default text size, a reply and the owner's words are 15 px and the chrome
+// 13 px (14.875 and 12.75 on the 17 px root), in every pane. A pane among four at 1920 px gives up
 // margin, so a line holds 55 characters or more; a pane alone holds no more
 // than 95. A phone keeps its platform's body size.
 test("a reply is the body's size on a desk: 15 px beside 13 px chrome, 55 to 95 characters a line", async ({ page, request }) => {
@@ -43,7 +43,7 @@ test("a reply is the body's size on a desk: 15 px beside 13 px chrome, 55 to 95 
   expect(four.pane).toBeLessThan(520);
   expect(four.chars).toBeGreaterThanOrEqual(55);
   expect(four.owner).toBe(four.px);
-  expect([four.root, four.px]).toEqual([16, 15]);
+  expect([four.root, four.px]).toEqual([17, 14.875]);
   await shoot(page, "reading-size-four-panes");
 
   // One pane: the same size, a readable measure, and the list's rows at the chrome's 13 px.
@@ -54,10 +54,10 @@ test("a reply is the body's size on a desk: 15 px beside 13 px chrome, 55 to 95 
   expect(one.px).toBe(four.px);
   expect(one.chars).toBeLessThanOrEqual(95);
   expect(one.owner).toBe(one.px);
-  expect(await page.getByTestId("session-row").first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBe(13);
+  expect(await page.getByTestId("session-row").first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBe(12.75);
   await shoot(page, "reading-size-one-pane");
 
-  // A phone is a narrow pane too, at its platform's own body size (a 17 px root): the reply and the
+  // A phone is a narrow pane too, at its platform's own body size (16 px on the same root): the reply and the
   // owner's words alike, 48 characters a line or more.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(async () => (await measure(page)).pane).toBeLessThanOrEqual(390);

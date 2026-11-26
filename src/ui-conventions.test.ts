@@ -204,7 +204,7 @@ const at = (s: Src, line: number, what: string) => `${s.file}:${line}: ${what}`;
 // or subscript is sized against its line.
 function sheetSizes(list: Src[]): string[] {
   // (A size that moves with the width between two steps of the scale is the scale's: min(step, max(step, Nvw)).)
-  const size = /^(var\(--text-[a-z]+\)|min\(var\(--text-[a-z]+\), max\(var\(--text-[a-z]+\), [\d.]+vw\)\)|inherit|0|calc\(1[67]px \* var\(--ui-scale, 1\)\)|max\(16px, 1rem\) !important|1\.08em)$/;
+  const size = /^(var\(--text-[a-z]+\)|min\(var\(--text-[a-z]+\), max\(var\(--text-[a-z]+\), [\d.]+vw\)\)|inherit|0|calc\(17px \* var\(--ui-scale, 1\)\)|max\(16px, 1rem\) !important|1\.08em)$/;
   const out: string[] = [];
   for (const s of list) for (const r of rules(s.text)) for (const d of r.decls) {
     if (d.prop === "font-size" && !size.test(d.value) && !(/(^|[\s>+~,])su[pb]\b/.test(r.selector) && /^[\d.]+em$/.test(d.value))) out.push(at(s, d.line, `font-size: ${d.value}`));
@@ -787,9 +787,9 @@ function ownTimers(list: Src[]): string[] {
   return [...kept, ...gone];
 }
 
-test("the type scale has eight sizes, written once", () => {
+test("the type scale has eight sizes, written once, and a desk's step down for the five that are read", () => {
   const theme = rules(sheets.find((s) => s.file === "styles.css")!.text).flatMap((r) => r.decls).filter((d) => /^--text-[a-z]+$/.test(d.prop));
-  expect(theme.map((d) => d.prop.slice(7))).toEqual(["micro", "caption", "ui", "base", "read", "head", "title", "display"]);
+  expect(theme.map((d) => d.prop.slice(7))).toEqual(["micro", "caption", "ui", "base", "read", "head", "title", "display", "micro", "caption", "ui", "base", "read"]);
   expect(theme.every((d) => /^[\d.]+rem$/.test(d.value))).toBe(true);
 });
 

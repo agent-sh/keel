@@ -1058,10 +1058,10 @@ html[data-resizing] iframe { pointer-events: none; }
 @media (hover: none) { .k-stow-cmd { height: var(--spacing-tap); } }
 
 /* Inside a station the transcript fills it, a little tighter than reading width. */
-.k-station .k-transcript { max-width: 43rem; padding-top: 1.375rem; --k-row-gap: 0.875rem; }
-.k-station .k-compose-in { max-width: 43rem; }
-/* A reply and the owner's words are set at the body's size in every pane, in a column that holds about 90
-   characters a line where the pane has the room. A pane under 28rem (one among four, a phone) gives up margin. */
+.k-station .k-transcript { max-width: 38rem; padding-top: 1.375rem; --k-row-gap: 0.875rem; }
+.k-station .k-compose-in { max-width: 38rem; }
+/* A reply and the owner's words are set at the body's size in every pane, in a column that holds no more than
+   95 characters a line where the pane has the room. A pane under 28rem (one among four, a phone) gives up margin. */
 .k-reading { container: reading / inline-size; }
 @container reading (max-width: 28rem) {
   .k-transcript { padding-inline: 0.875rem; }
@@ -2002,10 +2002,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-shell[data-mode="focus"] .k-rail-wrap[data-over] { width: 0; }
 .k-shell[data-mode="focus"] .k-band { height: 0; }
 .k-shell[data-mode="focus"] .k-station { --k-band-h: 0px; }
-.k-shell[data-mode="focus"] .k-top-in > .k-station-head { border-bottom-color: transparent; padding-inline: max(1.375rem, calc(50% - 20rem)) 4rem; padding-block: 0.875rem 0.25rem; }
+.k-shell[data-mode="focus"] .k-top-in > .k-station-head { border-bottom-color: transparent; padding-inline: max(1.375rem, calc(50% - 17.5rem)) 4rem; padding-block: 0.875rem 0.25rem; }
 .k-shell[data-mode="focus"] :is(.k-station-rest, .k-station-machine) { display: none; }
 .k-shell[data-mode="focus"] .k-top-in > .k-session-header { display: none; }
-.k-shell[data-mode="focus"] .k-stations .k-transcript, .k-shell[data-mode="focus"] .k-stations .k-compose-in { max-width: 43rem; }
+.k-shell[data-mode="focus"] .k-stations .k-transcript, .k-shell[data-mode="focus"] .k-stations .k-compose-in { max-width: 38rem; }
 .k-shell[data-mode="focus"] .k-compose-in { padding-bottom: 2.25rem; }
 /* A message's acts, its turn's figures and its notes come under the pointer or the keys. */
 .k-shell[data-mode="focus"] .k-turn-foot:not(:hover, :focus-within) > *,

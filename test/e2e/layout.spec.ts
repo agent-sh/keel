@@ -68,9 +68,9 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await expect(pane(1)).toHaveAttribute("data-testid", "pane-empty");
   await expect(pane(1)).toContainText("the next session opens here");
 
-  // Type is larger by default: what is read and what is glanced at.
+  // A desk's default type: the conversation at the body's size, about 15 px on the 17 px root.
   expect(await rootPx()).toBe(17);
-  expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBeGreaterThanOrEqual(18);
+  expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBe(14.875);
   // (A row's name is the chrome's name size, --text-ui: 0.8125rem.)
   expect(await fontPx('[data-testid="session-row"] .k-row-title')).toBeGreaterThanOrEqual(13.8);
   expect(await fontPx('[data-testid="composer"]')).toBeGreaterThanOrEqual(15);

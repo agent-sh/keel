@@ -176,7 +176,7 @@ test("a session's box on a desk is one quiet line in the workbench: the pickers 
   expect(look.sendRow).toBe(true);
   expect(look.ring).toBe("none");
   expect(look.send).toBeLessThanOrEqual(1.75);
-  expect(look.words).toBe(15);
+  expect(look.words).toBe(14.875);
   // What the next turn runs with is behind the +.
   await expect(box.getByTestId("model-picker")).toHaveCount(0);
   await box.getByTestId("box-more").click();

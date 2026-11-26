@@ -299,10 +299,10 @@
   /* Type scale, in rem. The chrome has two sizes: ui for names, controls and words, micro for
      what is read beside them in the quiet ink (a time, a key, a count). Ui is caption's size: a
      name a step over the control beside it was a third size 8% from each, which reads as one size
-     drawn carelessly, and the step down keeps every card and bar in the room it had. On a desk the
-     body is 15 px and the chrome 13 px at the default text size; a reply and the owner's words are
-     set at the body's size, read a step up only for a heading in a reply; head, title and display
-     name things.
+     drawn carelessly, and the step down keeps every card and bar in the room it had. These are a
+     phone's sizes (a 16 px body); a desk sets the first five a step down (below: a 15 px body and
+     13 px chrome at the default text size). A reply and the owner's words are set at the body's
+     size, read a step up only for a heading in a reply; head, title and display name things.
      No stylesheet or component writes a size of its own (src/ui-conventions.test.ts). */
   --text-micro: 0.75rem;
   --text-micro--line-height: 1.35;
@@ -429,11 +429,14 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 html, body, #root { height: 100%; }
 /* Every length in the interface is a rem: the text size the owner picks
    (Settings, Ctrl + and Ctrl -) scales type, spacing and controls together. */
-/* The default text size: on a phone a 17 px root (the platform's own body size); on a desk a 16 px root, which
-   sets the conversation's text at 15 px and the chrome at 13 px, the sizes a desktop app is read at. The owner's
-   size scales it. */
+/* The default text size: a 17 px root (16 px body text on a phone, the platform's own); the owner's size scales it. */
 html { -webkit-text-size-adjust: 100%; font-size: calc(17px * var(--ui-scale, 1)); }
-@media (min-width: 768px) { html { font-size: calc(16px * var(--ui-scale, 1)); } }
+/* On a desk the type is a step smaller than a phone's on the same root, so every length keeps its place: the
+   conversation's text is 15 px and the chrome 13 px at the default text size, the sizes a desktop app is read at;
+   what is read beside the chrome is 12 px, and a heading in a reply 17 px. */
+@media (min-width: 768px) {
+  :root { --text-micro: 0.6875rem; --text-caption: 0.75rem; --text-ui: 0.75rem; --text-base: 0.875rem; --text-read: 1rem; }
+}
 /* No color transitions while the theme flips: everything changes in one frame. */
 .theme-switch, .theme-switch * { transition: none !important; }
 body {
