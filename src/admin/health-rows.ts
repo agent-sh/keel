@@ -4,13 +4,14 @@
 
 export type Level = "ok" | "warning" | "broken";
 // What a row is about, in the order the list shows them.
-export const GROUPS = ["files", "agnix", "hooks", "settings", "sandbox", "providers", "mcp", "telemetry", "machine", "disk"] as const;
+export const GROUPS = ["files", "agnix", "hooks", "settings", "cards", "sandbox", "providers", "mcp", "telemetry", "machine", "disk"] as const;
 export type Group = (typeof GROUPS)[number];
 export const GROUP_NAMES: Record<Group, string> = {
   files: "Skills, commands, agents and plugins",
   agnix: "Agent configs, linted by agnix",
   hooks: "Hooks",
   settings: "Settings and layers",
+  cards: "Owner cards",
   sandbox: "Sandbox",
   providers: "Providers",
   mcp: "MCP servers",

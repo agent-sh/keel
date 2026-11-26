@@ -49,6 +49,7 @@ import { accountContext, childMode, classify, decide, isMode, shellCredentialRea
 import { cardOrder } from "./card-order.ts";
 import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
+import { restarts } from "../admin/life.ts";
 import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
 import { importOf, inCopy, ownersImported } from "./imported.ts";
@@ -180,6 +181,9 @@ export type Approval = {
   reason?: string;
   by?: AnsweredBy;      // who answered it: the kind of client, its name, whether it said it showed the whole text
   created: number;
+  // The mode and daemon build at raise, not the ones in force at answer.
+  opened_mode?: Mode;
+  opened_build?: string;
   // Where the call stands in the model's reply (its event, its index): the cards of one reply list in call order (card-order.ts).
   reply?: { seq: number; index: number };
   resolved?: number;
@@ -1969,7 +1973,10 @@ export class Gate {
       // (The card says what of his answer is kept: public-allowed.ts.)
       const kept = words ? remembered(words) : "";
       const why = words ? `${heldWhy(words)}${kept ? `\n${kept}` : ""}${rest ? `\nAlso: ${rest}` : ""}` : rest;
-      const out = await this.askOnce(session, call, name, why, words ? "words" : "provenance");
+      const out = await this.askOnce(session, call, name, why, words ? "words" : "provenance", undefined, undefined, {
+        ...("ask" in d ? { account: d.ask.account, unparsed: d.ask.unparsed } : {}),
+        ...(provHeld.hits.length ? { provenance: true } : {}),
+      });
       if (out) return out;
       // Answered: the owner has said these targets (they are theirs from here on in this session), and these words there.
       if (provHeld.hits.length) this.provenance.clear(provHeld.ids, provHeld.hits);
@@ -2268,7 +2275,8 @@ export class Gate {
   // `shown`: what the card shows of the call (a mail as its recipients, subject and text).
   // `held`: what makes it a one-call card, kept with it (delegate.ts: none of these is the helper's to answer).
   // `notice`: what the asker said of it in its own words, shown apart from the gate's reason.
-  async askOnce(session: Session, call: ToolCall, name: string, why: string, held: HeldBy, shown?: string, notice?: string): Promise<{ deny: string } | void> {
+  async askOnce(session: Session, call: ToolCall, name: string, why: string, held: HeldBy, shown?: string, notice?: string,
+    reasons?: Pick<Ask, "account" | "unparsed"> & { provenance?: true }): Promise<{ deny: string } | void> {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const short = inShort(cls, call.input);
@@ -2276,7 +2284,7 @@ export class Gate {
     // risk of its class, red only for what Ask would mark high, with the gate's reason then.
     const own = held === "harness" ? this.harnessRisk(session, call) : { risk: "high" as const };
     const risk = own.risk === "high" ? { risk: "high" as const, why: own.why ?? why } : { risk: "low" as const, why };
-    return this.card(session, call, name, cls, shown ?? short.summary, { ...risk, suggest: [], cut: shown === undefined ? short.cut : undefined, held, ...(notice ? { notice } : {}) }, true);
+    return this.card(session, call, name, cls, shown ?? short.summary, { ...risk, ...reasons, suggest: [], cut: shown === undefined ? short.cut : undefined, held, ...(notice ? { notice } : {}) }, true);
   }
 
   // What another harness asks to run or write, as Ask would judge Keel's own call, whatever the session's mode: as a
@@ -2338,7 +2346,7 @@ export class Gate {
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
     ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string }; part?: AskedPart;
-      ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }, once = false): Promise<{ deny: string } | void> {
+      ownerOnly?: true; account?: string; unparsed?: true; provenance?: true; risks?: { rule: RiskRule }[]; held?: HeldBy }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -2362,6 +2370,7 @@ export class Gate {
       summary, cut: ask.cut, notice: [asker, ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)), reply: call.ctx.reply,
+      opened_mode: this.perm(session.id).mode, opened_build: restarts()?.last().build_id,
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
       ...(ask.mine ? { mine: ask.mine, ...(ghOwnLogin(ask.mine) ? { mine_account: true as const } : {}) } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}), ...(ask.part && cls.kind === "shell" ? { part: ask.part } : {}),
       ...factsOf(ask),
@@ -2672,10 +2681,11 @@ function placeOf(session: Session, cls: CallClass): { at?: Approval["at"] } {
 
 // How long an input was, kept only when the card holds its start alone.
 // What the gate knew of why it asked, kept with a card for whoever answers it (src/safety/delegate.ts).
-function factsOf(ask: { ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }): { facts?: CardFacts } {
+function factsOf(ask: { ownerOnly?: true; account?: string; unparsed?: true; provenance?: true; risks?: { rule: RiskRule }[]; held?: HeldBy }): { facts?: CardFacts } {
   const f: CardFacts = {
     ...(ask.ownerOnly ? { owner_only: true as const } : {}), ...(ask.account !== undefined ? { account: ask.account } : {}),
     ...(ask.risks?.length ? { risks: [...new Set(ask.risks.map((r) => r.rule))] } : {}), ...(ask.held ? { held: ask.held } : {}),
+    ...(ask.unparsed ? { unparsed: true } : {}), ...(ask.provenance ? { provenance: true } : {}),
   };
   return Object.keys(f).length ? { facts: f } : {};
 }

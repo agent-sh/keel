@@ -258,7 +258,7 @@ export async function runHealth(deps: HealthDeps, cwd: string): Promise<HealthRe
   // The file walk answers two groups, the files and the layers; the layers wait on it.
   let held: Row[] = [];
   const walked = bounded("files", "files", CHECK_MS, async () => { const r = await files(deps.store, cwd); held = r.layers; return r.files; });
-  const [fileRows, agnixOut, hookRowsOut, sandboxOut, providerOut, mcpOut, telemetryOut, diskOut, machineOut] = await Promise.all([
+  const [fileRows, agnixOut, hookRowsOut, sandboxOut, providerOut, mcpOut, telemetryOut, diskOut, machineOut, cardsOut] = await Promise.all([
     walked,
     bounded("agnix", "agnix", CHECK_MS, () => { const a = agnix(); return a ? agnixRows({ installed: a.installed(), folders: a.all() }) : []; }),
     bounded("hooks", "hooks", CHECK_MS, () => hooks(deps.store, cwd)),
@@ -268,9 +268,20 @@ export async function runHealth(deps: HealthDeps, cwd: string): Promise<HealthRe
     bounded("telemetry", "telemetry", CHECK_MS, () => telemetryRows(settings().observe ?? {}, process.env)),
     bounded("disk", "disk", CHECK_MS, () => disk(deps.store)),
     bounded("machine", "machine", CHECK_MS, () => loadRows()),
+    bounded("daily cards", "cards", CHECK_MS, async () => {
+      const { days } = await readsOf(deps.store).run("cards.daily", { now: t0, log_dir: join(deps.store.stateDir, "logs") });
+      const average = (n: number) => new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(n / days.length);
+      const total = days.reduce((n, d) => n + d.cards, 0);
+      const auto = days.reduce((n, d) => n + (d.by_mode.auto?.cards ?? 0) + (d.by_mode["full-auto"]?.cards ?? 0), 0);
+      const unknown = days.reduce((n, d) => n + (d.by_mode.unknown?.cards ?? 0), 0);
+      const trust = days.reduce((n, d) => n + d.trust_notices, 0);
+      return [{ id: "cards:daily", group: "cards", level: "ok",
+        title: `Cards you saw: ${days.at(-1)!.cards} yesterday, ${average(total)} a day this week`,
+        detail: `Auto and Full auto: ${average(auto)} a day. ${unknown ? `${unknown} with unknown mode. ` : ""}Trust notices: ${days.at(-1)!.trust_notices} yesterday, ${average(trust)} a day. Last 7 full days, Jerusalem time.` }];
+    }),
   ]);
   const layers = layerRows({ unreadable: settingsUnreadable(), refused: refusedConfigs(), observe: settings().observe ?? {}, env: process.env, homeWithheld: !mayReadHome() });
   const layerOut = [...layers, ...held];
-  const rows = ordered([...fileRows, ...agnixOut, ...hookRowsOut, ...(layerOut.length ? layerOut : [layersOk]), ...sandboxOut, ...providerOut, ...mcpOut, ...telemetryOut, ...machineOut, ...diskOut]);
+  const rows = ordered([...fileRows, ...agnixOut, ...hookRowsOut, ...(layerOut.length ? layerOut : [layersOk]), ...cardsOut, ...sandboxOut, ...providerOut, ...mcpOut, ...telemetryOut, ...machineOut, ...diskOut]);
   return { at: t0, took_ms: Date.now() - t0, rows, counts: countsOf(rows) };
 }

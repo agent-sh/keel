@@ -11,11 +11,12 @@ import { classifyCall } from "../../safety/gate.ts";
 import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
 import { HeadTrust } from "../../safety/head-trust.ts";
 import { landedNote, trustLanded, type Landing, type Moved } from "../../safety/landed-trust.ts";
-import { rootOf, skillDigest, Trust } from "../../safety/trust.ts";
+import { rootOf, skillDigest, Trust, trustNotice } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import { headHeld, setupHook } from "../../worktree/setup.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
+import { restarts } from "../../admin/life.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -61,8 +62,10 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   skillFilter.ownerDigest = (dir) => trust.skillOwnerDigest(dir);
   skillFilter.digest = (dir) => skillDigest(dir);
 
-  const notify = (sessionId: string, text: string, kind: string) =>
-    bus.emit({ t: "event", event: store.append(sessionId, "note", { kind, text }) });
+  const notify = (sessionId: string, text: string, kind: string, held?: ReturnType<typeof trustNotice>) =>
+    bus.emit({ t: "event", event: store.append(sessionId, "note", {
+      kind, text, ...(held ? { held, card_build: restarts()?.last().build_id } : {}),
+    }) });
 
   const snaps = new Map<string, { root: string; snap: Snap }>();
 
@@ -84,7 +87,7 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
           } catch { return ""; }
         };
         const parts = await Promise.all(held.map(async (f) => `${relative(f.root, f.path)} (${f.state === "changed" ? "changed" : "new"}${await size(f)}${f.kind === "instructions" && f.state === "changed" ? ", the trusted version is used" : ""})`));
-        notify(s.id, `${held.length} file${held.length === 1 ? "" : "s"} of this repository ${held.length === 1 ? "is" : "are"} held until you trust ${held.length === 1 ? "it" : "them"}: ${parts.join(", ")}. Open the Trust panel to read what changed and trust ${held.length === 1 ? "it" : "them"}.`, "trust");
+        notify(s.id, `${held.length} file${held.length === 1 ? "" : "s"} of this repository ${held.length === 1 ? "is" : "are"} held until you trust ${held.length === 1 ? "it" : "them"}: ${parts.join(", ")}. Open the Trust panel to read what changed and trust ${held.length === 1 ? "it" : "them"}.`, "trust", trustNotice(held));
         bus.emit({ t: "feature", name: "trust", session_id: s.id, data: { held: held.length } });
       }
       return "";

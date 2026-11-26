@@ -14,6 +14,7 @@ import { timed } from "../admin/stall.ts";
 import { instructionNames } from "./instruction-files.ts";
 import { codexConfig, nativeRoots } from "../engine/native-memory.ts";
 import { headHold } from "./head-trust.ts";
+import { locate } from "../core/git.ts";
 
 export type TrustKind = "instructions" | "skill";
 export type ProjectFile = {
@@ -55,6 +56,17 @@ export function rootOf(dir: string): string | null {
     if (dirname(d) === d) return null;
   }
 }
+
+// The common Git directory identifies a repository across its worktrees.
+// An old notice may outlive its checkout; use the saved folder in that case.
+export const trustRepo = (dir: string): string => locate(dir)?.common ?? realOf(rootOf(dir) ?? dir);
+
+// Paths are relative to their checkout so identical held contents in two
+// worktrees are one set. The count report never returns these digests.
+export const trustNotice = (held: readonly ProjectFile[]) => ({
+  repo: sha(trustRepo(held[0]!.root)),
+  set: sha(JSON.stringify(held.map((f) => JSON.stringify([relative(f.root, f.path), f.state, f.sha256])).sort())),
+});
 
 // A file's SHA-256, read again only when the file is no longer the one hashed:
 // another inode, size, or change time (nanoseconds). The change time is the

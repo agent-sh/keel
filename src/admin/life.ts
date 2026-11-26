@@ -21,6 +21,7 @@
 import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
+import { buildId } from "../core/build.ts";
 import type { Session } from "../core/types.ts";
 import { type CutState, type CutTurn, registerHooks } from "../engine/hooks.ts";
 import type { Before, Restart, RestartTurn } from "./life-rows.ts";
@@ -149,7 +150,7 @@ export class Restarts {
     G.__keelRestarts = this;
     // Every start has its record, also one that knows nothing of the daemon before it.
     const id = `${process.pid}-${life.started_ms}`;
-    this.now = this.read(id) ?? { id, up_ms: life.started_ms, pid: process.pid, before: life.before, ...(life.before ? {} : { unknown: life.unknown ?? "nothing is known" }), turns: [] };
+    this.now = this.read(id) ?? { id, up_ms: life.started_ms, build_id: buildId(), pid: process.pid, before: life.before, ...(life.before ? {} : { unknown: life.unknown ?? "nothing is known" }), turns: [] };
     this.save();
     store.db.query(`DELETE FROM daemon_starts WHERE id NOT IN (SELECT id FROM daemon_starts ORDER BY up_ms DESC LIMIT ${KEPT})`).run();
     registerHooks({

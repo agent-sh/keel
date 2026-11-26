@@ -4,6 +4,7 @@
 // can still be answered comes from this live registry, not that history.
 import type { Asked, AskedQuestion, PendingQuestion } from "../core/types.ts";
 import type { ToolContext } from "./types.ts";
+import { allHooks } from "../engine/hooks.ts";
 
 export type Question = AskedQuestion;
 // Per question id: the labels picked, plus free text the owner typed.
@@ -113,6 +114,10 @@ export function askFor(ctx: ToolContext, asked?: Asked, qs?: Question[]): Promis
     const onAbort = () => done(null);
     ctx.signal.addEventListener("abort", onAbort, { once: true });
     pending.set(key, { question, resolve: done });
+    // An answer from a standing ruling never reaches the live registry.
+    if (!asked) for (const h of allHooks()) {
+      try { h.ownerAsked?.(ctx.sessionId, id, qs?.[0]?.question ?? "The agent asks a question."); } catch {} // the live card still waits
+    }
     ctx.questionChanged?.();
   });
 }

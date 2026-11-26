@@ -63,7 +63,7 @@ export type Held = "provenance" | "confirm" | "words" | "hook" | "harness";
 // What the gate knew of why it asked, kept with the card (gate.ts card()).
 // `owner_only`: the policy's onlyOwner. `account`: a write with the owner's account beyond his namespaces.
 // `risks`: the classes of what makes a command high risk (risk-words.ts). `held`: a one-call card and what made it.
-export type CardFacts = { owner_only?: true; account?: string; risks?: RiskRule[]; held?: Held };
+export type CardFacts = { owner_only?: true; account?: string; risks?: RiskRule[]; held?: Held; unparsed?: true; provenance?: true };
 
 export type OwnerClass = "provenance" | "owner-only" | "spend" | "publish" | "delete" | "authority" | "unseen" | "helper";
 export const CLASS_WORDS: Record<OwnerClass, string> = {

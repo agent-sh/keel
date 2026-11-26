@@ -24,6 +24,7 @@ import { costLine, costs, rankWaiting, type WaitCost, type WaitNow } from "../co
 import { isOutside } from "../core/outside.ts";
 import { OUTSIDE_LABEL } from "../core/watch.ts";
 import { DEFAULT_PER_HOUR } from "../integrations/mobile/budget.ts";
+import { restarts } from "../admin/life.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -747,7 +748,13 @@ function file(x: Filing): Alert | undefined {
   emit("alert", a);
   // (A limit's class and the time it lifts go with its row: the timeline says which limit.)
   const limit = kind === "limit" ? { cls: (data as { cls?: string } | undefined)?.cls, until: (data as { until?: number } | undefined)?.until } : {};
-  activity.record("alert", kind, x.from, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags, ...(key && decision ? { [key]: String(decision) } : {}), ...limit });
+  // Keep the actual raise, including consecutive questions on the same call
+  // whose inbox rows can replace each other. An expiry notice is not a card.
+  const q = data as { expired?: boolean; ask_id?: string; plan_id?: string; secret_id?: string; call_id?: string } | undefined;
+  const card = kind === "question" && !x.far && x.from && q && !q.expired ? {
+    card: q.ask_id ?? q.plan_id ?? q.secret_id ?? q.call_id, card_mode: perm.gate?.perm(x.from).mode, card_build: restarts()?.last().build_id,
+  } : {};
+  activity.record("alert", kind, x.from, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags, ...(key && decision ? { [key]: String(decision) } : {}), ...limit, ...card });
   deliverTo(a, sendTo);
   return a;
 }

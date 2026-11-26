@@ -166,13 +166,6 @@ function init(deps: Deps) {
       const name = target?.name ?? call.tool.name;
       const why = agents.gate(s.id, call.tool.name, call.input, namesOf(name, target ? target.input : call.input, call.tool.name));
       if (why) return { deny: why };
-      // A question the model asks the owner is an alert until it is answered.
-      // (Asked again after a daemon restart, it is the same question: no second alert.)
-      if (QUESTION_TOOLS.has(call.tool.name) && !alerts.raisedFor("call_id", call.id, s.id)) {
-        const q = (call.input?.questions ?? [])[0];
-        const text = String(q?.question ?? call.input?.question ?? call.input?.prompt ?? "The agent asks a question.");
-        alerts.raise("question", s.id, `Question: ${deps.store.session(s.id)?.title || "a session"}`, text, { call_id: call.id, open_session: s.id });
-      }
       return undefined;
     },
     afterTool: (s, call, result) => {
@@ -206,10 +199,10 @@ function init(deps: Deps) {
     toolRan: (s, call, result, ran) => {
       if (ran.outcome === "interrupted" && stopKind(result.content) === "stopped" && closedHow(s.id, call.id) === "not answered") alerts.keepOutcome("call_id", call.id, s.id, "not answered", true);
     },
-    // A question a server asked on a call's card is an alert like the model's own.
-    // (One alert per question: a call's server can ask more than one.)
+    // A real question card, not a call answered by a standing ruling. A
+    // restart does not raise a second alert for the same question.
     ownerAsked: (sessionId, callId, text, askId) => {
-      if (!alerts.raisedFor("ask_id", askId, sessionId)) alerts.raise("question", sessionId, `Question: ${deps.store.session(sessionId)?.title || "a session"}`, text, { call_id: callId, open_session: sessionId, ask_id: askId });
+      if (!alerts.raisedFor(askId ? "ask_id" : "call_id", askId ?? callId, sessionId)) alerts.raise("question", sessionId, `Question: ${deps.store.session(sessionId)?.title || "a session"}`, text, { call_id: callId, open_session: sessionId, ...(askId ? { ask_id: askId } : {}) });
     },
     ownerAnswered: (sessionId, _callId, answered, askId) => {
       alerts.keepOutcome("ask_id", askId, sessionId, answered ? "answered" : "declined");

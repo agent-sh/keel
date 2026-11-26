@@ -36,8 +36,10 @@ import { sealBundleTo, sealRoots, sealVerify } from "../admin/seal-read.ts";
 import { liveReport, type Experiment } from "../admin/experiment-report.ts";
 import { sentCalls, sentOf, type SentAsk } from "../drive/sent-read.ts";
 import { asksFacts } from "../board/asks-read.ts";
+import { readDailyCards } from "../admin/cards-read.ts";
 
 export const tasks = {
+  "cards.daily": readDailyCards,
   // What /proc says of the processes under the daemon (the resource sampler's pass, src/admin/proc-read.ts).
   "proc.sample": (_db: Database, a: ProcAsk) => readProcs(a),
   // The drive's sends of the stored history, a part of the events at a time (src/drive/sent.ts backfillSent).

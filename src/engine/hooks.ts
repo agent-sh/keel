@@ -233,10 +233,9 @@ export type TurnHooks = {
   // foreground); undefined for a call that does not block on agents. A drain waits for such a call only while
   // it waits for one of those agents (src/engine/drain-wait.ts).
   awaitsAgents?: (sessionId: string, callId: string) => string[] | undefined;
-  // A call that is no question tool put a question to the owner on its card
-  // (an MCP server asked while the call ran), and that question closed.
-  // `askId`: one per question (a call's server can ask more than one).
-  ownerAsked?: (sessionId: string, callId: string, text: string, askId: string) => void;
+  // A question card opened. `askId` identifies a server's question (a call's
+  // server can ask more than one); a question tool uses the call id alone.
+  ownerAsked?: (sessionId: string, callId: string, text: string, askId?: string) => void;
   // Before that question's card opens: the owner's Elicitation hooks may answer it, and then no card opens.
   // After it was answered (the owner's, or a hook's): the owner's ElicitationResult hooks may change the
   // answer, only to ask less of the owner (decline or cancel in place of an accept). The first hook of the list that

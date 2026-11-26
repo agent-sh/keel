@@ -19,6 +19,7 @@ export type RestartTurn = CutTurn & { session_id: string; title: string; parent_
 export type Restart = {
   id: string;
   up_ms: number; // the process's start
+  build_id?: string;
   // When it began to answer: up_ms and the time its modules took to load. Absent in a record from before it was kept.
   listening_ms?: number;
   pid: number;
