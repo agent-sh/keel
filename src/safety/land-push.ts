@@ -16,9 +16,10 @@ import { laid } from "./risk.ts";
 import { name as baseName } from "./risk-words.ts";
 import { splitCommand } from "./shell.ts";
 
-// One git push of a line: the folder it runs in (null: the line does not say one the rules can follow), the refspecs
-// as written, and whether it pushes every branch.
-export type Push = { dir: string | null; specs: string[]; all: boolean };
+// One git push of a line: the folder it runs in (null: the line does not say one the rules can follow), the remote it
+// names as written (null: none, so the branch's own), the refspecs as written, and whether it pushes every branch. A
+// dry run (-n, --dry-run) is no push.
+export type Push = { dir: string | null; remote: string | null; specs: string[]; all: boolean };
 
 const GIT_VALUED = new Set(["-c", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
 const PUSH_VALUED = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
@@ -47,17 +48,20 @@ export function pushesOf(command: string, cwd: string, home: string): Push[] {
     }
     if (w[k] !== "push") continue;
     const specs: string[] = [];
-    let all = false, remote = false;
+    let all = false, dry = false, remote: string | null = null, named = false;
     for (let n = k + 1; n < w.length; n++) {
       const a = w[n]!;
       if (a === "--") continue;
+      if (a === "--repo") { remote = w[++n] ?? null; named = true; continue; }
+      if (a.startsWith("--repo=")) { remote = a.slice(7); named = true; continue; }
       if (PUSH_VALUED.has(a)) { n++; continue; }
       if (a === "--all" || a === "--mirror" || a === "--branches") { all = true; continue; }
-      if (a.startsWith("-")) continue;
-      if (!remote) { remote = true; continue; }
+      if (a === "-n" || a === "--dry-run") { dry = true; continue; }
+      if (a.startsWith("-")) { if (/^-[a-zA-Z]*n/.test(a) && !a.startsWith("--")) dry = true; continue; }
+      if (!named) { named = true; remote = a; continue; }
       specs.push(a);
     }
-    out.push({ dir, specs, all });
+    if (!dry) out.push({ dir, remote, specs, all });
   }
   return out;
 }
@@ -82,7 +86,9 @@ export function movesBase(spec: string, base: string, current: string | null): b
 }
 
 // What a hand landing pushes, for the model to be told: the branches it can queue instead.
-export type LandPush = { repo: string; base: string; branches: string[]; commits: string[] };
+// `sure`: the line names the folder (or runs in the call's), so the push is known to be in this repository; a folder
+// spelled with an expansion is only taken to be.
+export type LandPush = { repo: string; base: string; branches: string[]; commits: string[]; sure: boolean };
 
 type Repo = { top: string; common: string; scope: string };
 const repoAt = (dir: string): Repo | null => {
@@ -93,25 +99,31 @@ const repoAt = (dir: string): Repo | null => {
   } catch { return null; }
 };
 
-// The base the queue lands on (overlap-scan.ts baseOf): the local branch origin/HEAD names, else main or master.
+// The base the queue lands on (queue.ts baseOf): the local branch origin/HEAD names, else main or master; only a local
+// branch, as the queue lands only one.
 async function baseOf(top: string): Promise<{ ref: string; name: string } | null> {
   const origin = (await git(top, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { read: true })).out.trim();
-  const cands = origin ? [`refs/heads/${origin.split("/").slice(3).join("/")}`, origin] : ["refs/heads/main", "refs/heads/master"];
+  const cands = origin ? [`refs/heads/${origin.split("/").slice(3).join("/")}`] : ["refs/heads/main", "refs/heads/master"];
   for (const ref of cands) {
     if ((await git(top, ["rev-parse", "--verify", "--quiet", ref], { read: true })).code !== 0) continue;
-    return { ref, name: ref.startsWith("refs/remotes/") ? ref.split("/").slice(3).join("/") : short(ref) };
+    return { ref, name: short(ref) };
   }
   return null;
 }
 
-// Whether the repository lands through its queue: a land block in the base's own .keel/checks.json (what the queue
-// reads), or in the owner's checks setting for it.
-async function lands(top: string, scope: string, base: string): Promise<boolean> {
+// The remote the queue pushes the base to when the repository lands through it, or null when it does not: a land block
+// in the owner's checks setting for it, else in the base's own .keel/checks.json (what the queue reads). Its push remote
+// is `land.push`, origin when it names none.
+const pushRemote = (land: unknown) => {
+  const p = land && typeof land === "object" ? (land as { push?: unknown }).push : undefined;
+  return typeof p === "string" && p.trim() ? p.trim() : "origin";
+};
+async function lands(top: string, scope: string, base: string): Promise<string | null> {
   const setting = (settings().checks?.repos as Record<string, { land?: unknown } | undefined> | undefined)?.[scope];
-  if (setting && typeof setting === "object" && setting.land !== undefined) return true;
+  if (setting && typeof setting === "object" && setting.land !== undefined) return pushRemote(setting.land);
   const shown = await git(top, ["show", `${base}:.keel/checks.json`], { read: true });
-  if (shown.code !== 0) return false;
-  try { return (JSON.parse(shown.out) as { land?: unknown })?.land !== undefined; } catch { return false; }
+  if (shown.code !== 0) return null;
+  try { const land = (JSON.parse(shown.out) as { land?: unknown })?.land; return land === undefined ? null : pushRemote(land); } catch { return null; }
 }
 
 const commitOf = async (dir: string, rev: string) => {
@@ -128,7 +140,7 @@ export async function landPushOf(command: string, cwd: string, home: string, own
   if (!pushes.length) return null;
   const mine = repoAt(own);
   if (!mine) return null;
-  const facts = new Map<string, { base: { ref: string; name: string } | null; lands: boolean }>();
+  const facts = new Map<string, { base: { ref: string; name: string } | null; remote: string | null }>();
   for (const p of pushes) {
     const dir = p.dir ?? cwd;
     const r = repoAt(dir) ?? (p.dir === null ? mine : null);
@@ -136,10 +148,13 @@ export async function landPushOf(command: string, cwd: string, home: string, own
     let f = facts.get(r.common);
     if (!f) {
       const base = await baseOf(r.top);
-      f = { base, lands: !!base && (await lands(r.top, r.scope, base.ref)) };
+      f = { base, remote: base ? await lands(r.top, r.scope, base.ref) : null };
       facts.set(r.common, f);
     }
-    if (!f.base || !f.lands) continue;
+    if (!f.base || !f.remote) continue;
+    // (Only a push to the remote the queue pushes to, or one that names none, lands: a fork, another remote, a URL or a
+    // local path is not the base the queue moves.)
+    if (p.remote !== null && p.remote !== f.remote) continue;
     // (A folder the line does not say: its HEAD is not known, only the names every worktree of the repository shares.)
     const known = p.dir !== null && !!repoAt(p.dir);
     const there = known ? p.dir! : r.top;
@@ -162,7 +177,7 @@ export async function landPushOf(command: string, cwd: string, home: string, own
       const named = await git(r.top, ["for-each-ref", `--points-at=${at}`, "--format=%(refname:short)", "refs/heads"], { read: true });
       for (const b of named.out.split("\n").map((x) => x.trim()).filter((x) => x && x !== f!.base!.name)) branches.push(b);
     }
-    if (landing) return { repo: r.top, base: f.base.name, branches: [...new Set(branches)].slice(0, 6), commits: [...new Set(commits)].slice(0, 6) };
+    if (landing) return { repo: r.top, base: f.base.name, branches: [...new Set(branches)].slice(0, 6), commits: [...new Set(commits)].slice(0, 6), sure: p.dir !== null };
   }
   return null;
 }

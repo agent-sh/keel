@@ -518,9 +518,10 @@ under `~/.cache/keel-work/bun/research/`.
   said on one card.
 - A repository with a land block lands through its queue, not by hand (`src/safety/land-push.ts`, the gate's
   `landBack`). A model's `git push` that moves the base of the session's own repository (a commit, a branch or HEAD to
-  `main`, `--all`) goes back to the model once with the `keel__landing_queue` call to make and the branches at that
+  `main`, `--all`; the base is the local branch the queue lands, and the push goes to the land block's push remote,
+  origin by default, or names none: a fork, another remote, a URL, a path or a dry run is no landing) goes back to the model once with the `keel__landing_queue` call to make and the branches at that
   commit, before what it sends is read; the same line again is judged as it is. A turn nobody started is refused it every
-  time, as a merge is. A push of the commit the base already is here (the queue landed it and its push did not go) is no
+  time, as a merge is, when the line names its folder (one spelled with a variable is only written out). A push of the commit the base already is here (the queue landed it and its push did not go) is no
   landing, and the owner's own terminal is never judged.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)

@@ -17,14 +17,26 @@ import { movesBase, pushesOf } from "./land-push.ts";
 
 test("the pushes of a line: the folder each runs in, its refspecs, and whether it pushes every branch", () => {
   const rows: [string, ReturnType<typeof pushesOf>][] = [
-    ["git push -q origin abc:main 2>&1 | tail -1", [{ dir: "/w", specs: ["abc:main"], all: false }]],
-    ["cd /r/wt && git push origin HEAD:main", [{ dir: "/r/wt", specs: ["HEAD:main"], all: false }]],
-    ["cd ~/r; git fetch -q; git push origin main", [{ dir: "/home/u/r", specs: ["main"], all: false }]],
-    ["git -C ~/r push --all origin", [{ dir: "/home/u/r", specs: [], all: true }]],
-    ['S=/x; cd $S/wt && git push -o ci.skip origin "$H:main"', [{ dir: null, specs: ["$H:main"], all: false }]],
-    ["git push", [{ dir: "/w", specs: [], all: false }]],
+    ["git push -q origin abc:main 2>&1 | tail -1", [{ dir: "/w", remote: "origin", specs: ["abc:main"], all: false }]],
+    ["cd /r/wt && git push origin HEAD:main", [{ dir: "/r/wt", remote: "origin", specs: ["HEAD:main"], all: false }]],
+    ["cd ~/r; git fetch -q; git push origin main", [{ dir: "/home/u/r", remote: "origin", specs: ["main"], all: false }]],
+    ["git -C ~/r push --all origin", [{ dir: "/home/u/r", remote: "origin", specs: [], all: true }]],
+    ['S=/x; cd $S/wt && git push -o ci.skip origin "$H:main"', [{ dir: null, remote: "origin", specs: ["$H:main"], all: false }]],
+    ["git push", [{ dir: "/w", remote: null, specs: [], all: false }]],
     ["git fetch origin main && git log -1", []],
     ["cat > t.sh <<'EOF'\ngit push origin x:main\nEOF", []],
+  ];
+  for (const [command, want] of rows) expect([command, pushesOf(command, "/w", "/home/u")]).toEqual([command, want]);
+});
+
+test("the remote a push names, and a dry run that is no push", () => {
+  const rows: [string, ReturnType<typeof pushesOf>][] = [
+    ["git push fork feat:main", [{ dir: "/w", remote: "fork", specs: ["feat:main"], all: false }]],
+    ["git push --repo=upstream feat:refs/heads/main", [{ dir: "/w", remote: "upstream", specs: ["feat:refs/heads/main"], all: false }]],
+    ["git push git@github.com:x/y.git feat:main", [{ dir: "/w", remote: "git@github.com:x/y.git", specs: ["feat:main"], all: false }]],
+    ["git push -n origin feat:main", []],
+    ["git push --dry-run origin feat:main", []],
+    ["git push -qn origin feat:main", []],
   ];
   for (const [command, want] of rows) expect([command, pushesOf(command, "/w", "/home/u")]).toEqual([command, want]);
 });
@@ -121,6 +133,39 @@ test("gate: a hand push to the base of a repository with a land block goes back 
   const vague = `D=${dir}; cd "$D" && git push -q origin HEAD:main`;
   expect((await decide(s, vague)).text).toContain("keel__landing_queue");
   expect((await decide(s, vague)).text).toContain("written out");
+});
+
+test("gate: a push to a fork, another remote, a URL or a path, a dry run, or a base only a remote has, is no landing", async () => {
+  const { dir, feat } = await repo(true);
+  await sh(dir, "remote", "add", "fork", "git@github.com:acme/fork.git");
+  const { session, decide } = rig(false);
+  const s = session(dir);
+  for (const line of ["git push -q fork feat:main", "git push -q fork feat:refs/heads/main", "git push -q git@github.com:acme/fork.git feat:main", `git push -q ${dir} feat:main`, `git push -n origin ${feat}:main`]) {
+    const r = await decide(s, line);
+    expect([line, r.text]).not.toEqual([line, expect.stringContaining("landing queue")]);
+  }
+  // The push remote the land block names; origin is then another remote.
+  const other = await repo(true);
+  writeFileSync(join(other.dir, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "bun test" } }, land: { checks: ["unit"], push: "fork" } }));
+  await sh(other.dir, "commit", "-q", "-am", "Push to fork");
+  await sh(other.dir, "remote", "add", "fork", "git@github.com:acme/fork.git");
+  const o = session(other.dir);
+  expect((await decide(o, `git push -q fork ${other.feat}:main`)).text).toContain("landing queue");
+  expect((await decide(o, `git push -q origin ${other.feat}:main`)).text).not.toContain("landing queue");
+  // A base the repository has only as a remote branch is not one the queue lands.
+  const bare = await repo(true);
+  await sh(bare.dir, "update-ref", "refs/remotes/origin/main", "main");
+  await sh(bare.dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  await sh(bare.dir, "checkout", "-q", "feat");
+  await sh(bare.dir, "branch", "-q", "-D", "main");
+  expect((await decide(session(bare.dir), `git push -q origin ${bare.feat}:main`)).text).not.toContain("landing queue");
+});
+
+test("gate: an unattended push from a folder spelled with a variable is not refused as a landing", async () => {
+  const { dir, feat } = await repo(true);
+  const { session, decide } = rig(false);
+  const r = await decide(session(dir), `D=${dir}; cd "$D" && git push -q origin ${feat}:main`);
+  expect(r.text).not.toContain("No message of the owner's");
 });
 
 test("gate: a repository with no land block is pushed as before", async () => {

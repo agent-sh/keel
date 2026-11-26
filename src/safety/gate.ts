@@ -2037,7 +2037,9 @@ export class Gate {
     let l: LandPush | null;
     try { l = await landPushOf(command, cwd, homeDir(), session.workspace); } catch (e) { console.error(`land push check failed: ${(e as Error).message}`); return null; }
     if (!l) return null;
-    if (this.byOwner && !this.byOwner(session.id)) return landUnstarted(l);
+    // (A turn nobody started is refused only a push known to be in this repository: a folder spelled with an expansion is
+    // judged as it is there, written out first.)
+    if (this.byOwner && !this.byOwner(session.id)) return l.sure ? landUnstarted(l) : null;
     const had = this.landSent.get(session.id) ?? new Set<string>();
     const key = Bun.hash(command).toString(36);
     if (had.has(key)) return null;
