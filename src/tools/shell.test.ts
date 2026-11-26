@@ -6,6 +6,31 @@ import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { startJob } from "./jobs.ts";
 
+test("a missing workdir names the existing directory with the same path ending", async () => {
+  const home = mkdtempSync(join(process.env.TMPDIR ?? ".", "workdir-home-"));
+  const before = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const cwd = join(home, "projects", "example");
+    const oldRoot = join(home, ".local", "share", "engine");
+    const tail = "engine-work/build/research";
+    const right = join(home, ".cache", tail);
+    const notADirectory = join(home, ".config", tail);
+    for (const dir of [cwd, oldRoot, right, join(notADirectory, "..")]) mkdirSync(dir, { recursive: true });
+    writeFileSync(notADirectory, "");
+    const exec = gptTools.find((t) => t.name === "exec_command")!;
+    const ctx = { sessionId: "gpt-moved-workdir", cwd, spillDir: join(home, "spill"), signal: new AbortController().signal, seen: new Map() };
+    const miss = await exec.run({ cmd: "echo ran", workdir: join(oldRoot, tail) }, ctx);
+    expect(miss.is_error).toBe(true);
+    expect(String(miss.content).split("Did you mean one of these?\n")[1]?.split("\n")[0]).toBe(right);
+    expect(miss.content).not.toContain(notADirectory);
+  } finally {
+    if (before === undefined) delete process.env.HOME;
+    else process.env.HOME = before;
+    rmSync(home, { recursive: true });
+  }
+});
+
 // A spawn into a folder that is not there fails as ENOENT of the program
 // (`posix_spawn 'systemd-run'`), which reads as a missing sandbox. The shell
 // tools name the folder instead, as a result of the call and not a failure.

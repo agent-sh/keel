@@ -4,8 +4,8 @@
 // path written from the wrong root. Each of those is answered with the place
 // to look instead, so the next call lands without a directory listing.
 import { statSync } from "node:fs";
-import { namesIn } from "../core/paths.ts";
-import { basename, dirname, extname, join, relative, isAbsolute } from "node:path";
+import { contains, namesIn, ownerHome } from "../core/paths.ts";
+import { basename, dirname, extname, join, relative, isAbsolute, sep } from "node:path";
 import { placeholdersIn } from "../safety/secrets.ts";
 
 const exists = (p: string) => { try { statSync(p); return true; } catch { return false; } };
@@ -18,10 +18,12 @@ export function notFound(p: string, cwd: string, what: "File" | "Directory" = "F
   // it is not there is the placeholder, not a removed folder.
   const marks = placeholdersIn(p);
   if (marks.length) out.push(`${marks.join(", ")} in this path is a secret's placeholder. Only a shell command's script is given a secret's value, never a path, so nothing has this name. Use a path without it: one relative to the session's folder, or cd inside the command, where ~ and $HOME expand.`);
-  const moved = reroot(p, cwd);
   const folder = dirname(p);
   let names = list(folder);
-  let suggestions = [...moved];
+  let suggestions = [
+    ...(what === "Directory" && !marks.length ? sameEnding(p) : []),
+    ...reroot(p, cwd),
+  ];
   if (names) {
     suggestions.push(...similar(names, basename(p)).map((n) => join(folder, n)));
   } else {
@@ -37,6 +39,24 @@ export function notFound(p: string, cwd: string, what: "File" | "Directory" = "F
   suggestions = [...new Set(suggestions)].slice(0, 3);
   if (suggestions.length) out.push(`Did you mean one of these?\n${suggestions.join("\n")}`);
   return out.join("\n\n");
+}
+
+// A workdir under the wrong home root: try the exact tail under the other
+// standard roots, longest first, without listing or walking the home.
+function sameEnding(p: string): string[] {
+  const home = ownerHome();
+  if (!isAbsolute(p) || !contains(home, p)) return [];
+  const roots = [".cache", ".local/share", ".local/state", ".config"].map((r) => join(home, r));
+  const from = roots.find((r) => contains(r, p)) ?? home;
+  const parts = relative(from, p).split(sep);
+  for (let i = 0; i <= 3 && i + 1 < parts.length; i++) {
+    const tail = parts.slice(i).join(sep);
+    const found = [home, ...roots].map((root) => join(root, tail)).filter((dir) => {
+      try { return statSync(dir).isDirectory(); } catch { return false; }
+    });
+    if (found.length) return found;
+  }
+  return [];
 }
 
 // /home/me/src/a.ts asked for in /home/me/repo usually means /home/me/repo/src/a.ts.
