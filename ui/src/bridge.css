@@ -330,8 +330,8 @@
   .k-rail[data-short] > .k-rail-foot :is(.k-act-label, .k-foot-word) { display: none; }
   .k-rail[data-short] > .k-rail-foot .k-theme-toggle { display: none; }
   .k-rail-wrap .k-rail[data-short] { width: min(calc(100vw - 0.75rem), max(min(86vw, 20rem), 5 * var(--spacing-tap) + 1rem)); }
-  .k-rail:has(.k-find:focus-within) > .k-rail-brand, .k-rail:has(.k-find:focus-within) > .k-rail-acts,
-  .k-rail:has(.k-find:focus-within) > .k-rail-top, .k-rail:has(.k-find:focus-within) > .k-rail-foot { display: none; }
+  .k-rail:has(.k-find > input:focus) > .k-rail-brand, .k-rail:has(.k-find > input:focus) > .k-rail-acts,
+  .k-rail:has(.k-find > input:focus) > .k-rail-top, .k-rail:has(.k-find > input:focus) > .k-rail-foot { display: none; }
 }
 .k-group { margin-top: 1rem; }
 .k-group:first-child { margin-top: 0.25rem; }
