@@ -1,4 +1,4 @@
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tempTree } from "../../test/env.ts";
 import { join } from "node:path";
@@ -713,30 +713,50 @@ test("a wait result settles the report it holds while a newer one is owed", asyn
   expect(sends.filter((x) => x.id === parent.id && x.text.includes(`agent_id="${a.id}"`))).toEqual([]);
 });
 
-// A message to an agent whose turn just ended, while its report is still
-// being settled (a work agent's worktree is checked first): the message
-// continues it as a new task, so the agent is running, not "done" while its
-// session works, and that task's report reaches the parent too.
+// A message to an agent whose report is still being settled continues it as
+// a new task. It is running, not "done", and the new report reaches the parent too.
 test("a message sent while an agent's report settles continues it", async () => {
-  const repo = tempTree("keel-agents-repo-");
-  Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
-  Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start"], { cwd: repo });
-  const p = store.createSession({ model: "m:x", workspace: repo, title: "work parent" });
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "work parent" });
   store.append(p.id, "assistant", { blocks: [] });
+  const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true });
+  // Pause the parent read that finish awaits before it stores the report.
+  const reading = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const warm = store.warm.bind(store);
+  const read = spyOn(store, "warm").mockImplementation(async (...args) => {
+    if (args[0] === p.id) {
+      reading.resolve();
+      await release.promise;
+    }
+    return warm(...args);
+  });
+  const completed = Promise.withResolvers<void>();
+  let reports = 0;
+  const off = bus.on((f) => {
+    if (f.t !== "feature" || f.name !== "automation" || f.data.kind !== "agent") return;
+    const row = f.data.data;
+    if (row.id === a.id && row.status === "completed" && ++reports === 2) completed.resolve();
+  });
   busy.add(p.id);
-  const a = await agents.spawn(p.id, { prompt: "do it", isolation: "worktree", background: true });
-  expect(agents.get(a.id)!.worktree).toBeTruthy();
-  end(a, "end_turn", "report R"); // settling starts: the worktree is read
-  await agents.send(a.id, "one more thing");
-  await Bun.sleep(300);
-  expect(agents.get(a.id)!.status).toBe("running");
-  end(a, "end_turn", "report S");
-  await Bun.sleep(300);
-  busy.delete(p.id);
-  sends.length = 0;
-  flush(p.id);
-  const to = sends.filter((x) => x.id === p.id).map((x) => x.text).join("\n");
-  expect([to.includes("report R"), to.includes("report S")]).toEqual([true, true]);
+  try {
+    end(a, "end_turn", "report R");
+    await reading.promise;
+    const following = agents.send(a.id, "one more thing");
+    expect(sends.some((x) => x.id === a.session_id && x.text.includes("one more thing"))).toBe(false);
+    release.resolve();
+    expect((await following).agent.status).toBe("running");
+    end(a, "end_turn", "report S");
+    await completed.promise;
+    busy.delete(p.id);
+    sends.length = 0;
+    flush(p.id);
+    const to = sends.filter((x) => x.id === p.id).map((x) => x.text).join("\n");
+    expect([to.includes("report R"), to.includes("report S")]).toEqual([true, true]);
+  } finally {
+    release.resolve();
+    read.mockRestore();
+    off();
+    busy.delete(p.id);
+  }
 });
 
 // Call ids are unique only within a session: two parents whose waits share
