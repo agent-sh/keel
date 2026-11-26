@@ -117,7 +117,9 @@ test("the unattended guard still reads long inline scripts", () => {
   const script = (n: number) => `# ${"padding ".repeat(n)}\n`;
   const merge = `bash -c '${script(2200)}gh pr merge 12'`;
   const force = [...Array.from({ length: 5 }, () => `bash -c '${script(450)}:'`), "eval 'git push --force origin main'"].join("\n");
-  for (const line of [merge, force])
+  let nested = "gh pr merge 12";
+  for (let n = 0; n < 6; n++) nested = `bash -c ${JSON.stringify(nested)}`;
+  for (const line of [merge, force, nested])
     expect(run("full-auto", line, () => false)).toHaveProperty("deny", expect.stringContaining("no message of the owner's"));
 });
 
@@ -139,4 +141,22 @@ test("a readable high-risk part does not hide an unreadable document handed to a
     const line = `rm -rf /h\n${shell} <<'DOC'\nprintf "unfinished\nDOC`;
     expect(run("full-auto", line, () => false)).toMatchObject({ ask: { unparsed: true, ownerOnly: true, why: expect.stringContaining("deletes the home directory recursively") } });
   }
+});
+
+test("unreadable inline shell scripts keep the never-allowed text check", () => {
+  const body = "'echo $\\\n(true)\nrm -rf /h'";
+  for (const command of [
+    `bash <<< ${body}`,
+    `echo ${body} | bash`,
+    `printf '%s\\n' ${body} | sh`,
+    `watch -n1 ${body}`,
+    `bash -c ${body}`,
+    `eval ${body}`,
+    `echo x | xargs -I{} sh -c ${body}`,
+    `find . -maxdepth 0 -exec sh -c ${body} \\;`,
+  ]) {
+    expect({ command, verdict: run("auto", command) }).toMatchObject({ verdict: { deny: expect.stringContaining("never runs without the owner") } });
+    expect(run("full-auto", command)).toHaveProperty("ask.unparsed", true);
+  }
+  expect(run("full-auto", `printf '%s\\n' ${body}`)).toHaveProperty("allow", true);
 });

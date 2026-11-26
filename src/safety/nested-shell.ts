@@ -40,7 +40,7 @@ import { docOf, splitCommand, splitDocument, type Simple } from "./shell.ts";
 // One script: its commands, where each runs, and the part of the outer line that starts its shell.
 export type Inner = { parts: Simple[]; pre: Laid; at: number };
 // A script that was not read, by the part of the outer line that starts its shell.
-export type Unread = { at: number; why: string; unparsed?: true };
+export type Unread = { at: number; why: string; unparsed?: true } | { parseFailed: true };
 
 // Programs that hand their input to a shell somewhere else: a here-document they open is no script of this machine.
 const AWAY = /^(ssh|kubectl|oc|docker|podman)$/;
@@ -86,13 +86,14 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
     }
     const doc = document ? splitDocument(text) : undefined;
     const inner = doc ? doc.parts : splitCommand(text);
+    if (!inner) { unread?.push({ parseFailed: true }); return; }
     if (doc?.unread) unread?.push({ at: i, why: "feeds a shell a here-document it could not parse", unparsed: true });
-    if (!inner?.length || inner.length > PARTS_MAX) return;
+    if (!inner.length || inner.length > PARTS_MAX) return;
     const l = laid(inner, pre.dirs[i] ?? null, home, pre.firm[i] === true);
     out.push({ parts: inner, pre: l, at: i });
     const deeper: Unread[] = [];
     for (const d of innerLines(inner, l, home, depth + 1, deeper, st, from)) out.push({ ...d, at: i });
-    for (const u of deeper) unread?.push({ ...u, at: i });
+    for (const u of deeper) unread?.push("at" in u ? { ...u, at: i } : u);
   };
   // (A script is read as it stands and, as a plain line is, with the variables it gave a written-out value written
   // out: `f=~/.npmrc; cat $f`. `whole`: a here-document of the line itself, read whatever its length.)

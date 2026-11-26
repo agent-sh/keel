@@ -1062,7 +1062,11 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
       if (p.docUnread && p.doc !== undefined && (docRisk = neverAllowedText(p.doc, home))) break;
     }
   }
-  if (act === UNPARSED || docRisk || unread.some((u) => u.unparsed)) return unparsed(f, d, docRisk);
+  const didNotParse = act === UNPARSED || unread.some((u) => "unparsed" in u && u.unparsed);
+  // A quoted script can fail its own parse without failing the outer line's. Apply the same
+  // fallback text rules before allowing the known parts to stand for the whole call.
+  const textRisk = docRisk ?? (f.mode !== "read-only" && (didNotParse || unread.length > 0) ? neverAllowedText(command, home) : null);
+  if (didNotParse || textRisk) return unparsed(f, d, textRisk);
   if (act === TOO_DEEP && ("allow" in d || ("ask" in d && d.ask.risk === "low")))
     return { ask: { risk: "high", why: "the command nests scripts deeper than the rules read", rule: RULE_WORDS.hidden, suggest: [] } };
   return d;
@@ -1222,8 +1226,8 @@ function decideParts({ command, parts }: { command: string; parts: Simple[] }, f
     if (d) return d;
     for (const s of scripts) { const inner = ownerWrites(s.parts, s.pre, pre.dirs[s.at] ?? null, s.at); if (inner) return inner; }
     // (A script the reading above left out: high risk, said at once, as one the risk classes do not read through.)
-    const extra = unread.find((u) => !u.unparsed);
-    if (extra) return naming({ ask: { risk: "high", why: `the command ${extra.why}`, rule: RULE_WORDS.hidden, suggest: [] } }, parts, extra.at);
+    const extra = unread.find((u) => "at" in u && !u.unparsed);
+    if (extra && "at" in extra) return naming({ ask: { risk: "high", why: `the command ${extra.why}`, rule: RULE_WORDS.hidden, suggest: [] } }, parts, extra.at);
   }
   const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)), ...(resolved ? { beside: true as const } : {}) }, pre);
   if (risks.length) {
