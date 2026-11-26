@@ -124,6 +124,29 @@ test("a protected file named through a name the line sets is a path the command 
   }
 });
 
+test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
+  const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
+  // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)
+  let looks = 0;
+  const judged = (command: string, mode: Mode = "ask") => { looks = 0; const d = decide({ kind: "shell", command, cwd: ws }, facts(mode, { credential: () => { looks++; return null; } })); return [how(d), "ask" in d ? d.ask.why : ""] as const; };
+  const over = "the command names files through names it sets in more ways than the rules read (2000 paths, a word of 4096 characters): write the paths into the command";
+  for (const command of [
+    // Eight folders a `cd` may lead to by eight values of a name, for each of thousands of words.
+    `for A in a b c d e f g h; do true; done; for D in a b c d e f g h; do true; done; cd $A; cat ${rep(3000, (i) => `$D/f${i} `)}`,
+    `D=$(pwd); ${rep(1500, (i) => `cat $D/f${i} > $D/o${i}; `)}`, `D=$(pwd); echo x | tee ${rep(1000, (i) => `$D/../f${i} `)}`,
+    // One word no path is as long as, and a value as long.
+    `D=$(pwd); cat '${rep(20000, () => "${a")}'$D/x`, `D=$(pwd); cat '${rep(20000, () => "$(a")}'$D/x`, `D='${rep(3000, () => "a; ")}'; cat $D/x`,
+  ]) {
+    for (const mode of ["ask", "full-auto"] as Mode[]) expect([command.slice(0, 60), mode, ...judged(command, mode)]).toEqual([command.slice(0, 60), mode, "ask-high", over]);
+    expect(looks).toBeLessThanOrEqual(2000);
+  }
+  // A long line of ordinary uses is read whole and runs as it did.
+  const usual = `S=/w/repo/scratch; L=$S/logs; mkdir -p $L; ${rep(60, (i) => `grep -c ok $L/run${i}.log > $S/out${i}.txt; `)}`;
+  expect(judged(usual)[0]).toBe("ask-low");
+  expect(judged(usual, "full-auto")[0]).toBe("allow");
+  expect(judged(`for f in ${rep(300, (i) => `a${i} `)}; do cat $f; done`, "full-auto")[0]).toBe("allow");
+});
+
 test("a tool given an owner-only file's path is the owner's; other paths and text are not paths", () => {
   expect(pathsNamed({ path: "~/.bashrc", content: "x", nested: { files: ["/etc/hosts", "relative/a.txt"] }, note: "see /home/u/.bashrc for more" })).toEqual(["~/.bashrc", "/etc/hosts"]);
   const tool = (input: unknown, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "other", paths: pathsNamed(input) }, facts(mode, more)));
