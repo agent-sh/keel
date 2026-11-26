@@ -90,6 +90,18 @@ test("a run takes the tests of the latest step's change, not of every change sin
   expect(ran(session.id)).toEqual(["sh t.sh ./a/lib.test.sh", "sh t.sh ./b/lib.test.sh"]);
 });
 
+test("a test that passed and reads nothing the step changed is not run again; one that imports the change is", async () => {
+  // Each test exits 0 as a sh script; its import line is what the reach reads.
+  const { session, write } = repo({ "c/lib.ts": "export const x = 1;\n", "c/a.test.ts": 'exit 0\nimport "./lib.ts";\n', "c/b.test.ts": "exit 0\n" }, { tests: ["**/*.test.ts"] });
+  write("c/lib.ts", "export const x = 2;\n");
+  step(session);
+  await idle(session.id);
+  write("c/lib.ts", "export const x = 3;\n");
+  step(session);
+  await idle(session.id);
+  expect(ran(session.id)).toEqual(["sh t.sh ./c/a.test.ts ./c/b.test.ts", "sh t.sh ./c/a.test.ts"]);
+});
+
 test("a wide change runs the most direct of the tests it touches", async () => {
   const files: Record<string, string> = { "c/lib.sh": "x=1\n" };
   for (let i = 0; i < 30; i++) files[`c/t${String(i).padStart(2, "0")}.test.sh`] = "exit 0\n";

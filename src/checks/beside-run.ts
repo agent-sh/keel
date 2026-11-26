@@ -30,7 +30,7 @@ import { INSTALL_MS, mainTop, packagesFor, readsIn, runCommand, type Ran } from 
 import * as cache from "./package-cache.ts";
 import { setupLineOf } from "../landing/pairs.ts";
 import { timed } from "../admin/stall.ts";
-import { askHost, BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, gapOf, hostLoadOf, limitOf, PER_HOUR, reachOf, stillGreen, noticeText, parentWords, outcomeOf, perFile, PICK_MAX, placeOf, preloadOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Green, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
+import { anyStands, askHost, BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, gapOf, hostLoadOf, indexOf, limitOf, PER_HOUR, reachOf, stillGreen, noticeText, parentWords, outcomeOf, perFile, PICK_MAX, placeOf, preloadOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Green, type Lane, type Reach, type Red, type Refs, type Setup } from "./beside.ts";
 import { countsOf } from "./counts.ts";
 import { baseFor, inFlight } from "./runs.ts";
 import { baseOf, holdCheckCache, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
@@ -340,11 +340,14 @@ async function standingGreen(scratch: string, copy: Copy, green: readonly string
   if (known.has(bunfig)) {
     try { preload = preloadOf(await Bun.file(join(scratch, bunfig)).text(), dir); } catch { return []; } // gone meanwhile: nothing is known to stand
   }
-  // What each reached file names, read as the walk finds it.
-  const walk = async (root: string) => {
-    for (let more = true; more;) {
-      more = false;
-      const r = reachOf(root, refsOf, copy.files);
+  const index = timed(() => "checks beside: the tree's files for the reach of passed tests", () => indexOf(copy.files));
+  // Each root's reach, its files read as the walk finds them; the walk of one root is short, the walks of every
+  // passed test together are not, so each is summed under one kind and the loop is let go between two roots.
+  const reaches = new Map<string, Reach>();
+  const walk = async (root: string): Promise<Reach> => {
+    for (;;) {
+      const r = timed(() => "checks beside: the reach of a passed test", () => reachOf(root, refsOf, index), false, "beside reach");
+      let more = false;
       for (const f of r.files) {
         const blob = copy.blobs.get(f);
         if (!blob || refs.has(blob) || !/\.(?:[cm]?[jt]sx?|json)$/.test(f)) continue;
@@ -353,19 +356,28 @@ async function standingGreen(scratch: string, copy: Copy, green: readonly string
         refs.set(blob, refsIn(text, f));
         more = true;
       }
+      if (!more) return r;
     }
   };
-  for (const t of [...preload, ...green]) if (known.has(t)) await walk(t);
   // The preload's reach, every file bun loads before each test; one it cannot find leaves nothing standing.
   const every = { files: new Set<string>(), folders: [] as string[], open: preload.some((p) => !known.has(p)) };
   for (const p of preload) {
     if (!known.has(p)) continue;
-    const r = reachOf(p, refsOf, copy.files);
+    const r = await walk(p);
     for (const f of r.files) every.files.add(f);
     every.folders.push(...r.folders);
     if (r.open) every.open = true;
+    await new Promise<void>((done) => setImmediate(done));
   }
-  return stillGreen(green.filter((t) => known.has(t)), change, (t) => reachOf(t, refsOf, copy.files), every);
+  const tests = green.filter((t) => known.has(t));
+  // A change that leaves nothing standing needs no test's reach.
+  if (change.length && anyStands(change, every)) {
+    for (const t of tests) {
+      if (/\.[cm]?[jt]sx?$/.test(t)) reaches.set(t, await walk(t));
+      await new Promise<void>((done) => setImmediate(done));
+    }
+  }
+  return timed(() => "checks beside: the passed tests that still stand", () => stillGreen(tests, change, (t) => reaches.get(t) ?? { files: new Set(), folders: [], open: true }, every));
 }
 
 // The test files whose tests failed (a file that failed to load included), else the first half of the files the

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { askHost, changed, outcomeOf, pathsOf, preloadOf, commandOf, gapOf, reachOf, stillGreen, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
+import { anyStands, askHost, indexOf, changed, outcomeOf, pathsOf, preloadOf, commandOf, gapOf, reachOf, stillGreen, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
 import { parseChecks } from "./named.ts";
 
 test("the steps of a window are one run, one run at a time, and a turn's end runs what waits at once", () => {
@@ -238,6 +238,14 @@ test("a test that passed stands while nothing it reaches changed: its imports to
   expect(stillGreen(green, ["src/d.test.ts"], reach)).toEqual(["src/a.test.ts"]);
   // Another kind of test never stands.
   expect(stillGreen(["t/a.sh", "src/a.test.ts"], ["tools/other.ts"], reach)).toEqual(["src/a.test.ts"]);
+  // One index of the tree, made once for every test, walks the same reach as the list of its files.
+  const index = indexOf(files);
+  for (const t of green) expect(reachOf(t, (p) => refs[p], index)).toEqual(reach(t));
+  // A change that touches no module, or a file at the top, leaves no test to walk.
+  expect(anyStands(["src/c.ts"])).toBe(true);
+  expect(anyStands(["docs/x.md"])).toBe(false);
+  expect(anyStands(["package.json"])).toBe(false);
+  expect(anyStands(["src/lib/index.ts"], reach("src/b.ts"))).toBe(false);
   // A file not read yet ends the walk there: what it imports is not known, so nothing past it is counted.
   expect([...reachOf("src/a.test.ts", (p) => (p === "src/a.ts" ? undefined : refs[p]), files).files].sort()).toEqual(["src/a.test.ts", "src/a.ts"]);
 });

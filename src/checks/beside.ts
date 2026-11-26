@@ -229,11 +229,16 @@ export function testsFor(changed: readonly string[], tests: readonly string[], r
 // it could not be read, or a relative import names no file of the tree.
 export type Reach = { files: Set<string>; folders: string[]; open?: boolean };
 const READ = /\.(?:[cm]?[jt]sx?|json)$/;
-export function reachOf(test: string, refsOf: (path: string) => Refs | undefined, files: readonly string[]): Reach {
+// The tree's files as reachOf looks them up: by path, by path without its extension, a folder by its index. Made
+// once for a tree and given to every reachOf over it (made again for each call, it costs as much as the walk).
+export type TreeIndex = { tree: Set<string>; resolve: (spec: string) => string | undefined };
+export function indexOf(files: readonly string[]): TreeIndex {
   const byBare = new Map<string, string>();
   for (const f of files) { byBare.set(f, f); byBare.set(f.replace(EXT, ""), f); if (/\/index\.[cm]?[jt]sx?$/.test(f)) byBare.set(posix.dirname(f), f); }
-  const resolve = (spec: string) => byBare.get(spec) ?? byBare.get(spec.replace(EXT, ""));
-  const tree = new Set(files);
+  return { tree: new Set(files), resolve: (spec) => byBare.get(spec) ?? byBare.get(spec.replace(EXT, "")) };
+}
+export function reachOf(test: string, refsOf: (path: string) => Refs | undefined, files: readonly string[] | TreeIndex): Reach {
+  const { tree, resolve } = "resolve" in files ? files : indexOf(files);
   const seen = new Set<string>(), folders: string[] = [];
   let open = false;
   const todo = [test];
@@ -256,10 +261,15 @@ export function reachOf(test: string, refsOf: (path: string) => Refs | undefined
 // test may read: a file at the top (package.json, bunfig.toml, tsconfig.json, the lock file), a file bun preloads
 // or what it reaches (`every`), or any file that is no module (a fixture, a script, a document a test opens by a
 // path its text does not spell). Pure: the reach comes from reachOf.
+// Whether any test can stand after `change`: not when it touches a file every test may read (see stillGreen).
+export function anyStands(change: readonly string[], every: Reach | null = null): boolean {
+  if (!change.length) return true;
+  if (every?.open) return false;
+  return !change.some((f) => !f.includes("/") || !EXT.test(f) || every?.files.has(f) || every?.folders.some((d) => under(d, f)));
+}
 export function stillGreen(green: readonly string[], change: readonly string[], reach: (test: string) => Reach, every: Reach | null = null): string[] {
   if (!change.length) return green.filter((t) => EXT.test(t));
-  if (every?.open) return [];
-  if (change.some((f) => !f.includes("/") || !EXT.test(f) || every?.files.has(f) || every?.folders.some((d) => under(d, f)))) return [];
+  if (!anyStands(change, every)) return [];
   return green.filter((t) => {
     if (!EXT.test(t)) return false;
     const r = reach(t);
