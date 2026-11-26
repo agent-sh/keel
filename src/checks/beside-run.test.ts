@@ -29,10 +29,18 @@ const gate = new Gate(store, new Bus(), (_s, p) => p.sandbox !== "off" && sandbo
 const state = new Map<string, AgentState>();
 const toAgent: { id: string; text: string }[] = [];
 const toParent: { id: string; cls: string; message: string }[] = [];
+// `told`: the agents whose input store already holds a notice under the key a send names (an earlier daemon sent it).
+const told = new Set<string>();
+const captured: unknown[] = [];
 bindBeside({
-  store, capture: (e) => { throw e; }, perm: (id) => gate.perm(id), confine: (id, ws, tool, shown) => gate.confineFor(id, ws, tool, shown),
+  store, capture: (e) => { captured.push(e); throw e; }, perm: (id) => gate.perm(id), confine: (id, ws, tool, shown) => gate.confineFor(id, ws, tool, shown),
   agentOf: (id) => state.get(id),
-  tellAgent: async (id, text) => { if (state.get(id) !== "working") return false; toAgent.push({ id, text }); return true; },
+  tellAgent: async (id, text) => {
+    if (state.get(id) !== "working") return false;
+    if (told.has(id)) throw Object.assign(new Error("this send id was used for another message; send this one under a new id"), { status: 409 });
+    toAgent.push({ id, text });
+    return true;
+  },
   tellParent: (id, cls, message) => void toParent.push({ id, cls, message }),
   windowMs: 0,
 });
@@ -296,4 +304,19 @@ test("a run that waited for a heavy slot while the agent changed its files gives
   expect(rows).toHaveLength(1);
   const look = await treeOf(repoOf(session.workspace)!);
   expect(rows[0]!.tree).toBe(look!.tree!);
+});
+
+test("a red of a tree the agent was already told of (its key is taken) is not told again, and is no failure", async () => {
+  const { session, write } = repo({ "lib.sh": "x=1\n", "lib.test.sh": '. ./lib.sh; [ "$x" = 1 ] || { echo "error: x is $x"; exit 1; }\n' });
+  toAgent.length = toParent.length = captured.length = 0;
+  told.add(session.id);
+  try {
+    write("lib.sh", "x=2\n");
+    step(session);
+    await idle(session.id);
+    expect(ran(session.id)).toHaveLength(1);
+    expect(captured).toEqual([]);
+    expect(toAgent).toEqual([]);
+    expect(toParent).toEqual([]);
+  } finally { told.delete(session.id); }
 });

@@ -187,7 +187,8 @@ async function settleOwed(id: string) {
   if (to === "later") return;
   lanes.set(id, { ...l!, owed: null });
   if (to === "agent") {
-    const sent = await d.tellAgent(id, owed.text, owed.key).catch((e) => { d!.capture(e, { at: "checks beside: telling the agent", session: id }); return true; });
+    // A key already taken (409) holds this tree's red as told: an earlier run, or an earlier daemon, sent it.
+    const sent = await d.tellAgent(id, owed.text, owed.key).catch((e) => { if (e?.status !== 409) d!.capture(e, { at: "checks beside: telling the agent", session: id }); return true; });
     if (sent) { stats.told++; return; }
     // It ended meanwhile: where it stands now.
     const now = lanes.get(id);
