@@ -236,37 +236,45 @@ test("a landing that moves land.push to another remote holds the after step unti
   expect(t.q.afterPins.show(t.repo)).toMatchObject({ state: "changed", land: { push: "mirror" } });
 });
 
-// The queue's push goes to a public place under the owner's name: read as his own `git push` is.
-test("a push the private-words reading holds (or could not read) is not made, and the after step is told so", async () => {
+// The queue's push goes to a public place under the owner's name: read as his own `git push` is, before the base
+// moves, so an entry whose commits hold private words leaves with them (its agent amends it) and blocks nothing after it.
+test("an entry whose push the private-words reading holds leaves with the words, and the rest land and push", async () => {
   const t = setup({ origin: true, land: { push: "origin", after: "bash .keel/after.sh" }, files: { ".keel/after.sh": 'echo "pushed=[$KEEL_LANDED_PUSHED]" >> "$KEEL_LAND_REPO/../after.log"\n' } });
   const log = join(t.dir, "after.log");
+  const origin = () => g(t.repo, "ls-remote", "origin", "refs/heads/main").split("\t")[0]!;
   const asked: string[] = [];
-  let answer: () => Promise<string | undefined> = async () => "This goes to a public place under your name and holds private words:\n- notes.md: SECRETNAME";
-  t.deps.publicSend = async (repo, command, who) => { asked.push(`${repo === t.repo} ${command.replace(/[0-9a-f]{40}/, "TIP")} ${who === t.coord}`); return answer(); };
+  let broken = false;
+  // A stand-in reader: words when what origin does not hold yet up to the pushed commit says SECRETNAME.
+  t.deps.publicSend = async (repo, command, who) => {
+    asked.push(`${repo === t.repo} ${command.replace(/[0-9a-f]{40}/, "TIP")} ${who === t.coord}`);
+    if (broken) throw new Error("no answer");
+    const tip = command.match(/[0-9a-f]{40}/)![0];
+    return g(t.repo, "log", "-p", `${origin()}..${tip}`).includes("SECRETNAME") ? "This goes to a public place under your name and holds private words:\n- notes.md: SECRETNAME" : undefined;
+  };
   expect(t.q.afterPins.pin(t.repo, t.q.afterPins.show(t.repo).sha256!)).toBeNull();
-  const origin = () => g(t.repo, "ls-remote", "origin", "refs/heads/main").split("\t")[0];
-  const before = origin();
   const a = t.session("a", t.coord);
   t.branch("keel/a", 1, "line 1 SECRETNAME", a);
-  await t.land(["keel/a"]);
-  expect(asked).toEqual(["true git push --porcelain origin TIP:refs/heads/main true"]);
-  expect(t.rows()[0]!.state).toBe("landed");
-  expect(origin()).toBe(before);
-  const o = t.q.outcomeFor(t.coord)!; o.settle();
-  expect(o.text).toContain("It was not pushed to origin: This goes to a public place under your name and holds private words");
-  expect(readFileSync(log, "utf8")).toBe("pushed=[]\n");
-  // A reading that fails is a part it could not read: no push either.
-  answer = async () => { throw new Error("no answer"); };
   t.branch("keel/b", 2, "line 2 BETA", a);
-  await t.land(["keel/b"]);
-  expect(origin()).toBe(before);
-  expect(readFileSync(log, "utf8")).toBe("pushed=[]\npushed=[]\n");
-  // Nothing found: the push goes.
-  answer = async () => undefined;
+  await t.land(["keel/a", "keel/b"]);
+  expect(asked[0]).toBe("true git push --porcelain origin TIP:refs/heads/main true");
+  const rows = t.rows();
+  expect(rows.find((r) => r.branch === "keel/a")).toMatchObject({ state: "left" });
+  expect(rows.find((r) => r.branch === "keel/a")!.why).toContain("holds private words:\n- notes.md: SECRETNAME");
+  expect(rows.find((r) => r.branch === "keel/b")!.state).toBe("landed");
+  expect(g(t.repo, "log", "-p", "main")).not.toContain("SECRETNAME");
+  expect(origin()).toBe(t.main());
+  expect(readFileSync(log, "utf8")).toBe("pushed=[origin]\n");
+  // A reading that fails on the base too: nothing an entry did is to blame; it lands, the push is not made, the step sees none.
+  broken = true;
+  const before = origin();
   t.branch("keel/c", 3, "line 3 GAMMA", a);
   await t.land(["keel/c"]);
-  expect(origin()).toBe(t.main());
-  expect(readFileSync(log, "utf8")).toBe("pushed=[]\npushed=[]\npushed=[origin]\n");
+  expect(t.rows().find((r) => r.branch === "keel/c")!.state).toBe("landed");
+  expect(origin()).toBe(before);
+  expect(t.main()).not.toBe(before);
+  const o = t.q.outcomeFor(t.coord)!; o.settle();
+  expect(o.text).toContain("It was not pushed to origin: the push could not be read for private words (no answer)");
+  expect(readFileSync(log, "utf8")).toBe("pushed=[origin]\npushed=[]\n");
 });
 
 // A restart while the after step ran: the batch's entries are landed, the step never ended; the outcome says so.

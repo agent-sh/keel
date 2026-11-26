@@ -172,6 +172,8 @@ const groups = new Set<number>();
 const killGroup = (pid: number) => { try { process.kill(-pid, "SIGKILL"); } catch {} };
 process.on("exit", () => { for (const g of groups) killGroup(g); });
 
+const pushArgv = (remote: string, base: string, tip: string) => ["push", "--porcelain", remote, `${tip}:${base}`];
+
 export class LandingQueue {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private running = new Map<string, Promise<void>>();
@@ -497,6 +499,13 @@ export class LandingQueue {
         }
       }
       let tip = from;
+      // What the push would send is read for private words before the base moves (src/safety/public-send.ts), each
+      // entry on the commits it adds: one that holds them leaves the queue with the words, so its agent can amend it,
+      // and the rest land and push. When the base itself holds them, nothing an entry did is to blame: the batch lands
+      // and the push is not made (push).
+      const reads = rules.push && this.d.publicSend && !this.d.mayPush(who);
+      const baseWords = reads ? await this.readPush(repo, rules.push!, base, from, who) : undefined;
+      let readTip: string | undefined = reads && !baseWords ? from : undefined;
       for (const e of order) {
         const ahead = passed.map((p) => p.e.branch);
         this.set(e.id, { step: `building on ${baseName}${ahead.length ? ` with ${ahead.join(", ")}` : ""}` });
@@ -518,6 +527,11 @@ export class LandingQueue {
         this.set(e.id, { built: built.at, state: "checking" });
         const failed = await this.checkAll(checks, scratch, e, who, repo, rules.timeoutMs, built.at, { base: baseName, from, ahead });
         if (failed) { leave(e, failed.why, failed.log); continue; }
+        if (readTip) {
+          const words = await this.readPush(repo, rules.push!, base, built.at, who);
+          if (words) { leave(e, `its commits were not landed, because the push to ${rules.push} would send them: ${words}\nAmend them and queue it again.`); continue; }
+          readTip = built.at;
+        }
         passed.push({ e, at: built.at, tip: bt });
         tip = built.at;
         this.set(e.id, { step: "passed: lands with the batch" });
@@ -549,7 +563,7 @@ export class LandingQueue {
         await this.d.landed!({ repo, checkout: followed, from, to: tip, entries: landed }).catch((x) => this.d.error(x, "landing trust"));
       }
       // Pushed after the base moved here: a remote never holds what this repository does not.
-      if (rules.push) outcome.push = await this.push(repo, rules.push, base, tip, who);
+      if (rules.push) outcome.push = await this.push(repo, rules.push, base, tip, who, readTip === tip);
       if (rules.after) {
         const a = await this.after(repo, base, tip, from, passed.map((p) => p.e.branch), batch, who, rules.timeoutMs, landText(rules, r!.named), outcome.push);
         if ("held" in a) outcome.afterHeld = a.held;
@@ -828,16 +842,23 @@ export class LandingQueue {
   }
 
   // The push of the landed commit to the remote the repository names, for the session that queued it.
-  private async push(repo: string, remote: string, base: string, tip: string, who: string | null): Promise<Push> {
+  // `read`: the private-words reading of exactly this push already found nothing (the pass read it).
+  private async push(repo: string, remote: string, base: string, tip: string, who: string | null, read = false): Promise<Push> {
     const no = this.d.mayPush(who);
     if (no) return { remote, skipped: no };
-    const argv = ["push", "--porcelain", remote, `${tip}:${base}`];
-    if (this.d.publicSend) {
-      const words = await this.d.publicSend(repo, `git ${argv.join(" ")}`, who).catch((e) => `the push could not be read for private words (${(e as Error).message})`);
+    if (!read) {
+      const words = await this.readPush(repo, remote, base, tip, who);
       if (words) return { remote, skipped: words };
     }
-    const r = await git(repo, argv, { timeout: 300_000, fetch: "any" });
+    const r = await git(repo, pushArgv(remote, base, tip), { timeout: 300_000, fetch: "any" });
     return r.code === 0 ? { remote, ok: true } : { remote, ok: false, err: tailOf(r.err || r.out, 2, 240) };
+  }
+
+  // The private words the push of `tip` would send, read as the owner's own `git push` is; a reading that fails is a
+  // part it could not read. Nothing to read with: undefined.
+  private async readPush(repo: string, remote: string, base: string, tip: string, who: string | null): Promise<string | undefined> {
+    if (!this.d.publicSend) return undefined;
+    return this.d.publicSend(repo, `git ${pushArgv(remote, base, tip).join(" ")}`, who).catch((e) => `the push could not be read for private words (${(e as Error).message})`);
   }
 
   // The after-land step: in the checkout that has the base out, now at the

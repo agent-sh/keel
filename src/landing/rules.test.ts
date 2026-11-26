@@ -46,3 +46,15 @@ test("the outcome: what landed on which tree, what left and why", () => {
   ].join("\n"));
   expect(tailOf("a\n\nb\x1b[31m\nc\n", 2)).toBe("b | c");
 });
+
+// The after step's pin holds the landing it comes after whole: a check's inputs, folder or cache moved is another landing.
+test("the land text holds each check whole", async () => {
+  const { landText } = await import("./land-pin.ts");
+  const rules = readLand({ checks: ["unit"], after: "true" });
+  const text = (c: object) => landText(rules, parseChecks(JSON.stringify({ checks: { unit: { run: "bun test", ...c } } })).checks);
+  const one = text({});
+  expect(text({ inputs: ["node_modules"] })).not.toBe(one);
+  expect(text({ dir: "ui" })).not.toBe(one);
+  expect(text({ cache: false })).not.toBe(one);
+  expect(text({})).toBe(one);
+});

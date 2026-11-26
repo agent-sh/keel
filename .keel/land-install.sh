@@ -16,7 +16,9 @@
 # for the new daemon (40 minutes at most, KEEL_LAND_WAIT_MIN), then checks that it runs the new
 # binary and serves its page. Its state is the file <folder>/status: checking, installing,
 # waiting, verified, or failed (install.log says why, and the daemon's Errors panel); a failure after
-# the binary was replaced puts the previous one back unless a new daemon already runs. Nothing runs as root.
+# the binary was replaced puts the previous one back unless a new daemon already runs: a wait in which the old daemon
+# is gone and nothing answers for a minute is such a failure (the service manager then starts the previous binary).
+# Nothing runs as root.
 set -euo pipefail
 umask 077
 ORIGIN_URL=https://github.com/agent-sh/keel.git
@@ -40,13 +42,24 @@ if [ "${1:-}" != "--install" ]; then
   # Only over a compiled Keel: a daemon run from source (bun, a dev build) is no binary of a commit to replace.
   running=$(curl -fsS --max-time 5 "$KEEL_LAND_DAEMON/api/daemon" | bun -e 'const d = JSON.parse(await Bun.stdin.text()); process.stdout.write(String(d.build?.revision ?? ""))') || running=""
   [[ $running =~ ^[0-9a-f]{40}$ ]] || fail "the daemon at $KEEL_LAND_DAEMON is not a compiled Keel of a commit (its revision: ${running:-none})"
-  d=${KEEL_LAND_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/keel-land}/$c
+  root=${KEEL_LAND_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/keel-land}
+  d=$root/$c
   [ ! -e "$d/status" ] || fail "$d was installed before (its status: $(cat "$d/status"))"
   mkdir -p "$d"
   printf '%s\n' "$c" > "$d/commit"
   printf '%s\n' "$KEEL_LAND_DAEMON" > "$d/daemon"
-  # A build that changes what must not wait (src/core/build.ts: the urgent marks) restarts at once.
-  if ! git diff --quiet "$running" "$c" -- src/core/build.ts 2> /dev/null; then : > "$d/now"; fi
+  # The build checkouts an earlier step left when it was killed (its process gone): removed, and git's record of them.
+  for w in "$root"/*/src; do
+    [ -d "$w" ] && [ "$w" != "$d/src" ] || continue
+    p=$(cat "$(dirname "$w")/build.pid" 2> /dev/null) || p=""
+    if [ -z "$p" ] || ! kill -0 "$p" 2> /dev/null; then git worktree remove --force "$w" > /dev/null 2>&1 || rm -rf -- "$w"; fi
+  done
+  git worktree prune
+  printf '%s\n' "$" > "$d/build.pid"
+  # A build that changes what must not wait (src/core/build.ts: the urgent marks) restarts at once. When what the
+  # daemon runs cannot be compared (its commit is not here), the restart waits for the owner, as any other.
+  rc=0; git diff --quiet "$running" "$c" -- src/core/build.ts 2> /dev/null || rc=$?
+  case $rc in 0) ;; 1) : > "$d/now" ;; *) echo "land-install: the daemon's commit ${running:0:12} is not here to compare; the restart waits for the owner" ;; esac
   # Built from the commit alone: a checkout of it of its own, with nothing but the installed packages beside it.
   src="$d/src"
   modules=${KEEL_LAND_REPO:-$PWD}/node_modules
@@ -86,6 +99,8 @@ url=$(cat "$d/daemon")
 status() { printf '%s\n' "$1" > "$d/status.new"; mv -fT "$d/status.new" "$d/status"; }
 daemon() { curl -fsS --max-time 5 "$url/api/daemon"; }
 field() { bun -e "const d = JSON.parse(await Bun.stdin.text()); process.stdout.write(String(d.draining ? '' : d.pid ?? ''))"; }
+# The pid that answers, draining or not.
+anypid() { bun -e "const d = JSON.parse(await Bun.stdin.text()); process.stdout.write(String(d.pid ?? ''))"; }
 bin="" old="" placed=""
 # A failure is the daemon's Errors row too; once the binary was replaced, the previous one goes back when the
 # daemon did not move to the new one (the old process still answers, or nothing does).
@@ -93,7 +108,7 @@ failed() {
   local why
   why=$(tail -n 1 "$d/install.log" 2> /dev/null | cut -c1-400)
   if [ -n "$placed" ] && [ -f "$d/previous-keel" ]; then
-    local now; now=$(daemon 2> /dev/null | field 2> /dev/null) || now=""
+    local now; now=$(daemon 2> /dev/null | anypid 2> /dev/null) || now=""
     if [ -z "$now" ] || [ "$now" = "$old" ]; then
       local tmp; tmp=$(mktemp "$(dirname "$bin")/.keel-restore.XXXXXX")
       install -m 755 "$d/previous-keel" "$tmp" && mv -fT "$tmp" "$bin" && echo "$(date -Is) put the previous binary back at $bin" && why="$why (the previous binary was put back)"
@@ -101,7 +116,13 @@ failed() {
   fi
   status failed
   body=$(WHY="$why" C="$c" D="$d" bun -e 'process.stdout.write(JSON.stringify({ message: `The landed Keel ${process.env.C.slice(0, 12)} was not installed: ${process.env.WHY}`, context: { at: "land-install", commit: process.env.C, log: `${process.env.D}/install.log` } }))' 2> /dev/null) || body=""
-  [ -z "$body" ] || curl -fsS --max-time 5 -H 'content-type: application/json' -d "$body" "$url/api/errors" > /dev/null 2>&1 || true
+  [ -n "$body" ] || return 0
+  # The daemon may be coming back (on the binary put back): the row is tried for a minute.
+  local until=$(( $(date +%s) + 60 ))
+  until curl -fsS --max-time 5 -H 'content-type: application/json' -d "$body" "$url/api/errors" > /dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$until" ] || { echo "$(date -Is) the daemon's Errors panel did not answer: this log is the only record"; return 0; }
+    sleep 5
+  done
 }
 trap 'rc=$?; if [ "$rc" != 0 ]; then failed; fi' EXIT
 echo "$(date -Is) install of $c"
@@ -116,7 +137,9 @@ old=$(daemon | field) || true
 rev=$(daemon | bun -e 'const d = JSON.parse(await Bun.stdin.text()); process.stdout.write(String(d.build?.revision ?? ""))') || rev=""
 [[ $rev =~ ^[0-9a-f]{40}$ ]] || fail "the daemon at $url is not a compiled Keel of a commit (its revision: ${rev:-none})"
 bin=$(readlink "/proc/$old/exe") || fail "cannot read what the daemon at $url runs"
-case "$bin" in *" (deleted)") fail "the daemon's binary was replaced under it: restart it by hand first" ;; esac
+# A binary replaced under the running daemon (an install put back, an update) reads " (deleted)": the path is still
+# where it runs from, and the cmp below says whether what is there is what it runs.
+bin=${bin% (deleted)}
 [ -f "$bin" ] && [ ! -L "$bin" ] && [ -w "$bin" ] || fail "the daemon runs $bin, which is not a binary this account may replace"
 cmp -s "/proc/$old/exe" "$bin" || fail "$bin is not what the daemon at $url runs"
 # What it runs says it is Keel of the commit the daemon names: never another program the pid happens to run.
@@ -139,10 +162,18 @@ now=()
 status waiting
 limit=$(( $(date +%s) + 60 * ${KEEL_LAND_WAIT_MIN:-40} ))
 new=""
-# Only a new process that runs the installed binary is the new daemon.
+heard=$(date +%s)
+# Only a new process that runs the installed binary is the new daemon. A daemon that answers, draining included, is
+# heard; once the old process is gone and nothing has answered for a minute, the new binary does not serve, and the
+# install stops (the previous binary goes back: failed).
 while [ "$(date +%s)" -lt "$limit" ]; do
-  new=$(daemon 2> /dev/null | field 2> /dev/null) || new=""
-  if [[ $new =~ ^[0-9]+$ ]] && [ "$new" != "$old" ] && [ "$(sha256sum "/proc/$new/exe" 2> /dev/null | cut -d' ' -f1)" = "$new_hash" ]; then break; fi
+  if j=$(daemon 2> /dev/null); then
+    heard=$(date +%s)
+    new=$(printf '%s' "$j" | field 2> /dev/null) || new=""
+    if [[ $new =~ ^[0-9]+$ ]] && [ "$new" != "$old" ] && [ "$(sha256sum "/proc/$new/exe" 2> /dev/null | cut -d' ' -f1)" = "$new_hash" ]; then break; fi
+  elif ! kill -0 "$old" 2> /dev/null && [ $(( $(date +%s) - heard )) -ge ${KEEL_LAND_SILENT_S:-60} ]; then
+    fail "the daemon stopped and nothing answered at $url for a minute: the new binary does not serve"
+  fi
   new=""
   sleep 5
 done

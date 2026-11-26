@@ -27,10 +27,10 @@ export const AFTER_SHOWN_MAX = 100_000;
 
 export type AfterStep = { command: string; root: string; covers: string[]; links: string[]; sha256: string };
 
-// The land block the step comes after, as one text for the digest: where it pushes, its setup, and each check with
-// the command it runs.
+// The land block the step comes after, as one text for the digest: where it pushes, its setup, and each check whole
+// (its command, folder, tree, inputs, cache and what it drops), as the batch runs it.
 export function landText(rules: LandRules, named: readonly Check[]): string {
-  const checks = (rules.checks ?? []).map((c) => { const n = named.find((x) => x.name === c.name); return [c.name, c.args, n ? [n.run, n.dir, n.args] : null]; });
+  const checks = (rules.checks ?? []).map((c) => { const n = named.find((x) => x.name === c.name); return [c.name, c.args, n ?? null]; });
   return JSON.stringify({ push: rules.push ?? null, setup: rules.setup ?? null, checks });
 }
 
@@ -95,7 +95,7 @@ export class AfterPins {
     if (texts.reduce((n, t) => n + t.text.length, command.length) > AFTER_SHOWN_MAX) problems.push(`the step and its files are longer than Keel shows whole (${AFTER_SHOWN_MAX} characters), so they cannot be trusted`);
     const pin = this.pinned(root);
     const state = problems.length ? "refused" : !pin ? "new" : pin === s.sha256 ? "pinned" : "changed";
-    const land = { ...(rules.push ? { push: rules.push } : {}), ...(rules.setup ? { setup: rules.setup } : {}), checks: (rules.checks ?? []).map((c) => { const n = named.find((x) => x.name === c.name); return `${[c.name, ...c.args].join(" ")}${n ? `: ${[n.run, ...c.args].join(" ")}` : " (not a named check)"}`; }) };
+    const land = { ...(rules.push ? { push: rules.push } : {}), ...(rules.setup ? { setup: rules.setup } : {}), checks: (rules.checks ?? []).map((c) => { const n = named.find((x) => x.name === c.name); return `${[c.name, ...c.args].join(" ")}${n ? `: ${[n.run, ...c.args].join(" ")}${n.dir !== "." ? ` (in ${n.dir})` : ""}` : " (not a named check)"}`; }) };
     return { path, state, command, sha256: s.sha256, covers: s.covers, texts, land, problems };
   }
   pin(cwd: string, digest: string): string | null {
