@@ -66,7 +66,9 @@ export const toolRoutes: RouteModule = (deps) => {
         if (agent && agent.status !== "running" && agent.status !== "waiting") return riding ? note() : sent();
         if (riding) return commandEnded(job, text, riding, agent?.status === "waiting", { sent, note });
         // (An agent parked on the command is the one that still gets its turn after a stop: nothing else ends its wait.)
-        if ((job.stopReason && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return (note(), quiet(job));
+        // A released command its call's limit killed ends as that call would have: its turn goes on (not a stop).
+        const limitKill = !!(job.released && job.killAt && job.stopReason?.startsWith("was killed at its "));
+        if ((job.stopReason && !limitKill && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return (note(), quiet(job));
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
         const end = deps.store.db.query<{ kind: string; reason: string | null }, [string]>("SELECT kind, data ->> '$.reason' AS reason FROM events WHERE id = (SELECT head FROM sessions WHERE id = ?)").get(job.sessionId);
         const cut = end?.kind === "turn_end" && end.reason === "restart";
