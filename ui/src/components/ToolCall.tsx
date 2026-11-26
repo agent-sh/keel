@@ -36,6 +36,7 @@ import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
 import { McpApp, type AppShown } from "./McpApp.tsx";
 import { AskedUnder, QuestionCard } from "./QuestionCard.tsx";
+import { McpReconnect } from "./McpReconnect.tsx";
 import { WaitMark } from "./WaitMark.tsx";
 import { Copyable, CopyButton } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
@@ -190,7 +191,9 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   // The app its server drew with the result (an MCP App), under the call.
   const app = peek ? undefined : (result as (ToolResultBlock & { shown?: { mcp_app?: AppShown } }) | undefined)?.shown?.mcp_app;
   // A server asked the owner something while this call runs: a line says so under the call.
-  return <AskedUnder use={use} sessionId={result ? undefined : sessionId}>{call}{app ? <McpApp sessionId={sessionId} shown={app} /> : null}</AskedUnder>;
+  // A call that failed on a server that is down: a line under it brings the server back from here.
+  const down = result?.is_error && !peek ? <McpReconnect use={use} result={result} sessionId={sessionId} /> : null;
+  return <AskedUnder use={use} sessionId={result ? undefined : sessionId}>{call}{app ? <McpApp sessionId={sessionId} shown={app} /> : null}{down}</AskedUnder>;
 }
 
 // How long a command has run: the time since the turn's tools started, on the page's one clock.

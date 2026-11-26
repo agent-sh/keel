@@ -9,6 +9,9 @@ const tools: { name: string; description: string; annotations?: object; inputSch
   { name: "echo", description: "Echo the given text back, prefixed with 'echo:'.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   { name: "add", description: "Add two numbers.", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } },
 ];
+// --down-unless=FILE: it will not start while FILE is missing (a server that is down until the owner fixes it).
+const downUnless = process.argv.find((a) => a.startsWith("--down-unless="))?.slice(14);
+if (downUnless && !(await Bun.file(downUnless).exists())) { process.stderr.write(`down: ${downUnless} is missing\n`); process.exit(1); }
 const learns = process.argv.includes("--extras");
 let initDelay = Number(process.argv.find((a) => a.startsWith("--init-delay="))?.slice(13)) || 0;
 const LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"];

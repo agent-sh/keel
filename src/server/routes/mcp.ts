@@ -7,6 +7,7 @@ import { bindMcpCalls } from "../../automation/mcp-calls.ts";
 import * as loops from "../../automation/loops.ts";
 import { installMcpSkills } from "../../mcp/skill-tools.ts";
 import { registerHooks } from "../../engine/hooks.ts";
+import { toMessages } from "../../engine/turn.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { installTacitServer } from "../../integrations/tacit-mcp.ts";
@@ -48,6 +49,9 @@ const retryPage = (line: string, url: string) =>
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
 
+// How long a sign-in page begun from a conversation is given again to a second press: well inside the
+// 15 minutes its pending state lives (src/mcp/oauth.ts), so the page it gives can still finish.
+const SIGN_IN_OPEN_MS = 10 * 60_000;
 const escape = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 export const mcpRoutes: RouteModule = (deps) => {
@@ -118,6 +122,25 @@ export const mcpRoutes: RouteModule = (deps) => {
   // An agent file's own servers: given to its agent at its start and at each of its turns, ended when it finishes.
   agentServers.give = (child, file) => projects.refreshAgent(child, file);
   agentServers.release = (id) => projects.releaseAgent(id);
+  registerHooks({
+    beforeRequest: (s, req) => {
+      if (req.purpose !== "turn") return req;
+      const names = back.owed.get(s.id);
+      if (!names?.size) return req;
+      back.owed.delete(s.id);
+      try {
+        const list = [...names].sort();
+        const one = list.length === 1;
+        const text = `[harness] The MCP server${one ? "" : "s"} ${list.join(", ")} ${one ? "is" : "are"} connected again: the owner brought ${one ? "it" : "them"} back from this conversation. The call that failed was not run again; call it again if it is still needed.`;
+        const ev = deps.store.append(s.id, "note", { kind: "mcp_back", model: true, system: true, short: `${list.join(", ")} connected again`, servers: list, text });
+        deps.bus.emit({ t: "event", event: ev });
+        return { ...req, messages: toMessages(deps.store.lineage(s.id)) };
+      } catch (e) {
+        deps.errors.capture("server", e, { at: "mcp back note", session: s.id });
+        return req;
+      }
+    },
+  });
   registerHooks({ turnStart: (s) => {
     try { projects.refresh(s); } catch (e) { deps.errors.capture("server", e, { at: "mcp project servers", session: s.id }); }
     try { const def = defOfSession(s.id); if (def?.file && def.ownServers?.length) projects.refreshAgent(s, def.file); } catch (e) { deps.errors.capture("server", e, { at: "mcp agent file servers", session: s.id }); }
@@ -212,6 +235,25 @@ export const mcpRoutes: RouteModule = (deps) => {
   // A plugin's server goes and stops with its plugin (Customize > Plugins).
   const plugins = (name: string) => { const p = m.pluginOf(name); return p ? bad(`${name} comes with the plugin ${p}: turn the plugin off or remove it in Customize > Plugins`, 409) : null; };
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+  // A server the owner brought back from a conversation where its call failed: that session's model is
+  // told at its next model request (a note of the harness, starting no turn), and the call is never run
+  // again by Keel.
+  const back = {
+    signing: new Map<string, { url: string; at: number; sessions: Set<string> }>(),
+    owed: new Map<string, Set<string>>(),
+    tell(name: string, sessions: Iterable<string>) {
+      const st = m.list().find((x) => x.name === name);
+      if (st?.state !== "ready") return;
+      for (const sid of sessions) if (deps.store.session(sid)) (back.owed.get(sid) ?? back.owed.set(sid, new Set()).get(sid)!).add(name);
+    },
+    // A sign-in begun from a conversation finished: the server connects with its new sign-in, then each waiting session is told.
+    signedIn(name: string) {
+      const open = back.signing.get(name);
+      if (!open) return;
+      back.signing.delete(name);
+      void m.ensure(name, 15_000).catch(() => {}).then(() => back.tell(name, open.sessions));
+    },
+  };
   // A server that is a command runs a program as the owner: from a remote device that takes the passkey.
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
 
@@ -438,8 +480,17 @@ export const mcpRoutes: RouteModule = (deps) => {
     "/api/mcp/servers/:name/toggle": {
       POST: async (req: any) => known(req.params.name) ?? plugins(req.params.name) ?? (m.toggle(req.params.name, (await body(req)).enabled !== false), servers()),
     },
+    // `session_id`: the conversation a failed call of the server was in, where the owner pressed
+    // Reconnect. Once the server is ready its model is told so with its next input; the call is not run again.
     "/api/mcp/servers/:name/reconnect": {
-      POST: async (req: any) => known(req.params.name) ?? (await m.reconnect(req.params.name), servers()),
+      POST: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const sid = String((await body(req)).session_id ?? "");
+        await m.reconnect(req.params.name);
+        if (sid) back.tell(req.params.name, [sid]);
+        return servers();
+      },
     },
     "/api/mcp/servers/:name/sign-in": {
       POST: async (req: any) => {
@@ -447,7 +498,17 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (k) return k;
         const s = m.list().find((x) => x.name === req.params.name)!;
         if (!s.sign_in) return bad(`${s.name} has no sign-in`);
+        const sid = String((await body(req)).session_id ?? "");
         const origin = new URL(req.url).origin;
+        // From a conversation: the sessions blocked on the server wait for the one sign-in, and a
+        // second press while it is open gets the same page (one login, not two).
+        if (sid) {
+          const open = back.signing.get(s.name);
+          if (open && Date.now() - open.at < SIGN_IN_OPEN_MS) { open.sessions.add(sid); return json({ url: open.url }); }
+          const url = await m.signIn(s.name, `${origin}/api/mcp/oauth/callback`);
+          back.signing.set(s.name, { url, at: Date.now(), sessions: new Set([sid]) });
+          return json({ url });
+        }
         return json({ url: await m.signIn(s.name, `${origin}/api/mcp/oauth/callback`) });
       },
     },
@@ -465,6 +526,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         try {
           const done = await m.finishSignIn(new URL(req.url).searchParams);
           if (done.retry) return retryPage(done.line ?? "", done.retry);
+          back.signedIn(done.server);
           return page("Signed in", `${escape(done.server)} is connected. You can close this tab.`);
         } catch (e) {
           deps.errors.capture("server", e, { at: "mcp oauth callback" });
@@ -480,6 +542,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (!q.get("state")) return bad("the redirect carries no state");
         try {
           const done = await m.finishSignIn(q);
+          if (!done.retry) back.signedIn(done.server);
           return json({ server: done.server, ...(done.retry ? { retry: done.retry, line: done.line } : {}), servers: m.list() });
         } catch (e) {
           return bad((e as Error).message);
