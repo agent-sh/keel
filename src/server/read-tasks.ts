@@ -20,6 +20,7 @@ import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.
 import { readYield } from "../admin/review-yield.ts";
 import { boardChecks, boardFacts, boardPictures } from "../board/facts.ts";
 import { parseDiff } from "../board/tree.ts";
+import { readyRoots } from "../board/ready-roots.ts";
 import { earlierCandidates, earlierOutcomes } from "../automation/earlier-facts.ts";
 import { priceFactsRead } from "../engine/price-facts.ts";
 import { pressReport } from "../admin/presses.ts";
@@ -85,6 +86,8 @@ export const tasks = {
   // and the check runs on their heads' trees.
   "board.facts": (db: Database, a: { root: string }) => boardFacts(db, a),
   "board.checks": (db: Database, a: { trees: string[]; heads?: { head: string; session: string }[] }) => boardChecks(db, a),
+  // The trees the landing cards are read from: recent ones, and every one with an approved branch not landed (src/board/ready-roots.ts).
+  "landings.roots": (db: Database, a: { since: number; recent: number; branches: number }) => readyRoots(db, a),
   // One branch head's diff against the base, parsed for the tree review (src/board/tree-review.ts).
   "tree.parse": (_db: Database, a: { text: string }) => parseDiff(a.text),
   "board.pictures": (db: Database, a: { heads: string[] }) => boardPictures(db, a),

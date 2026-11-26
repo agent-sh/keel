@@ -6,13 +6,20 @@
 import type { Store } from "../../core/store.ts";
 import { git } from "../../core/git.ts";
 import type { WorkBoard } from "../../board/board.ts";
-import type { BoardRow } from "../../board/rules.ts";
+import { branchGone, type BoardRow } from "../../board/rules.ts";
+import { SETTLED_TABLE, type ReadyRoots } from "../../board/ready-roots.ts";
+import { readsOf } from "../../server/reads.ts";
 import { cardOrder, isCard, landCard, type LandCard } from "../../board/card.ts";
 import type { LandingQueue } from "../../landing/queue.ts";
 
-// Sessions whose trees are read: the newest that have an agent with a branch made in this time.
+// Sessions whose trees are read: the newest that have an agent with a branch made in this time, and every tree
+// with an approved branch not landed yet, the newest BRANCHES_READ of those branches.
 export const ROOTS_READ = 12;
 const ROOTS_SINCE_MS = 14 * 86_400_000;
+export const BRANCHES_READ = 200;
+// Of the trees read only for an approved branch, the most one list reads (the longest unread first); the others
+// show the cards their last read made. A decision reads its card fresh whatever the list showed.
+export const APPROVED_READ = 8;
 // The diffs a card's areas are read from, kept by base and head (a pair's answer never changes).
 const AREAS_KEPT = 400;
 // The owner's words to an agent that gets its branch back.
@@ -48,21 +55,41 @@ export function landings(d: LandingsDeps) {
     return p;
   };
 
-  // The sessions at the top of trees whose agents made branches lately, the newest first.
-  const roots = (): string[] => {
-    const rows = d.store.db.query<{ parent_id: string }, [number]>(
-      "SELECT parent_id, MAX(created) AS at FROM agents WHERE branch IS NOT NULL AND created > ? GROUP BY parent_id ORDER BY at DESC LIMIT 200",
-    ).all(Date.now() - ROOTS_SINCE_MS);
-    const out: string[] = [];
-    for (const r of rows) {
-      const root = d.rootOf(r.parent_id);
-      const s = d.store.session(root);
-      if (!s || s.archived || out.includes(root)) continue;
-      out.push(root);
-      if (out.length >= ROOTS_READ) break;
-    }
-    return out;
+  // Approved branches a board read found landed, gone or past its board's rows: kept with when their agent
+  // ended, so the read thread leaves them out until it ends again (src/board/ready-roots.ts), across restarts.
+  let settledMade = false;
+  const settle = (agent: string, ended: number | null, why: string) => {
+    try {
+      if (!settledMade) { d.store.db.run(SETTLED_TABLE); settledMade = true; }
+      d.store.db.query("INSERT OR REPLACE INTO landing_settled (agent_id, ended, why, at) VALUES (?, ?, ?, ?)").run(agent, ended, why, Date.now());
+    } catch {}
   };
+
+  // The sessions at the top of trees whose agents made branches lately, the newest first; then those read only
+  // for an approved branch not landed yet, with the agents of those branches by tree.
+  const roots = async (): Promise<{ recent: string[]; approved: Map<string, Map<string, number | null>> }> => {
+    const got = await readsOf(d.store).run("landings.roots", { since: Date.now() - ROOTS_SINCE_MS, recent: 200, branches: BRANCHES_READ }) as ReadyRoots;
+    const open = (parent: string) => {
+      const root = d.rootOf(parent);
+      const s = d.store.session(root);
+      return s && !s.archived ? root : null;
+    };
+    const recent: string[] = [];
+    for (const p of got.recent) {
+      const root = recent.length < ROOTS_READ ? open(p) : null;
+      if (root && !recent.includes(root)) recent.push(root);
+    }
+    const approved = new Map<string, Map<string, number | null>>();
+    for (const a of got.approved) {
+      const root = open(a.parent_id);
+      if (!root) continue;
+      if (!approved.has(root)) approved.set(root, new Map());
+      approved.get(root)!.set(a.id, a.ended);
+    }
+    return { recent, approved };
+  };
+  // The cards of each tree read only for an approved branch, as its last read made them.
+  const kept = new Map<string, { at: number; cards: (LandCard & { at: number })[] }>();
 
   const cardOf = async (root: string, row: BoardRow, repos: { repo: string; base_tip: string | null }[] = []): Promise<LandCard> =>
     landCard({ root, title: d.store.session(root)?.title || "New chat", row, report: d.report(row.id), baseTip: repos.find((x) => x.repo === row.repo)?.base_tip ?? null,
@@ -73,9 +100,37 @@ export function landings(d: LandingsDeps) {
     const b = d.board();
     if (!b) return [];
     const out: (LandCard & { at: number })[] = [];
-    for (const root of roots()) {
-      const board = await b.read(root, fresh).catch(() => undefined);
-      for (const row of board?.rows ?? []) if (isCard(row)) out.push({ ...(await cardOf(root, row, board?.repos)), at: row.ended ?? row.created });
+    const { recent, approved } = await roots();
+    const read = async (root: string, now: boolean) => {
+      const board = await b.read(root, now).catch(() => undefined);
+      const cards: (LandCard & { at: number })[] = [];
+      if (!board) return cards;
+      for (const row of board.rows) {
+        if (isCard(row)) cards.push({ ...(await cardOf(root, row, board.repos)), at: row.ended ?? row.created });
+      }
+      // An approved branch this read cannot make a card of, and will not on a later read until its agent ends
+      // again, is settled: landed, gone, or left out by the board's row cap (only older finished agents are).
+      const mine = approved.get(root);
+      if (mine) {
+        const shown = new Map(board.rows.map((r) => [r.id, r]));
+        for (const [id, ended] of mine) {
+          const row = shown.get(id);
+          const why = !row ? (board.total > board.rows.length ? "past its board's rows" : null)
+            : row.landed?.state === "yes" || row.landed?.state === "nothing" ? "landed" : branchGone(row) ? "gone" : null;
+          if (why) settle(id, ended, why);
+        }
+      }
+      return cards;
+    };
+    for (const root of recent) out.push(...(await read(root, fresh)));
+    // The trees read only for an approved branch: a few each list, the longest unread first, and not fresh (each
+    // read is git calls and merges); the others show what their last read made.
+    const only = [...approved.keys()].filter((r) => !recent.includes(r));
+    for (const r of kept.keys()) if (!only.includes(r)) kept.delete(r);
+    const due = [...only].sort((x, y) => (kept.get(x)?.at ?? 0) - (kept.get(y)?.at ?? 0)).slice(0, APPROVED_READ);
+    for (const root of only) {
+      if (due.includes(root)) kept.set(root, { at: Date.now(), cards: await read(root, false) });
+      out.push(...(kept.get(root)?.cards ?? []));
     }
     return out.sort(cardOrder).map(({ at, ...c }) => c);
   }
