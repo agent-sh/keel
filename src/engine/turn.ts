@@ -398,10 +398,15 @@ export function instructionLimit(window?: number): number {
 // The line is the one on disk: `lines` maps a text with its imports brought in (expandMapped) to
 // the file each part is from; `lines: null` says the text is not what the file holds now (the
 // version the owner last trusted), so no line of the file is named.
+// Where a text past the limit is cut: at a line end where one is near.
+export function cutPoint(text: string, limit: number): number {
+  if (text.length <= limit) return text.length;
+  const nl = text.lastIndexOf("\n", limit);
+  return nl >= limit / 2 ? nl + 1 : limit;
+}
 export function cutInstructions(path: string, text: string, limit: number, lines?: LineSource[] | null): string {
   if (text.length <= limit) return text;
-  const nl = text.lastIndexOf("\n", limit);
-  const at = nl >= limit / 2 ? nl + 1 : limit;
+  const at = cutPoint(text, limit);
   const kept = text.slice(0, at);
   const said = `(Cut here: this is ${at.toLocaleString("en-US")} of the file's ${text.length.toLocaleString("en-US")} characters, as much as fits this model's window. Its later instructions are not in your context.`;
   let where: string;
@@ -468,9 +473,12 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
     const filtered = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
     if (filtered === null) continue;
     const trusted = filtered === raw;
-    const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined);
+    // Carried as far as the cut keeps it: a rule past the cut is in no file the model holds, so a later
+    // file that says it again keeps it.
+    const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined, { record: false });
     if (!fresh.text.trim()) continue;
     const limit = Math.min(cap === undefined ? whole : Math.min(whole, cap), room);
+    once.carried.record(fresh.text.slice(0, cutPoint(fresh.text, limit)), fresh.lines, p);
     const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
     room -= Math.min(fresh.text.length, limit);
     parts.push(`# ${p}\n\n${body}`);

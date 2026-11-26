@@ -276,6 +276,28 @@ test("instruction files: the chain's bound names the files past it", async () =>
   }
 });
 
+test("instruction files: a rule past a file's cut is not carried", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { instructionFiles } = await import("./turn.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-"));
+  try {
+    mkdirSync(join(root, "a/b"), { recursive: true });
+    const Z = "## Secrets\n\n- Never print a token, a key or a password into any output, and never commit one; a leaked one is rotated before other work goes on.";
+    let big = "# Outer\n\n";
+    for (let i = 0; i < 400; i++) big += `- outer rule ${i}: lorem ipsum dolor sit amet consectetur adipiscing elit.\n\n`;
+    writeFileSync(join(root, "a/AGENTS.md"), big + Z + "\n");
+    writeFileSync(join(root, "a/b/AGENTS.md"), "# Inner\n\n- inner rule.\n\n" + Z + "\n");
+    // A 32K window cuts the outer file at 8,000 characters, before its Secrets: the inner file's copy is
+    // the one the model reads.
+    const cut = instructionFiles(join(root, "a/b"), 32_000);
+    expect(cut).toContain("(Cut here:");
+    expect(cut.match(/Never print a token/g)?.length).toBe(1);
+  } finally {
+    rmSync(join(root, ""), { recursive: true, force: true });
+  }
+});
+
 // A call the restart cut gets what its approval card recorded: the owner's
 // denial and reason, "did not run" for a card nothing answered, and "may have
 // partly run" only for an allowed call or one with no card. Also state from

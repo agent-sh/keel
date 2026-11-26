@@ -40,3 +40,11 @@ test("a block's note does not tell again what only moved to another file", () =>
   expect(gone).not.toContain("Deleted");
   expect(blockDiff(before, `# /r/AGENTS.md\n\n${long("R")}\n`, () => false)).toContain("Deleted (or no longer found where it was read): /u/.codex/AGENTS.md.");
 });
+
+test("a text recorded as far as it is kept: what a cut left out is carried by no file", () => {
+  const c = new Carried();
+  const text = `${long("A")}\n\n${long("B")}\n`;
+  const r = c.fresh("/a.md", text, undefined, { record: false });
+  c.record(r.text.slice(0, text.indexOf("- B 0")), r.lines, "/a.md");
+  expect(c.fresh("/b.md", `${long("A")}\n\n${long("B")}\n`).text).toBe(`(Left out here: a section the same as in /a.md, above.)\n\n${long("B")}\n`);
+});

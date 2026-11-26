@@ -60,13 +60,20 @@ export const linesOf = (text: string, path: string): LineSource[] => {
 export class Carried {
   private from = new Map<string, string>();
   has(key: string): boolean { return this.from.has(key); }
-  add(text: string, path: string) { for (const s of sectionsOf(text)) if (!s.heading && !this.from.has(s.key)) this.from.set(s.key, path); }
+  add(text: string, path: string) { this.record(text, linesOf(text, path), path); }
+
+  // The sections of a text the chain now carries, each from the file its line is in. A text cut to fit is
+  // recorded as far as it is kept, so what the cut left out is carried by no file.
+  record(text: string, lines: LineSource[], path: string) {
+    const sourceAt = (at: number) => lines.findLast((x) => x.at <= at)?.path ?? path;
+    for (const s of sectionsOf(text)) if (!s.heading && !this.from.has(s.key)) this.from.set(s.key, sourceAt(s.start));
+  }
 
   // A file's text without the sections the chain already carries, with its line map moved to match;
-  // its new sections are carried from then on. `path`: the file, `lines`: where each line is on disk.
-  fresh(path: string, text: string, lines: LineSource[] = linesOf(text, path)): { text: string; lines: LineSource[]; left: number } {
+  // its new sections are carried from then on, unless `record` is false (the caller cuts the text and
+  // records what it keeps). `path`: the file, `lines`: where each line is on disk.
+  fresh(path: string, text: string, lines: LineSource[] = linesOf(text, path), o: { record?: boolean } = {}): { text: string; lines: LineSource[]; left: number } {
     const secs = sectionsOf(text);
-    const sourceAt = (at: number) => lines.findLast((x) => x.at <= at)?.path ?? path;
     const drop = secs.map((s) => !s.heading && this.from.has(s.key));
     // A heading goes with the section under it.
     for (let i = secs.length - 1; i >= 0; i--) if (secs[i]!.heading) drop[i] = i + 1 < secs.length && !secs[i + 1]!.heading ? drop[i + 1]! : false;
@@ -86,8 +93,10 @@ export class Carried {
       else for (let k = i; k <= j; k++) drop[k] = false;
       i = j;
     }
-    for (let i = 0; i < secs.length; i++) if (!drop[i] && !secs[i]!.heading && !this.from.has(secs[i]!.key)) this.from.set(secs[i]!.key, sourceAt(secs[i]!.start));
-    if (!runs.length) return { text, lines, left: 0 };
+    if (!runs.length) {
+      if (o.record !== false) this.record(text, lines, path);
+      return { text, lines, left: 0 };
+    }
     let out = "", from = 0, left = 0;
     const moved: LineSource[] = [];
     const keep = (a: number, b: number) => {
@@ -101,6 +110,7 @@ export class Carried {
       left++;
     }
     keep(from, text.length);
+    if (o.record !== false) this.record(out, moved, path);
     return { text: out, lines: moved, left };
   }
 }
