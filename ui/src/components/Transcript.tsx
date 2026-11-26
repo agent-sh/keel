@@ -2105,6 +2105,18 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       <div
         ref={scroller}
         className="k-reading relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
+        onClickCapture={(e) => {
+          if (!stick.current || !(e.target as Element).closest(".k-work-fold")) return;
+          // Revealing a run is reading from its first line, not following the end as it grows.
+          const el = e.currentTarget;
+          stick.current = false;
+          remember();
+          requestAnimationFrame(() => {
+            if (scroller.current !== el) return;
+            stick.current = !short.current && el.scrollHeight - el.scrollTop - el.clientHeight < 1;
+            setAway(!stick.current);
+          });
+        }}
         // A row that holds the keyboard itself (reached by Previous or Next prompt, or from a
         // search hit) gives it back to the pane's message box on Escape. The press ends
         // there: it does not also stop the turn or leave an agent's session.

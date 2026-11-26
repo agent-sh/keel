@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "./isolate.ts";
 import { approvals, ask, calls, create, drop, folder, scripted } from "./answering.ts";
-import { shoot } from "./shots.ts";
+import { endsAre, shoot } from "./shots.ts";
 
 // Feature: Focus on a phone (ui/src/lib/focus.ts), the default there as at a desk. A session is the
 // conversation and the message box under a bar that holds the list's button, card or no card: the list
@@ -17,6 +17,37 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
     // No saved choice: what the owner sees the first time.
     test.use({ storageState: { cookies: [], origins: [] }, viewport: size, hasTouch: true, isMobile: true });
     test.setTimeout(120_000);
+
+    test("opening a fold keeps the first revealed line at the tap", async ({ page, request }) => {
+      await scripted(request);
+      const id = await create(request, "A folded run", folder("phone-fold"));
+      try {
+        await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+        const work = Array.from({ length: 12 }, (_, i) => ({ name: "Bash", input: { command: `echo check ${i}; exit 3` } }));
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: `Check the output.\n${calls(work)}` } });
+        await page.goto(`/s/${id}`);
+        await endsAre(page, 1);
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say Checks complete." } });
+        await endsAre(page, 2);
+        await page.reload();
+        const fold = page.getByTestId("work-fold");
+        await expect(fold).toHaveCount(1);
+        await fold.scrollIntoViewIfNeeded();
+        const y = (await fold.boundingBox())!.y;
+        await fold.tap();
+        const first = page.getByTestId("work").first();
+        await expect(first).toBeVisible();
+        // Let the transcript's resize observer run before reading the position, without resizing for the shots.
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        try {
+          expect(Math.abs((await first.boundingBox())!.y - y)).toBeLessThan(2);
+        } finally {
+          await shoot(page, `phone-fold-${size.width}`);
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
 
     test("the conversation and a one-line box, the list one tap away, the agents one quiet item", async ({ page, request }) => {
       await scripted(request);
