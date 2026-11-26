@@ -201,6 +201,11 @@ export class Telemetry {
     // toolShape): without a session index it walks every tool run back from the newest (a 2.2 s
     // stall live). A turn's rollup reads the session's rows of its time range by it too (outcomes.ts).
     store.migrate("CREATE INDEX IF NOT EXISTS telemetry_tools_session ON telemetry_tools(session_id, ts)");
+    // The step's read names the tool too: by the session index alone a tool the session seldom ran walks
+    // every run of the session (thousands in a coordinator's), page by page, and stalled the loop under the
+    // disk's pressure. With the tool in the index it reads at most the twenty rows it returns; the build
+    // pin's "did the session call this tool" read takes it as well.
+    store.migrate("CREATE INDEX IF NOT EXISTS telemetry_tools_session_tool ON telemetry_tools(session_id, tool, ts)");
     this.backfill();
     this.classify();
     void bus;
