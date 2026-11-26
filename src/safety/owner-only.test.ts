@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
@@ -223,9 +223,11 @@ test("a step after a cd spelled with a name may not have been taken: the folders
 
 // Each folder a step leads to is as long as the steps joined, and the folders double with each step: ten steps of
 // 100,000 characters after `cd $A` held the loop 7.7 seconds and took 2.5 GB, the vault's read of the same line as
-// long again. A step or a folder longer than a word is read is not followed, and the line asks as high risk. What
-// is checked is the cost beside the same line with its name used elsewhere (the line split and read the same way):
-// a multiple of it, not a time, so a loaded machine that slows both does not make it fail.
+// long again. A step or a folder longer than a word is read is not followed, and the line asks as high risk. And each
+// `cd` of a chain made its folders again from the first step: eight short steps, then 19 of 4,000 characters that
+// lead nowhere new, held the loop 2.8 seconds for one read at the end. What is checked is the cost beside the same
+// line with its name used elsewhere (the line split and read the same way): a multiple of it, not a time, so a loaded
+// machine that slows both does not make it fail.
 test("long steps after a cd spelled with a name cost what the line's length does, and ask as high risk", () => {
   const step = (i: number, n: number) => `s${i}${"/abcdefghi".repeat(n / 10)}`;
   const steps = (n: number) => Array.from({ length: 10 }, (_, i) => `cd ${step(i, n)}; `).join("");
@@ -236,11 +238,13 @@ test("long steps after a cd spelled with a name cost what the line's length does
     return b;
   };
   const wrong: string[] = [];
-  for (const n of [3_900, 100_000]) {
-    const led = `read A; cd $A; ${steps(n)}cat f`, elsewhere = `read A; cd x; ${steps(n)}cat $A`;
+  const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
+  const chain = (to: string, read: string) => `read A; cd ${to}; ${rep(8, (i) => `cd d${i}; `)}${rep(19, () => `cd ${"./".repeat(2_000)}; `)}cat ${read}`;
+  for (const n of [3_900, 100_000, 0]) {
+    const led = n ? `read A; cd $A; ${steps(n)}cat f` : chain("$A", "f"), elsewhere = n ? `read A; cd x; ${steps(n)}cat $A` : chain("x", "$A");
     for (const mode of ["ask", "full-auto"] as Mode[]) {
       const d = (command: string) => decide({ kind: "shell", command, cwd: ws }, facts(mode));
-      expect([n, mode, how(d(led))]).toEqual([n, mode, "ask-high"]);
+      expect([n, mode, how(d(led))]).toEqual([n, mode, n ? "ask-high" : mode === "ask" ? "ask-low" : "allow"]);
       const b = best(() => d(elsewhere)), a = best(() => d(led), 3 * b + 20);
       if (a > 3 * b + 20) wrong.push(`${mode}: ${led.length} characters: ${a.toFixed(0)} ms led by the name, ${b.toFixed(0)} ms with it elsewhere`);
     }
@@ -250,6 +254,22 @@ test("long steps after a cd spelled with a name cost what the line's length does
   }
   expect(wrong).toEqual([]);
 }, 120_000);
+
+// A step longer than a word is read is not followed, but the folders before it are still tried: a step may not be
+// taken. A protected file there is answered as it is, and the vault keeps its path; with none, the line asks as
+// high risk, as where the step leads is not read.
+test("a step too long to read after a cd spelled with a name leaves the folders before it tried", () => {
+  const junk = `j${"/abcdefghi".repeat(500)}`;
+  const shell = (command: string, mode: Mode, more: Record<string, unknown> = {}) => how(decide({ kind: "shell", command, cwd: ws }, facts(mode, more)));
+  for (const command of [`A=/x; A=/home/u; cd $A; cd ${junk}; echo x >> .bashrc`, `A=/x; A=/home/u; cd $A; cd ${junk}; cd .ssh; cp k authorized_keys`])
+    expect([command.length, shell(command, "ask"), shell(command, "auto-edits"), shell(command, "full-auto")]).toEqual([command.length, "owner", "owner", "ask-high"]);
+  const sandboxed = { sandboxed: true, agent: true, confinedShown: (p: string) => ({ shown: !/\/\.(ssh|aws)(\/|$)/.test(p) }) };
+  expect(shell(`A=/x; A=/home/u/.ssh; cd $A; cd ${junk}; cat id_rsa`, "auto-edits", sandboxed)).toBe("deny");
+  const credential = (p: string) => (/\/\.(ssh|aws)\//.test(p) ? { path: p, store: dirname(p), what: "a key" } : null);
+  expect(unspeltCredentials(`A=/home/u/.ssh; cd $A; cd ${junk}; cat id_rsa`, ws, ws, credential, home)).toEqual(["/home/u/.ssh/id_rsa"]);
+  for (const command of [`read A; cd $A; cd ${junk}; cat f`, `A=/x; A=/home/u; cd $A; cd ${junk}; cat notes.txt`])
+    expect([command.length, shell(command, "ask"), shell(command, "full-auto")]).toEqual([command.length, "ask-high", "ask-high"]);
+});
 
 test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
   const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");

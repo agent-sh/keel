@@ -126,8 +126,9 @@ export function overlaps(a: string, b: string): boolean {
 // parent of the link's target, which only the walk (realOf) knows.
 export function atCwd(cwd: string, p: string): string {
   const whole = isAbsolute(p) ? p : `${cwd}/${p}`;
-  return whole.split("/").includes("..") ? whole : resolve(whole);
+  return STEP_UP.test(whole) ? whole : resolve(whole);
 }
+const STEP_UP = /(^|\/)\.\.(\/|$)/;
 
 // A path as the kernel walks it: each part resolved in turn, links followed
 // where they stand, and `..` applied to where the walk is (after a link, the

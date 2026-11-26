@@ -1109,7 +1109,7 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // the line gives a value its words do not show (a `read`, a `printf -v`, a `${D:=..}`); `deep`: how many
 // names deep the reading is; `given`: where the line's words give each name a value, a loop's words among them,
 // in the line's order; `cost`: what is left of the bound, and what each path looked at came to.)
-type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null>; seen: string[] };
+type Cost = { paths: number; tries: number; over: boolean; cut: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null>; seen: string[] };
 type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, { out: string[]; deep: number }>; deep: number; low: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string; items?: string[] }[]>; from?: { scope: Line; at: number } };
 // (`shown`: every part of the path is in the line's words, with what the written-out line would be told of it.)
 type Unspelt = { word: string; path: string; rule: string; reads?: true; shown?: { why: string; by?: string; api?: string } };
@@ -1219,12 +1219,32 @@ function wordStands(word: string, i: number, s: Line, home: string): string[] {
   }
   return outs.map((o) => o + word.slice(at));
 }
+// A relative step of a `cd`, read once: where it leads from a folder, as `spelled` says, and, when it holds a step up,
+// where it leads as no step up (`none`). (Its parts are read once, not again from each folder: a folder that is
+// already as `resolve` makes one leads to itself and the step's own parts, and one with a step up in it to the two
+// written one after the other.)
+type Step = { from: (dir: string) => string | null; none?: Step };
+const NOWHERE: Step = { from: () => null };
+const PLAIN = /^\/(?!.*\/\/)(?!.*\/\.\.?(\/|$))(.*[^/])?$/s;
+function stepOf(t: string, home: string): Step {
+  const up = UP.test(t), none = up ? stepOf(t.replace(/(^|\/)\.\.(?=\/|$)/g, "$1."), home) : undefined;
+  const odd = /^(\/|~|\$HOME|\$\{HOME\}|["'])/.test(t) ? undefined : !t || /[$`*?\n]/.test(t) ? null : t;
+  if (odd === null) return { from: () => null, ...(none ? { none } : {}) };
+  if (odd === undefined) return { from: (dir) => spelled(t, dir, home), ...(none ? { none } : {}) };
+  const rest = t.split("/").filter((p) => p !== "" && p !== ".").join("/");
+  const from = (dir: string): string | null => {
+    if (up || UP.test(dir)) return `${dir}/${t}`;
+    if (!PLAIN.test(dir)) return resolve(`${dir}/${t}`);
+    return rest ? `${dir === "/" ? "" : dir}/${rest}` : dir;
+  };
+  return { from, ...(none ? { none } : {}) };
+}
 function unspelt(command: string, f: Facts, cwd: string, all?: string[]): Unspelt | "over" | null {
   const parts = splitCommand(command);
   if (!parts) return null;
   const home = f.home ?? homeOf();
   const pre = laid(parts, cwd, home);
-  const cost: Cost = { paths: PATHS, tries: 10 * PATHS, over: false, wrote: new Map(), read: new Map(), seen: [] };
+  const cost: Cost = { paths: PATHS, tries: 10 * PATHS, over: false, cut: false, wrote: new Map(), read: new Map(), seen: [] };
   const top = scopeOf(parts, pre, home, cost);
   // (A script the line hands a shell: its own names, and the line's where its text holds them.)
   let inner: { s: Line; cwd: string }[] | undefined;
@@ -1241,8 +1261,8 @@ function unspelt(command: string, f: Facts, cwd: string, all?: string[]): Unspel
     }
   }
   // (Read to its end, in every script: what it met is all the line may read this way.)
-  if (!all && f.named && !cost.over && !hit?.shown) f.named.reads = [...new Set(cost.seen)];
-  return hit ?? (cost.over ? "over" : null);
+  if (!all && f.named && !cost.over && !cost.cut && !hit?.shown) f.named.reads = [...new Set(cost.seen)];
+  return hit ?? (cost.over || cost.cut ? "over" : null);
 }
 function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[], pass?: "reads" | "writes"): Unspelt | null {
   const { parts, pre } = s;
@@ -1253,7 +1273,8 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[],
   // The `cd` that left the folder of part `i` unknown, when it is spelled with a name the line sets, and the
   // relative steps written out after it (`cd $D; cd ..; cd .ssh`), which may lead on from wherever it led.
   // (`last`: the `cd` nearest before each part, found once for the line; `chains`: what each `cd` comes to.)
-  type Entered = { to: string; at: number; then: string[]; key: number };
+  // (`then`: the steps in order, a step too long to read as no folder it leads to.)
+  type Entered = { to: string; at: number; then: (string | null)[]; key: number };
   const last: (number | undefined)[] = [];
   parts.forEach((p, j) => { const w = pre.runs[j]!.words; last[j + 1] = !p.heredoc && (w[0] === "cd" || w[0] === "pushd") ? j : last[j]; });
   const chains = new Map<number, Entered | null>();
@@ -1263,54 +1284,81 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[],
     let got = chains.get(key);
     if (got !== undefined) return got;
     got = null;
-    const then: string[] = [];
-    for (let j: number | undefined = key; j !== undefined; j = last[j]) {
+    const then: (string | null)[] = [];
+    for (let j: number | undefined = key, n = 0; j !== undefined; j = last[j]) {
       const to = pre.runs[j]!.words.slice(1).find((a) => !a.startsWith("-"));
       if (to !== undefined && namesSet(to, s)) { got = { to, at: j, then: then.reverse(), key }; break; }
       // (Any other `cd` is followed by the rules above, or leads where nothing here says: a written-out folder from
       // the root or the home, no folder, `-`, an expansion that is no name of the line's.)
       if (to === undefined || /[$`]/.test(to) || /^(["']?)(\/|~)/.test(to) || (pre.dirs[j] !== null && pre.dirs[j] !== undefined)) break;
-      // (More steps than a line takes, or a step longer than a word is read: not followed, and not known to lead
-      // nowhere protected.)
-      if (to.length > WORD || then.push(to) > STEPS) { s.cost.over = true; break; }
+      // (More steps than a line takes: not followed, and not known to lead nowhere protected.)
+      if (++n > STEPS) { s.cost.over = true; break; }
+      // (A step longer than a word is read is not followed: the folders before it are still tried, as a step may
+      // not be taken, and so are the folders a line usually means, as after any step; the line is cut, so where the
+      // step may lead is not known to hold nothing protected.)
+      if (to.length > WORD) s.cost.cut = true;
+      then.push(to.length > WORD ? null : to);
     }
     chains.set(key, got);
     return got;
   };
-  // (The folders a `cd` may lead to are the same for every part after it.)
+  // (The folders a `cd` may lead to are the same for every part after it. A later `cd` of the same chain leads on
+  // from where the one before it led, so a chain's folders are made once, a step at a time, and each `cd` takes
+  // them as they stood after its own step: `made`, by the place of the `cd` spelled with the name, holds every
+  // folder in the order it was first made, the step it was first shown at, and how many there were after each step.)
   const led = new Map<number, Folder[]>();
+  const made = new Map<number, { dirs: Map<string, number>; after: number[] }>();
   const folders = (i: number): Folder[] => {
     if (pre.dirs[i] !== null && pre.dirs[i] !== undefined) return [{ dir: pre.dirs[i]!, shown: true }];
     const cd = entered(i);
     if (!cd) return usual(i);
     let to = led.get(cd.key);
-    if (!to) {
-      const from = pre.dirs[cd.at] ?? null, dirs = new Map<string, boolean>();
-      // (A folder longer than a word is read is not kept: the steps would make every one of them longer still.)
-      const add = (dir: string | null, shown: boolean) => {
-        if (!dir) return;
-        if (dir.length > WORD) s.cost.over = true;
-        else dirs.set(dir, !!dirs.get(dir) || shown);
-      };
-      for (const c of wordStands(cd.to, cd.at, s, home)) {
-        if (c.startsWith(SOMEWHERE)) { for (const u of usual(cd.at)) add(u.dir, false); continue; }
+    if (to) return to;
+    // (What the `cd` itself may be is read again for each `cd` after it, as the line's bound counts it.)
+    const values = wordStands(cd.to, cd.at, s, home);
+    let run = made.get(cd.at);
+    if (!run) {
+      const dirs = new Map<string, number>(), from = pre.dirs[cd.at] ?? null;
+      made.set(cd.at, run = { dirs, after: [] });
+      for (const c of values) {
+        if (c.startsWith(SOMEWHERE)) { for (const u of usual(cd.at)) keep(dirs, u.dir, false, 0); continue; }
         const text = clean(c);
-        add(spelled(text, from ?? cwd, home), whole(c) && (from !== null || ROOTED.test(text)));
+        keep(dirs, spelled(text, from ?? cwd, home), whole(c) && (from !== null || ROOTED.test(text)), 0);
       }
-      // The steps after it. None of these is known to have landed, or to have run (one after `||` runs only where
-      // the command before it failed): the shell may be where the `cd` spelled with the name led, where it was
-      // before it, or on from either by any of the steps, each taken or not. (From a guessed folder a step up is
-      // tried as written and as no step: a step up from a folder nobody knows can land in any of them.)
-      if (cd.then.length) for (const u of usual(cd.at)) add(u.dir, false);
-      for (const step of cd.then.map(clean)) {
-        for (const [dir, shown] of [...dirs]) for (const t of !shown && UP.test(step) ? [step, step.replace(/(^|\/)\.\.(?=\/|$)/g, "$1.")] : [step]) add(spelled(t, dir, home), shown);
-        // (More folders than the line has paths to look at: not followed, and not known to lead nowhere protected.)
-        if (dirs.size > PATHS) s.cost.over = true;
-        if (s.cost.over) break;
-      }
-      led.set(cd.key, to = [...dirs].map(([dir, shown]) => ({ dir, shown })));
+      run.after.push(dirs.size);
     }
+    // The steps after it. None of these is known to have landed, or to have run (one after `||` runs only where
+    // the command before it failed): the shell may be where the `cd` spelled with the name led, where it was
+    // before it, or on from either by any of the steps, each taken or not. (From a guessed folder a step up is
+    // tried as written and as no step: a step up from a folder nobody knows can land in any of them.)
+    const { dirs, after } = run;
+    // (Past the bound a step is still taken once, from a chain made new, as each `cd` once made its own.)
+    while (after.length <= cd.then.length && (!s.cost.over || after.length === 1)) {
+      const k = after.length;
+      if (k === 1) for (const u of usual(cd.at)) keep(dirs, u.dir, false, k);
+      const t = cd.then[k - 1]!, step = t === null ? NOWHERE : stepOf(clean(t), home);
+      for (const [dir, at] of [...dirs]) {
+        const shown = at !== Infinity;
+        keep(dirs, step.from(dir), shown, k);
+        if (!shown && step.none) keep(dirs, step.none.from(dir), shown, k);
+      }
+      // (More folders than the line has paths to look at: not followed, and not known to lead nowhere protected.)
+      if (dirs.size > PATHS) s.cost.over = true;
+      after.push(dirs.size);
+    }
+    const n = Math.min(cd.then.length, after.length - 1), size = after[n]!;
+    to = [];
+    for (const [dir, at] of dirs) { if (to.length === size) break; to.push({ dir, shown: at <= n }); }
+    led.set(cd.key, to);
     return to;
+  };
+  // (A folder longer than a word is read is not kept: the steps would make every one of them longer still.)
+  const keep = (dirs: Map<string, number>, dir: string | null, shown: boolean, k: number) => {
+    if (!dir) return;
+    if (dir.length > WORD) { s.cost.over = true; return; }
+    const at = dirs.get(dir);
+    if (at === undefined) dirs.set(dir, shown ? k : Infinity);
+    else if (shown && at === Infinity) dirs.set(dir, k);
   };
   // The paths a candidate names: one that stands in some folder is tried in each a line usually means, with its
   // steps back up and without them (a step up from a folder nobody knows can land in any of them).

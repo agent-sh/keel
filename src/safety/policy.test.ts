@@ -361,7 +361,8 @@ test("a stored shell rule covers nothing in a mode that writes nothing", () => {
     }
     expect(misses).toEqual([]);
     expect(pairs).toBeGreaterThan(300); // the check had pairs to hold
-  });
+    // (Every pair of 600 commands and some 90 specs: about four seconds alone, past the default limit on a busy machine.)
+  }, 30_000);
 
   test("a deny of a tool or an edit folder is held by every allow that can match what it matches", async () => {
     const { claudeAllow, overlaps } = await import("../integrations/port-permissions.ts");
