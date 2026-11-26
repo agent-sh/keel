@@ -33,8 +33,8 @@ import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import { headTail, scanBack } from "../import/files.ts";
 import { splitGrown } from "./facts.ts";
-import { alive, procOf } from "./writer.ts";
-import { SCHEMA, type Answered, type CardGate, type Send, type SendState } from "./codex-app.ts";
+import { alive, claudeRecordOf, holderChain, procOf, type Proc } from "./writer.ts";
+import { merged, reap, SCHEMA, type Answered, type CardGate, type Send, type SendState } from "./codex-app.ts";
 import type { Answer as PlanAnswer, PlanCard } from "../../server/routes/plan.ts";
 import { answerLine, answersOf, argsOf, cardOf, childEnv, holdsMessage, modelOf, modeFor, planMode, questionsOf, readOut, refusalLine, requestLine, sessionFacts, turnEnded, userLine } from "./claude-wire.ts";
 
@@ -62,6 +62,8 @@ export type ClaudeCodeDeps = {
   // The claude program, and Claude Code's folder when it is not its default (read when used).
   bin: () => string | undefined;
   configDir: () => string | undefined;
+  // Claude Code's folder of running sessions (its sessions/<pid>.json records), as the mirror reads it.
+  runningDir: () => string;
   trouble: (e: unknown, at: string) => void;
   // A question or a plan Claude Code asks is an alert like the model's own (the turn hooks' ownerAsked and ownerAnswered).
   asked?: (sessionId: string, callId: string, text: string, askId: string) => void;
@@ -164,6 +166,14 @@ type Run = {
   nonce: string;
   interrupting?: boolean;
   ending?: Promise<void>;
+  killing?: Promise<void>;
+  // What holds the session under the child, learned once it is ready and again when it is ended: the process
+  // Claude Code's record names and its ancestors under the child (a launcher's native claude). Nothing else
+  // under it (an MCP server, a job of the turn) is Keel's to end.
+  under: Proc[];
+  // The child is gone, and so is what held the session under it: a send waits for it before it starts another.
+  over: Promise<void>;
+  isOver: () => void;
 };
 
 // The records of the transcript from a byte offset on (the bytes a send started at): what the session gained since.
@@ -178,6 +188,16 @@ function records(path: string, offset: number): Json[] {
     return splitGrown("", buf.toString("utf8") + "\n").records;
   } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
 }
+
+// Whether a kept process is still claude in print mode answering over the control channel, by its arguments: a
+// check of a row Keel kept (its pid and start time), never a way to find one.
+function printChild(pid: number): boolean {
+  let argv: string[] = [];
+  try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { return false; }
+  return argv.includes("--resume") && argv.includes("--permission-prompt-tool") && argv.includes("stdio");
+}
+
+type ProcRow = { session_id: string; pid: number; start: string };
 
 export class ClaudeCode {
   private runs = new Map<string, Run>();
@@ -289,7 +309,13 @@ export class ClaudeCode {
 
   private async deliver(sessionId: string, id: string) {
     let r = this.runs.get(sessionId);
-    if (r?.ending) { await r.ending; r = undefined; }
+    // A child that is ending is waited out, and so is what held the session under it; then the one child in runs
+    // is taken (a send that came meanwhile may have started it), never a second one beside it.
+    while (r?.ending || r?.killing) {
+      await r.over;
+      if (this.closed) return;
+      r = this.runs.get(sessionId);
+    }
     if (!r) {
       // Read again right before the child starts: another process may have taken the session since.
       const holder = this.d.outside.holderNow(sessionId);
@@ -299,7 +325,10 @@ export class ClaudeCode {
       r = begun;
     }
     const run = r;
-    if (!(await run.ready)) {
+    const ready = await run.ready;
+    // A daemon that stopped meanwhile marks nothing: the send stays stored, and the next one sends it.
+    if (this.closed) return;
+    if (!ready) {
       if (this.byId(id)?.state === "stored") this.set(id, "failed", { said: "Claude Code did not resume the session" });
       return;
     }
@@ -337,18 +366,27 @@ export class ClaudeCode {
     if (m.note) this.note(sessionId, m.note);
     const env = childEnv(this.d.env?.() ?? process.env, f.model, this.d.configDir());
     const child = new Child(argsOf(bin, row.source_id, { model: f.model, mode: m.mode }), cwd, env, (msg) => this.d.trouble(new Error(msg), "claude in print mode"));
-    const run: Run = { sessionId, claudeId: row.source_id, path: row.path, cwd, child, ready: Promise.resolve(false), open: new Set(), given: new Set(), blocks: new Map(), cards: new Map(), stopped: new AbortController(), nonce: Bun.randomUUIDv7().slice(-12) };
+    let isOver = () => {};
+    const over = new Promise<void>((r) => { isOver = r; });
+    const run: Run = { sessionId, claudeId: row.source_id, path: row.path, cwd, child, ready: Promise.resolve(false), open: new Set(), given: new Set(), blocks: new Map(), cards: new Map(), stopped: new AbortController(), nonce: Bun.randomUUIDv7().slice(-12), under: [], over, isOver };
     this.runs.set(sessionId, run);
-    this.keepChild(sessionId, child.pid);
+    const self = procOf(child.pid);
+    if (self) this.keep(sessionId, [self]);
     child.onLine = (msg) => this.heard(run, msg);
-    void child.exited.then(() => this.gone(run));
+    void child.exited.then(() => this.gone(run)).catch((e) => this.d.trouble(e, "a Claude Code child that ended"));
     run.ready = (async () => {
       try {
         // (Every field of initialize is optional: Keel registers no hooks, servers or dialogs of its own.)
         await bounded(child.request({ subtype: "initialize" }), "initialize", READY_MS);
+        // What holds the session under the child now (a launcher's native claude): kept, so a next daemon ends it
+        // too when this one could not.
+        run.under = this.writers(run);
+        if (run.under.length) this.keep(sessionId, run.under);
         this.d.outside.retell(sessionId);
         return true;
       } catch (e) {
+        // A daemon that stopped meanwhile marks nothing: the send stays stored, and the next one sends it.
+        if (this.closed) return false;
         const said = `Claude Code did not resume the session: ${(e as Error).message}`;
         for (const s of this.sends(sessionId)) if (s.state === "stored") this.set(s.id, "failed", { said });
         void this.end(run);
@@ -491,48 +529,76 @@ export class ClaudeCode {
     return run.ending;
   }
 
-  private async kill(run: Run): Promise<void> {
-    run.stopped.abort();
-    run.child.kill();
-    let t: ReturnType<typeof setTimeout> | undefined;
-    const late = await Promise.race([run.child.exited.then(() => false), new Promise<boolean>((r) => { t = setTimeout(() => r(true), END_MS); })]);
-    clearTimeout(t);
-    if (late) { run.child.kill("SIGKILL"); await run.child.exited; }
+  // The child ends now, and what holds the session under it: SIGTERM to the child (a launcher passes it on), then
+  // SIGKILL to whatever of them is still there after END_MS. What Claude Code started (MCP servers, the turn's
+  // jobs) is left, whatever its arguments say.
+  private kill(run: Run): Promise<void> {
+    run.killing ??= (async () => {
+      run.stopped.abort();
+      if (run.child.alive) run.under = merged(run.under, this.writers(run));
+      run.child.kill();
+      const end = Date.now() + END_MS;
+      while (Date.now() < end && (run.child.alive || run.under.some((p) => alive(p.pid, p.start)))) await Bun.sleep(25);
+      if (run.child.alive) run.child.kill("SIGKILL");
+      await reap(run.under, 0);
+      await run.child.exited;
+    })();
+    return run.killing;
   }
 
-  private keepChild(sessionId: string, pid: number) {
-    const p = procOf(pid);
-    if (p) this.d.store.db.query("INSERT OR REPLACE INTO outside_procs (session_id, pid, start) VALUES (?, ?, ?)").run(sessionId, p.pid, p.start);
+  // The process whose record says it runs the session (sessions/<pid>.json, its start time compared) and its
+  // ancestors under the child: a launcher's native claude. Nothing when the child itself holds it, or the holder
+  // is not under the child. Never a process found by its arguments.
+  private writers(run: Run): Proc[] {
+    const r = claudeRecordOf(this.d.runningDir(), run.claudeId);
+    return holderChain(run.child.pid, r?.pid);
   }
 
-  // A child an earlier daemon left running: the same pid, started at the same moment, still claude answering over
-  // the control channel. Never a process Keel did not start. Resolves when every one has ended.
-  private async orphans(): Promise<void> {
-    const rows = this.d.store.db.query<{ rowid: number; session_id: string; pid: number; start: string }, []>(
-      "SELECT p.rowid AS rowid, p.session_id, p.pid, p.start FROM outside_procs p JOIN outside_sessions o ON o.session_id = p.session_id WHERE o.harness = 'claude'").all();
-    const left: number[] = [];
+  // Processes kept with the session, until they ended.
+  private keep(sessionId: string, procs: Proc[]) {
+    const put = this.d.store.db.query("INSERT OR REPLACE INTO outside_procs (session_id, pid, start) VALUES (?, ?, ?)");
+    for (const p of procs) put.run(sessionId, p.pid, p.start);
+  }
+
+  // The rows of processes that are gone (ended, or their pid taken again by another start).
+  private forget(rows: ProcRow[]) {
+    const del = this.d.store.db.query("DELETE FROM outside_procs WHERE session_id = ? AND pid = ? AND start = ?");
+    for (const r of rows) if (!alive(r.pid, r.start)) del.run(r.session_id, r.pid, r.start);
+  }
+
+  // A child an earlier daemon left running, or what holds its session under it: the kept pid, started at the kept
+  // moment, still claude answering over the control channel. Never a process Keel did not start, nor one Claude
+  // Code started. Resolves when every one has ended.
+  private async orphans(rows: ProcRow[]): Promise<void> {
+    let left: Proc[] = [];
     for (const c of rows) {
-      let argv: string[] = [];
-      try { argv = readFileSync(`/proc/${c.pid}/cmdline`, "utf8").split("\0"); } catch {}
-      if (alive(c.pid, c.start) && argv.includes("--resume") && argv.includes("--permission-prompt-tool") && argv.includes("stdio")) {
-        try { process.kill(c.pid, "SIGTERM"); left.push(c.pid); } catch {}
-      }
+      if (!alive(c.pid, c.start) || !printChild(c.pid)) continue;
+      const id = this.d.store.session(c.session_id)?.outside?.source_id;
+      const r = id ? claudeRecordOf(this.d.runningDir(), id) : undefined;
+      left = merged(left, [{ pid: c.pid, start: c.start }, ...holderChain(c.pid, r?.pid)]);
     }
-    this.d.store.db.query("DELETE FROM outside_procs WHERE rowid IN (SELECT value FROM json_each(?))").run(JSON.stringify(rows.map((r) => r.rowid)));
-    const end = Date.now() + END_MS;
-    while (left.some((p) => alive(p)) && Date.now() < end) await Bun.sleep(50);
-    for (const p of left) if (alive(p)) try { process.kill(p, "SIGKILL"); } catch {}
+    await reap(left, END_MS);
+    if (this.closed) return;
+    // A row goes once its process is gone: one that outlived its SIGKILL is still there for the next look.
+    this.forget(rows);
   }
 
-  private gone(run: Run) {
+  private async gone(run: Run) {
     run.stopped.abort();
-    if (!this.closed) this.d.store.db.query("DELETE FROM outside_procs WHERE session_id = ? AND pid = ?").run(run.sessionId, run.child.pid);
-    if (this.closed) return;
-    if (this.runs.get(run.sessionId) === run) this.runs.delete(run.sessionId);
-    if (!run.ending && run.open.size) this.note(run.sessionId, `Claude Code ended in the middle of the turn${run.child.why() ? `: ${run.child.why()}` : ""}`);
-    this.check(run, true);
-    this.d.outside.retell(run.sessionId);
-    for (const s of this.sends(run.sessionId)) if (s.state === "stored") void this.deliver(run.sessionId, s.id).catch((e) => this.d.trouble(e, "answering a Claude Code session in place"));
+    try {
+      // A launcher that ended leaves what it started (a native claude that holds the session): it ends too.
+      await reap(run.under, END_MS);
+      if (this.closed) return;
+      this.forget(this.d.store.db.query<ProcRow, [string]>("SELECT session_id, pid, start FROM outside_procs WHERE session_id = ?").all(run.sessionId));
+      if (this.runs.get(run.sessionId) === run) this.runs.delete(run.sessionId);
+      if (!run.ending && run.open.size) this.note(run.sessionId, `Claude Code ended in the middle of the turn${run.child.why() ? `: ${run.child.why()}` : ""}`);
+      this.check(run, true);
+      this.d.outside.retell(run.sessionId);
+      // A send stored while this child ended goes with a new one (one child: the others wait on `over` and take it).
+      for (const s of this.sends(run.sessionId)) if (s.state === "stored") void this.deliver(run.sessionId, s.id).catch((e) => this.d.trouble(e, "answering a Claude Code session in place"));
+    } finally {
+      run.isOver();
+    }
   }
 
   // At the daemon's start: the cards an earlier child raised are closed (it ended with the daemon), a send a
@@ -558,7 +624,10 @@ export class ClaudeCode {
       }
       owed.push(s);
     }
-    void this.orphans().catch((e) => this.d.trouble(e, "ending a Claude Code child an earlier daemon left")).then(() => {
+    // Read now: a child this daemon starts from here on is not one an earlier daemon left.
+    const left = this.d.store.db.query<ProcRow, []>("SELECT p.session_id, p.pid, p.start FROM outside_procs p JOIN outside_sessions o ON o.session_id = p.session_id WHERE o.harness = 'claude'").all();
+    void this.orphans(left).catch((e) => this.d.trouble(e, "ending a Claude Code child an earlier daemon left")).then(() => {
+      if (this.closed) return;
       for (const s of owed) void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Claude Code session in place"));
     });
   }

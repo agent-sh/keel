@@ -17,7 +17,12 @@
 //   - "plan ...": ExitPlanMode with a plan, then a reply naming the decision.
 //   - "wait ...": works until an interrupt, then the turn ends interrupted.
 //   - "edit ...": an Edit of a.ts in its folder, then a reply naming the decision.
+//   - "run: CMD": Bash with that command (never run), then a reply naming the decision.
+//   - "wipe ...": Bash `rm -rf ~/projects` (never run), then a reply naming the decision.
+//   - "stuck ...": a reply, then nothing: an interrupt and SIGTERM are ignored (a claude that hangs).
 //   - anything else: Bash `make test`, then a reply naming the decision.
+// With KEEL_STANDIN_HELPERS=FILE it starts two processes of its own as Claude Code's MCP servers and a
+// turn's jobs would be (their arguments look like its own), and writes "helper PID" lines to FILE.
 // It refuses to run without --permission-prompt-tool stdio, stream-json both ways
 // and --resume. What it was started with (its arguments and the names of the
 // route variables in its environment, never a value) and every line it read go to
@@ -72,11 +77,19 @@ if (keeps) mkdirSync(join(config, "sessions"), { recursive: true });
 const status = (s: string) => { if (keeps) writeFileSync(own, JSON.stringify({ pid: process.pid, sessionId: id, cwd, startedAt: Date.now(), procStart, kind: "interactive", entrypoint: "sdk-cli", status: s })); };
 status("idle");
 const bye = (code = 0) => { if (keeps) try { rmSync(own, { force: true }); } catch {} process.exit(code); };
-process.on("SIGTERM", () => bye(0));
+let onTerm: () => void = () => bye(0);
+process.on("SIGTERM", () => onTerm());
+if (process.env.KEEL_STANDIN_HELPERS) {
+  for (const what of ["mcp", "job"]) {
+    const h = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 60000)", "--", "-p", "--resume", id, "--permission-prompt-tool", "stdio", what], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    h.unref();
+    appendFileSync(process.env.KEEL_STANDIN_HELPERS, `${what} ${h.pid}\n`);
+  }
+}
 
 const waits = new Map<string, (r: any) => void>();
 const ask = (request: object) => new Promise<any>((ok) => { const rid = crypto.randomUUID(); waits.set(rid, ok); out({ type: "control_request", request_id: rid, request }); });
-let turn: { uuids: string[]; stop?: () => void; stopped?: boolean } | undefined;
+let turn: { uuids: string[]; text?: string; stop?: () => void; stopped?: boolean } | undefined;
 const queue: any[] = [];
 
 async function reply(text: string) {
@@ -115,7 +128,7 @@ function finish(error = false) {
 async function run(m: any) {
   const content = m.message?.content;
   const text = typeof content === "string" ? content : (content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n");
-  turn = { uuids: [m.uuid] };
+  turn = { uuids: [m.uuid], text };
   status("busy");
   record({ type: "user", uuid: m.uuid, message: { role: "user", content: text }, permissionMode: mode, promptSource: "sdk" });
   await sleep(80);
@@ -124,6 +137,11 @@ async function run(m: any) {
     await new Promise<void>((ok) => { if (turn!.stopped) ok(); else turn!.stop = ok; });
     record({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });
     return finish(true);
+  }
+  if (/^stuck\b/i.test(text)) {
+    onTerm = () => {};
+    await reply("Stuck.");
+    return new Promise<void>(() => {});
   }
   if (/^ask me\b/i.test(text)) {
     const questions = [{ question: "Which color should the button be?", header: "Color", multiSelect: false, options: [{ label: "Blue", description: "The brand color" }, { label: "Green", description: "Calm" }] }];
@@ -144,8 +162,9 @@ async function run(m: any) {
     await reply(`The change was ${r?.behavior === "allow" ? "allowed" : "declined"}: ${text}`);
     return finish();
   }
+  const command = /^run: /.test(text) ? text.slice(5) : /^wipe\b/i.test(text) ? "rm -rf ~/projects" : "make test";
   await reply("Running the tests first.");
-  const r = await toolCall("Bash", { command: "make test", description: "Run the tests" });
+  const r = await toolCall("Bash", { command, description: "Run the tests" });
   await reply(`The command was ${r?.behavior === "allow" ? "allowed" : "declined"}: ${text}`);
   finish();
 }
@@ -166,6 +185,7 @@ process.stdin.on("data", (c) => {
         ok({ commands: [], models: [], account: {}, pending_permission_requests: [] });
         out({ type: "system", subtype: "init", session_id: id, model, permissionMode: mode, cwd, tools: [], mcp_servers: [], slash_commands: [], skills: [], plugins: [], apiKeySource: "none", claude_code_version: "2.1.999", output_style: "default", uuid: crypto.randomUUID() });
       } else if (m.request?.subtype === "interrupt") {
+        if (/^stuck\b/i.test(String(turn?.text ?? ""))) continue;
         if (turn) { turn.stopped = true; turn.stop?.(); }
         ok({ still_queued: [] });
       } else out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `unknown ${m.request?.subtype}` } });

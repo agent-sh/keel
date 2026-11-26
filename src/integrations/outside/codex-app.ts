@@ -838,11 +838,11 @@ function serves(pid: number): boolean {
 // What under a child serves the protocol: a launcher's native, which holds the thread's writer lock.
 const servers = (pid: number): Proc[] => descendants(pid).filter((p) => serves(p.pid));
 
-const merged = (a: Proc[], b: Proc[]): Proc[] => [...a, ...b.filter((p) => !a.some((q) => q.pid === p.pid && q.start === p.start))];
+export const merged = (a: Proc[], b: Proc[]): Proc[] => [...a, ...b.filter((p) => !a.some((q) => q.pid === p.pid && q.start === p.start))];
 
 // The processes that are still the ones listed end: SIGTERM, then SIGKILL after `ms` (at once with 0). A pid
 // taken again since (another start time) is never signalled.
-async function reap(procs: Proc[], ms: number): Promise<void> {
+export async function reap(procs: Proc[], ms: number): Promise<void> {
   const live = () => procs.filter((p) => alive(p.pid, p.start));
   if (!live().length) return;
   if (ms > 0) {

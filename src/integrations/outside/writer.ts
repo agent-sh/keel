@@ -156,16 +156,23 @@ export function readClaudeRecord(path: string): ClaudeRecord | undefined {
   return { pid, sessionId: str(r.sessionId), procStart: str(r.procStart), kind: str(r.kind), entrypoint: str(r.entrypoint), status: str(r.status), waitingFor: str(r.waitingFor) };
 }
 
-// The live process Claude Code records for the session, read from its folder of running sessions now.
-export function claudeHolder(sessionsDir: string, sessionId: string): Holder {
+// The live record Claude Code keeps for the session in its folder of running sessions now: its pid, with the
+// start time it wrote compared (a pid taken again by another program is not it).
+export function claudeRecordOf(sessionsDir: string, sessionId: string): ClaudeRecord | undefined {
   let names: string[] = [];
-  try { names = readdirSync(sessionsDir); } catch { return FREE; }
+  try { names = readdirSync(sessionsDir); } catch { return undefined; }
   for (const n of names) {
     if (!/^\d+\.json$/.test(n)) continue;
     const r = readClaudeRecord(join(sessionsDir, n));
-    if (r?.sessionId === sessionId && alive(r.pid, r.procStart)) return { kind: claudeKind(r), pid: r.pid };
+    if (r?.sessionId === sessionId && alive(r.pid, r.procStart)) return r;
   }
-  return FREE;
+  return undefined;
+}
+
+// The live process Claude Code records for the session, read from its folder of running sessions now.
+export function claudeHolder(sessionsDir: string, sessionId: string): Holder {
+  const r = claudeRecordOf(sessionsDir, sessionId);
+  return r ? { kind: claudeKind(r), pid: r.pid } : FREE;
 }
 
 // What a lock's holder is, from its command line and its input: a server another app speaks to, a

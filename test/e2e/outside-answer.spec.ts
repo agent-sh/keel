@@ -264,6 +264,23 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     await expect(page.getByTestId("transcript").getByText("The plan was approved; going on in acceptEdits mode.").first()).toBeVisible({ timeout: 15_000 });
     await expect(plan).toHaveCount(0);
     await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+
+    // A command that is really high risk is marked so, in Keel's words (judged as running with no sandbox of
+    // Keel's). Denied, its line says it was asked and denied by the owner (the transcript says only what it returned).
+    await input.fill(`wipe it ${tag}`);
+    await bar.getByTestId("outside-send").click();
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    await expect(card.getByTestId("approval-summary")).toContainText("rm -rf ~/projects");
+    const risk = card.getByTestId("approval-risk");
+    await expect(risk).toBeVisible();
+    await expect(risk).not.toContainText("Claude Code runs this command");
+    await card.getByRole("button", { name: /^Deny/ }).click();
+    await card.getByTestId("deny-send").click();
+    const denied = page.locator('[data-testid="tool-call"]').filter({ hasText: "rm -rf ~/projects" }).last();
+    await expect(denied.getByTestId("call-answer")).toHaveText("denied by you", { timeout: 15_000 });
+    await expect(denied.locator(".k-line-verb")).toHaveText("Asked to run");
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await shoot(page, "outside-answer-claude-denied");
     expect((await request.post(`/api/sessions/${sid}/messages`, { data: { text: "hello" } })).status()).toBe(409);
   } finally {
     if (sid) await request.delete(`/api/sessions/${sid}`);

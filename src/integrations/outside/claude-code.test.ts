@@ -5,7 +5,7 @@
 // card; the transcript holds the message and the reply and the child is gone after the turn. A session another
 // process holds takes nothing. After a restart a send is looked for in the transcript.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
@@ -16,6 +16,9 @@ import { answer, allPendingQuestions } from "../../tools/interact.ts";
 import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
+import { ownerClass } from "../../safety/delegate.ts";
+import { HelperCards } from "../../helper/cards.ts";
+import { forPeers } from "../../core/outside.ts";
 import { statFields } from "./writer.ts";
 import type { CardGate } from "./codex-app.ts";
 import { ClaudeCode } from "./claude-code.ts";
@@ -26,6 +29,10 @@ const top = mkdtempSync(join(tmpdir(), "keel-claude-code-"));
 ownEnv({ KEEL_IMPORT_CODEX_DIR: undefined, KEEL_IMPORT_CLAUDE_DIR: undefined });
 afterAll(() => rmSync(top, { recursive: true, force: true }));
 const STANDIN = join(import.meta.dir, "../../../test/e2e/fixtures/claude-code.ts");
+const LAUNCHER = join(import.meta.dir, "../../../test/e2e/fixtures/claude-launcher.ts");
+// Whether /proc says what a process's children and state are (Linux): the process tests need it.
+const PROC = (() => { try { return readFileSync(`/proc/${process.pid}/stat`, "utf8").length > 0; } catch { return false; } })();
+const lives = (pid: number) => { try { return statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))?.state !== "Z"; } catch { return false; } };
 
 const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> => {
   const end = Date.now() + ms;
@@ -38,7 +45,7 @@ const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> =
 };
 
 let k = 0;
-function rig(opts: { realGate?: boolean; model?: string; mode?: string } = {}) {
+function rig(opts: { realGate?: boolean; model?: string; mode?: string; bin?: string; env?: Record<string, string> } = {}) {
   const dir = join(top, String(k++));
   const config = join(dir, "claude");
   const projects = join(config, "projects");
@@ -66,8 +73,8 @@ function rig(opts: { realGate?: boolean; model?: string; mode?: string } = {}) {
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => o.holderNow(id), retell: (id: string) => o.retell(id) };
   // The daemon's environment as the child's is made from: a first-party session must not get these keys.
   // (KEEL_STANDIN_RECORD: the stand-in keeps a record of itself as a running Claude Code, which must not make it a holder.)
-  const env = () => ({ ...process.env, KEEL_STANDIN_RECORD: "1", ANTHROPIC_API_KEY: "sk-test", AWS_BEARER_TOKEN_BEDROCK: "b-test", CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_DEFAULT_MODEL: "global.anthropic.claude-x" });
-  const make = () => (app = new ClaudeCode({ store, bus, outside, gate: () => gate, bin: () => STANDIN, configDir: () => config, env, trouble: (e) => { throw e; }, plan: async (c) => { plans.push(c); return planned(c); } }));
+  const env = () => ({ ...process.env, ...opts.env, KEEL_STANDIN_RECORD: "1", ANTHROPIC_API_KEY: "sk-test", AWS_BEARER_TOKEN_BEDROCK: "b-test", CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_DEFAULT_MODEL: "global.anthropic.claude-x" });
+  const make = () => (app = new ClaudeCode({ store, bus, outside, gate: () => gate, bin: () => opts.bin ?? STANDIN, configDir: () => config, runningDir: () => join(config, "sessions"), env, trouble: (e) => { throw e; }, plan: async (c) => { plans.push(c); return planned(c); } }));
   make();
   const id = `0c1a0000-0000-4000-8000-${String(k).padStart(12, "0")}`;
   const path = join(project, `${id}.jsonl`);
@@ -180,7 +187,7 @@ describe("a Claude Code session answered in place", () => {
       const text = readFileSync(r.path, "utf8");
       expect(text.split('"content":"fix the build"').length - 1).toBe(1);
       expect(text).toContain("The command was allowed: fix the build");
-      expect(r.cards).toEqual([{ name: "Claude Code command", input: { command: "make test", cwd: r.cwd }, why: "Claude Code runs this command in the session if you allow it", shown: undefined, notice: "Claude Code says: It runs the project's tests" }]);
+      expect(r.cards).toEqual([{ name: "Claude Code command", input: { command: "make test", cwd: r.cwd, item: expect.stringMatching(/^toolu_/) }, why: "Claude Code runs this command in the session if you allow it", shown: undefined, notice: "Claude Code says: It runs the project's tests" }]);
       const deltas = r.frames.filter((f): f is Extract<Frame, { t: "delta" }> => f.t === "delta" && f.session_id === s.id).map((f) => f.text).join("");
       expect(deltas).toContain("The command was allowed: fix the build");
       // Started with the session's id, model and mode; the text went on standard input; first party: no key, no Bedrock.
@@ -313,9 +320,129 @@ describe("a Claude Code session answered in place", () => {
       expect(r.gate()!.approval(card.id)).toMatchObject({ state: "cancelled", reason: "Keel restarted while Claude Code worked: the turn stopped there" });
       expect(r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }, { id: "c", state: "cut" }]);
       expect(readFileSync(r.path, "utf8").match(/it did not/g)).toBeNull();
-      await until(() => r.store.db.query("SELECT * FROM outside_procs").all().length === 0);
       await until(() => left!.exitCode !== null || left!.signalCode !== null, 8000);
+      // The rows of what is gone go; the row of a process that still lives (not Keel's to end) stays.
+      await until(() => r.store.db.query("SELECT * FROM outside_procs").all().length === 1);
+      expect(r.store.db.query("SELECT session_id FROM outside_procs").all()).toEqual([{ session_id: other }]);
       expect(orphan.exitCode).toBeNull();
     } finally { orphan.kill(); left?.kill(); r.done(); }
   }, 30_000);
+
+  test("what Claude Code asks is judged as running with no sandbox of Keel's: high risk only for what is", async () => {
+    const r = rig({ realGate: true });
+    try {
+      const s = await r.session();
+      // A session whose own commands run in Keel's sandbox: what Claude Code runs is not one of them.
+      r.gate()!.setPerm(s.id, { sandbox: "workspace-write" });
+      const risk = async (command: string, key: string) => {
+        r.app().send(s.id, `run: ${command}`, key);
+        const card = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0], 15_000);
+        r.gate()!.resolve(card.id, s.id, { choice: "deny" });
+        await until(() => !r.app().ours(s.id), 15_000);
+        return [command, card.risk, card.why];
+      };
+      let n = 0;
+      for (const c of ["rm -rf ~/projects", "chmod -R 777 /home/someone", "mv ~/.ssh ~/.ssh.bak"]) {
+        const [, level, why] = await risk(c, `k${++n}`);
+        expect([c, level]).toEqual([c, "high"]);
+        expect(why).not.toBe("Claude Code runs this command in the session if you allow it");
+      }
+      expect(await risk("make test", "k9")).toEqual(["make test", "low", "Claude Code runs this command in the session if you allow it"]);
+    } finally { r.done(); }
+  }, 60_000);
+
+  test("a call the owner denied is answered by its tool_use id: its line says denied by you", async () => {
+    const r = rig({ realGate: true });
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "wipe it", "k1");
+      const card = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0], 15_000);
+      const use = card.input?.item as string;
+      expect(use).toMatch(/^toolu_/);
+      expect(readFileSync(r.path, "utf8")).toContain(`"id":"${use}"`);
+      r.gate()!.resolve(card.id, s.id, { choice: "deny", reason: "not on this box" });
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(r.app().answers(s.id)).toEqual({ [use]: { state: "denied", reason: "not on this box" } });
+      const told = r.frames.filter((f) => f.t === "feature" && f.name === "outside_sends" && f.session_id === s.id).at(-1) as any;
+      expect(told.data.answers).toEqual({ [use]: { state: "denied", reason: "not on this box" } });
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a Claude Code card is the owner's alone: never the helper's, never a paired machine's", async () => {
+    const r = rig({ realGate: true });
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "fix the build", "k1");
+      const card = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0], 15_000);
+      expect(ownerClass(card, false)?.cls).toBe("owner-only");
+      const h: any = { deps: { store: r.store, errors: { capture: () => {} } }, isHelper: () => false, isCards: () => false, state: () => ({ on: true, answer_cards: true }), session: () => ({ id: "helper" }) };
+      const cards = new HelperCards(h, () => r.gate() as any, { send: (() => {}) as any, raise: (() => undefined) as any, untold: () => true });
+      expect(cards.open()).toEqual([]);
+      // Nothing of the session goes to a paired machine: its card, its sends, its reply's words.
+      const peers = forPeers(r.store.db);
+      const mine = r.frames.filter((f: any) => f.session_id === s.id || f.session?.id === s.id || f.data?.session_id === s.id);
+      expect(mine.some((f: any) => f.t === "feature" && f.name === "approval")).toBe(true);
+      expect(mine.map((f) => peers.relay(f as any)).filter(Boolean)).toEqual([]);
+      expect(r.gate()!.resolve(card.id, s.id, { choice: "once", seen: "whole" })).toEqual({ ok: true });
+      await until(() => !r.app().ours(s.id), 15_000);
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a send taken just before Keel stops is kept for the next daemon, which sends it", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      expect("send" in r.app().send(s.id, "fix the build", "k1")).toBe(true);
+      // The drain comes while the child starts.
+      r.app().stop();
+      await Bun.sleep(500);
+      expect(r.app().sends(s.id).map((x) => x.state)).toEqual(["stored"]);
+      r.make().start();
+      await until(() => r.store.db.query<{ state: string }, []>("SELECT state FROM outside_sends").get()?.state === "delivered", 15_000);
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(readFileSync(r.path, "utf8").split('"content":"fix the build"').length - 1).toBe(1);
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a send that lands while the child ends goes with one new child, never two", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "wait for me", "k1");
+      await until(() => r.app().running(s.id), 15_000);
+      const run = (r.app() as any).runs.get(s.id);
+      void (r.app() as any).kill(run);
+      r.app().send(s.id, "first after", "k2");
+      r.app().send(s.id, "second after", "k3");
+      await until(() => readFileSync(r.path, "utf8").includes("The command was allowed: second after"), 20_000);
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(r.log().filter((l) => l.argv).length).toBe(2);
+    } finally { r.done(); }
+  }, 40_000);
+
+  test.skipIf(!PROC)("a claude that is a launcher: a forced Stop ends what holds the session under it, never what Claude Code started", async () => {
+    const helpers = join(top, `helpers-${k}`);
+    writeFileSync(helpers, "");
+    const r = rig({ bin: LAUNCHER, env: { KEEL_STANDIN_HELPERS: helpers } });
+    const left: number[] = [];
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "stuck now", "k1");
+      await until(() => r.frames.some((f) => f.t === "delta" && f.session_id === s.id && f.text.includes("Stuck")), 15_000);
+      const launcher = (r.app() as any).runs.get(s.id).child.pid as number;
+      // The native the launcher runs keeps the session's record: it holds the session, not the launcher.
+      const native = (await until(() => r.o.holderNow(s.id) && readdirSync(join(r.config, "sessions")).map((n) => Number(n.split(".")[0])).find((p) => p !== launcher && lives(p))))!;
+      left.push(native, ...readFileSync(helpers, "utf8").split("\n").filter(Boolean).map((l) => Number(l.split(" ")[1])));
+      expect(left.length).toBe(3);
+      // A Stop asks Claude Code, which does not answer; a second ends the child.
+      const first = r.app().interrupt(s.id);
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await first;
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect([lives(launcher), lives(native)]).toEqual([false, false]);
+      // Its MCP servers and the turn's jobs are not Keel's to end, whatever their arguments say.
+      expect(left.slice(1).map(lives)).toEqual([true, true]);
+      expect(r.store.db.query("SELECT * FROM outside_procs").all()).toEqual([]);
+    } finally { for (const p of left) try { process.kill(p, "SIGKILL"); } catch {} r.done(); }
+  }, 40_000);
 });

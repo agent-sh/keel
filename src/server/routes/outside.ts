@@ -81,6 +81,7 @@ export const outsideRoutes: RouteModule = (deps) => {
     gate: () => gate,
     bin: claudeBin,
     configDir: claudeConfig,
+    runningDir: () => outside!.roots().claudeRunning,
     trouble: (e, at) => errors.capture("server", e, { at }),
     asked: (sid, call, text, ask) => tell((h) => h.ownerAsked?.(sid, call, text, ask)),
     answered: (sid, call, answered, ask) => tell((h) => h.ownerAnswered?.(sid, call, answered, ask)),
