@@ -19,7 +19,7 @@ import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, PairCheckRow, PictureRow, TreeRun } from "./facts.ts";
 import { baseHolds } from "./held.ts";
 import { FILE as PICTURES_FILE, readPictures } from "../pictures/config.ts";
-import { forecastFrom, live, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type Meeting, type PairFact, type PictureFact, type Work } from "./rules.ts";
+import { forecastFrom, forecastGaps, forecastPlan, live, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type Meeting, type PairFact, type PictureFact, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -29,8 +29,9 @@ export type BoardDeps = {
 };
 
 const MERGES = 4_096;           // merges whose answer is kept (a pair of commits never changes)
-const FORECAST_ROWS = 24;       // branches of one repository the forecast reads
-const FORECAST_PAIRS = 80;      // pairs of them it merges in one board
+const FORECAST_READ = 64;       // branches of one repository the forecast reads (ended ones first): 2,016 pairs at most
+const FORECAST_ROWS = 24;       // merges with the base one board makes that no earlier read made
+const FORECAST_PAIRS = 80;      // merges of two branches one board makes that no earlier read made
 const KEEP_MS = 3_000;          // a board read again within this is the same answer
 const GIT_MS = 15_000;          // one git call of the board
 const BOARD_MS = 30_000;        // every git call of one board: past it the rest is not asked, and says so
@@ -75,34 +76,59 @@ export class WorkBoard {
   // src/worktree/overlap-scan.ts mergeTips): each with the base, and each pair where one of the two has ended. The
   // forecast's own table holds the branches of live agents only (an ended agent's branch is left out of it), and Land
   // is offered for ended ones, so the board asks for them. Nothing is written to the repository.
+  // A pair of commits never changes its answer, so a merge made on an earlier read is kept and costs nothing: the
+  // caps (FORECAST_ROWS, FORECAST_PAIRS) count only the merges not made yet, and the rows of ended agents come
+  // first, each with all its pairs, so a busy repository's forecast fills in over a few reads instead of leaving
+  // the same rows past a cap on every read (`forecastPlan` in rules.ts).
+  private ovOf = () => forecastOf(this.store);
   private async forecast(repo: string, base: string | null, baseTip: string | null, rows: BoardRow[], by: number): Promise<void> {
-    const ov = forecastOf(this.store);
+    const ov = this.ovOf();
     const shortBase = base?.replace(/^refs\/(heads|remotes)\//, "");
     if (!ov || !baseTip || !shortBase) return;
-    const open = rows.filter((r) => r.branch && r.head && r.landed?.state === "no").slice(0, FORECAST_ROWS);
-    if (!open.some((r) => !live(r.state))) return;
-    const merge = (ta: string, tb: string): Promise<Result> => {
-      const key = `${ta} ${tb}`;
+    const unlanded = rows.filter((r) => r.branch && r.head && r.landed?.state === "no");
+    if (!unlanded.some((r) => !live(r.state))) return;
+    const baseKey = (head: string) => `${baseTip} ${head}`;
+    const pairKey = (x: string, y: string) => (x < y ? `${x} ${y}` : `${y} ${x}`);
+    const plan = forecastPlan(unlanded.map((r) => ({ branch: r.branch!, head: r.head!, ended: !live(r.state) })),
+      { rows: FORECAST_READ, base: FORECAST_ROWS, pairs: FORECAST_PAIRS },
+      (head) => this.merges.has(baseKey(head)), (x, y) => this.merges.has(pairKey(x, y)));
+    const merge = (key: string, ta: string, tb: string): Promise<Result> => {
       let p = this.merges.get(key);
-      if (!p) {
-        if (this.merges.size >= MERGES) this.merges.clear();
-        p = ov.mergeTips(repo, ta, tb).catch((e) => ({ error: String(e?.message ?? e) }));
-        this.merges.set(key, p);
-      }
+      if (p) { this.merges.delete(key); this.merges.set(key, p); return p; } // the newest used stays longest
+      if (this.merges.size >= MERGES) this.merges.delete(this.merges.keys().next().value!);
+      p = ov.mergeTips(repo, ta, tb).catch((e) => ({ error: String(e?.message ?? e) }));
+      this.merges.set(key, p);
       return p;
     };
     const late = () => by - performance.now() < 250;
-    const files = (r: Result) => ("conflict" in r && r.conflict ? r.files : null);
-    const meet: (string[] | null)[] = open.map(() => null);
-    await pool(open.map((r, i) => i), AT_ONCE, async (i) => { if (!late()) meet[i] = files(await merge(baseTip, open[i]!.head!)); });
-    const heads: Meeting[] = open.map((r, i) => ({ branch: r.branch!, agent: r.id, base: shortBase, baseFiles: meet[i] ?? null }));
-    const todo: { a: BoardRow; b: BoardRow }[] = [];
-    for (let i = 0; i < open.length; i++) for (let j = i + 1; j < open.length; j++) if (!live(open[i]!.state) || !live(open[j]!.state)) todo.push({ a: open[i]!, b: open[j]! });
-    const found: (string[] | null)[] = todo.map(() => null);
-    await pool(todo.slice(0, FORECAST_PAIRS).map((_, i) => i), AT_ONCE, async (i) => { if (!late()) found[i] = files(await merge(todo[i]!.a.head!, todo[i]!.b.head!)); });
-    const pairs = todo.flatMap((p, i) => (found[i] ? [{ a: p.a.branch!, b: p.b.branch!, files: found[i]! }] : []));
+    // A merge not made (the board's time for git spent) or that failed is not "no conflict": it says why.
+    type Got = { files: string[] | null } | { why: string };
+    const made1 = async (key: string, ta: string, tb: string): Promise<Got> => {
+      if (late() && !this.merges.has(key)) return { why: "the board's time for git ran out" };
+      const r = await merge(key, ta, tb);
+      return "error" in r ? { why: "git's merge failed" } : { files: r.conflict ? r.files : null };
+    };
+    const open = plan.open.map((i) => unlanded[i]!);
+    const meet: Got[] = plan.base.map((why) => ({ why: why ?? "not merged" }));
+    await pool(plan.base.flatMap((why, i) => (why ? [] : [i])), AT_ONCE, async (i) => { meet[i] = await made1(baseKey(open[i]!.head!), baseTip, open[i]!.head!); });
+    const heads: Meeting[] = open.map((r, i) => ({ branch: r.branch!, agent: r.id, base: shortBase, baseFiles: "files" in meet[i]! ? meet[i]!.files : null }));
+    const found: Got[] = plan.pairs.map((p) => ({ why: p.why ?? "not merged" }));
+    await pool(plan.pairs.flatMap((p, k) => (p.why ? [] : [k])), AT_ONCE, async (k) => {
+      const a = open[plan.pairs[k]!.a]!, b = open[plan.pairs[k]!.b]!;
+      found[k] = await made1(pairKey(a.head!, b.head!), a.head!, b.head!);
+    });
+    const pairs = plan.pairs.flatMap((p, k) => { const f = found[k]!; return "files" in f && f.files ? [{ a: open[p.a]!.branch!, b: open[p.b]!.branch!, files: f.files }] : []; });
     const made = forecastFrom(heads, pairs);
-    for (const r of open) r.forecast = made.get(r.branch!) ?? [];
+    const gaps = forecastGaps(
+      unlanded.map((r) => r.branch!),
+      unlanded.map((r) => { const i = open.indexOf(r); if (i < 0) return `past the ${FORECAST_READ} branches the forecast reads`; const m = meet[i]!; return "why" in m ? `the merge with the base: ${m.why}` : null; }),
+      plan.pairs.map((p, k) => { const f = found[k]!; return { a: open[p.a]!.branch!, b: open[p.b]!.branch!, why: "why" in f ? f.why : null }; }),
+    );
+    for (const r of unlanded) {
+      r.forecast = made.get(r.branch!) ?? [];
+      const why = gaps.get(r.branch!);
+      if (why && !live(r.state)) r.forecast_unknown = why;
+    }
   }
 
   // A git call of the board being built: none once the board's time for git is spent (`by`, a

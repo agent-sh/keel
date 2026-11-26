@@ -94,3 +94,16 @@ test("a conflict the forecast names makes the card not ready with a new print, a
   const cleared = card(row({ forecast: [] }));
   expect([cleared.ready, cleared.fp]).toEqual([true, clean.fp]);
 });
+
+test("a forecast that could not be made is missing evidence, not an answer that nothing conflicts", () => {
+  const clean = card(row({ forecast: [] }));
+  const unknown = card(row({ forecast: [], forecast_unknown: "the board's time for git ran out" }));
+  expect(unknown.ready).toBe(false);
+  expect(unknown.missing).toEqual(["the conflict forecast is not known (the board's time for git ran out)"]);
+  expect(unknown.fp).not.toBe(clean.fp);
+  // Why it is not known is shown, not printed: a merge that waits for the next read is the same fact as one past the time.
+  const other = card(row({ forecast: [], forecast_unknown: "the merge with keel/b: not merged yet" }));
+  expect([other.ready, other.fp, other.missing]).toEqual([false, unknown.fp, ["the conflict forecast is not known (the merge with keel/b: not merged yet)"]]);
+  // Made on a later read and clean: ready again on the print it had.
+  expect([card(row({ forecast: [], forecast_unknown: null })).ready, card(row({ forecast: [], forecast_unknown: null })).fp]).toEqual([true, clean.fp]);
+});

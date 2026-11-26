@@ -152,6 +152,40 @@ describe("the overlap forecast", () => {
     // A conflict git names no file for is kept.
     expect(R.forecastFrom(heads(null, null), pair([])).get("keel/a")).toHaveLength(1);
   });
+  test("a branch the forecast could not read whole says why: its own line, or a pair not made", () => {
+    const g = R.forecastGaps(["keel/a", "keel/b", "keel/c", "keel/d"], [null, "the merge with the base: git's merge failed", null, "past the 64 branches the forecast reads"], [
+      { a: "keel/a", b: "keel/c", why: "not merged yet" }, { a: "keel/a", b: "keel/b", why: null },
+    ]);
+    expect(Object.fromEntries(g)).toEqual({
+      "keel/a": "the merge with keel/c: not merged yet",
+      "keel/b": "the merge with the base: git's merge failed",
+      "keel/c": "the merge with keel/a: not merged yet",
+      "keel/d": "past the 64 branches the forecast reads",
+    });
+    expect(R.forecastGaps(["keel/a", "keel/b"], [null, null], [{ a: "keel/a", b: "keel/b", why: null }]).size).toBe(0);
+  });
+  test("the caps count merges no earlier read made, ended rows first, so a busy repository's ended rows fill in", () => {
+    // 30 unlanded branches, the first ten of them live: 20 ended rows, 390 pairs with an ended side.
+    const rows = Array.from({ length: 30 }, (_, i) => ({ head: `h${i}`, ended: i >= 10 }));
+    const caps = { rows: 64, base: 24, pairs: 80 };
+    const made = new Set<string>();
+    const key = (x: string, y: string) => (x < y ? `${x} ${y}` : `${y} ${x}`);
+    let reads = 0, whole = false;
+    while (!whole && reads < 6) {
+      reads++;
+      const p = R.forecastPlan(rows, caps, (h) => made.has(h), (x, y) => made.has(key(x, y)));
+      expect(p.open.slice(0, 20).every((i) => rows[i]!.ended)).toBe(true);
+      p.open.forEach((i, k) => { if (!p.base[k]) made.add(rows[i]!.head); });
+      for (const q of p.pairs) if (!q.why) made.add(key(rows[p.open[q.a]!]!.head, rows[p.open[q.b]!]!.head));
+      const branches = p.open.map((i) => `b${i}`);
+      const gaps = R.forecastGaps(branches, p.base, p.pairs.map((q) => ({ a: branches[q.a]!, b: branches[q.b]!, why: q.why })));
+      whole = p.open.every((i, k) => !rows[i]!.ended || !gaps.has(branches[k]!));
+    }
+    expect([whole, reads]).toEqual([true, 5]);
+    // A read after them makes no merge: every answer is kept.
+    const after = R.forecastPlan(rows, caps, (h) => made.has(h), (x, y) => made.has(key(x, y)));
+    expect([after.base.every((w) => w === null), after.pairs.every((q) => q.why === null)]).toEqual([true, true]);
+  });
   test("Land is offered with no conflict and held with one", () => {
     expect(R.canLand(row())).toBe(true);
     expect(R.canLand(row({ forecast: [] }))).toBe(true);

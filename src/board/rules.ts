@@ -124,6 +124,7 @@ export type BoardRow = {
   work: Work | null;            // what its worktree changes; null: not read
   together: PairFact[] | null;  // null: no branch; the pairs it was checked in at its head
   forecast?: ForecastFact[];    // what the overlap forecast says would conflict at its head and the tips now; empty when nothing
+  forecast_unknown?: string | null; // why the forecast could not say for this head (a merge not made or failed): not "nothing"
   pictures?: PictureFact | null; // the before and after pictures of its head, when its repository names them
 };
 
@@ -501,6 +502,40 @@ export function forecastFrom(rows: Meeting[], pairs: { a: string; b: string; fil
     put(a.branch, { with: b.branch, with_agent: b.agent, base: false, files });
     put(b.branch, { with: a.branch, with_agent: a.agent, base: false, files });
   }
+  return out;
+}
+
+// Which merges one board makes for the forecast. `rows` of the unlanded branches are read, those of ended agents
+// first (a card waits on them), in the board's order; the pairs are each two of them where one has ended, the
+// pairs of the first ended row first, then the next. A merge an earlier read made (`hasBase`, `hasPair`) is taken
+// as it is; of the others, at most `base` merges with the base and `pairs` merges of two branches are made, and the
+// rest say they wait for a later read. `base` and the pairs' `a`, `b` index `open`, which indexes the rows given.
+export type ForecastPlan = { open: number[]; base: (string | null)[]; pairs: { a: number; b: number; why: string | null }[] };
+export function forecastPlan(
+  rows: { head: string; ended: boolean }[], caps: { rows: number; base: number; pairs: number },
+  hasBase: (head: string) => boolean, hasPair: (x: string, y: string) => boolean,
+): ForecastPlan {
+  const order = [...rows.keys()].sort((i, j) => Number(rows[j]!.ended) - Number(rows[i]!.ended) || i - j);
+  const open = order.slice(0, caps.rows);
+  let base = caps.base, pairs = caps.pairs;
+  const later = (n: number, what: string) => `not merged yet (a board merges ${n} new ${what}; a later read goes on)`;
+  const baseWhy = open.map((i) => (hasBase(rows[i]!.head) ? null : base-- > 0 ? null : later(caps.base, "with the base")));
+  const out: ForecastPlan["pairs"] = [];
+  for (let i = 0; i < open.length; i++) for (let j = i + 1; j < open.length; j++) {
+    const x = rows[open[i]!]!, y = rows[open[j]!]!;
+    if (!x.ended && !y.ended) continue;
+    out.push({ a: i, b: j, why: hasPair(x.head, y.head) ? null : pairs-- > 0 ? null : later(caps.pairs, "pairs") });
+  }
+  return { open, base: baseWhy, pairs: out };
+}
+
+// The branches the forecast could not read whole, and why: its own line (`base`, by position: past the rows read,
+// its merge with the base not made or failed), or a pair with another branch not made or failed (each side). A
+// branch absent from the answer was read whole, so an empty forecast for it means nothing conflicts.
+export function forecastGaps(branches: string[], base: (string | null)[], pairs: { a: string; b: string; why: string | null }[]): Map<string, string> {
+  const out = new Map<string, string>();
+  branches.forEach((b, i) => { if (base[i]) out.set(b, base[i]!); });
+  for (const p of pairs) if (p.why) for (const [x, y] of [[p.a, p.b], [p.b, p.a]] as const) if (!out.has(x)) out.set(x, `the merge with ${y}: ${p.why}`);
   return out;
 }
 

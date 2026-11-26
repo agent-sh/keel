@@ -27,7 +27,8 @@ export type LandCard = {
   areas: Area[];
   queue: { state: string; why: string | null } | null; // its branch's latest entry, of this head
   together: string[];          // what fails when it is merged with another live branch (src/landing/together.ts), in words
-  conflicts: string[];         // what the overlap forecast says its head would conflict with now (the base or another branch), in words
+  conflicts: string[];         // what the overlap forecast says its head would conflict with now (the base or another branch), or that it could not say, in words
+  forecast_unknown: string | null; // why the forecast could not say, when it could not: shown in `missing`, not printed (a reason that changes is no new fact)
   ready: boolean;              // nothing is missing
   missing: string[];           // what of the evidence is not there, in words
   fp: string;
@@ -111,6 +112,8 @@ export function cardPrint(c: Omit<LandCard, "fp" | "ready" | "missing">): string
   return Bun.hash(facts.join("\u0000")).toString(36);
 }
 
+const UNKNOWN = "the conflict forecast is not known";
+
 // `baseTip`: the commit the base is at, from the board's repository (the card's behind line is counted against it).
 export function landCard(o: { root: string; title: string; row: BoardRow; report: string | null; numstat: string; baseTip?: string | null }): LandCard {
   const r = o.row;
@@ -124,10 +127,13 @@ export function landCard(o: { root: string; title: string; row: BoardRow; report
     checks, review, proof: proofOf(o.report), areas: areasOf(o.numstat),
     queue: q ? { state: q.state, why: q.why } : null,
     together: (r.together ?? []).filter((p) => p.state === "red").map((p) => `fails together with ${p.with}: ${p.checks.map((c) => `${c.name}${c.tests?.length ? ` (${c.tests.slice(0, 3).join(", ")}${c.tests.length > 3 ? ` and ${c.tests.length - 3} more` : ""})` : ""}`).join("; ")}`),
-    // One line a conflict, with its files: the same words the work board holds Land back with.
-    conflicts: (r.forecast ?? []).map((f) => forecastWords([f])),
+    // One line a conflict, with its files: the same words the work board holds Land back with. A forecast that
+    // could not be made is no answer that nothing conflicts: it is missing too, with why (the why is not printed:
+    // a merge that waits for the next read is the same fact as one past the board's time).
+    conflicts: [...(r.forecast ?? []).map((f) => forecastWords([f])), ...(r.forecast_unknown ? [UNKNOWN] : [])],
+    forecast_unknown: r.forecast_unknown || null,
   };
-  const missing = missingOf(checks, review, body.together, body.conflicts);
+  const missing = missingOf(checks, review, body.together, body.conflicts.map((c) => (c === UNKNOWN && body.forecast_unknown ? `${UNKNOWN} (${body.forecast_unknown})` : c)));
   return { ...body, ready: !missing.length, missing, fp: cardPrint(body) };
 }
 
