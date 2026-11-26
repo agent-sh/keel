@@ -346,7 +346,8 @@ export function workOf(events: readonly StoredEvent[], prior: Trail | undefined,
     trail: trailOf(span, prior),
     written: span.trail.files.filter((f) => f.created || f.edits || f.writes || f.deleted || f.moved_to).map((f) => f.path),
     recurring: span.recurring, ids: ids.length,
-    unsupported: ids.filter((a) => !span.text.includes(a) && !support.includes(a)),
+    // (A word in capitals alone a summary may write as emphasis: IMPORTANT, CRITICAL. A name the span holds is matched above.)
+    unsupported: ids.filter((a) => !span.text.includes(a) && !support.includes(a) && !/^[A-Z]+$/.test(a)),
   };
 }
 

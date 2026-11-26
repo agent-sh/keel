@@ -56,7 +56,7 @@ import { cleanTitle, derivedTitle, firstReply, modelTitles, overLong, ownerPromp
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
 import { clearedFile, clearedText, clearingOf, pickCleared, stubOf } from "./cold-clear.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, keptTexts, fixedContext } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention, switchWarning } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
@@ -64,7 +64,8 @@ import { cacheState, capsuleText, decideFollowUp, freshStartText, isWay, missing
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
 import { cachePlanOn, compactLimit, readThrough, readerTierModel } from "./agent-defaults.ts";
 import { readAim, readNamed } from "./read-aim.ts";
-import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
+import { priceCompaction, residual, type PriceAsk, type PriceVerdict, type Residual } from "./price-compact.ts";
+import { meaningHeld, openedByRestart, swapAt } from "./owner-compact.ts";
 import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
 import { withoutImages } from "./images.ts";
@@ -3365,7 +3366,7 @@ export class Engine {
           // One that fails while the context still fits is said, and the turn goes on whole.
           // (A context whose summary could not be written whole is not asked for again:
           // compactNow says so at once, with no request, and the turn says it once.)
-          if (!this.applyPrepared(id, events, undefined, st)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
+          if (!this.applyPrepared(id, events, undefined, st, false)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
             if (signal.aborted || over) throw e;
             summaryFailed = true;
             const rec = this.errors.capture("provider", e, { session: id, at: "threshold compaction" });
@@ -3386,7 +3387,7 @@ export class Engine {
           events = this.lineage(id);
         } else if (steps === 1 && mark?.way === "carry") {
           // A follow-up decided to go on in the whole context: no summary replaces it now.
-        } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events, undefined, st)) {
+        } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events, undefined, st, this.ownPriceOn(session) || undefined)) {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
           events = this.lineage(id);
@@ -3395,8 +3396,16 @@ export class Engine {
           // the steps go on, and put in place at the first step after it is
           // ready, the newest steps kept as they were (no tool result the model
           // has not answered yet is summarized away, and no step waits for it).
-          if (this.applyPrepared(id, events, priced, st)) events = this.lineage(id);
-          else this.prepare(id, st, false);
+          // The owner's own session (src/engine/owner-compact.ts): the summary goes in only at a turn's first step or
+          // a cold one, and only when its meaning check holds; inside a running turn on a warm cache it waits. It is
+          // written when the turn ends (below), so it covers the turn it is put in after.
+          // (A run that continues a turn a restart cut is inside that turn: its first step is no turn's first.)
+          if (session.parent_id) {
+            if (this.applyPrepared(id, events, priced, st)) events = this.lineage(id);
+            else this.prepare(id, st, false);
+          } else if (swapAt({ firstStep: steps === 1 && !openedByRestart(events), cold: this.cacheCold(id, events, st) }) && this.applyPrepared(id, events, priced, st, true, used)) events = this.lineage(id);
+          // Not put in at this step: the window's line is prepared for as with the switch off.
+          else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
         } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
         }
@@ -3596,7 +3605,10 @@ export class Engine {
       if (!signal.aborted) {
         const events = this.lineage(id);
         const limit = this.limitOf(session, st.info.context);
-        if (this.used(events, st) >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
+        const used = this.used(events, st);
+        // The owner's own session whose context is worth a summary by price: it is written now, to cover the turn
+        // that ended, and put in place at the next turn's first step (src/engine/owner-compact.ts).
+        if (!this.endPriced(id, events, st, used) && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
         this.scheduleIdle(id, st);
       }
       // The first reply is in: the session gets a title that says its task.
@@ -3921,6 +3933,9 @@ export class Engine {
 
   // Summaries being written ahead. Each can be stopped, and names the event it covers up to.
   private preparing = new Map<string, { abort: AbortController; covered: string }>();
+  // The context a summary by price of the owner's session was dropped at because what it really left did not pay
+  // (applyPrepared): none is written again until the context has grown by the cheapest gap since.
+  private unpaid = new SessionMap<number>(256);
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // When the prepared summary's request read this context's cache on the
@@ -4139,14 +4154,23 @@ export class Engine {
   // session of a daemon that is not stopping. That is checked when the session
   // changes and again when the summary arrives, so obsolete work is cut short
   // and nothing of it is stored. One that still holds is stored and reused.
-  private prepare(id: string, st: Step, idle = false) {
+  // `byPrice`: asked for the owner's own session by its price (src/engine/owner-compact.ts): it goes in only
+  // where its meaning check holds, or at the window's line.
+  // A summary by price is written again over the one prepared before when that one covers less (`refresh`), unless
+  // its meaning check held it back and the context has not grown by `gap` tokens since (one of more may keep it).
+  private prepare(id: string, st: Step, idle = false, byPrice = false, refresh?: { used: number; gap?: number }) {
     const current = this.preparing.get(id);
     if (this.draining || (current && !current.abort.signal.aborted)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
     if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st, false) || this.summaryHeld(id, events, st)) return;
     const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
-    if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data)) && this.preparedFits(id, events, JSON.parse(have.data), st)) return;
+    if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data)) && this.preparedFits(id, events, JSON.parse(have.data), st)) {
+      const d = JSON.parse(have.data);
+      const grown = refresh && typeof d.tokens_before === "number" ? refresh.used - d.tokens_before : 0;
+      // (One not held is replaced only when the caller found it would no longer pay.)
+      if (!refresh || have.covered === covered.id || (d.held_told && !(refresh.gap && grown >= refresh.gap))) return;
+    }
     const abort = new AbortController();
     this.preparing.set(id, { abort, covered: covered.id });
     const session = this.store.session(id)!;
@@ -4162,7 +4186,7 @@ export class Engine {
         }
         this.summaryBackoff.delete(id);
         const settled = await this.settled(events, summary);
-        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(events, summary, this.wordsBudget(st), settled)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(events, summary, byPrice || this.ownPriceOn(session) ? this.ownWordsBudget(st) : this.wordsBudget(st), settled)), auto: true, ahead: !idle, trigger: idle ? "idle" : byPrice ? "price" : "threshold", ...(byPrice ? { by_price: true } : {}), covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
@@ -4189,15 +4213,21 @@ export class Engine {
     return compactLimit(session, context, (id) => this.store.session(id));
   }
   private priceOn(session: Session): boolean {
+    // (A session the owner talks to has its own switch: ownPriceOn.)
     if (!session.parent_id) return false;
     for (let s: Session | undefined = session, up = 0; s && up < 32; s = s.parent_id ? this.store.session(s.parent_id) : undefined, up++) {
       if (s.settings.compact_by_price !== undefined) return s.settings.compact_by_price === true;
     }
     return false;
   }
-  private priced(session: Session, events: readonly StoredEvent[], st: Step, used: number): (PriceVerdict & { ahead: Residual; delay: number; keep: number }) | undefined {
+  // Whether a session the owner talks to compacts by price itself (src/engine/owner-compact.ts): his own switch on it.
+  private ownPriceOn(session: Session): boolean {
+    return !session.parent_id && session.settings.owner_compact_by_price === true;
+  }
+  private priced(session: Session, events: readonly StoredEvent[], st: Step, used: number): (PriceVerdict & { ahead: Residual; delay: number; keep: number; ask: Omit<PriceAsk, "keep"> }) | undefined {
     const price = st.info.price;
-    if (!price || !this.priceOn(session)) return undefined;
+    const own = this.ownPriceOn(session);
+    if (!price || !(own || this.priceOn(session))) return undefined;
     const bpt = bytesPerToken(st.info.id);
     const tokens = (bytes: number) => Math.ceil(bytes / bpt);
     const prefix = tokens(this.prefixBytes(st));
@@ -4223,15 +4253,19 @@ export class Engine {
     // The steps the summary takes to be written while the agent works: it is in place at the next one at the earliest.
     const delay = Math.max(1, sum?.ms && stepMs ? Math.ceil(sum.ms / stepMs) : 1);
     // (The agents table is made by the automation: an engine without it prices the agent as of no kind.)
-    if (!this.agentKinds.has(session.id)) this.agentKinds.set(session.id, this.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'").get() ? this.store.db.query<{ type: string }, [string]>("SELECT type FROM agents WHERE session_id = ? LIMIT 1").get(session.id)?.type : undefined);
-    const ahead = residual(done, delay, { type: this.agentKinds.get(session.id), model: st.info.id }, facts?.lives ?? []);
+    // The owner's own session is like no agent: its steps ahead are read from its own history alone.
+    if (!own && !this.agentKinds.has(session.id)) this.agentKinds.set(session.id, this.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'").get() ? this.store.db.query<{ type: string }, [string]>("SELECT type FROM agents WHERE session_id = ? LIMIT 1").get(session.id)?.type : undefined);
+    const ahead = residual(done, delay, { type: own ? undefined : this.agentKinds.get(session.id), model: st.info.id }, own ? [] : facts?.lives ?? []);
     const ask = { used, prefix, growth, summaryIn: tokens(utf8Bytes(summaryPrompt())), summaryOut: out, ahead, price, long: this.asksLong(session.id, st) };
     // A bound first: even a summary that kept nothing but the prefix would not pay.
     const bound = priceCompaction({ ...ask, keep: prefix + out });
-    if (!bound?.compact) return bound && { ...bound, ahead, delay, keep: prefix + out };
+    if (!bound?.compact) return bound && { ...bound, ahead, delay, keep: prefix + out, ask };
     // What the summary keeps: the words kept verbatim, the fixed context, the trail and the steps taken while it is written.
-    const kept = keptMessages(events, this.wordsBudget(st));
-    const keptBytes = [...kept.owner_messages, ...(kept.other_messages ?? [])].reduce((n, t) => n + utf8Bytes(t), 0) + fixedContext(events).reduce((n, f) => n + utf8Bytes(f.text), 0) + TRAIL_BYTES;
+    const kept = keptMessages(events, own ? this.ownWordsBudget(st) : this.wordsBudget(st));
+    // The owner's own session keeps every word of his whole: a summary that could not is not asked for (the window's line
+    // still compacts as it always did, and the messages it keeps then count from there).
+    if (own && (kept.owner_messages_left || kept.owner_messages_shortened || kept.owner_media_left)) return { ...bound, compact: false, ahead, delay, keep: prefix + out, ask };
+    const keptBytes = keptTexts(kept).reduce((n, t) => n + utf8Bytes(t), 0) + fixedContext(events).reduce((n, f) => n + utf8Bytes(f.text), 0) + TRAIL_BYTES;
     // And what the agent reads again after it: the files it wrote since the last checkpoint, at their newest read.
     const span = events.slice(Math.max(0, checkpointAt(events).keepFrom));
     const written = new Set<string>();
@@ -4241,7 +4275,31 @@ export class Engine {
     }
     const keep = prefix + out + tokens(keptBytes + rereadBytes(span, [...written])) + delay * growth;
     const v = priceCompaction({ ...ask, keep });
-    return v && { ...v, ahead, delay, keep };
+    return v && { ...v, ahead, delay, keep, ask };
+  }
+
+  // At a turn's end, the owner's own session whose context is worth a summary by price: one is written now, over the
+  // turn that ended. One prepared before stays when it would still pay put in place now (the steps since the point it
+  // covers follow it verbatim), so a summary still being written when the next turn begins is not written again at
+  // every turn's end. True when the session compacts by price (nothing else is prepared for it then).
+  private endPriced(id: string, events: readonly StoredEvent[], st: Step, used: number): boolean {
+    const session = this.store.session(id);
+    if (!session || !this.ownPriceOn(session)) return false;
+    const v = this.priced(session, events, st, used);
+    if (!v?.compact || !events.some((e) => e.kind === "assistant") || !worthSummarizing(summarizable(events))) return false;
+    const unpaid = this.unpaid.get(id);
+    if (unpaid !== undefined && !(v.best_gap && used - unpaid >= v.best_gap)) return true;
+    const have = this.store.db.query<{ data: string }, [string]>("SELECT data FROM prepared_summaries WHERE session_id = ?").get(id);
+    const d = have ? JSON.parse(have.data) : undefined;
+    if (d && !d.held_told && this.pays(events, d, st, used, v.ask)) return true;
+    this.prepare(id, st, false, true, { used, gap: v.best_gap });
+    return true;
+  }
+  // Whether a prepared summary put in place now pays (src/engine/price-compact.ts): the context it leaves (the prefix,
+  // the summary and the steps since the point it covers) against the context now.
+  private pays(events: readonly StoredEvent[], data: Record<string, unknown>, st: Step, used: number, ask: Omit<PriceAsk, "keep">): boolean {
+    const left = Math.ceil(this.prefixBytes(st) / bytesPerToken(st.info.id)) + contextTokens([...events, { id: "\u0000prepared", kind: "compaction", data } as unknown as StoredEvent], st.info.id).used;
+    return !!priceCompaction({ ...ask, used, keep: left })?.compact;
   }
 
   // A summary's statements checked against every message of the branch it
@@ -4295,11 +4353,15 @@ export class Engine {
   // The prepared summary as a checkpoint, when it covers part of this branch
   // after its last checkpoint. The events since stay verbatim after it.
   // `price`: put in place by compaction by price, which says so with what it priced.
-  private applyPrepared(id: string, events: readonly StoredEvent[], price?: NonNullable<ReturnType<Engine["priced"]>>, st?: Step): boolean {
+  // `guard`: the summary goes in only when its meaning check holds (src/engine/owner-compact.ts): asked by the
+  // owner's own session's price, and by default for one prepared by it; the window's line passes false. `used`:
+  // the context now, which says when a summary the check held back is written again.
+  private applyPrepared(id: string, events: readonly StoredEvent[], price?: NonNullable<ReturnType<Engine["priced"]>>, st?: Step, guard?: boolean, used?: number): boolean {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (!row) return false;
     const data = JSON.parse(row.data);
     if (price) Object.assign(data, { trigger: "price", price: priceData(price) });
+    else if (guard === false && data.by_price) data.trigger = "threshold";
     if (!preparedHolds(events, row.covered, false, data)) {
       // Written for another branch: kept for when that branch is shown again.
       // One this branch has passed (a checkpoint came after it) serves no more.
@@ -4311,6 +4373,27 @@ export class Engine {
     if (!this.preparedFits(id, events, data, st)) {
       this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
       return false;
+    }
+    if (guard ?? !!data.by_price) {
+      const why = meaningHeld(data);
+      if (why) {
+        // Told once for each summary, across restarts (the row keeps that it was). It stays for the window's line, and
+        // one is written again at a turn's end once the context has grown by the gap that is cheapest to compact at
+        // (a summary of more may keep what this one did not).
+        if (!data.held_told) {
+          this.store.db.run("UPDATE prepared_summaries SET data = ? WHERE session_id = ? AND covered = ?", [JSON.stringify({ ...JSON.parse(row.data), held_told: true }), id, row.covered]);
+          this.append(id, "note", { kind: "price_compaction_held", covered: row.covered, text: `A summary by price did not replace the history: ${why}. The history stays whole; the window's line compacts it as before.` });
+        }
+        return false;
+      }
+      // What it really leaves, priced again: the summary and the steps since the point it covers, against the context now.
+      // One that does not pay is dropped; when a summary of everything up to now would not pay either (the price's
+      // estimate was wrong), none is written again until the context has grown by the cheapest gap.
+      if (price && st && used !== undefined && !this.pays(events, data, st, used, price.ask)) {
+        this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
+        if (!this.pays(events, { ...data, covered: undefined }, st, used, price.ask)) this.unpaid.set(id, used);
+        return false;
+      }
     }
     this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
     // What runs now (a prepared summary holds no such block: it would be old).
@@ -4503,6 +4586,12 @@ export class Engine {
   // or a quarter of a window too small to hold that beside the summary.
   // `next`: the model the session switches to after this summary (the owner
   // compacts before a switch): its window bounds the words too.
+  // A summary by price of the owner's own session keeps his words whole within a quarter of the window: past
+  // OWNER_WORDS_BYTES of them it would leave the oldest out, and then it is not asked for at all.
+  // (The other inputs, reports and wakes, keep what they always did: what his words leave of the usual budget.)
+  private ownWordsBudget(st: Step): { owner: number; all: number } {
+    return { owner: Math.floor((st.info.context / 4) * bytesPerToken(st.info.id)), all: this.wordsBudget(st) };
+  }
   private wordsBudget(st: Step, next?: ModelInfo): number {
     const quarter = (m: ModelInfo) => Math.floor((m.context / 4) * bytesPerToken(m.id));
     return Math.min(OWNER_WORDS_BYTES, quarter(st.info), next ? quarter(next) : Infinity);

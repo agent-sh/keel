@@ -55,12 +55,14 @@ const WALK_PART = 64;
 const WALK_MS = 20;
 // How long a text form goes on reading to place its turns before it says which are not placed (see settled).
 const SETTLE_MS = 2000;
-// What a mark's data may give: a few named fields, never its text.
+// What a mark's data may give: a few named fields, never its text (one mark's text is the harness's own words: below).
 // (A cache plan's: what it did and what it cost, in numbers.)
 const PICK = `CASE WHEN kind IN ('turn_start', 'turn_end') THEN data ELSE json_object(
   'kind', data ->> '$.kind', 'from', data ->> '$.from', 'to', data ->> '$.to', 'mode', data ->> '$.mode', 'auto', data ->> '$.auto',
   'trigger', data ->> '$.trigger', 'tokens_before', data ->> '$.tokens_before', 'error_id', data ->> '$.error_id', 'capsule', data ->> '$.capsule',
   'outcome', data ->> '$.outcome', 'pings', data ->> '$.pings', 'spent_usd', data ->> '$.spent_usd', 'lapse_usd', data ->> '$.lapse_usd', 'waited_ms', data ->> '$.waited_ms',
+  -- A summary held back by its meaning check: the harness's words for why (never a quote of the session).
+  'text', CASE WHEN kind = 'note' AND data ->> '$.kind' = 'price_compaction_held' THEN data ->> '$.text' END,
   -- A compaction's probe: its counts, never the identifiers it names.
   'probe', CASE WHEN kind = 'compaction' AND data ->> '$.probe.files' IS NOT NULL THEN json_object('files', data ->> '$.probe.files', 'files_kept', data ->> '$.probe.files_kept',
     'files_summary', data ->> '$.probe.files_summary', 'anchors', data ->> '$.probe.anchors', 'anchors_kept', data ->> '$.probe.anchors_kept',

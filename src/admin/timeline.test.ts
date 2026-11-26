@@ -158,3 +158,15 @@ test("a turn that goes on after a restart with no prompt between (its card was s
     f.close();
   }
 });
+
+test("a summary by price held back says why on its row, read from the store", () => {
+  const f = setup();
+  try {
+    f.turn(0);
+    f.add("note", { kind: "price_compaction_held", covered: "x", text: "A summary by price did not replace the history: it did not quote 1 statement word for word." });
+    const row = new Timeline(f.store).page(f.id).rows.find((r) => r.text.includes("summary by price"));
+    expect(row?.text).toContain("it did not quote 1 statement word for word");
+  } finally {
+    f.close();
+  }
+});

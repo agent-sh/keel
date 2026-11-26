@@ -224,7 +224,7 @@ const short = (model: unknown) => String(model ?? "").split(":").pop() || "anoth
 const tokens = (n: unknown) => (typeof n === "number" && n > 0 ? `, from ${n < 1000 ? n : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`} tokens` : "");
 // The kinds of note that make a row: the timeline's index holds these notes
 // and no other, so a kind told here is named here (a test holds the two together).
-export const NOTE_MARKS = ["model_told", "fallback", "restart", "compaction_failed", "rewind", "fork", "cache_plan"] as const;
+export const NOTE_MARKS = ["model_told", "fallback", "restart", "compaction_failed", "rewind", "fork", "cache_plan", "price_compaction_held"] as const;
 // A cache plan's row (src/engine/cache-plans.ts): what the wait did with the prompt cache, and what it cost against a rewrite.
 const usd = (x: unknown) => { const n = Number(x) || 0; return n >= 1 ? `$${n.toFixed(2)}` : n >= 0.01 ? `$${n.toFixed(3)}` : `$${n.toFixed(4)}`; };
 function cacheLine(d: Record<string, any>): string {
@@ -255,6 +255,8 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
     case "fallback": return row("model", "fallback", d.overloaded ? "The model stayed overloaded: the turn went on with the fallback model" : "The model declined: the turn went on with the fallback model");
     case "restart": return row("restart", "held", "Not resumed after the daemon restart: it waits for the owner", "owner");
     case "compaction_failed": return row("compaction", "failed", "The context could not be compacted", "failed");
+    // A summary by price of the owner's session that its meaning check held back (src/engine/owner-compact.ts).
+    case "price_compaction_held": return row("compaction", "held", typeof d.text === "string" && d.text ? d.text : "A summary by price did not replace the history: it did not keep what was said");
     // Written when files are put back from a checkpoint: the conversation is as it was.
     case "rewind": return row("files", "restored", "Files were restored to an earlier state");
     case "fork": return row("model", "fork", "Forked from another session");

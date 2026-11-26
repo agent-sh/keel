@@ -465,6 +465,7 @@ function Checkpoint({ e, sid, undoable }: { e: StoredEvent; sid: string; undoabl
             {e.data.tokens_before ? `, ${fmtTokens(e.data.tokens_before)} tokens into a summary` : ""}
             {e.data.parts ? ` (too long for one request: read as a transcript${e.data.parts > 1 ? ` in ${e.data.parts} parts` : ""}${e.data.outputs_shortened ? `, ${e.data.outputs_shortened} long tool outputs shortened` : ""}${e.data.steps_left_out ? `, the oldest ${e.data.steps_left_out.toLocaleString()} steps of the work left out of the summary` : ""})` : ""}
             {e.data.owner_messages_shortened ? `; the oldest of the owner's messages kept word for word is cut to its start and end` : ""}
+            {e.data.owner_about?.some((a: { cut?: boolean } | null) => a?.cut) ? `; a plan the owner edited is kept as its start and end (the lines he changed stay whole)` : ""}
             {e.data.other_messages_shortened ? `; the oldest kept report or other delivered message is cut to its start and end` : ""}
             {e.data.statements_dropped?.length ? `; ${e.data.statements_dropped.length === 1 ? "one statement" : `${e.data.statements_dropped.length} statements`} the summary did not quote word for word left out` : ""}
             {e.data.statements_done?.length ? `; ${e.data.statements_done.length === 1 ? "one request" : `${e.data.statements_done.length} requests`} marked done` : ""}

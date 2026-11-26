@@ -171,6 +171,12 @@ export type SessionSettings = {
   // An agent compacts when the steps it is expected to take would read more than a summary costs (src/engine/price-compact.ts):
   // true or false for its whole tree, set on a session at the top (a trial's arm sets it there); absent = by the window only.
   compact_by_price?: boolean;
+  // A session the owner talks to compacts by price itself, at a turn's first step or a cold one, when the summary
+  // keeps what was said (src/engine/owner-compact.ts): his switch in the session's menu; absent = by the window only.
+  // `_on_ms` / `_off_ms`: when it was last turned on and off, which the menu's numbers compare across.
+  owner_compact_by_price?: boolean;
+  owner_compact_by_price_on_ms?: number;
+  owner_compact_by_price_off_ms?: number;
   // The share of the model's window an agent compacts at, and whether its waits get a cache plan: for the agent's
   // whole tree, set on its first agent (a trial's arm, src/admin/setting-trials.ts); absent = the owner's `agents` setting.
   compact_share?: number;

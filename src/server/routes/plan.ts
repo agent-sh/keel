@@ -40,9 +40,11 @@ async function present(input: any, ctx: ToolContext) {
   const mode = gate?.perm(ctx.sessionId).mode;
   if (mode && mode !== "plan") return { content: `The session is not in plan mode (it is in ${mode}): go ahead with the work.` };
   const card: PlanCard = { id: ctx.callId ?? crypto.randomUUID(), session_id: ctx.sessionId, plan: plan.slice(0, 40_000), title: input?.title ? String(input.title).slice(0, 120) : undefined, created: Date.now() };
+  let cut = false;
   const a = await new Promise<Answer>((resolve) => {
     const done = (x: Answer, stopped = false) => {
       if (!waiting.delete(keyOf(card.session_id, card.id))) return;
+      cut = stopped;
       ctx.signal.removeEventListener("abort", onAbort);
       // Parked with its turn by a daemon that stops: it did not end, and no client is told it did.
       if (stopped && parking()) { emit(card, "closed"); resolve(x); return; }
@@ -58,9 +60,13 @@ async function present(input: any, ctx: ToolContext) {
     if (ctx.signal.aborted) onAbort();
     else ctx.signal.addEventListener("abort", onAbort, { once: true });
   });
-  if (!a.approved) return { content: `The owner did not approve the plan${a.feedback ? `: ${a.feedback}` : "."} Stay in plan mode, change the plan, and present it again.` };
+  // His own words on the plan, kept with the result for what a compaction keeps of his (src/engine/compact.ts
+  // ownerReplies); a stop's words are the harness's, never his.
+  if (!a.approved) return { content: `The owner did not approve the plan${a.feedback ? `: ${a.feedback}` : "."} Stay in plan mode, change the plan, and present it again.`, ...(!cut && a.feedback ? { shown: { plan_answer: { feedback: a.feedback } } } : {}) };
   const edited = a.plan !== card.plan;
+  const said = { ...(a.note ? { note: a.note } : {}), ...(edited ? { plan: a.plan } : {}) };
   return {
+    ...(Object.keys(said).length ? { shown: { plan_answer: said } } : {}),
     content: [
       `The owner approved the plan. The session is now in ${a.mode} mode: carry it out.`,
       edited ? `The owner edited it; this is the plan to follow:\n\n${a.plan}` : "",

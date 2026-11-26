@@ -306,7 +306,8 @@ export const turnRoutes: RouteModule = (deps) => {
           for (let n = 2; titles.has(title); n++) title = `${base} ${n})`;
         }
         // The copy keeps the settings, not the source's pin or done mark.
-        const { pinned_ms: _p, done_ms: _d, repairs: _r, ...settings } = s.settings; // (its repairs are recorded as its own)
+        // (The owner's switch for compaction by price is his choice for that session, with its numbers since: the copy starts without it.)
+        const { pinned_ms: _p, done_ms: _d, repairs: _r, owner_compact_by_price: _o, owner_compact_by_price_on_ms: _on, owner_compact_by_price_off_ms: _off, ...settings } = s.settings; // (its repairs are recorded as its own)
         const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings });
         // `worktree` ({ name?, base? } or true): the fork works in a worktree of its own, as a clone does, so two
         // forks of one task never write the same folder.
