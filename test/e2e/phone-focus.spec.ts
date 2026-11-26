@@ -90,6 +90,8 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         const there = page.locator(".k-station[data-helm]");
         await expect(there.getByTestId("approval").first()).toBeVisible({ timeout: 30_000 });
         await expect(there.getByTestId("show-sidebar")).toBeVisible();
+        // (The pages slide to it: the shot waits until it has come to rest in the window.)
+        await expect.poll(async () => Math.abs((await there.boundingBox())?.x ?? 99) < 2, { timeout: 10_000 }).toBe(true);
         await shoot(page, `phone-focus-02-card-${size.width}`);
       } finally {
         await drop(request, coord, asker);
