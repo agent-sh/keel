@@ -84,6 +84,8 @@ test("Auto reviews uncovered work while Full auto runs everything unreviewed", a
   await expect(card.getByTestId("allow-always")).toHaveCount(0);
   expect(existsSync(join(work, ".envrc"))).toBe(false);
   await shoot(page, "permission-review-03-owner-only");
+  await expect(card).toHaveAttribute("data-live", "true");
+  await expect(card.getByTestId("allow-once")).not.toHaveAttribute("aria-disabled", "true");
   await card.getByTestId("allow-once").click();
   await turnsDone(4);
   expect(readFileSync(join(work, ".envrc"), "utf8")).toBe("# Inert approval fixture\n");
