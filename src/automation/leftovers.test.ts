@@ -567,7 +567,7 @@ test("a stop of a command's scope is told once for its key, across a restart, an
 // A branch the base took with another patch: a cherry-pick onto a base that moved the context, an edit while
 // landing it. Its commits are on no other branch; what decides is whether a commit of the base holds its lines.
 const ten = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
-const put = (dir: string, lines: string[]) => writeFileSync(join(dir, "f.txt"), lines.join("\n") + "\n");
+const put = (dir: string, lines: string[], file = "f.txt") => writeFileSync(join(dir, file), lines.join("\n") + "\n");
 const edit = (dir: string, n: number, text: string, subject: string) => {
   const lines = readFileSync(join(dir, "f.txt"), "utf8").trimEnd().split("\n");
   lines[n - 1] = text;
@@ -602,24 +602,74 @@ test("the worktree Keel made goes with its branch when the base holds its every 
   expect(existsSync(k!.wt.path)).toBe(false);
   expect(branchesOf(r)).not.toContain(k!.wt.branch);
   // Landed, then the base edited the same line again: the base's tip no longer holds it, the landed commit does.
+  // Its branch is kept (the tip does not hold its line); the page's pass may take its folder.
   edit(later!.wt.path, 8, "eight", "Change eight");
   git(r, "cherry-pick", later!.wt.branch);
   edit(r, 8, "eight, later", "Change eight again on main");
-  expect(await later!.own()).toContain("landed with another patch (the base holds its every line at ");
-  expect(branchesOf(r)).not.toContain(later!.wt.branch);
+  const said = await later!.own();
+  expect(said).toContain("kept: it landed as ");
+  expect(said).toContain("the base's tip no longer holds its every line");
+  expect(existsSync(later!.wt.path)).toBe(true);
+  expect(branchesOf(r)).toContain(later!.wt.branch);
+});
+
+// What the review found the first form of the test let through: each a branch whose lines are on no ref but its own.
+test("a branch is not landed whole when only its patch ids, an old landing or a landing record say so", async () => {
+  const { r, store, made: [merged, spaced, reverted, rewound, kept] } = await landRepo("land-holes", ["merged", "spaced", "reverted", "rewound", "kept"]);
+  // It merged the base and added work inside the merge commit; the base took its plain commit, so every
+  // non-merge commit of it is on the base by patch id (git cherry skips merges).
+  edit(merged!.wt.path, 6, "six", "Change six");
+  put(r, ["g on main"], "g.txt"); git(r, "add", "g.txt"); git(r, "commit", "-qm", "g on main");
+  git(merged!.wt.path, "merge", "--no-commit", "--no-ff", "main");
+  put(merged!.wt.path, ["work only in the merge commit"], "novel.txt"); git(merged!.wt.path, "add", "novel.txt");
+  git(merged!.wt.path, "commit", "-qm", "Merge main, and the fix the merge needed");
+  git(r, "cherry-pick", git(merged!.wt.path, "rev-parse", "HEAD^1").trim());
+  expect(git(r, "cherry", "main", merged!.wt.branch).trim()).toStartWith("- ");
+  expect(await merged!.own()).toStartWith(`\n\nIts work is on branch ${merged!.wt.branch}`);
+  expect(branchesOf(r)).toContain(merged!.wt.branch);
+  // The base holds the same change with other whitespace: one patch id, not one line.
+  edit(spaced!.wt.path, 3, "        three", "Indent three");
+  edit(r, 3, "three", "Three by another hand");
+  expect(await spaced!.own()).toStartWith(`\n\nIts work is on branch ${spaced!.wt.branch}`);
+  // Landed, then reverted on the base: held at the landed commit, not at the tip. The branch stays.
+  edit(reverted!.wt.path, 9, "nine", "Change nine");
+  edit(r, 4, "four", "Change four on main");
+  git(r, "cherry-pick", reverted!.wt.branch);
+  git(r, "revert", "--no-edit", "HEAD");
+  expect(await reverted!.own()).toContain("kept: it landed as ");
+  expect(branchesOf(r)).toContain(reverted!.wt.branch);
+  // The landing queue landed it, then the base was moved back before that commit: the row says nothing now.
+  edit(rewound!.wt.path, 10, "ten", "Change ten");
+  git(r, "cherry-pick", rewound!.wt.branch);
+  const landedAs = git(r, "rev-parse", "HEAD").trim();
+  store.db.exec("CREATE TABLE IF NOT EXISTS landing_queue (id TEXT PRIMARY KEY, repo TEXT, branch TEXT, pos INTEGER, tip TEXT, state TEXT, landed TEXT, updated INTEGER)");
+  store.db.query("INSERT INTO landing_queue (id, repo, branch, pos, tip, state, landed, updated) VALUES ('q1', ?, ?, 1, ?, 'landed', ?, ?)").run(r, rewound!.wt.branch, git(rewound!.wt.path, "rev-parse", "HEAD").trim(), landedAs, Date.now());
+  // An answer read while the base held it is not kept past the base's move.
+  put(kept!.wt.path, ["k"], "k.txt"); git(kept!.wt.path, "add", "k.txt"); git(kept!.wt.path, "commit", "-qm", "Add k");
+  git(r, "cherry-pick", kept!.wt.branch);
+  const keptTip = git(kept!.wt.path, "rev-parse", "HEAD").trim();
+  expect(await leftovers.landedOn(store, r, keptTip)).toMatchObject({ how: "whole" });
+  git(r, "reset", "-q", "--hard", "HEAD~2");
+  expect(await leftovers.landedOn(store, r, keptTip)).toBeUndefined();
+  expect(await rewound!.own()).toStartWith(`\n\nIts work is on branch ${rewound!.wt.branch}`);
+  expect(await kept!.own()).toStartWith(`\n\nIts work is on branch ${kept!.wt.branch}`);
+  expect(branchesOf(r)).toEqual(expect.arrayContaining([spaced!.wt.branch, rewound!.wt.branch, kept!.wt.branch]));
 });
 
 test("a branch that landed with changes, or not at all, keeps its worktree and branch at its end", async () => {
   const { r, made: [changed, open, reverted] } = await landRepo("land-changed", ["changed", "open", "reverted"]);
   edit(changed!.wt.path, 6, "six from the agent", "Change six");
-  edit(r, 6, "six as landed", "Change six"); // the same subject, landed with an edit
+  edit(changed!.wt.path, 7, "seven from the agent", "Change seven");
+  edit(r, 6, "six as landed", "Change six"); // the same subjects, landed with an edit
+  edit(r, 7, "seven from the agent", "Change seven");
   const said = await changed!.own();
   expect(said).toContain("landed as ");
-  expect(said).toContain("with changes (its commit is on the base by subject)");
+  expect(said).toContain("with changes (its 2 commits are on the base by subject)");
   expect(existsSync(changed!.wt.path)).toBe(true);
   expect(branchesOf(r)).toContain(changed!.wt.branch);
-  // Its subject on the base and nothing else: no commit holds its line, nothing says it landed whole.
+  // One subject of it on the base and nothing else: too common a line to name a landing.
   edit(open!.wt.path, 2, "two", "Change two");
+  edit(r, 2, "two, another way", "Change two");
   expect(await open!.own()).toStartWith(`\n\nIts work is on branch ${open!.wt.branch}`);
   expect(branchesOf(r)).toContain(open!.wt.branch);
   // Taken and reverted with another subject before any landing record: the base's tip gives its line back.
@@ -630,32 +680,50 @@ test("a branch that landed with changes, or not at all, keeps its worktree and b
   expect(existsSync(reverted!.wt.path)).toBe(true);
 });
 
-test("the landed pass removes each listed landed worktree, the branch only of a whole landing, and refuses one that changed", async () => {
-  const { r, store, made: [whole, changed, moved, open] } = await landRepo("land-pass", ["whole", "changed", "moved", "open"]);
+test("the landed pass removes each listed landed worktree, the branch only of a whole landing, and refuses one that changed or holds what git status does not show", async () => {
+  const { r, store, made: [whole, changed, moved, open, hid, nest, stash] } = await landRepo("land-pass", ["whole", "changed", "moved", "open", "hidden", "nested", "stash"]);
   edit(whole!.wt.path, 3, "three", "Change three");
   edit(changed!.wt.path, 5, "five from the agent", "Change five");
+  put(changed!.wt.path, ["c from the agent"], "c.txt"); git(changed!.wt.path, "add", "c.txt"); git(changed!.wt.path, "commit", "-qm", "Add c");
   edit(moved!.wt.path, 7, "seven", "Change seven");
   edit(open!.wt.path, 10, "ten", "Change ten");
+  const add = (dir: string, file: string, subject: string) => { put(dir, [subject], file); git(dir, "add", file); git(dir, "commit", "-qm", subject); };
+  add(hid!.wt.path, "h.txt", "Add h");
+  add(nest!.wt.path, "n.txt", "Add n");
+  add(stash!.wt.path, "s.txt", "Add s");
   edit(r, 1, "one", "Change one on main");
-  git(r, "cherry-pick", whole!.wt.branch, moved!.wt.branch);
+  git(r, "cherry-pick", whole!.wt.branch, moved!.wt.branch, hid!.wt.branch, nest!.wt.branch, stash!.wt.branch);
   edit(r, 5, "five as landed", "Change five");
+  put(r, ["c as landed"], "c.txt"); git(r, "add", "c.txt"); git(r, "commit", "-qm", "Add c");
+  // An edit git is told not to look at, a repository in an ignored folder, a stash made on the branch.
+  git(hid!.wt.path, "update-index", "--assume-unchanged", "h.txt");
+  put(hid!.wt.path, ["an edit git is told not to look at"], "h.txt");
+  mkdirSync(join(nest!.wt.path, "out/inner"), { recursive: true });
+  const inner = join(nest!.wt.path, "out/inner");
+  git(inner, "init", "-q", "-b", "main"); writeFileSync(join(inner, "x"), "x\n"); git(inner, "add", "-A"); git(inner, "commit", "-qm", "inner work");
+  put(stash!.wt.path, ["stashed work"], "s.txt"); git(stash!.wt.path, "stash", "-q");
   const ctx = { store, isRunning: () => false, workspace: r };
   const s = await leftovers.survey(ctx);
   const row = (p: string) => s.worktrees.find((w) => w.path === p)!;
-  expect(row(whole!.wt.path).landed).toMatchObject({ how: "whole", by: "tree" });
+  expect(row(whole!.wt.path).landed).toMatchObject({ how: "whole" });
   expect(row(changed!.wt.path).landed).toMatchObject({ how: "changed" });
   expect(row(open!.wt.path).landed).toBeUndefined();
   expect(row(whole!.wt.path).bytes).toBeGreaterThan(0);
-  const seen = (p: string) => { const w = row(p); return { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, how: w.landed!.how }; };
-  const listed = [seen(whole!.wt.path), seen(changed!.wt.path), seen(moved!.wt.path)];
+  expect([hid, nest, stash].map((k) => [row(k!.wt.path).removable, row(k!.wt.path).landed])).toEqual([[false, undefined], [false, undefined], [false, undefined]]);
+  expect(row(hid!.wt.path).why).toBe("1 file git is told not to look at changed");
+  expect(row(nest!.wt.path).why).toContain("an ignored folder holds a repository");
+  expect(row(stash!.wt.path).why).toContain("a stash entry was made on its branch");
+  const seen = (p: string, how?: string) => { const w = row(p); return { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, how: (how ?? w.landed!.how) as "whole" }; };
+  const listed = [seen(whole!.wt.path), seen(changed!.wt.path), seen(moved!.wt.path), seen(stash!.wt.path, "whole")];
   git(moved!.wt.path, "commit", "-q", "--allow-empty", "-m", "after it was listed");
   const out = await leftovers.removeLanded(ctx, listed);
   expect(out.removed).toEqual([whole!.wt.path, changed!.wt.path]);
   expect(out.deleted).toEqual([whole!.wt.branch]);
-  expect(out.refused.map((x) => x.what)).toEqual([moved!.wt.path]);
+  expect(out.refused.map((x) => x.what)).toEqual([moved!.wt.path, stash!.wt.path]);
   expect(out.refused[0]!.why).toContain("it changed since it was listed");
+  expect(out.refused[1]!.why).toContain("a stash entry was made on its branch");
   expect(existsSync(whole!.wt.path) || existsSync(changed!.wt.path)).toBe(false);
-  expect(branchesOf(r)).toEqual(expect.arrayContaining([changed!.wt.branch, moved!.wt.branch, open!.wt.branch]));
+  expect(branchesOf(r)).toEqual(expect.arrayContaining([changed!.wt.branch, moved!.wt.branch, open!.wt.branch, stash!.wt.branch]));
   expect(branchesOf(r)).not.toContain(whole!.wt.branch);
-  expect(existsSync(open!.wt.path)).toBe(true);
+  expect([open, hid, nest, stash].every((k) => existsSync(k!.wt.path))).toBe(true);
 });

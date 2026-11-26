@@ -20,8 +20,9 @@ type Scope = { memory_bytes: number; idle_since: number; command_ended: boolean;
 type Proc = { session_id: string; title: string; agent?: { id: string; status: string }; job_id: string; command: string; cwd: string; started: number; running: boolean; pids: number[]; ports: number[]; contain?: string; earlier?: boolean; scope?: Scope };
 type Held = { scopes: number; memory_bytes: number; others: { scopes: number; memory_bytes: number }; at: number; bounds: { idle_ms: number; build_idle_ms: number } };
 type Tree = { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string;
-  // The base holds its branch's work though not its commits: "whole" (its branch goes too) or "changed" (landed edited; its branch stays).
-  landed?: { how: "whole" | "changed"; at?: string; words: string }; bytes?: number };
+  // The base holds its branch's work though not its commits: "whole" (its branch goes too), "earlier" (an older base commit
+  // held it, the tip no longer does) or "changed" (landed edited): the branch stays for those two.
+  landed?: { how: "whole" | "earlier" | "changed"; at: string; words: string }; bytes?: number };
 type Branch = { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By };
 // A job scope that is not this daemon's job (another daemon's, or one whose processes carry another daemon's mark).
 // `daemon_live`: a daemon of the state folder its processes were started over runs now. `holds_self`: this daemon is in it.
@@ -115,7 +116,7 @@ export function LeftoversPanel() {
   const ignoredAll = trees.reduce((n, w) => n + (w.ignored?.length ?? 0), 0);
   // What the button removes, said on it: how many of each, and the ignored files that go with the worktrees.
   const allLabel = trees.length + merged.length
-    ? `Remove ${[trees.length ? `${trees.length} ${trees.length === 1 ? "worktree" : "worktrees"}` : "", merged.length ? `${merged.length} ${merged.length === 1 ? "branch" : "branches"}` : ""].filter(Boolean).join(" and ")}${ignoredAll ? `, ${ignoredAll} ignored ${ignoredAll === 1 ? "path" : "paths"} with them` : ""}`
+    ? `Remove all: ${[trees.length ? `${trees.length} ${trees.length === 1 ? "worktree" : "worktrees"}` : "", merged.length ? `${merged.length} ${merged.length === 1 ? "branch" : "branches"}` : ""].filter(Boolean).join(" and ")}${ignoredAll ? `, ${ignoredAll} ignored ${ignoredAll === 1 ? "path" : "paths"} with them` : ""}`
     : "Nothing to remove without losing work";
   const removeAll = async () => {
     const parts = [trees.length ? `${trees.length} ${trees.length === 1 ? "worktree" : "worktrees"} with nothing uncommitted (their branches and commits stay${ignoredAll ? `; ${ignoredAll} ignored ${ignoredAll === 1 ? "path goes" : "paths go"} with them` : ""})` : "", merged.length ? `${merged.length} ${merged.length === 1 ? "branch" : "branches"} whose commits are all on the base` : ""].filter(Boolean);
@@ -139,11 +140,14 @@ export function LeftoversPanel() {
   const landed = s.worktrees.filter((w) => w.removable && w.branch && !w.missing && w.landed);
   const landedWhole = landed.filter((w) => w.landed!.how === "whole").length;
   const landedBytes = landed.reduce((n, w) => n + (w.bytes ?? 0), 0);
-  const landedLabel = `Remove ${landed.length} landed ${landed.length === 1 ? "worktree" : "worktrees"}${landedBytes ? `, ${mb(landedBytes)}` : ""}`;
+  const landedIgnored = landed.reduce((n, w) => n + (w.ignored?.length ?? 0), 0);
+  // Told apart from the whole list's button: it names the landing, the branches it deletes and what it frees.
+  const landedLabel = `Remove ${landed.length} landed ${landed.length === 1 ? "worktree" : "worktrees"}${landedWhole ? ` and ${landedWhole} ${landedWhole === 1 ? "branch" : "branches"}` : ""}${landedBytes >= 1 << 20 ? `, ${mb(landedBytes)}` : ""}`;
   const removeLanded = async () => {
     const changed = landed.length - landedWhole;
     const body = [landedWhole ? `${landedWhole} ${landedWhole === 1 ? "worktree goes with its branch" : "worktrees go with their branches"}: the base holds every line of their work.` : "",
-      changed ? `${changed} ${changed === 1 ? "worktree goes and its branch stays" : "worktrees go and their branches stay"}: their work landed with changes, so their commits are kept.` : ""].filter(Boolean).join("\n");
+      changed ? `${changed} ${changed === 1 ? "worktree goes and its branch stays" : "worktrees go and their branches stay"}: their work landed with changes, or the base changed it since, so their commits are kept.` : "",
+      landedIgnored ? `${landedIgnored} ignored ${landedIgnored === 1 ? "path goes" : "paths go"} with them (build output, installed packages, copied files).` : ""].filter(Boolean).join("\n");
     if (!(await confirmAction({ title: `${landedLabel}?`, body: `${body}\n\nNothing uncommitted is in any of them. Each is checked again first: one that changed since it was listed stays.`, action: "Remove", danger: true }))) return;
     setBusy("landed");
     try {
@@ -259,8 +263,8 @@ export function LeftoversPanel() {
                   </span>
                 </span>}
                 meta={<>
-                  {w.landed && <Status tone={w.landed.how === "whole" ? "ok" : "quiet"} testid="leftover-landed" title={`${w.landed.words}${w.landed.how === "whole" ? ": its branch goes with it" : ": its branch stays"}`}>{w.landed.how === "whole" ? "landed" : "landed with changes"}</Status>}
-                  {w.bytes !== undefined && <span className="w-14 text-right" title="What it holds on disk">{mb(w.bytes)}</span>}
+                  {w.landed && <Status tone={w.landed.how === "whole" ? "ok" : "quiet"} testid="leftover-landed" title={`${w.landed.words}${w.landed.how === "whole" ? ": its branch goes with it" : ": its branch stays"}`}>{w.landed.how === "whole" ? "landed" : w.landed.how === "earlier" ? "landed, changed since" : "landed with changes"}</Status>}
+                  {w.bytes !== undefined && w.bytes >= 1 << 20 && <span className="w-14 text-right" title="What it holds on disk">{mb(w.bytes)}</span>}
                   {!treeBy && <Who by={w.by} />}{age(w.made)}
                 </>}
                 actions={<button type="button" className="k-btn" data-testid="leftover-remove" aria-label={`Remove worktree ${w.path}`} disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}

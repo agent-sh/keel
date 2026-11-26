@@ -247,7 +247,7 @@ test("a job scope of another daemon is listed with what it holds and stopped by 
 });
 
 // Feature: worktrees whose branch landed with another patch. One branch's commit was cherry-picked onto a base
-// that moved its context (no patch id matches, the base holds every line), another's landed with an edit. Settings
+// that moved its context (no patch id matches, the base holds every line), another's two commits landed by subject, one with an edit. Settings
 // > Leftovers marks both landed and offers one pass with what they hold on disk: it removes both folders and the
 // first branch, and keeps the second branch, whose own lines are not on the base.
 test("the landed pass removes worktrees whose branch's work is on the base, and the branch only of a whole landing", async ({ page, request }) => {
@@ -270,9 +270,11 @@ test("the landed pass removes worktrees whose branch's work is on the base, and 
   g(repo, "worktree", "add", "-q", edited, "-b", `landed-edited-${stamp}`);
   put(whole, 3, "three", "Change three");
   put(edited, 7, "seven from the agent", "Change seven");
+  put(edited, 9, "nine", "Change nine");
   put(repo, 1, "one", "Change one on main");
   g(repo, "cherry-pick", `landed-whole-${stamp}`);
   put(repo, 7, "seven as landed", "Change seven");
+  put(repo, 9, "nine", "Change nine");
   const { session } = await (await request.post("/api/sessions", { data: { workspace: repo, title: "Landed" } })).json();
   try {
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -280,11 +282,12 @@ test("the landed pass removes worktrees whose branch's work is on the base, and 
     const w = page.locator(`[data-testid="leftover-worktree"][data-path="${whole}"]`), e = page.locator(`[data-testid="leftover-worktree"][data-path="${edited}"]`);
     await expect(w.getByTestId("leftover-landed")).toHaveText("landed");
     await expect(e.getByTestId("leftover-landed")).toHaveText("landed with changes");
-    await expect(page.getByTestId("leftovers-remove-landed")).toContainText(/Remove \d+ landed worktrees?, \d/);
+    await expect(page.getByTestId("leftovers-remove-landed")).toContainText(/^Remove \d+ landed worktrees? and \d+ branch/);
+    await expect(page.getByTestId("leftovers-remove-all")).toContainText(/^Remove all: /);
     await shoot(page, "leftovers-03-landed");
     await page.getByTestId("leftovers-remove-landed").click();
     await expect(page.getByRole("alertdialog")).toContainText("the base holds every line of their work");
-    await expect(page.getByRole("alertdialog")).toContainText("their work landed with changes, so their commits are kept");
+    await expect(page.getByRole("alertdialog")).toContainText("their work landed with changes, or the base changed it since, so their commits are kept");
     await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
     await expect(page.getByTestId("leftovers-said")).toContainText(/^Removed \d+ worktrees? \(.+\) and \d+ branch/);
     await expect(w).toHaveCount(0);

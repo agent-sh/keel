@@ -129,16 +129,20 @@ test("a shared server keeps its scope: adb's, which every device tool talks to",
 });
 
 test("a branch whose whole work the base holds goes with its worktree; one landed with changes is kept and said", () => {
-  const whole = { how: "whole", by: "tree", at: "abcdef0123456789" } as const;
-  const changed = { how: "changed", at: "0123456789abcdef", why: "its commit is on the base by subject" } as const;
+  const whole = { how: "whole", at: "abcdef0123456789" } as const;
+  const earlier = { how: "earlier", at: "fedcba9876543210" } as const;
+  const changed = { how: "changed", at: "0123456789abcdef", why: "its 2 commits are on the base by subject" } as const;
   expect(ownTreeFate({ dirty: 0, unique: 2, landed: whole })).toEqual({ act: "remove" });
-  expect(ownTreeFate({ dirty: 0, unique: 2, landed: changed })).toEqual({ act: "keep", why: "2 commits on no other branch, landed as 0123456789 with changes (its commit is on the base by subject)" });
+  expect(ownTreeFate({ dirty: 0, unique: 2, landed: changed })).toEqual({ act: "keep", why: "2 commits on no other branch, landed as 0123456789 with changes (its 2 commits are on the base by subject)" });
+  // Held by an older commit of the base, not its tip (reverted or edited since): its branch is kept.
+  expect(ownTreeFate({ dirty: 0, unique: 1, landed: earlier })).toEqual({ act: "keep", why: "1 commit on no other branch, landed as fedcba9876, and the base's tip no longer holds its every line (reverted or edited since)" });
   // Nothing uncommitted is ever outweighed by a landing.
   expect(ownTreeFate({ dirty: 1, unique: 2, landed: whole }).act).toBe("keep");
   expect(ownTreeFate({ dirty: 0, unique: 0, busy: "a process works in it: pid 7 (vim)", landed: whole }).act).toBe("keep");
   // The page's landed pass: the branch goes only with a whole landing, and only a clean worktree on a branch is in it.
   expect(landedPass({ removable: true, branch: "b", landed: whole })).toBe("tree-and-branch");
   expect(landedPass({ removable: true, branch: "b", landed: changed })).toBe("tree");
+  expect(landedPass({ removable: true, branch: "b", landed: earlier })).toBe("tree");
   expect(landedPass({ removable: false, branch: "b", landed: whole })).toBeUndefined();
   expect(landedPass({ removable: true, landed: whole })).toBeUndefined();
   expect(landedPass({ removable: true, branch: "b", missing: true, landed: whole })).toBeUndefined();
@@ -148,7 +152,10 @@ test("a branch whose whole work the base holds goes with its worktree; one lande
 test("the landing record names a branch landed with changes only on what says it landed", () => {
   expect(recordOf({ commits: 2, matched: 2, newest: "c2" })).toEqual({ at: "c2", why: "its 2 commits are on the base by subject" });
   expect(recordOf({ commits: 3, matched: 1, newest: "c1" })).toBeUndefined();
-  expect(recordOf({ commits: 3, matched: 1, newest: "c1", reviewed: true })).toEqual({ at: "c1", why: "a review said land it, and 1 of its 3 commits are on the base by subject" });
+  // One subject alone names no landing, a review's yes or not; two with a review do.
+  expect(recordOf({ commits: 1, matched: 1, newest: "c1" })).toBeUndefined();
+  expect(recordOf({ commits: 3, matched: 1, newest: "c1", reviewed: true })).toBeUndefined();
+  expect(recordOf({ commits: 3, matched: 2, newest: "c1", reviewed: true })).toEqual({ at: "c1", why: "a review said land it, and 2 of its 3 commits are on the base by subject" });
   expect(recordOf({ commits: 3, matched: 0, reviewed: true })).toBeUndefined();
   expect(recordOf({ commits: 1, matched: 0, queued: "q" })).toEqual({ at: "q", why: "the landing queue landed it" });
   // The commits worth a merge: the queue's first, then those of the branch's subjects, newest first, bounded.

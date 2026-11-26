@@ -59,25 +59,29 @@ export function newSince(before: GitSnap, trees: GitTree[], heads: Record<string
 
 // ---- a branch that landed with another patch: rebased, cherry-picked with a conflict edit, squashed, a fix on top.
 //
-// Its commits are on no other branch, yet its work may be on the base. "whole": nothing of it is lost when the
-// branch goes, proven from git alone: every commit of it is on the base by patch id, or the branch merged on a
-// commit of the base gives that commit's own tree (git merge-tree), which is what landing it there would make: that
-// commit holds every line the branch changes, whatever its commits look like. The merge-tree is the strongest of
-// the tests: a patch id fails on a rebase that moved the context, a diff that applies fails on a later edit of the
-// same lines, and both miss a squash; a revert on the base makes the merge give the branch's lines back, so a
-// reverted change is never taken as landed. "changed": the landing record names it (the landing queue landed this
-// tip, or every commit of it is on the base by subject, or a review said land it and some of it is there) but no
-// commit of the base holds its lines as they are: what landed was edited (a conflict resolved, a fix on top). Its
-// branch is kept: only its folder may go, which loses nothing committed.
-export type Landed = { how: "whole"; by: "patch" | "tree"; at?: string } | { how: "changed"; at: string; why: string };
+// Its commits are on no other branch, yet its work may be on the base. The one test of what the base holds is a
+// merge: the branch merged on a commit of the base gives that commit's own tree (git merge-tree), which is what
+// landing it there would make, so that commit holds every line the branch changes, whatever its commits look like.
+// No patch id speaks for it: a patch id skips merge commits (a merge that adds work of its own) and ignores
+// whitespace, a diff that applies fails on a later edit of the same lines, and both miss a squash. A revert on the
+// base makes the merge give the branch's lines back, so a reverted change never counts as held at the tip.
+//   "whole": the base's tip holds it. Nothing of it is lost when the branch goes.
+//   "earlier": an older commit of the base held it (the one it landed as), the tip no longer does (a revert, a
+//     later edit of its lines). Its branch stays; only its folder may go, which loses nothing committed.
+//   "changed": the landing record names it (the landing queue landed this tip on a commit the base holds, or more
+//     than one subject of it is on the base: all of them, or some and a review said land it) but no commit of the
+//     base holds its lines as they are: what landed was edited (a conflict resolved, a fix on top). As "earlier".
+// A branch with no commit over the base is merged, not landed: the other rules decide it.
+export type Landed = { how: "whole" | "earlier"; at: string } | { how: "changed"; at: string; why: string };
 // What the landing record says of a branch whose lines no commit of the base holds. `commits`: its commits over the
 // base, by subject; `matched`: how many of those subjects a commit of the base since the fork has; `newest`: the
-// newest such commit; `queued`: the commit the landing queue landed this tip as; `reviewed`: a review said land it.
+// newest such commit; `queued`: the commit the landing queue landed this tip as, when the base holds it;
+// `reviewed`: a review said land it. One subject alone is too common a line to name a landing.
 export type LandRecord = { commits: number; matched: number; newest?: string; queued?: string; reviewed?: boolean };
 export function recordOf(r: LandRecord): { at: string; why: string } | undefined {
   if (r.queued) return { at: r.queued, why: "the landing queue landed it" };
-  if (!r.newest || !r.matched) return undefined;
-  if (r.matched >= r.commits) return { at: r.newest, why: r.commits === 1 ? "its commit is on the base by subject" : `its ${r.commits} commits are on the base by subject` };
+  if (!r.newest || r.matched < 2) return undefined;
+  if (r.matched >= r.commits) return { at: r.newest, why: `its ${r.commits} commits are on the base by subject` };
   if (r.reviewed) return { at: r.newest, why: `a review said land it, and ${r.matched} of its ${r.commits} commits are on the base by subject` };
   return undefined;
 }
@@ -93,7 +97,12 @@ export function candidatesOf(baseLog: { sha: string; subject: string }[], subjec
 }
 export function landedWords(l: Landed): string {
   if (l.how === "changed") return `landed as ${l.at.slice(0, 10)} with changes (${l.why})`;
-  return l.by === "patch" ? "every commit of it is on the base by patch id" : `the base holds its every line${l.at ? ` at ${l.at.slice(0, 10)}` : ""}`;
+  if (l.how === "earlier") return `landed as ${l.at.slice(0, 10)}, and the base's tip no longer holds its every line (reverted or edited since)`;
+  return `the base holds its every line at ${l.at.slice(0, 10)}`;
+}
+// What the landed pass and the page call a landing.
+export function landedName(l: Landed): string {
+  return l.how === "whole" ? "landed" : l.how === "earlier" ? "landed, changed since" : "landed with changes";
 }
 
 // What is in a worktree: uncommitted and untracked files, ignored ones (git worktree remove deletes them),
@@ -133,7 +142,7 @@ export function ownTreeFate(s: TreeState): Fate {
 
 // The landed pass of the page: a listed worktree that goes, and whether its branch goes with it. A worktree with
 // anything uncommitted, locked, gone, or with no branch is not in it; a whole landing takes the branch, a changed
-// one leaves it.
+// or older one leaves it.
 export function landedPass(t: { removable: boolean; branch?: string; missing?: boolean; landed?: Landed }): "tree-and-branch" | "tree" | undefined {
   if (!t.removable || !t.branch || t.missing || !t.landed) return undefined;
   return t.landed.how === "whole" ? "tree-and-branch" : "tree";

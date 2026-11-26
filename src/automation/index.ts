@@ -679,7 +679,7 @@ export const automationRoutes: RouteModule = (deps) => {
       POST: (req: any) => attempt(async () => {
         const b = await body(req);
         const list = (Array.isArray(b.worktrees) ? b.worktrees.slice(0, 1000) : []).filter((x: any) => typeof x?.head === "string" && x.head);
-        return json(await leftovers.removeLanded(leftCtx(), list.map((x: any) => ({ ...treeSeen(x), how: x.how === "whole" ? "whole" : "changed" }))));
+        return json(await leftovers.removeLanded(leftCtx(), list.map((x: any) => ({ ...treeSeen(x), how: ["whole", "earlier", "changed"].includes(x.how) ? x.how : "changed" }))));
       }),
     },
     "/api/leftovers/remove-all": {
