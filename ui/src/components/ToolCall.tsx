@@ -281,7 +281,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // What the model says a command does (a shell tool's own `description`): the line says that, and the
   // command's start stands under it, one row. (Only a shell tool's: another tool's `description` is
   // what it writes, an issue's body, not what the call does.)
-  const note = kind === "shell" && !ledger && state !== "unrun" && typeof input.description === "string" ? input.description.trim() : "";
+  // (Not for a command of another harness's the owner denied on its card: its line says it was asked, never what it would do.)
+  const note = kind === "shell" && !ledger && state !== "unrun" && answered?.state !== "denied" && typeof input.description === "string" ? input.description.trim() : "";
   // (A plan update that was not applied says so as its verb, with the reason under its line: no state word, no step.)
   const what = rejected ? "" : waits ? `for ${waitsFor}, up to ${fmtWait(Number(input.timeout_ms ?? 300_000))}` : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : summary(kind, use.name, input, cwd);
   const more = kind === "shell" ? moreLines(use) : 0;
