@@ -109,7 +109,7 @@ const MISSING = /^File does not exist: (\S.*)$/;
 export const normalize = (message: string) => {
   const lines = firstLines(message);
   const missing = lines.length ? MISSING.exec(lines[0]!) : null;
-  if (missing) return fingerprint(`missing ${missing[1]}`);
+  if (missing) return `missing ${missing[1]}`;
   return fingerprint(noIds(lines.join("\n")).replace(/(?:[\w.~-]*\/)+[\w.~@%+-]*/g, "<path>"));
 };
 
