@@ -644,8 +644,8 @@ test("the changed tools carry an urgent mark", () => {
   const marks = { ...toolMarks(claudeTools), ...toolMarks(geminiTools), ...toolMarks(gptTools) };
   expect(marks.Read).toBe("read-through-reader");
   expect(marks.read_file).toBe("read-through-reader");
-  // A shell returns its command's output: the GPT family's tools changed nothing.
-  expect(marks.exec_command).toBe("wait-poll");
+  // A shell returns its command's output; a command still waiting for a heavy slot is not run when a message arrives.
+  expect(marks.exec_command).toBe("wait-poll,slot-steer");
   expect(marks.apply_patch).toBeUndefined();
   expect(marks.Edit).toBe("edit-after-reading");
   expect(marks.replace).toBe("edit-after-reading");

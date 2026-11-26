@@ -51,6 +51,8 @@ const machinesList: Tool = {
 
 const runOn: Tool = {
   name: "keel__run_on",
+  // Kept here (machine "auto"), a command still waiting for a heavy slot is not run when a message arrives.
+  urgent: "slot-steer",
   description: "Run one shell command on another machine of the fleet (by name), in its granted directory or a cwd inside it. The session stays where it is. Waits for a slot in that machine's job queue, and a heavy command (a test suite, a build, a browser) for a slot of that machine's heavy-command pool. machine \"auto\": the owner's placement rules choose, a heavy command counted as heavy; when they keep it here it runs in this session's folder.",
   input_schema: {
     type: "object",
