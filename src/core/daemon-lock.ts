@@ -76,10 +76,9 @@ export function waitForLeaving(stateDir: string, ms = GOING_MS) {
   waitWhile(pid, () => pidState(pid) === "leaving", 25, ms);
 }
 
-// How long the daemon a restart handed the folder to tries for its claim: a
-// start by hand that took the free claim a moment before it lets go at once,
-// since the lock names this one.
-const HANDED_MS = 2000;
+// Bound a start's claim retry while the folder has no other identified owner.
+// This includes a restart handed the folder while a manual start briefly held it.
+const CLAIM_RETRY_MS = 2000;
 
 // Who answers on host:port, if anything does: Bun lets a second server bind a
 // port another process listens on, and both then answer. A Keel daemon says
@@ -119,10 +118,12 @@ export function acquireLock(stateDir: string, goingMs = GOING_MS) {
     process.exit(1);
   };
   let claimed = claimState(stateDir);
-  // The folder was handed to this daemon by the one that restarted, and
-  // something else took the claim a moment ago: a start by hand, which gives
-  // it up as soon as it reads the lock.
-  for (const until = Date.now() + HANDED_MS; !claimed && held().pid === process.pid && Date.now() < until; claimed = claimState(stateDir)) Bun.sleepSync(25);
+  // On a fresh file, two SQLite connections can both fail to promote their
+  // initial read locks. Retry until one gets the claim and records its pid.
+  // A named live owner is refused immediately, as before.
+  for (const until = Date.now() + CLAIM_RETRY_MS; !claimed && !holder(held()) && Date.now() < until; claimed = claimState(stateDir)) {
+    Bun.sleepSync(25 + process.pid % 17);
+  }
   if (!claimed) refuse(held());
   // A daemon named in the lock file holds the folder whatever the claim
   // says, while its process has anything left that runs: a daemon from
