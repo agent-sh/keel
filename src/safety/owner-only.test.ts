@@ -14,7 +14,7 @@ import { geminiTools } from "../tools/gemini.ts";
 import { applyPatchTool, gptTools } from "../tools/gpt.ts";
 import type { Tool } from "../tools/types.ts";
 import { Gate, landing, workspaceBins } from "./gate.ts";
-import { classify, decide, pathsNamed, type CallClass, type Mode } from "./policy.ts";
+import { classify, decide, pathsNamed, unspeltCredentials, type CallClass, type Mode } from "./policy.ts";
 
 const ws = "/w/repo", home = "/home/u", config = ["/home/u/.config/keel-bun", "/w/repo/scripts/guard.sh"];
 const exec = gptTools.find((t) => t.name === "exec_command")!;
@@ -311,6 +311,17 @@ test("an agent's read of a credential is refused whatever else its line does", (
   // An agent's line that reads none is answered as it was.
   for (const command of ["echo hi >> ~/.bashrc; cat notes.txt", "p=/home/u; q=$p/own; echo x > $q/.git/config; cat $q/README.md"])
     expect([command, judged(command, "ask", true), judged(command, "full-auto", true)]).toEqual([command, "owner", "ask-high"]);
+});
+
+test("the decision on a line leaves the credentials it may read through its names, for the gate to keep from the model", () => {
+  const credential = (p: string) => (p.endsWith("/.env") ? ({ path: p, what: "a file of the test's" } as NonNullable<ReturnType<NonNullable<Parameters<typeof decide>[1]["credential"]>>>) : null);
+  const left = (command: string, mode: Mode = "full-auto") => { const named: { reads?: string[] } = {}; decide({ kind: "shell", command, cwd: ws }, facts(mode, { credential, named })); return named.reads; };
+  // Read to its end, the decision's reading is the one the gate would make again.
+  for (const command of ["D=$(pwd); cat $D/.env", "d=$(ls | head -1); cat $d/.env; bash -c 'cat $d/sub/.env'", "S=/w/repo/x; L=$S/logs; cat $L/run.log", "echo hi", "read D; cd $D; cd sub; cat .env"])
+    for (const mode of ["full-auto", "ask"] as Mode[]) expect([command, mode, left(command, mode)]).toEqual([command, mode, unspeltCredentials(command, ws, ws, credential, home)]);
+  expect(left("D=$(pwd); cat $D/.env")).toEqual(["/w/repo/.env", "/home/u/.env"]);
+  // One that stopped at a file the words show whole, or was not made, leaves nothing: the gate reads the line itself.
+  expect([left("p=/home/u; q=$p/proj; cat $q/.env"), left("rm -rf ~; D=$(pwd); cat $D/.env", "auto")]).toEqual([undefined, undefined]);
 });
 
 test("a tool given an owner-only file's path is the owner's; other paths and text are not paths", () => {

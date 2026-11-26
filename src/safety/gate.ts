@@ -324,6 +324,10 @@ function asAddress(word: string): string | null {
 }
 // The folders looked through for a call, which its judgments share (credential-reads.ts).
 const lookKept = new WeakMap<object, LookKept>();
+// What the decision on a call's command read of the credentials it may reach through names the line sets (policy.ts,
+// `Facts.named`), kept with the call: the vault is given them when the call runs.
+const namedKept = new WeakMap<object, { reads?: string[] }>();
+const namedOf = (cls: object) => { let kept = namedKept.get(cls); if (!kept) namedKept.set(cls, kept = {}); return kept; };
 // `links`: how many names the file had (0: none, it was not there), which a write's descriptor is held to (files.ts writeHeld).
 type Look = { path: string; id: string | null; linked: boolean; links: number };
 const lookedAt = new WeakMap<object, Look[]>();
@@ -1441,6 +1445,8 @@ export class Gate {
       // Where credentials are kept, as a path is named and where it lands, with Keel's own folders (credentials.ts).
       // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
       ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look(cls, facts?.looked) }),
+      // (What the decision reads of a line's names is kept for the vault, which reads the line no second time.)
+      ...(cls.kind === "shell" && !session.machine ? { named: namedOf(cls) } : {}),
       ...(session.parent_id ? { agent: true as const } : {}),
       // (Another harness's request: harnessRisk.)
       ...(free ? { harness: true as const } : {}),
@@ -1543,7 +1549,7 @@ export class Gate {
         }
       }
       // (And the credentials it may read through names the line sets, which the rules above do not place.)
-      paths = [...(reads?.paths ?? []), ...unspeltCredentials(cls.command, cls.cwd ?? session.workspace, session.workspace, (p) => this.credentialOf(p))];
+      paths = [...(reads?.paths ?? []), ...(namedKept.get(cls)?.reads ?? unspeltCredentials(cls.command, cls.cwd ?? session.workspace, session.workspace, (p) => this.credentialOf(p)))];
       const links = new Set(reads?.hits.filter((h) => h.foreign).map((h) => h.path));
       // A command in the sandbox reads what the sandbox shows: its own folder's `.env` and kin as they always were,
       // and a store the owner opened for it, whose values are kept from the model as an allowed read's are. What the

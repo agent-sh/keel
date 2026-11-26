@@ -168,6 +168,16 @@ test("a listed file read through names the line sets is the owner's card, refuse
   const kept = () => vault.list(other.id).filter((e) => e.kind === "credential file").length;
   expect(await through(other, "Bash", { command: "read y; cat ~/.aws/$y" })).toBe("ran");
   expect(kept()).toBeGreaterThan(0);
+  // A file the words do not show whole (the folder is a substitution's): the decision's own reading of the line is what the vault is given.
+  const third = (gate as any).store.createSession({ model: "fixture:m", workspace: ws }) as Session;
+  gate.setPerm(third.id, { mode: "full-auto", sandbox: "off" });
+  // (Each path the name may lead to is looked at once: the line is not read a second time for the vault.)
+  const g = gate as any, lookAt = g.credentialOf.bind(g);
+  let looks = 0;
+  g.credentialOf = (p: string) => { if (p.endsWith("/.env")) looks++; return lookAt(p); };
+  try { expect(await through(third, "Bash", { command: "D=$(pwd); cat $D/.env" })).toBe("ran"); } finally { g.credentialOf = lookAt; }
+  expect(looks).toBe(2);
+  expect(vault.list(third.id).filter((e) => e.kind === "credential file").length).toBeGreaterThan(0);
 });
 
 test(".envrc, history and Keel's own files: refused to an agent; the servers and providers say where the masked view is", async () => {

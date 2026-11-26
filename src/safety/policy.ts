@@ -574,6 +574,10 @@ export type Facts = {
   // The credential a path is or is in (credentials.ts), as named and where it lands: the gate's, with Keel's own
   // folders. Without it the path as named is read against the home's stores and the names alone.
   credential?: (path: string) => Credential | null;
+  // Where the decision on a command leaves the credentials it may read through names the line sets (`unspelt`),
+  // when it read the line for them to its end: the gate keeps what they hold from the model without reading the
+  // line again. Left as it was when the reading stopped early or was not made.
+  named?: { reads?: string[] };
   // What the disk adds to a command's words about credentials: the files named like them in a folder it searches,
   // the files a wildcard of it matches (credential-reads.ts).
   look?: DiskLook;
@@ -1036,6 +1040,7 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   // (An answer that is already the owner's is his as it stands. An agent's line is still read for a credential the
   // line's words show whole: that read is refused, and his yes to the rest would run it.)
   const owners = sev >= 3 || ("ask" in d && !!d.ask.ownerOnly);
+  if (shell && f.named && !command.includes("$")) f.named.reads = [];
   if (!shell || "deny" in d || (owners && !f.agent) || !command.includes("$")) return d;
   const u = unspelt(command, f, cwd);
   if (!u) return d;
@@ -1093,7 +1098,7 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // the line gives a value its words do not show (a `read`, a `printf -v`, a `${D:=..}`); `deep`: how many
 // names deep the reading is; `given`: where the line's words give each name a value, a loop's words among them,
 // in the line's order; `cost`: what is left of the bound, and what each path looked at came to.)
-type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null> };
+type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null>; seen: string[] };
 type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, { out: string[]; deep: number }>; deep: number; low: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string; items?: string[] }[]>; from?: { scope: Line; at: number } };
 // (`shown`: every part of the path is in the line's words, with what the written-out line would be told of it.)
 type Unspelt = { word: string; path: string; rule: string; reads?: true; shown?: { why: string; by?: string; api?: string } };
@@ -1208,7 +1213,7 @@ function unspelt(command: string, f: Facts, cwd: string, all?: string[]): Unspel
   if (!parts) return null;
   const home = f.home ?? homeOf();
   const pre = laid(parts, cwd, home);
-  const cost: Cost = { paths: PATHS, tries: 10 * PATHS, over: false, wrote: new Map(), read: new Map() };
+  const cost: Cost = { paths: PATHS, tries: 10 * PATHS, over: false, wrote: new Map(), read: new Map(), seen: [] };
   const top = scopeOf(parts, pre, home, cost);
   // (A script the line hands a shell: its own names, and the line's where its text holds them.)
   let inner: { s: Line; cwd: string }[] | undefined;
@@ -1224,6 +1229,8 @@ function unspelt(command: string, f: Facts, cwd: string, all?: string[]): Unspel
       if (found && (found.shown || !hit)) hit = found;
     }
   }
+  // (Read to its end, in every script: what it met is all the line may read this way.)
+  if (!all && f.named && !cost.over && !hit?.shown) f.named.reads = [...new Set(cost.seen)];
   return hit ?? (cost.over ? "over" : null);
 }
 function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[], pass?: "reads" | "writes"): Unspelt | null {
@@ -1337,7 +1344,8 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[],
       // (A name nobody shows in a folder that is a store of credentials is one of its files, as a wildcard there is.)
       const store = !shown && within ? credentialOf(within, f) : null;
       // (For the vault: the file, or the store whose files the name may be any of.)
-      if (all) { all.push((store ?? cred).path); continue; }
+      (all ?? s.cost.seen).push((store ?? cred).path);
+      if (all) continue;
       // (As a written-out read is judged: in the sandbox only one it shows, outside the session's folder, to an agent.)
       if (f.confinedShown && !(f.confinedShown(cred.path).shown && (cred.foreign || !contains(f.workspace, cred.path)) && !!f.agent)) continue;
       if (shown || store) { const c = store ?? cred; return { word, path: tilded(c.path), rule: CREDENTIAL_RULE, reads: true, shown: { why: c.what, by, ...(c.api ? { api: c.api } : {}) } }; }
