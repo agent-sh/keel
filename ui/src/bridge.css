@@ -1990,7 +1990,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 
 /* A session another harness runs, in the composer's place (OutsideBar.tsx): its state in words, what it
    spent and changed on one quiet line, and the one way on. */
-.k-outside { display: grid; gap: 0.375rem; padding: 0.625rem 0.75rem 0.5rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); }
+.k-outside { display: grid; flex-shrink: 0; gap: 0.375rem; padding: 0.625rem 0.75rem 0.5rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); }
 /* The lines under the head start where its words do: the mark (0.625rem) and the gap (0.625rem). */
 .k-outside-head { display: flex; align-items: center; gap: 0.625rem; }
 .k-outside-head > .k-mark { flex-shrink: 0; }
@@ -2037,8 +2037,8 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* Sends Codex does not hold yet, and the ones it did not take, with what to do. */
 .k-outside-sends { display: grid; gap: 0.25rem; margin-left: 1.25rem; }
 .k-outside-send { display: flex; align-items: center; gap: 0.625rem; min-width: 0; font-size: var(--text-caption); color: var(--muted); }
-.k-outside-send-text { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-.k-outside-send-said { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.k-outside-send-text { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.k-outside-send-said { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .k-outside-send[data-state="lost"] .k-outside-send-said, .k-outside-send[data-state="failed"] .k-outside-send-said { color: var(--st-fail-ink); }
 /* The harness on a list row: the session runs there, not here. */
 .k-row-outside { flex-shrink: 0; padding: 0 0.3125rem; border-radius: var(--radius-xs); background: var(--sunken); color: var(--muted); font-size: var(--text-micro); line-height: 1.25rem; white-space: nowrap; }

@@ -273,6 +273,28 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     const started = readFileSync(`${path}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((m) => m.argv);
     expect(started?.argv).toEqual(["-p", "--resume", id, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--model", "claude-opus-5-5", "--permission-mode", "acceptEdits"]);
 
+    // A long request has its own scroll area on a phone turned sideways.
+    await input.fill(["run: make test", ...Array.from({ length: 28 }, (_, i) => `# Check ${i + 1} of the test plan`)].join("\n"));
+    await bar.getByTestId("outside-send").click();
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    const touch = await page.context().newCDPSession(page);
+    await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(input).toBeInViewport({ ratio: 1 });
+    await expect.poll(() => page.getByTestId("composer-tray").evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    const deny = card.getByTestId("deny");
+    await deny.scrollIntoViewIfNeeded();
+    await expect(deny).toBeInViewport();
+    await expect(input).toBeInViewport({ ratio: 1 });
+    await shoot(page, "outside-answer-claude-card-landscape");
+    await deny.click();
+    await card.getByTestId("deny-send").click();
+    await expect(card).toHaveCount(0);
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await touch.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await touch.detach();
+    await page.setViewportSize({ width: 1920, height: 1040 });
+
     // A plan Claude Code presents is Keel's plan card; approved in Auto edits, Claude Code goes on in acceptEdits.
     await input.fill(`plan the rename ${tag}`);
     await bar.getByTestId("outside-send").click();

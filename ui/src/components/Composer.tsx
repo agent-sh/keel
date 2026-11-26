@@ -1532,7 +1532,7 @@ const CARDS = ["approval", "question", "plan-card", "secret-request", "trust-car
 // oldest one is in view moves nothing: the region keeps its height and its place
 // (the new card is below, under the edge that fades), and goes to the next one
 // when the one in view is answered.
-function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactNode; onAsking?: (on: boolean) => void }) {
+export function Tray({ children, asks, onAsking }: { children?: ReactNode; asks?: ReactNode; onAsking?: (on: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const wait = useRef<HTMLDivElement>(null);
