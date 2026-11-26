@@ -245,6 +245,21 @@ test("no number of other values or names hides the one that leads to a protected
   expect([shell(many), shell(many, "full-auto")]).toEqual(["allow", "allow"]);
 });
 
+test("a name set from itself reads what the line gave it before: an assignment before a loop, a value a builtin read", () => {
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  for (const command of [
+    // The loop's second word holds what the substitution gave the name, not the loop's first word.
+    "p=$(dirname ~/x); for p in x $p/.bashrc; do true; done; echo hi >> $p", "D+=/x; for D in $D/sub ${D}/.ssh; do true; done; cat $D/.bashrc",
+    "F=$(dirname ~/x); for F in .. $F/.ssh; do true; done; cp k $F/authorized_keys",
+    // A value a builtin read, under one the line writes out.
+    "p=x; read p; p=$p/.bashrc; echo hi >> $p", 'p=x; printf -v p %s "$1"; p=$p/.bashrc; echo hi >> $p', "p=x; : ${p:=y}; for p in $p/.bashrc; do true; done; echo hi >> $p",
+  ]) expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-high", "ask-high"]);
+  // With nothing protected in sight the same shapes run as they did.
+  for (const command of ["p=$(dirname src/x); for p in x $p/notes.txt; do true; done; echo hi >> $p", "p=x; read p; p=$p/notes.txt; echo hi >> $p"])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-low", "allow"]);
+  expect(shell("f=a; for f in $f.log $f.txt; do cat $f; done", "full-auto")).toBe("allow");
+});
+
 test("a tool given an owner-only file's path is the owner's; other paths and text are not paths", () => {
   expect(pathsNamed({ path: "~/.bashrc", content: "x", nested: { files: ["/etc/hosts", "relative/a.txt"] }, note: "see /home/u/.bashrc for more" })).toEqual(["~/.bashrc", "/etc/hosts"]);
   const tool = (input: unknown, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "other", paths: pathsNamed(input) }, facts(mode, more)));

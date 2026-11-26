@@ -1084,10 +1084,10 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // (`memo`: what each name may stand for, worked out once; `busy`: the names being worked out, each with what is
 // found for it so far, so one set from itself (`D=$D/sub`) reads what the line gave it before; `taken`: the names
 // the line gives a value its words do not show (a `read`, a `printf -v`, a `${D:=..}`); `deep`: how many
-// names deep the reading is; `given` and `looped`: where the line's words give each name a value, and the loops
-// that take it through their words; `cost`: what is left of the bound, and what each path looked at came to.)
+// names deep the reading is; `given`: where the line's words give each name a value, a loop's words among them,
+// in the line's order; `cost`: what is left of the bound, and what each path looked at came to.)
 type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null> };
-type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; deep: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string }[]>; looped?: Map<string, number[]>; from?: { scope: Line; at: number } };
+type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; deep: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string; items?: string[] }[]>; from?: { scope: Line; at: number } };
 // (`shown`: every part of the path is in the line's words, with what the written-out line would be told of it.)
 type Unspelt = { word: string; path: string; rule: string; reads?: true; shown?: { why: string; by?: string; api?: string } };
 // (A value the words do not show: a candidate that starts with it stands in some folder.)
@@ -1111,16 +1111,14 @@ function scopeOf(parts: Simple[], pre: Laid, home: string, cost: Cost, from?: Li
 // Where the words of a line give each name a value, read once.
 function givenOf(s: Line): NonNullable<Line["given"]> {
   if (s.given) return s.given;
-  const given: NonNullable<Line["given"]> = new Map(), looped: NonNullable<Line["looped"]> = new Map();
-  s.looped = looped;
+  const given: NonNullable<Line["given"]> = new Map();
+  const put = (n: string, row: { at: number; k: number; op: string; value: string; items?: string[] }) => { const l = given.get(n); if (l) l.push(row); else given.set(n, [row]); };
   s.parts.forEach((q, at) => {
     if (q.heredoc) return;
-    if (q.loop) { const l = looped.get(q.loop.name); if (l) l.push(at); else looped.set(q.loop.name, [at]); }
+    if (q.loop) put(q.loop.name, { at, k: -1, op: "in", value: "", items: q.loop.items });
     q.words.forEach((w, k) => {
       const m = w.length > WORD ? /^([A-Za-z_][A-Za-z0-9_]*)(\+?=|\[)/.exec(w) : SETS_NAME.exec(w);
-      if (!m) return;
-      const row = { at, k, op: m[2]!, value: m[3] ?? w.slice(m[0].length) }, l = given.get(m[1]!);
-      if (l) l.push(row); else given.set(m[1]!, [row]);
+      if (m) put(m[1]!, { at, k, op: m[2]!, value: m[3] ?? w.slice(m[0].length) });
     });
   });
   return (s.given = given);
@@ -1148,12 +1146,15 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
   if (sofar) return sofar.length ? [...sofar] : [SOMEWHERE];
   // (Names set from names, deeper than a line goes: not followed, and not known to lead nowhere protected.)
   if (s.deep >= DEEP) { s.cost.over = true; return []; }
-  const out: string[] = [];
+  // (A name a builtin reads a value into, a loop over words the parser did not keep, a `${D:=..}`: a value the
+  // words do not show, whatever else the line gives the name, and what a value set from the name itself may hold.)
+  const out: string[] = s.taken.has(n) ? [SOMEWHERE] : [];
   s.busy.set(n, out);
   s.deep++;
-  const given = givenOf(s).get(n) ?? [];
-  for (const j of s.looped!.get(n) ?? []) for (const item of s.parts[j]!.loop!.items) out.push(...wordStands(item, j, s, home));
-  for (const { at: j, k, op, value } of given) {
+  // (In the line's order, a loop's words and an assignment alike: one that holds the name itself reads what the
+  // line gave it before.)
+  for (const { at: j, k, op, value, items } of givenOf(s).get(n) ?? []) {
+    if (items) { for (const item of items) out.push(...wordStands(item, j, s, home)); continue; }
     const q = s.parts[j]!;
     // (An array, an addition, or a word that only starts like an assignment: a script handed to ssh, `X=1; cmd` in quotes.)
     if (op !== "=" || value.startsWith("(") || (value.length <= WORD && /[\s;&|<>()]/.test(value.replace(/\$\(\.\.\.\)|`\.\.\.`/g, "")))) { out.push(SOMEWHERE); continue; }
@@ -1162,9 +1163,6 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
     // what it prints: `f=$(sqlite3 store.db "select log ...")` names the store and gives a log's path.)
     for (const c of q.how?.[q.dyn?.indexOf(k) ?? -1]?.subs.flat() ?? []) if (PRINTS.test(baseName(c.words[0]))) for (const a of c.words.slice(1)) if (!a.startsWith("-")) out.push(...wordStands(a, j, s, home).map(loose));
   }
-  // (A name a builtin reads a value into, a loop over words the parser did not keep, a `${D:=..}`: a value the
-  // words do not show, whatever else the line gives the name.)
-  if (s.taken.has(n)) out.push(SOMEWHERE);
   const all = each(out.length || s.cost.over ? out : [SOMEWHERE], s);
   s.deep--;
   s.busy.delete(n);
