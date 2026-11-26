@@ -90,12 +90,15 @@ export type SandboxFacts = {
 // `refused`: why the cap is not in force. `alone`: the user manager takes OOMPolicy=continue on a scope (undefined:
 // not asked yet). `live`: the slice's memory.max as the kernel has it, when the slice runs now.
 // `shared`: why this daemon leaves the slice to the owner's daemon (src/tools/job-slice.ts sliceKeeper).
-export type MemoryCapFacts = { cap: number | null; noSlice?: string; pending?: boolean; refused?: string; shared?: string; alone?: boolean; aloneWhy?: string; live?: string };
+export type MemoryCapFacts = { cap: number | null; noSlice?: string; pending?: boolean; refused?: string; shared?: string; keeperError?: string; alone?: boolean; aloneWhy?: string; live?: string };
 
 export function memoryCapRow(f: MemoryCapFacts): Row {
   const link = { section: "resources" };
   const base = { id: "sandbox:memory", group: "sandbox" as const, link, how: "read the setting job_slice.unattended_memory_max and what systemctl set-property on app-keelunattended.slice answered" };
   const liveText = f.live === undefined ? "" : f.live === "max" ? " Its memory.max is max now." : ` Its memory.max is ${gb(Number(f.live))} now.`;
+  if (f.keeperError) return { ...base, level: "warning", title: "could not check which daemon sets the unattended memory cap",
+    detail: `systemctl could not read MainPID for keel-bun.service: ${f.keeperError}. The slice is left unchanged. Keel retries in one minute.`,
+    how: "ran systemctl --user show -p MainPID --value keel-bun.service" };
   if (f.shared) return { ...base, level: "ok", title: "this daemon leaves the unattended slice's memory cap to the owner's daemon",
     detail: `${f.shared}: only the daemon of the default state folder or of keel-bun.service sets it. Its unattended commands still go in app-keelunattended.slice, under what that daemon set.${liveText}` };
   if (f.cap === null) {

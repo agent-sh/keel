@@ -475,7 +475,7 @@ export function placeOf(sessionId: string, byOwner = false): { unit: string; dir
 // weighs what any slice does, still one share for all its jobs). `memory`: the unattended slice's memory cap
 // and whether it is in force. `alone`: the user manager takes OOMPolicy=continue on a scope (probed once).
 export type MemoryFacts = { bytes: number | null; pending?: true; refused?: string };
-export type ScopeAt = { slice?: string; why?: string; weights?: string; memory?: MemoryFacts; alone?: boolean; aloneWhy?: string; keeps?: true; shared?: string };
+export type ScopeAt = { slice?: string; why?: string; weights?: string; memory?: MemoryFacts; alone?: boolean; aloneWhy?: string; keeps?: true; shared?: string; keeperError?: string };
 let scopeAt: ScopeAt | undefined;
 export function jobScope(): ScopeAt {
   if (scopeAt) return scopeAt;
@@ -488,12 +488,7 @@ export function jobScope(): ScopeAt {
   const at: ScopeAt = (scopeAt = { slice, memory: { bytes: unattendedCap(), pending: true } });
   // Only the owner's daemon sets the shared slice's properties (sliceKeeper); `keeps` once that is known,
   // `shared` why not.
-  void keeperWhy().then((why) => {
-    if (why) { at.shared = why; at.memory = { bytes: unattendedCap(), refused: why }; return; }
-    at.keeps = true;
-    weighUnattended(at);
-    capUnattended(at);
-  });
+  checkKeeper(at);
   probeAlone(at);
   return at;
 }
@@ -501,16 +496,33 @@ export function jobScope(): ScopeAt {
 // The state folder of the daemon this process runs (keepSliceFor, from startDaemon); none in a test or a client.
 let daemonState: string | undefined;
 export function keepSliceFor(stateDir: string) { daemonState = stateDir; }
+
+// A failed lookup cannot authorize a write to a shared slice, or tell us another daemon owns it.
+function checkKeeper(at: ScopeAt) {
+  void keeperWhy().then((why) => {
+    delete at.keeperError;
+    if (why) { at.shared = why; at.memory = { bytes: unattendedCap(), refused: why }; return; }
+    at.keeps = true;
+    weighUnattended(at);
+    capUnattended(at);
+  }, (e) => {
+    at.keeperError = String(e?.message ?? e).slice(0, 200);
+    setTimeout(() => checkKeeper(at), 60_000).unref();
+  });
+}
+
 async function keeperWhy(): Promise<string | undefined> {
   // A test shares the user manager of the machine it runs on: it never changes that manager's slices.
   if (process.env.NODE_ENV === "test") return "a test does not change the user manager's slices";
   let unitPid: number | undefined;
   if (daemonState !== undefined && daemonState !== xdgStateDir()) {
-    try {
-      const p = Bun.spawn(["systemctl", "--user", "show", "-p", "MainPID", "--value", "keel-bun.service"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-      const r = await outputOf(p, { where: "keel-bun.service pid", timeoutMs: 10_000 });
-      if (r.code === 0) unitPid = Number(r.out.trim()) || undefined;
-    } catch {}
+    const p = Bun.spawn(["systemctl", "--user", "show", "-p", "MainPID", "--value", "keel-bun.service"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const r = await outputOf(p, { where: "keel-bun.service pid", timeoutMs: 10_000 });
+    if (r.timedOut) throw new Error("did not answer within 10 seconds");
+    if (r.code !== 0) throw new Error(`exited ${r.code}`);
+    const value = r.out.trim();
+    if (value && !/^\d+$/.test(value)) throw new Error("returned an invalid PID");
+    unitPid = Number(value) || undefined;
   }
   return sliceKeeper({ stateDir: daemonState, defaultDir: xdgStateDir(), pid: process.pid, unitPid });
 }

@@ -164,3 +164,15 @@ test("the unattended memory cap says its size and whether it is in force; nothin
   expect(shared).toMatchObject({ level: "ok", title: "this daemon leaves the unattended slice's memory cap to the owner's daemon" });
   expect(shared.detail).toContain("state folder of its own");
 });
+
+test("a failed service PID query warns even when the memory cap is disabled", () => {
+  for (const cap of [24 * 1024 ** 3, null]) {
+    const facts = { cap, keeperError: "exited 1", live: "max" };
+    const row = memoryCapRow(facts);
+    expect(row.level).toBe("warning");
+    expect(row.detail).toContain("keel-bun.service");
+    expect(row.detail).toContain("MainPID");
+    expect(row.detail).toContain("exited 1");
+    expect(row.detail).toContain("one minute");
+  }
+});
