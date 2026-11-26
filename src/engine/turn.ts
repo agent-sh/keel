@@ -2193,8 +2193,9 @@ export class Engine {
   // may; a model that does not resolve has no cache to keep.
   private async coldOf(session: Session): Promise<string | undefined> {
     const r = await this.providers.resolve(session.model).catch(() => undefined);
-    // (Read off the loop first: the session in hand may be another's parent, not in memory.)
-    if (r) await this.store.warm(session.id);
+    // (Read off the loop first: the session in hand may be another's parent, not in memory. Only its
+    // context: coldWhy reads the last checkpoint and what follows it, never a body from before.)
+    if (r) await this.warmContext(session.id);
     return r ? this.coldWhy(session.id, r.provider, r.info) : "the model is not available";
   }
 
