@@ -60,7 +60,7 @@ test("acp client subagents", async ({ page, request }) => {
     await expect.poll(async () => (await agents()).find((a) => a.id === docs.id)?.status).toBe("running");
     await page.getByTestId("work-step").locator(".k-line[data-step]").click();
     await cards.filter({ hasText: "Doc checker" }).getByTestId("agent-call-stop").click();
-    await page.getByRole("button", { name: "Stop agent" }).click();
+    await page.getByRole("alertdialog", { name: 'Stop "Doc checker"?' }).getByTestId("confirm-action").click();
     await expect.poll(async () => (await agents()).find((a) => a.id === docs.id)?.status, { timeout: 30_000 }).toBe("stopped");
     expect((await agents()).find((a) => a.id === test_.id)?.status).toBe("completed");
     // The session's own turn ends with what the agent said of its children.
