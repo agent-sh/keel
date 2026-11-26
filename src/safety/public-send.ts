@@ -14,7 +14,7 @@ import { hostname, userInfo } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 import { settings } from "../admin/settings.ts";
 import { timed } from "../admin/stall.ts";
-import { git, gitEach, gitEnv } from "../core/git.ts";
+import { git, gitEach, gitEnv, locate, realDir } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
 import { homeDir } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
@@ -24,10 +24,12 @@ import { accountNames } from "./account-settings.ts";
 import { ghBase, pushRemote, repoOf, type Remotes } from "./accounts.ts";
 import { gitCall } from "./autonomy.ts";
 import { ownerWords } from "./judge.ts";
-import { remotesIn } from "./looked.ts";
+import { realAt, remotesIn, rewritesOwn } from "./looked.ts";
 import { matcher, say, sentencesOf, type Finding, type Unit, type Words } from "./private-words.ts";
 import { registerPrivateSettings } from "./private-settings.ts";
+import { reboundBy } from "./policy.ts";
 import { laid } from "./risk.ts";
+import { PLAIN_GIT, follow, makerOf, type Maker, type Over } from "./line-makes.ts";
 import { narrow, untilde } from "./line-vars.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { splitCommand, type Simple } from "./shell.ts";
@@ -61,12 +63,21 @@ const TREE_FILES = 2_000;
 const place = (dir: string | null, f: string): string => { const w = untilde(f, homeDir()); return isAbsolute(w) ? resolve(w) : dir ? resolve(dir, w) : ""; };
 type Maybe = string | null; // null: its text cannot be known from the command line
 type Msg = { where: string; text: Maybe; why?: string };
-type Tree = { dir: string | null; untracked: boolean };
+type Tree = { dir: string | null; untracked: boolean; made?: Maker; loose?: true; over?: Over };
 type Same = { messages: Msg[]; trees: Tree[] };
 // What an earlier part of the same command line writes to a file: its text, or null when it cannot be known.
 type Written = Map<string, Maybe>;
+// `made`: what the same line made the folder a push or a commit runs in, while it stands as made with nothing but git's
+// own plain commands since (line-makes.ts); `loose`: the line makes a repository the folder would be in before it at
+// all, `over`: where (line-makes.ts). Such a repository is not on the disk when the line is read.
+// `added`: the remotes the line gave an address before the push, in the folder the push runs in. `rewired`: the line
+// changes where remotes lead in a way that is not followed, so where the push goes is not read.
+// What a line gives a remote: `how` it does (`git remote add`, `set-url`, `set-url --push`). `sure`: the push runs only
+// when that command worked, with nothing but git's own plain commands between (a remote it added is then new, and one
+// it gave another address has it). `again`: the line gave the name an address before this one too.
+type Given = { url: string; how: "add" | "url" | "push"; sure?: true; again?: true };
 type Act =
-  | { is: "push"; dir: string | null; args: string[] }
+  | { is: "push"; dir: string | null; args: string[]; made?: Maker; loose?: true; over?: Over; added?: ReadonlyMap<string, Given>; rewired?: true }
   | { is: "gh"; dir: string | null; send: GhSend; part: Simple; doc?: string; feed: () => Promise<Maybe>; written: Written };
 
 type Spec = { valued: string[]; title: string[]; body: string[]; file: string[]; tag?: true; files?: true; repo?: true; open?: string[] };
@@ -249,26 +260,54 @@ const HOME_SET = /(?:^|[\s;&|(])(?:(?:export|declare|typeset|readonly)\s+(?:-\w+
 const NOT_HOME = "/HOME-is-set-on-this-line";
 const homeKnown = (command: string) => (HOME_SET.test(command) ? command.replace(/(^|[\s='"(;&|])(?:~|\$\{HOME\}|\$HOME)(?=\/|[\s'";&|)]|$)/g, `$1${NOT_HOME}`) : command);
 
-async function actsOf(command: string, cwd: string, home: string, depth = 0): Promise<{ acts: Act[]; same: Same }> {
+// The git commands between a `git remote add` and a push that leave the remote as it was added and the repository in place.
+const CALM_GIT = new Set(["add", "commit", "status", "branch", "checkout", "switch", "tag", "log", "diff", "show"]);
+// `from`: what the line a script is part of did before it: `rewired`, and `makes`, whether it makes a repository a
+// folder would be in.
+async function actsOf(command: string, cwd: string, home: string, depth = 0, from?: { rewired: boolean; makes: (dir: string) => boolean }): Promise<{ acts: Act[]; same: Same; rewired: boolean }> {
   const same: Same = { messages: [], trees: [] };
   const line = homeKnown(command);
   const written0 = resolvedLine(line, home) ?? line;
   const parts = splitCommand(narrow(written0, home) ?? written0);
-  if (!parts) return { acts: [], same };
+  if (!parts) return { acts: [], same, rewired: !!from?.rewired };
   const pre = laid(parts, cwd, home);
   const docAt = docsAt(parts, command);
   const written = await writtenIn(parts, pre.dirs, cwd, docAt);
   const out: Act[] = [];
+  // The folders the line's own git makes as it goes: one of them is not on the disk yet.
+  // (A folder git is given with a `..` in it is where the disk walks it: each is asked first, off the loop and within
+  // a time limit, and one the disk did not answer for is a folder that is not read.)
+  const walks = new Map<string, string | null>();
+  for (let i = 0; i < parts.length; i++) if (!parts[i]!.heredoc) makerOf(pre.runs[i]!.words, pre.dirs[i] ?? null, (p) => { walks.set(p, null); return null; });
+  await Promise.all([...walks.keys()].map(async (p) => { const r = await realAt(p); walks.set(p, r === "late" ? null : r); }));
+  const makes = follow(PLAIN_GIT, from?.makes, false, (p) => walks.get(p) ?? null, parts);
+  // The remotes the line gives an address before a push (`git remote add NAME URL`, `set-url NAME URL`), by the folder
+  // each is given in; `rewired`: the line changes where remotes lead some other way (a rename, a removal, a second
+  // address, a setting, a config of its own: what the account rules do not place a push by, policy.ts), so where a
+  // remote's name leads is not known. (Anywhere on the line: a setting given for the push itself is one.)
+  const added = new Map<string, Map<string, Given & { at: number }>>();
+  let rewired = !!from?.rewired || !!reboundBy(parts);
+  // `cut`: the last part that is not one of git's own plain commands joined to the next by `&&`.
+  let last = -1, cut = -1;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!;
     if (part.heredoc) continue;
+    if (last >= 0) makes.step(parts[last]!, pre.runs[last]!, pre.dirs[last] ?? null);
+    last = i;
     const words = pre.runs[i]!.words;
     const dir = pre.dirs[i] ?? null;
     const prog = basename(words[0] ?? "");
+    const madeAt = (d: string | null) => ({ ...(d && makes.mayHold(d) ? { loose: true as const, over: makes.over(d) } : {}) });
+    // (Until the part shows as one of git's own plain commands, run where the line is, that the next runs only after.)
+    const was = cut;
+    cut = i;
+    const joined = !part.nested && !part.flow && !part.unknown && !part.redirects && part.led === undefined && part.sep === "&&" && !pre.runs[i]!.set.length && part.words[0] === "git";
     if (/^(sh|bash|zsh|dash|ksh)$/.test(prog) && depth < 2) {
       const c = words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x));
       if (c > 0 && words[c + 1] !== undefined) {
-        const inner = await actsOf(words[c + 1]!, dir ?? cwd, home, depth + 1);
+        const inner = await actsOf(words[c + 1]!, dir ?? cwd, home, depth + 1, { rewired: rewired || added.size > 0, makes: makes.mayHold });
+        // (What a script does to the remotes is not carried out of it: after one that changes them, they are not read.)
+        if (inner.rewired) rewired = true;
         out.push(...inner.acts);
         same.messages.push(...inner.same.messages);
         same.trees.push(...inner.same.trees);
@@ -278,7 +317,29 @@ async function actsOf(command: string, cwd: string, home: string, depth = 0): Pr
       const at = g?.sub ?? (["push", "commit", "tag", "add"].find((w) => words.includes(w)) ?? "");
       const args = g?.args ?? words.slice(words.indexOf(at) + 1);
       const where = g ? g.dir : dir;
-      if (at === "push") out.push({ is: "push", dir: where, args });
+      const here = added.get(where ?? "");
+      if (joined && !!g && where === dir && CALM_GIT.has(at)) cut = was;
+      if (at === "push") {
+        // (A remote given an address in another folder may be this repository's too: not followed.)
+        const given = here ? new Map([...here].map(([n, v]) => [n, { url: v.url, how: v.how, ...(v.at > was ? { sure: true as const } : {}), ...(v.again ? { again: true as const } : {}) }] as [string, Given])) : undefined;
+        out.push({ is: "push", dir: where, args, ...madeAt(where), ...(given ? { added: given } : {}), ...(rewired || added.size > (here ? 1 : 0) ? { rewired: true as const } : {}) });
+      }
+      else if (at === "remote" || (!g && words.includes("remote"))) {
+        const rest = g?.sub === "remote" ? args : words.slice(words.indexOf("remote") + 1);
+        const verb = rest.find((x) => !x.startsWith("-"));
+        const ops: string[] = [], opts: string[] = [];
+        for (let n = 0; n < rest.length; n++) { const x = rest[n]!; if (x === "-t" || x === "-m") n++; else if (x.startsWith("-")) opts.push(x); else if (n > rest.indexOf(verb ?? "")) ops.push(x); }
+        // (git remote add NAME URL, set-url [--push] NAME URL, with no option that says more of where it leads:
+        // --mirror=push sends every ref, --add and --delete keep or drop other addresses. A second add of a name fails.)
+        const how = verb === "add" ? "add" as const : verb === "set-url" ? (opts.includes("--push") ? "push" as const : "url" as const) : undefined;
+        const plain = how !== undefined && !!g && !/[$`*?{}]/.test(ops.join("")) && ops.length === 2 && opts.every((x) => (how === "push" ? x === "--push" : how === "add" && /^(-f|--fetch|--tags|--no-tags)$/.test(x))) && !(how === "add" && here?.has(ops[0]!));
+        if (plain) {
+          if (!here) added.set(where ?? "", new Map());
+          added.get(where ?? "")!.set(ops[0]!, { url: ops[1]!, how, at: i, ...(here?.has(ops[0]!) ? { again: true as const } : {}) });
+          if (joined && where === dir) cut = was;
+        }
+        else if (verb !== undefined && !/^(show|get-url|prune|update)$/.test(verb)) rewired = true;
+      }
       else if (at === "commit" || at === "tag") {
         const m = messagesOf(args, `git ${at}`);
         same.messages.push(...m.texts);
@@ -291,7 +352,7 @@ async function actsOf(command: string, cwd: string, home: string, depth = 0): Pr
       }
       if (TREE_SUBS.has(at)) {
         const has = same.trees.find((t) => t.dir === where);
-        if (has) has.untracked ||= at === "add"; else same.trees.push({ dir: where, untracked: at === "add" });
+        if (has) has.untracked ||= at === "add"; else same.trees.push({ dir: where, untracked: at === "add", ...madeAt(where) });
       }
     } else if (prog === "gh") {
       const send = ghParse(words);
@@ -300,7 +361,7 @@ async function actsOf(command: string, cwd: string, home: string, depth = 0): Pr
       out.push({ is: "gh", dir, send, part, doc: docAt[i] ?? (next?.heredoc ? next.doc : undefined), feed: () => fedBy(parts, i, dir ?? cwd, docAt), written });
     }
   }
-  return { acts: out, same };
+  return { acts: out, same, rewired: rewired || added.size > 0 };
 }
 
 // ---- where it goes ----
@@ -319,13 +380,12 @@ type Target = { repo: Repo | null; remote?: string; remotes: Remotes | null };
 async function remotesAt(dir: string | null): Promise<Remotes | null> {
   if (!dir) return null;
   const r = await remotesIn(dir);
-  return r === "late" ? null : r;
+  // (A config that includes another file may send a push elsewhere than its remotes say: not read as known.)
+  return r === "late" || r?.includes ? null : r;
 }
 
-// What a repository's settings pick for a push, written as a folder of this machine.
-const PICKED_FOLDER = /^(\.{1,2}|\/.*|\.{1,2}\/.*)$/;
-// Where a `git push` sends: the remote it names (or the one git picks) and the repository that remote is.
-async function pushTarget(dir: string, args: string[]): Promise<Target & { refs: string[]; wide: string[]; local?: true; del?: true }> {
+// The words of a push past its options: the remote or address and the revisions, how wide it sends, whether it deletes.
+function pushWords(args: string[]): { pos: string[]; wide: string[]; del: boolean } {
   const pos: string[] = [], wide: string[] = [];
   let del = false;
   for (let i = 0; i < args.length; i++) {
@@ -340,24 +400,101 @@ async function pushTarget(dir: string, args: string[]): Promise<Target & { refs:
     else if (a === "--mirror") wide.push("--all");
     else if (!a.startsWith("-") || a === "-") pos.push(a);
   }
-  const remotes = await remotesAt(dir);
+  return { pos, wide, del };
+}
+// A word that names a folder of this machine, as a push reads it.
+const LOCAL_PLACE = /^(\.{1,2}|~.*|\/.*|file:.*|\.{1,2}\/.*)$/;
+// What a repository's settings pick for a push, written as a folder of this machine.
+const PICKED_FOLDER = /^(\.{1,2}|\/.*|\.{1,2}\/.*)$/;
+// Where a `git push` sends: the remote it names (or the one git picks) and the repository that remote is.
+// `added`: the remotes the same line gave an address before the push, in the folder it runs in. `rewired`: the line
+// changes where remotes lead in a way that is not followed: the place is not read (no repository, and not a folder).
+// `picked`: the push names no remote, so the repository's settings pick it.
+// `fresh`: the place is not the one the clone's remote-tracking refs are of (an address the line gave, or one not
+// read): what it already has is not known, and every commit of the revisions counts.
+// `also`: or the place the disk has for the remote (null: one that is not read): a command of the line that gives it
+// another address may not have run before the push.
+// An address written on the line (one it gave a remote, or one the push names) is where the push goes only while no
+// url rewrite is in force there: with one (url.<base>.insteadOf or .pushInsteadOf in the repository's config or the
+// owner's, or a config that includes a file, which may hold one) git may send it elsewhere, and the place is not read.
+// (The remotes the disk holds are listed as git rewrites them.)
+type Sent = Target & { also?: Repo | null; refs: string[]; wide: string[]; local?: true; del?: true; picked?: true; fresh?: true };
+const ADDRESS = /^[a-z][a-z0-9+.-]*:\/\/|@/i;
+const sameRepo = (a: Repo | null, b: Repo | null) => !!a && !!b && a.host === b.host && a.path.join("/") === b.path.join("/");
+async function pushTarget(dir: string, args: string[], added?: ReadonlyMap<string, Given>, rewired = false): Promise<Sent> {
+  const { pos, wide, del } = pushWords(args);
+  const listed = await remotesIn(dir);
+  const remotes = listed === "late" || listed?.includes ? null : listed;
+  const rewrites = listed === "late" || !!listed?.includes || !!listed?.rewrites;
   const named = pos[0];
+  const there: Sent = { repo: null, remotes, refs: [], wide: [], local: true };
   // A push to a folder of this machine (`git push . x:y`, a path, file://) goes to no public place.
-  if (named !== undefined && !(remotes && (named in remotes.push || named in remotes.fetch)) && (/^(\.{1,2}|~.*|\/.*|file:.*)$/.test(named) || /^\.{1,2}\//.test(named))) return { repo: null, remotes, refs: [], wide: [], local: true };
-  const known = (n: string) => !!remotes && (n in remotes.push || n in remotes.fetch);
-  let remote: string | undefined, url: string | undefined, refs = pos.slice(1);
+  const known = (n: string) => !!added?.has(n) || (!!remotes && (n in remotes.push || n in remotes.fetch));
+  if (!rewired && named !== undefined && !known(named) && LOCAL_PLACE.test(named)) return there;
+  let remote: string | undefined, url: string | undefined, refs = pos.slice(1), picked = false, fresh = rewired;
   if (named !== undefined && known(named)) remote = named;
   else if (named !== undefined && slug(named)) { url = named; }
-  else if (named !== undefined) { refs = pos; remote = remotes ? pushRemote(remotes) : undefined; }
-  else remote = remotes ? pushRemote(remotes) : undefined;
+  else if (named !== undefined) { refs = pos; remote = remotes ? pushRemote(remotes) : undefined; picked = true; }
+  else { remote = remotes ? pushRemote(remotes) : undefined; picked = true; }
+  // A remote the line gave an address. Where its name leads by then depends on what the repository holds for it:
+  // `git remote add` fails for a name that is there (the push goes where the disk says), `set-url` leaves a push address
+  // of its own in place, `set-url --push` leaves the others of several. Where the disk does not settle it (no
+  // repository read here among them), the place is not read.
+  // A `set-url` the push may run without (not joined to it by `&&`) may not have run: the remote then leads where the
+  // disk says, which counts too (`also`); where the line gave the name an address before as well, the place is not read.
+  const given = remote !== undefined ? added?.get(remote) : undefined;
+  let lost = rewired, also: string | undefined, folder = false;
+  if (url !== undefined && rewrites) lost = true;
+  if (given && !lost) {
+    const push = remotes?.push[remote!] ?? [], fetch = remotes?.fetch[remote!];
+    const has = push.length > 0 || fetch !== undefined;
+    const leads = !remotes ? null
+      : given.how === "add" ? (has ? undefined : given.url)
+      : given.how === "url" ? (!has || (push.length === 1 && push[0] === fetch) ? given.url : null)
+      : push.length <= 1 ? given.url : null;
+    const unsure = given.how !== "add" && !given.sure, was = push[0] ?? fetch;
+    if (leads === null || (unsure && given.again) || (leads !== undefined && rewrites)) lost = true;
+    else if (leads !== undefined) {
+      if (unsure && was !== undefined && was !== leads && !LOCAL_PLACE.test(was)) also = was;
+      if (LOCAL_PLACE.test(leads)) { if (also === undefined) return there; folder = true; }
+      url = leads;
+      // (The remote-tracking refs under the name are of the address it had: of the same repository, or of another.)
+      if (folder || !sameRepo(slug(leads), slug(was ?? ""))) fresh = true;
+    }
+  }
+  const or = also === undefined ? {} : { also: ADDRESS.test(also) ? slug(also) : null };
   // (A remote the repository's settings picked that is no remote's name is an address to git.)
-  if (remote && remotes) url = remotes.push[remote]?.[0] ?? remotes.fetch[remote] ?? (/^[a-z][a-z0-9+.-]*:\/\/|@/i.test(remote) ? remote : undefined);
+  if (url === undefined && remote && remotes) url = remotes.push[remote]?.[0] ?? remotes.fetch[remote] ?? (ADDRESS.test(remote) ? remote : undefined);
   // (One they picked that is neither is a folder of this machine only when it is written as one: `.`, as a branch that
   // follows a local one has it, `..`, or a path that starts with `/`, `./` or `../`. Any other is a place the rules do
   // not read: a name a url rewrite makes an address of, or one of a file under .git/remotes or .git/branches, which
   // holds an address. It is taken as public.)
-  if (remote && remotes && url === undefined && named === undefined && PICKED_FOLDER.test(remote) && remote === (remotes.branchPushRemote || remotes.pushDefault || remotes.branchRemote)) return { repo: null, remotes, refs: [], wide: [], local: true };
-  return { repo: url ? slug(url) : null, remote, remotes, refs, wide, ...(del ? { del: true as const } : {}) };
+  if (!lost && remote && remotes && url === undefined && named === undefined && PICKED_FOLDER.test(remote) && remote === (remotes.branchPushRemote || remotes.pushDefault || remotes.branchRemote)) return there;
+  if (lost) return { repo: null, remotes, refs, wide, fresh: true, ...(del ? { del: true as const } : {}), ...(picked ? { picked: true as const } : {}) };
+  return { repo: url && !folder ? slug(url) : null, ...(folder ? { local: true as const } : {}), ...or, ...(fresh ? {} : { remote }), remotes, refs, wide, ...(del ? { del: true as const } : {}), ...(picked ? { picked: true as const } : {}), ...(fresh ? { fresh: true as const } : {}) };
+}
+// What an address in a repository's settings is to a push: a folder of this machine (no `:` before its first `/`), a
+// repository, or null for a place the rules do not read.
+function placeOf(u: string): Repo | "local" | null {
+  if (LOCAL_PLACE.test(u) || PICKED_FOLDER.test(u)) return "local";
+  return /^[a-z][a-z0-9+.-]*:\/\/|@/i.test(u) ? slug(u) : null;
+}
+
+// The revisions of a push that runs in a checkout the same line added, as a push of the repository it was added to:
+// the new branch, HEAD or @ there is the commit the checkout starts from, with what follows it (HEAD~2, @^), sent under
+// the branch's name. null: one of them is counted from a commit the words do not settle (git picked where the checkout
+// starts), or from the checkout's own history (@{...}), which the repository it was added to does not hold.
+function worktreeRefs(refs: string[], m: Extract<Maker, { by: "worktree" }>): string[] | null {
+  const out: string[] = [];
+  for (const r of refs.length ? refs : ["HEAD"]) {
+    const [src, dst] = r.replace(/^\+/, "").split(":") as [string, string | undefined];
+    const lead = /^(HEAD|@)(?=$|[~^@{])/.exec(src)?.[0] ?? (m.branch && src.startsWith(m.branch) && /^($|[~^@])/.test(src.slice(m.branch.length)) ? m.branch : undefined);
+    if (lead === undefined) { out.push(r); continue; }
+    const rest = src.slice(lead.length);
+    if (m.start === undefined || rest.includes("@") || rest.startsWith("{")) return null;
+    out.push(`${m.start}${rest}:${dst || m.branch || "HEAD"}`);
+  }
+  return out;
 }
 
 // ---- what is in it ----
@@ -387,7 +524,7 @@ const notRepo = (r: { err: string }) => /not a git repository/i.test(r.err);
 const why = (what: string, r: { code: number; err: string }) => (r.code === -1 ? `${what} was cut off (timed out)` : `${what} failed${r.err.trim() ? `: ${r.err.trim().split("\n")[0]!.slice(0, 160)}` : ""}`);
 
 // The commits a push would send: those the remote's tracking refs lack, from the revisions it names.
-async function pushUnits(dir: string, t: Awaited<ReturnType<typeof pushTarget>>, budget: Budget, base: Base): Promise<Read> {
+async function pushUnits(dir: string, t: Sent, budget: Budget, base: Base): Promise<Read> {
   // A delete sends no commit and no text: the name goes away.
   if (t.del) return { units: [], unread: [] };
   const revs: string[] = [...t.wide];
@@ -414,7 +551,7 @@ async function pushUnits(dir: string, t: Awaited<ReturnType<typeof pushTarget>>,
   const shown = [...new Set(names.filter((n) => n !== "HEAD"))];
   if (shown.length) units.push({ where: "git push branch names", first: 1, text: shown.join("\n"), known: base.branch });
   const args = ["log", "--no-color", "--no-textconv", "--no-ext-diff", "--no-renames", "-p", "-U0", "--format=%x00H%h%x00%B%x00P%an <%ae>%n%cn <%ce>%x00D",
-    ...revs, "--not", t.remote ? `--remotes=${t.remote}` : "--remotes", "--"];
+    ...revs, ...(t.fresh ? [] : ["--not", t.remote ? `--remotes=${t.remote}` : "--remotes"]), "--"];
   let hash = "", stage: "head" | "message" | "people" | "diff" = "head";
   const r = await gitEach(dir, args, { read: true, timeout: LOG_MS }, (entries) => {
     for (const e of entries) {
@@ -442,7 +579,7 @@ async function pushUnits(dir: string, t: Awaited<ReturnType<typeof pushTarget>>,
 // What the repository a push goes to already has, by the remote-tracking refs the clone holds: its branch names and the
 // files of the branches this push goes to (or the remote's default). A name it has says nothing new.
 type Base = { branch(name: string): Promise<boolean>; file(path: string): Promise<boolean> };
-function baseOf(dir: string, t: Awaited<ReturnType<typeof pushTarget>>): Base {
+function baseOf(dir: string, t: Sent): Base {
   const remote = t.remote;
   let heads: Promise<Set<string>> | undefined, tree: Promise<Set<string>> | undefined;
   const branches = () => (heads ??= (async () => {
@@ -770,6 +907,21 @@ export function learner(store: Store): Deps["words"] {
 
 // ---- the check ----
 
+// Whether the repository the disk shows for a folder is the one a command there finds, though the same line makes one
+// the folder would be in (`over`, line-makes.ts). It is when it stands at or under each place the line makes one: an
+// init of a repository that is there changes nothing, and a clone or a new checkout into a folder that holds one
+// fails. Where the line makes one in a place the words do not say, only a folder that is the top of its repository.
+function standing(dir: string, over: Over | undefined): boolean {
+  try {
+    const w = locate(dir), top = w?.top ?? w?.gitDir;
+    if (!top) return false;
+    if (over?.any && realDir(dir) !== top) return false;
+    return (over?.places ?? []).every((p) => { const r = realDir(p); return top === r || top.startsWith(`${r}/`); });
+  } catch { return false; } // (a place that is not there, or not ours to read)
+}
+
+// A word of a line that names a .git folder or a file under one (not an address that ends in `.git`).
+const GIT_FILES = /(^|[\s"'=\/:])\.git($|[\s"'\/;&|)])/;
 // What a call sends to a public place that holds a private word (or could not be read), or null. `deps.visibility`
 // says whether a repository is public.
 export async function held(command: string, cwd: string, deps: Deps, session: string): Promise<Held | null> {
@@ -780,7 +932,7 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
   const units: Unit[] = [];
   const said: string[] = [], unread: string[] = [];
   const targets: Repo[] = [];
-  let sends = false, pushes = false, firstBase: Base | undefined;
+  let sends = false, pushes = false, firstBase: Base | undefined, rewritten: boolean | "late" | undefined;
   // The repository each send goes to, and whether it is public (once for each).
   const vis = new Map<string, Promise<Visibility>>();
   const publicly = async (repo: Repo | null): Promise<boolean> => {
@@ -789,20 +941,106 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
     if (!vis.has(key)) vis.set(key, deps.visibility(repo));
     return (await vis.get(key)!) !== "private";
   };
+  // Whether a push from a repository the line makes says itself that it goes to no public place: it names a folder of
+  // this machine, an address, or a remote the line added there (the push runs only when that worked, so the remote
+  // is new and leads where the line says), and the place is a folder or a private repository. Not when the line
+  // changes where remotes lead some other way, or the owner's own git config can (a url rewrite, a template).
+  const aside = async (a: Extract<Act, { is: "push" }>): Promise<boolean> => {
+    // (Nor where the line makes a repository with options the rules do not read, a template among them, or names a
+    // file under a .git folder: either can give the new repository a url rewrite, which sends the address elsewhere.)
+    if (a.rewired || a.over?.any || GIT_FILES.test(command)) return false;
+    const named = pushWords(a.args).pos[0];
+    const given = named === undefined ? undefined : a.added?.get(named);
+    const to = given ? (given.sure ? given.url : undefined) : named !== undefined && (LOCAL_PLACE.test(named) || ADDRESS.test(named)) ? named : undefined;
+    if (to === undefined) return false;
+    if (LOCAL_PLACE.test(to)) return true;
+    const repo = ADDRESS.test(to) ? slug(to) : null;
+    if (!repo || (rewritten ??= await rewritesOwn()) !== false) return false;
+    return !(await publicly(repo));
+  };
   for (const a of acts) {
     if (a.is === "push") {
       if (!a.dir) { unread.push("git push: the folder it runs in is not known"); continue; }
-      // (A folder that is gone: the push fails there, and sends nothing.)
-      if (!existsSync(a.dir)) continue;
-      const t = await pushTarget(a.dir, a.args);
-      if (t.local || !(await publicly(t.repo))) continue;
+      // A folder that is not there. One the same line makes holds what made it: a new checkout of a repository sends
+      // that repository's commits, a clone or a new repository nothing but what the line commits. One the line may
+      // have made some other way is not read. Any other is gone: the push fails there, and sends nothing.
+      let from = a.dir, wt: Extract<Maker, { by: "worktree" }> | undefined;
+      // (A repository the line makes is not on the disk to read. A push from one that says itself it goes to a folder
+      // of this machine or to a private repository sends nothing to a public place.)
+      if (!existsSync(a.dir)) {
+        const m = a.made;
+        if (!m) { if (a.loose && !(await aside(a))) unread.push(`git push: the folder it runs in (${a.dir}) is not there yet, the same line may make it, and what it would send could not be read`); continue; }
+        if (m.by === "clone") {
+          if (!m.url) { unread.push(`git push: it runs in a folder the same line clones (${a.dir}), from an address that could not be read`); continue; }
+          // (The owner's own url rewrites give the clone's remote another address than the one cloned.)
+          if ((rewritten ??= await rewritesOwn()) !== false) { unread.push(`git push: it runs in a folder the same line clones (${a.dir}), and the owner's git config rewrites addresses, includes a file by condition, names a template or holds a remote's settings: where it goes and what it would send could not be read`); continue; }
+          // Where it goes: back where it was cloned from, unless the push names another place or the line gave the
+          // clone's remotes other addresses. What a clone holds is not on the disk: sent anywhere else, it is unread.
+          const named = pushWords(a.args).pos[0];
+          const to = named === undefined || named === m.remote ? a.added?.get(m.remote)?.url ?? m.url : a.added?.get(named)?.url ?? (slug(named) || LOCAL_PLACE.test(named) ? named : undefined);
+          if (to !== undefined && (LOCAL_PLACE.test(to) || (to === m.url && !repoOf(to)))) continue; // (to a folder of this machine)
+          const repo = to === undefined || a.rewired ? null : slug(to), source = slug(m.url);
+          if (!(await publicly(repo))) continue;
+          if (!repo || !source || repo.host !== source.host || repo.path.join("/") !== source.path.join("/")) { unread.push(`git push: it runs in a folder the same line clones (${a.dir}) and sends what the clone holds to ${repo ? `${repo.host}/${repo.path.join("/")}` : "a place the line does not settle"}, not where it was cloned from: what it would send could not be read`); continue; }
+          sends = pushes = true;
+          targets.push(repo);
+          said.push(`git push to ${repo.host}/${repo.path.join("/")}`);
+          continue;
+        }
+        if (m.by === "init") {
+          // (A repository the line makes new holds nothing but what the line commits, unless the owner's git config
+          // names a template for new repositories, which can hold more.)
+          if ((rewritten ??= await rewritesOwn()) !== false) { unread.push(`git push: it runs in a repository the same line makes (${a.dir}), and the owner's git config may give a new repository more than the line does (a template, a file included by condition): what it would send could not be read`); continue; }
+          sends = pushes = true;
+          said.push("git push");
+          continue;
+        }
+        if (a.rewired) { unread.push(`git push: it runs in a checkout the same line adds (${a.dir}), after the line changes the repository's remotes in a way that could not be read`); continue; }
+        if (!m.from || !existsSync(m.from)) continue;
+        // (The new checkout's branch starts at a commit of the repository it was added to: that is what goes out.)
+        from = m.from;
+        wt = m;
+      }
+      // A folder that is there, where the line makes a repository before the push (a git init of a folder with files in
+      // it, a clone into an empty one): the disk shows none of its own there, or one around it, and not what the push sends.
+      else if (a.loose && !standing(a.dir, a.over)) {
+        if (!(await aside(a))) unread.push(`git push: the same line makes a repository where it runs (${a.dir}), which is not on the disk yet: what it would send could not be read`);
+        continue;
+      }
+      const t = await pushTarget(from, a.args, a.added, !!a.rewired);
+      if (wt && t.picked) {
+        // With no remote named, the new checkout's branch picks it, and that is not the branch the repository is on
+        // now: every remote of the repository counts, and every place its settings or a branch of it name. One place:
+        // the push is read as going there. Several, one of them public or not read: where it goes is not known.
+        const r = t.remotes;
+        const names = new Set(r ? [...Object.keys(r.push), ...Object.keys(r.fetch), ...(a.added?.keys() ?? [])] : []);
+        const urls = new Map<string, string | undefined>();
+        for (const n of names) for (const u of a.added?.has(n) ? [a.added.get(n)!.url] : r!.push[n] ?? (r!.fetch[n] ? [r!.fetch[n]!] : [])) urls.set(u, n);
+        for (const v of r ? [r.pushDefault, r.branchPushRemote, r.branchRemote, ...(r.picks ?? [])] : []) if (v && !names.has(v)) urls.set(v, undefined);
+        const places = [...urls].map(([u, n]) => ({ at: placeOf(u), n })), repos = new Map<string, { repo: Repo; n: string | undefined }>();
+        for (const p of places) if (p.at && p.at !== "local") repos.set(`${p.at.host}/${p.at.path.join("/")}`, { repo: p.at, n: p.n });
+        const several = !r || r.picksCut || places.some((p) => p.at === null) || (repos.size > 1 && (await Promise.all([...repos.values()].map((x) => publicly(x.repo)))).some(Boolean));
+        if (several) { unread.push(`git push: it runs in a checkout the same line adds (${a.dir}) and names no remote: which place its branch pushes to, and so what it would send there, could not be read`); continue; }
+        if (repos.size !== 1) continue; // (folders of this machine, or private places only)
+        const one = [...repos.values()][0]!;
+        t.repo = one.repo; t.remote = one.n; delete t.local;
+      }
+      if (wt && !t.wide.length && !t.del) {
+        const refs = worktreeRefs(t.refs, wt);
+        if (!refs) { unread.push(`git push: it runs in a checkout the same line adds (${a.dir}), from a commit the line does not name: what it would send could not be read`); continue; }
+        t.refs = refs;
+      }
+      // (To a folder of this machine, or to a private repository: and so is the other place it may go, when there is one.)
+      const goes = t.local ? false : await publicly(t.repo), other = t.also === undefined ? false : await publicly(t.also);
+      if (!goes && !other) continue;
       sends = true;
       if (!t.del && !(t.refs.length && !t.wide.length && t.refs.every((x) => x.startsWith(":")))) pushes = true;
-      if (t.repo) targets.push(t.repo);
-      said.push(`git push${t.repo ? ` to ${t.repo.host}/${t.repo.path.join("/")}` : ""}`);
-      const base = baseOf(a.dir, t);
+      for (const x of [goes ? t.repo : null, other ? t.also : null]) if (x) targets.push(x);
+      const to = goes ? t.repo : t.also;
+      said.push(`git push${to ? ` to ${to.host}/${to.path.join("/")}` : ""}`);
+      const base = baseOf(from, t);
       firstBase ??= base;
-      const r = await pushUnits(a.dir, t, budget, base);
+      const r = await pushUnits(from, t, budget, base);
       units.push(...r.units); unread.push(...r.unread);
       continue;
     }
@@ -835,7 +1073,9 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
     }
     for (const t of same.trees) {
       if (!t.dir) { unread.push("a commit made on this line: the folder it runs in is not known"); continue; }
-      if (!existsSync(t.dir)) continue;
+      // (A folder the line made, with nothing but git's own plain commands since, holds no change to commit.)
+      if (!existsSync(t.dir)) { if (!t.made && t.loose) unread.push(`a commit made on this line: the folder it runs in (${t.dir}) is not there yet, the same line may make it, and what it holds could not be read`); continue; }
+      if (t.loose && !standing(t.dir, t.over)) { unread.push(`a commit made on this line: the same line makes a repository where it runs (${t.dir}), which is not on the disk yet: what it holds could not be read`); continue; }
       const r = await treeUnits(t.dir, t.untracked, budget, firstBase);
       units.push(...r.units); unread.push(...r.unread);
     }

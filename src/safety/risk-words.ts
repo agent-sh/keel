@@ -176,11 +176,23 @@ export function unwrap(words: string[]): Run {
 // (where the subshell ends is still not known): for a reader that takes more commands as in a folder, never fewer.
 // `home`: null when the line may have given HOME another value (the account rules say when): a `cd` with no folder, to
 // `~` or under it then leaves the folder unknown.
+const MOVES = /^(cd|pushd|popd)$/;
+// Whether a line may give one of the shell's own names another meaning: a function (`function cd`, `cd () ...` before
+// any compound command), an alias, or an `enable`, which can take a builtin away so that its name runs a program.
+export function redefines(parts: Simple[], runs: Run[], names: RegExp): boolean {
+  return parts.some((p, k) => {
+    if (p.heredoc) return false;
+    if (p.words[0] === "function" && names.test(p.words[1] ?? "")) return true;
+    if (p.def && names.test(p.words[0] ?? "")) return true;
+    const first = runs[k]!.words[0];
+    return first === "enable" || (first === "alias" && p.words.some((x) => x.includes("=") && names.test(x.slice(0, x.indexOf("=")))));
+  });
+}
 export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: string | null, through = false): (string | null)[] {
   // No part changes folder: every one runs where the line does.
   if (!runs.some((r) => r.words[0] === "cd" || r.words[0] === "pushd" || r.words[0] === "popd")) return new Array<string | null>(parts.length).fill(cwd);
-  // A function the line gives the name: what `cd` does after it is not known, and no folder is followed.
-  if (parts.some((s, i) => s.words.length === 1 && /^(cd|pushd|popd)$/.test(s.words[0]!) && !!parts[i + 1]?.flow && /^\{/.test(parts[i + 1]!.text))) return new Array<string | null>(parts.length).fill(null);
+  // A line that may give the name another meaning: what `cd` does after it is not known, and no folder is followed.
+  if (redefines(parts, runs, MOVES)) return new Array<string | null>(parts.length).fill(null);
   let top: string | null = cwd;
   let inner: string | null | undefined; // undefined: nested parts run where the line is
   // (Only while nothing in the line can have set PWD: an assignment, export, declare, read, unset or eval of it,
@@ -252,14 +264,30 @@ export function firmOf(parts: Simple[], runs: Run[], start = true): boolean[] {
 // real folders (`cd -P`, `set -P`: the `..` then leaves a link's target, where `dirsOf` leaves the link), a `pushd`
 // or `popd` that turns the stack, a relative one inside a loop, a condition or a function's body (it may run again)
 // and an `eval` of a `cd` may land anywhere: null, a folder the rules cannot name.
-// `cd X || exit` leaves nothing to run where it failed. A `cd` that may not run in the shell at all (after `||`, in a pipe,
-// negated) leaves what its `&&` joins where the shell was.
+// `cd X || exit` leaves nothing to run where it failed, and neither does `cd X || { echo ...; exit 1; }`, a `cd` on a
+// line of its own under a `set -e` that opens the script, or the line's first command when it is a `cd` to a folder
+// written from the root that the disk says is there. A `cd` that may not run in the shell at all (after `||`, in a
+// pipe, negated) leaves what its `&&` joins where the shell was.
 // For a reader that must know every folder a write can happen in (the account rules): more folders, never fewer.
 // `real`, `cdpath`: the shell that runs these parts was asked for real folders, or given a CDPATH, by what started it
 // (`bash -P -c`, `SHELLOPTS=physical`, a `CDPATH=` in front of it), which its own parts do not show.
-export type Else = { real?: boolean; cdpath?: boolean };
+// `lands(folder)`: whether the disk says a folder is there to change into (asked only of the line's first command, where
+// nothing the line runs can have changed it). `evaled`: the parts are an eval's, run by the shell that runs the eval:
+// a `set -e` in them holds only where that shell is not told to ignore it, which they do not show.
+export type Else = { real?: boolean; cdpath?: boolean; lands?: (folder: string) => boolean; evaled?: boolean };
+// `set -e`, `set -eu`, `set -euo pipefail`, `set -o errexit`: the script's own first command, on a line of its own.
+function setsErrexit(p: Simple, run: Run): boolean {
+  if (p.nested || p.flow || p.unknown || p.dyn || p.redirects || p.sep !== undefined || p.led !== undefined || p.words[0] !== "set" || run.words[0] !== "set") return false;
+  let on = false;
+  for (let k = 1; k < p.words.length; k++) {
+    const a = p.words[k]!;
+    if (!/^-[a-zA-Z]+$/.test(a)) return false;
+    if (a.endsWith("o")) { if (p.words[++k] === "errexit") on = true; else if (!/^[a-z]+$/.test(p.words[k] ?? "")) return false; }
+    if (a.slice(1, a.endsWith("o") ? -1 : undefined).includes("e")) on = true;
+  }
+  return on;
+}
 const NO_DIRS: readonly (string | null)[] = [];
-const MOVES = /^(cd|pushd|popd)$/;
 // Whether a line names CDPATH, and whether it asks for real folders somewhere (`set -P`, `set -o physical`, `cd -P`, a
 // SHELLOPTS it sets): from there the shell's folder is not the one its words spell when a link is on the way, and a `..`
 // leaves the link's target, not the link.
@@ -300,7 +328,71 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[], o:
   // `lost`: a chain of relative cds led past the longest path there is. From there the shell is somewhere the rules cannot
   // name, and no folder is followed further (each would be resolved again at every cd after it).
   let others = new Set<string | null>(), pending = new Set<string | null>(), nested = false, lost = false;
-  const ends = (i: number) => { const n = runs[i + 1]?.words[0]; return parts[i]!.sep === "||" && n === "exit" && !parts[i + 1]!.nested; };
+  // Code the parts do not show, run in the line's own shell: a file it sources, words it evals, a trap's, the callback
+  // of a mapfile or readarray. And a command the words do not name: a part the parser does not read, or one whose first
+  // word an expansion makes (`$s +e` is `set +e` where s is set). Any of them can change folder, take `set -e` back or
+  // give `exit` another meaning.
+  const hidden = parts.some((p, k) => !p.heredoc && (!!p.unknown || /^(source|\.|eval|trap|mapfile|readarray)$/.test(runs[k]!.words[0] ?? "") || (runs[k]!.words.length > 0 && !!p.dyn?.includes(runs[k]!.at))));
+  // `exit` is the shell's own while the line gives the name to nothing else, and ends the shell where it runs in it: not
+  // in the background, not as one side of a pipe.
+  const renamed = redefines(parts, runs, /^exit$/);
+  const exits = (k: number) => { const p = parts[k]; return !!p && !renamed && !p.nested && !p.heredoc && !p.unknown && runs[k]!.words[0] === "exit" && p.words[0] === "exit" && p.led !== "|" && p.led !== "|&" && (p.sep === undefined || p.sep === "&&" || p.sep === "||"); };
+  // `cd X || exit`, and `cd X || { echo ...; exit 1; }`: a group that only says something before it exits. (Where the
+  // group closes is not in the parts: only commands that write nothing but their words may stand before the exit, so one
+  // read past the group's end changes nothing.)
+  // A group or a subshell before part `k` that was sent to the background or into a pipe: the operator after its close
+  // stands before the next command, and ends no command of its own.
+  const apart = (k: number) => { const p = parts[k]!; if (p.heredoc || (p.led !== "&" && p.led !== "|" && p.led !== "|&")) return false; let j = k - 1; while (j >= 0 && parts[j]!.heredoc) j--; return parts[j]?.sep !== p.led; };
+  // Whether a later `&` may send the list part `i` is in to the background. The `&` that does ends the list: one after
+  // a later list (past a `;` or a newline) sends only that one. Where the parts do not show where the list ends (the cd
+  // inside a function, loop or group, or a group, a subshell or a substitution in the list after it), any later `&` may.
+  const sent = (i: number) => {
+    // (The `&` after a group or a subshell closes stands before the next command.)
+    const any = () => parts.some((p, k) => k > i && !p.heredoc && (p.led === "&" || (!p.nested && p.sep === "&")));
+    if (parts[i]!.flow) return any();
+    for (let k = i + 1; k < parts.length; k++) {
+      const p = parts[k]!;
+      if (p.heredoc) continue;
+      if (p.nested || p.flow || p.unknown || p.led === "&" || /^[{(]/.test(p.text)) return any();
+      if (p.sep === "&") return true;
+      if (p.sep === undefined) return false;
+    }
+    return false;
+  };
+  const ends = (i: number) => {
+    if (parts[i]!.sep !== "||") return false;
+    // (A list sent to the background runs in a shell of its own, where its exit ends only that.)
+    if (sent(i)) return false;
+    // (Inside such a group the exit ends the group's own shell: what follows the group runs where the shell was.)
+    if (parts[i]!.flow && parts.some((_, k) => k > i && apart(k))) return false;
+    if (exits(i + 1) && !/^\{/.test(parts[i + 1]!.text)) return true;
+    // (The group form only where the cd stands before any function, loop, conditional or group of the line: inside one,
+    // the body may run in a shell of its own, a pipe's or a subshell's, where the exit ends only that.)
+    // (Nor with code on the line the parts do not show, which can give `exit` another meaning.)
+    if (hidden || parts[i]!.flow || !/^\{\s+(echo|printf|exit)(\s|$)/.test(parts[i + 1]?.text ?? "")) return false;
+    for (let k = i + 1; k < parts.length; k++) {
+      const p = parts[k]!, prog = runs[k]!.words[0];
+      if (p.nested || p.heredoc || p.unknown || (k > i + 1 && (p.led !== undefined || !p.text.startsWith(p.words[0] ?? " ")))) return false;
+      if (prog === "exit") return exits(k) && !parts.some((_, j) => j > k && apart(j));
+      if (p.sep !== undefined || p.redirects || p.words[0] !== prog || (prog !== "echo" && prog !== "printf")) return false;
+    }
+    return false;
+  };
+  // `set -e` as the script's first command, with nothing after it that can take it back (a set, a shopt, code the parts
+  // do not show): a cd on a line of its own that fails ends the shell.
+  const first = parts.findIndex((p) => !p.heredoc);
+  const strict = !o.evaled && !hidden && first >= 0 && setsErrexit(parts[first]!, runs[first]!) && !parts.some((p, k) => k > first && !p.heredoc && /^(set|shopt|alias|enable)$/.test(runs[k]!.words[0] ?? ""));
+  // A cd the shell cannot be left behind by. `before`: the operator that ended the command before it.
+  // (On a line of its own: one joined to more by an operator may be part of a list sent to the background or into a
+  // pipe, which runs in a shell of its own.)
+  const certain = (i: number, s: Simple, w: string[], before: string | undefined) => {
+    if (s.flow || s.sep !== undefined || (s.led !== undefined && s.led !== "&") || w[0] !== "cd" || s.words[0] !== "cd" || /[<>]/.test(s.text) || NEGATED.test(s.text)) return false;
+    if (strict && (before === undefined || before === "&")) return true;
+    const to = w.length === 2 ? w[1]! : "";
+    // (After hidden code, what follows a cd the disk says lands is counted where the line started too, as after any other cd.)
+    return !!o.lands && !hidden && i === first && /^\/[A-Za-z0-9_.\/@:+,%^=-]*$/.test(to) && !/(^|\/)\.\.?(\/|$)/.test(to) && o.lands(resolve(to));
+  };
+  let before: string | undefined;
   for (let i = 0; i < parts.length; i++) {
     const s = parts[i]!, w = runs[i]!.words;
     if (!s.heredoc && !s.nested) nested = false;
@@ -312,6 +404,8 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[], o:
       if (evals(w) || (moves && (unsure(w, s) || (others.size > 0 && relative(w) !== undefined)))) nested = true;
       continue;
     }
+    const prior = before;
+    before = s.sep;
     if (!moves) {
       if (evals(w)) others.add(null);
       if (s.sep !== "&&" && pending.size) { for (const x of pending) others.add(x); pending = new Set(); }
@@ -331,8 +425,9 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[], o:
     // A cd the shell may pass over, or make in a shell of its own, though what follows is joined to it by `&&`: one after
     // `||` (not run when what stands before it worked), one side of a pipe (the shell itself stays), a negated one (what
     // its `&&` joins runs where it failed). What follows runs where the shell was, too.
-    const passed = s.led !== undefined || NEGATED.test(s.text);
-    if (s.sep === "&&") { for (const x of stay) pending.add(x); if (passed) for (const x of stay) next.add(x); }
+    const passed = (s.led !== undefined && s.led !== "&") || NEGATED.test(s.text);
+    if (!lost && !passed && certain(i, s, w, prior)) pending = new Set();
+    else if (s.sep === "&&") { for (const x of stay) pending.add(x); if (passed) for (const x of stay) next.add(x); }
     else if (ends(i)) pending = new Set();
     else { for (const x of [...stay, ...pending]) next.add(x); pending = new Set(); }
     others = next.size > 8 ? new Set([null]) : next;

@@ -15,6 +15,7 @@ import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, name as baseName, namesCdpath, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { unstartedAct, unstartedWhy } from "./unstarted.ts";
+import { follow } from "./line-makes.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
 import { RESERVED } from "../mcp/config.ts";
@@ -774,17 +775,22 @@ const never = (why: string, f: Facts): Decision =>
 
 // Why a line's writes by a remote's name, or by default, cannot be placed: the line itself changes where remotes point
 // (git config remote.*.url, -c url.*.insteadOf, GIT_CONFIG_*, GIT_DIR, git remote set-url, gh repo set-default), which
-// remote a push by default goes to (remote.pushDefault, branch.*.remote and .pushRemote), or has git read another config
+// remote a push by default goes to (remote.pushDefault, branch.*.remote and .pushRemote, a fetch or pull --set-upstream),
+// renames or removes a section of the settings (git config --rename-section), has git read another config
 // file or take a key from the environment (include.path, includeIf.*.path, --config-env, a HOME or XDG_CONFIG_HOME of the
-// line's own), which can say any of those.
-const REBOUND = /^(remote\.[^=\s]*\.(url|pushurl|gh-resolved)|url\..*\.(push)?insteadof)(=|$)/i;
+// line's own), which can say any of those, or names a template, whose config a repository the line makes starts with
+// (init.templateDir, GIT_TEMPLATE_DIR).
+const REBOUND = /^(remote\.[^=\s]*\.(url|pushurl|gh-resolved)|url\..*\.(push)?insteadof|init\.templatedir)(=|$)/i;
 const REBOUND_DEFAULT = /^(remote\.pushdefault|branch\..*\.(remote|pushremote))(=|$)/i;
 const REBOUND_FILE = /^(include\.path|includeif\..*\.path)(=|$)/i;
-const REBOUND_ENV = /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
+const REBOUND_ENV = /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_TEMPLATE_DIR)=/;
+// An option as git takes it shortened: any start of its name that is long enough to be no other's (`--rename-sec`,
+// `--set-upst`), with or without a value joined to it.
+const shortFor = (x: string, full: string, least: number) => { const o = x.split("=")[0]!; return o.length >= least && full.startsWith(o); };
 // (git reads the owner's own settings from $HOME/.gitconfig and $XDG_CONFIG_HOME/git/config: another folder there is another
 // set of url rewrites.)
 const REBOUND_HOME = /^(HOME|XDG_CONFIG_HOME)=/;
-function reboundBy(parts: Simple[]): string | undefined {
+export function reboundBy(parts: Simple[]): string | undefined {
   for (const part of parts) {
     if (part.heredoc) continue;
     const w = part.words;
@@ -798,6 +804,13 @@ function reboundBy(parts: Simple[]): string | undefined {
       if (REBOUND_HOME.test(x)) return "the same line sets HOME or XDG_CONFIG_HOME, where git reads your own settings from, which can say where a remote points";
       if (x === "remote" && /^(rename|remove|rm|set-head)$/.test(w[i + 1] ?? "") && w.slice(0, i).some((y) => baseName(y) === "git")) return "the same line changes a remote";
       if (x === "set-default" && w[i - 1] === "repo" && baseName(w[i - 2]) === "gh") return "the same line changes the repository gh acts on";
+      // (A section of git's config renamed or removed is a remote or a branch's settings under another name; a fetch or
+      // a pull with --set-upstream makes what it names the branch's remote, an address included.)
+      const git = () => w.slice(0, i).some((y) => baseName(y) === "git");
+      // (Also as git config's own subcommands: git config rename-section, remove-section.)
+      const section = shortFor(x, "--rename-section", 5) || shortFor(x, "--remove-section", 5) || ((x === "rename-section" || x === "remove-section") && w.slice(0, i).includes("config"));
+      if (section && git()) return "the same line renames or removes a section of git's settings, which can be a remote's or a branch's";
+      if (shortFor(x, "--set-upstream", 5) && w.slice(0, i).some((y) => y === "fetch" || y === "pull") && git()) return "the same line sets which remote a push goes to";
     }
   }
   return undefined;
@@ -807,7 +820,8 @@ function reboundBy(parts: Simple[]): string | undefined {
 // `moved`: the script starts in a folder the line went to. `unsure`: or in another one, which the rules cannot name.
 // `homeKept`: whether HOME still names the owner's home for the script (asked only when a `cd` of it reads HOME). `real`,
 // `cdpath`: what started the script's shell asked it for real folders, or the line names CDPATH (risk-words.ts Else).
-type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean; homeKept?: () => boolean; real?: boolean; cdpath?: boolean };
+// `makes`: a command before the script makes a repository (line-makes.ts). `loud`: or can fill a folder some other way.
+type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean; homeKept?: () => boolean; real?: boolean; cdpath?: boolean; makes?: (dir: string) => boolean; loud?: boolean; evaled?: boolean };
 const ELSE_WHY = "a cd before it may not land where it says (it can fail, the line names CDPATH, or it is not one the rules follow), so the folder it runs in is not known to the rules";
 
 // `git -C ~/folder`: a `~/` that begins the word, unquoted, is the home folder by the time git reads it (the shell writes
@@ -819,6 +833,8 @@ const ELSE_WHY = "a cd before it may not land where it says (it can fail, the li
 // The same holds for a `cd` with no folder, to `~` or under it: in a line that may give HOME another value the folder it
 // leaves the shell in is not known (in a script another shell is given too, where the line and the script both keep HOME
 // and no other account starts that shell).
+// What a shell that is given a script reads before it, or finds as a function, when it starts: BASH_ENV, an exported function.
+const STARTS_WITH = /(^|[^A-Za-z0-9_])(BASH_ENV|BASH_FUNC_[A-Za-z0-9_]*)(%%)?(=|$)/;
 const MADE_COMPUTES = /\$\{(?![A-Za-z_][A-Za-z0-9_]*\})|\$\(\(|\$\[/;
 const HOME_READ = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
 // (git's own options that take the next word, as the account rules read them: accounts.ts gitWrites.)
@@ -874,7 +890,9 @@ function homeWritten<P extends Runs>(parts: Simple[], pre: P, home: string, home
 
 // Every write with an account the parts of a line make, found through what wraps them and in the folder each runs in.
 // A script a shell is given with -c (or eval) is read as a line of its own. Exports before a command count for it.
-export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked" | "home">, depth = 0, from?: Scope): Write[] {
+// `sandboxed`: whether the session's commands are confined (false only where that is known): a confined shell does not
+// see every folder the daemon does, so a cd is taken as landing by the disk's word only outside a sandbox.
+export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked" | "home"> & { sandboxed?: boolean }, depth = 0, from?: Scope): Write[] {
   const out: Write[] = [];
   const home = f.home ?? homeDir();
   let kept: boolean | undefined;
@@ -883,20 +901,30 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
   const scope: Scope = { vars: new Map(from?.vars), exported: new Set(from?.exported), rebinds: from?.rebinds ?? reboundBy(parts), added: new Map(from?.added) };
   const cdpath = !!from?.cdpath || namesCdpath(parts), real = !!from?.real || asksReal(parts, pre.runs);
   // The folder the line starts in, and for each part the other folders it may run in (a cd before it that failed).
-  const start = pre.dirs[0] ?? null, or = elseOf(parts, pre.runs, pre.dirs, { cdpath, real });
+  // (The line's first command, a cd to a folder the disk says is there, leaves the shell nowhere else.)
+  const lands = depth === 0 && f.sandboxed === false && f.looked?.enters ? (p: string) => f.looked!.enters!(p) === "yes" : undefined;
+  const start = pre.dirs[0] ?? null, or = elseOf(parts, pre.runs, pre.dirs, { cdpath, real, ...(lands ? { lands } : {}), ...(from?.evaled ? { evaled: true } : {}) });
   const key = (w: Write) => `${w.does}\0${w.account ? say(w.account) : ""}`;
+  // The folders the line's own git makes as it goes (line-makes.ts).
+  // (A folder git is given with a `..` in it is read through the disk, which walks it: not read while it has not answered.)
+  const onDisk = f.looked?.real ? (p: string) => { const r = f.looked!.real!(p); return r === "late" ? null : r; } : undefined;
+  const made = follow(undefined, from?.makes, from?.loud, onDisk, parts);
   parts.forEach((part, i) => {
     if (part.heredoc) return;
-    const run = pre.runs[i]!;
+    // (env takes any name: a function handed to a shell, BASH_FUNC_name%%=..., is set for the command, not its first word.)
+    const raw = pre.runs[i]!, fn = raw.words.findIndex((x) => !/^BASH_FUNC_[^=\s]*=/.test(x));
+    const run = fn > 0 ? { ...raw, words: raw.words.slice(fn), at: raw.at + fn, set: [...raw.set, ...raw.words.slice(0, fn)] } : raw;
     const kept = [...scope.exported].filter((k) => scope.vars.has(k)).map((k) => `${k}=${scope.vars.get(k)}`);
     // (find -execdir runs its command in the folder of each file it found, not where the line is.)
-    const dir = run.fed === "find" && part.words.some((x) => x === "-execdir" || x === "-okdir") ? null : pre.dirs[i] ?? null;
+    // (Nor does one `env -C FOLDER` starts: it runs in the folder env is given.)
+    const elsewhere = (run.fed === "find" && part.words.some((x) => x === "-execdir" || x === "-okdir")) || (run.at > 0 && part.words.slice(0, run.at).some((x, k, all) => /^(-[a-zA-Z]*C|--chdir(=.*)?)$/.test(x) && all.slice(0, k).some((y) => baseName(y) === "env")));
+    const dir = elsewhere ? null : pre.dirs[i] ?? null;
     // A command xargs or parallel hands its last words to is not placed by the words the line spells.
     const writesToAccounts = (words: string[], e: AccountEnv) => (run.fed === "xargs" ? writesFed(words, e) : writesPlain(words, e));
     const others = from?.unsure && !or[i]!.includes(null) ? [...or[i]!, null] : or[i]!;
-    const base = { set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}),
+    const base = { set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}), makes: made.mayHold, remade: made.mayReplace,
       ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}),
-      ...(f.looked?.hostname ? { hostname: (h: string) => f.looked!.hostname!(h) } : {}) };
+      ...(f.looked?.hostname ? { hostname: (h: string) => f.looked!.hostname!(h) } : {}), ...(f.looked?.rewrites ? { rewrites: () => f.looked!.rewrites!() } : {}) };
     const at = (d: string | null) => ({ ...base, dir: d, ...(from?.moved || d !== start ? { moved: true as const } : {}) });
     const env = at(dir);
     const found = writesToAccounts(run.words, env);
@@ -927,12 +955,15 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
         // The script's own HOME: the line's, unless the script or the line can change it, or another account starts its shell.
         let keeps: boolean | undefined;
         const innerKept = () => (keeps ??= homeKept() && !part.words.slice(0, run.at).some((x) => LEAVES.test(baseName(x))) && keepsHome(inner, runs));
-        const dirs = dirsOf(inner, runs, pre.dirs[i] ?? null, runs.some(readsHome) && !innerKept() ? null : home);
+        // (A shell started with BASH_ENV or a function in its environment may not have the `cd` its script names: no folder is followed.)
+        const preset = STARTS_WITH.test(part.text) || [...scope.exported].some((k) => STARTS_WITH.test(k));
+        const dirs = preset && runs.some((r) => /^(cd|pushd|popd)$/.test(r.words[0] ?? "")) ? new Array<string | null>(inner.length).fill(null) : dirsOf(inner, runs, dir, runs.some(readsHome) && !innerKept() ? null : home);
         out.push(...accountWrites(inner, { runs, dirs }, f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added, moved: !!env.moved, unsure: others.length > 0,
-          homeKept: innerKept, cdpath, real: real || (shell > 0 && startsReal(run.words, shell)) }));
+          homeKept: innerKept, cdpath, real: real || (shell > 0 && startsReal(run.words, shell)), makes: made.mayHold, loud: made.loud(), evaled: first === "eval" || !!from?.evaled }));
       } else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: split ? `the script it runs holds ${split.length} commands, more than the rules read through (${PARTS_MAX})` : "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
     // What this part gives the parts after it.
+    made.step(part, run, dir);
     const w0 = baseName(run.words[0]);
     // git remote add NAME URL, git remote set-url [--push] NAME URL: the commands after it push where it says.
     if (w0 === "git") {
@@ -957,10 +988,10 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
 }
 
 // What the judge is told of a line's writes with the owner's accounts, and whose namespaces they are in; "" when it makes none.
-export function accountContext(command: string, cwd: string, looked: Looked | undefined, names: Namespace[], home: string = homeDir()): string {
+export function accountContext(command: string, cwd: string, looked: Looked | undefined, names: Namespace[], home: string = homeDir(), sandboxed?: boolean): string {
   const parts = splitCommand(command);
   if (!parts) return "";
-  return accountFacts(accountWrites(parts, laid(parts, cwd, home), { looked, home }), names);
+  return accountFacts(accountWrites(parts, laid(parts, cwd, home), { looked, home, ...(sandboxed === undefined ? {} : { sandboxed }) }), names);
 }
 
 const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it unless the place is one of his namespaces (Settings > Permissions > Your accounts, where he names them). Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";

@@ -2169,7 +2169,7 @@ export class Gate {
     }
     const repo = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homeDir(), session, places) : undefined;
     // (The writes with the owner's accounts the command makes, and whose namespaces they are in.)
-    const accounts = high && cls.kind === "shell" ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames()) : "";
+    const accounts = high && cls.kind === "shell" ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames(), homeDir(), !cls.unconfined && this.sandboxed(session, this.perm(session.id))) : "";
     const facts = repo === undefined ? undefined : accounts ? `${repo}\n${accounts}` : repo;
     const own = places.length ? ownFacts(places) : undefined;
     const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, own, settled, provenance: await this.provenanceFact(session, cls, auto ? auto.input : call.input, summary) });

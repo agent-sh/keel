@@ -103,6 +103,149 @@ test("a push with no remote named that the repository's settings send to a folde
   expect(await held("git push", dir, deps("private"), "s")).not.toBeNull();
 });
 
+// A folder the same line makes is not on the disk when the line is read: what a push from it would send is not read,
+// and the call is held. A folder that is gone, with nothing on the line that makes it, sends nothing.
+test("a push from a folder the same line may make is not read, and said", async () => {
+  const dir = await repo("Deploy from buildbox");
+  const wt = join(mkdtempSync(join(tmp(), "pub-made-")), "wt");
+  for (const line of [
+    `git worktree add -q ${wt} -b topic && cd ${wt} && git push -u origin topic`,
+    `git clone -q https://github.com/acme/open.git ${wt} && cd ${wt} && git push`,
+    `mkdir -p ${wt} && cd ${wt} && git init -q && git remote add origin git@github.com:acme/open.git && git push -u origin main`,
+    `git clone -q https://github.com/acme/open.git ${wt} && cd ${wt} && ./fill.sh && git add -A && git commit -q -m x && git push`,
+    `bash -c 'git clone -q https://github.com/acme/open.git ${wt}'; cd ${wt} && git push`,
+  ]) expect([line, (await held(line, dir, deps(), "s"))?.unread.join("\n").includes("not there yet")]).toEqual([line, true]);
+  // A remote the line adds to a repository that is there leads where the line says.
+  expect((await held("git remote add pub https://github.com/acme/pub.git && git push pub main", dir, deps({ "github.com/acme/open": "private" }), "s"))?.acts).toEqual(["git push to github.com/acme/pub"]);
+  expect(await held(`cd ${wt} && git push origin main`, tmp(), deps(), "s")).toBeNull();
+  // A push from such a folder that says itself where it goes, a folder or a private repository, is not held: an address,
+  // or a remote the line added there, when the push runs only if that worked.
+  const closed = () => deps({ "github.com/acme/closed": "private" });
+  for (const line of [
+    `mkdir -p ${wt} && cd ${wt} && git init -q && git commit -q --allow-empty -m "Deploy from buildbox" && git remote add origin git@github.com:acme/closed.git && git push -u origin main`,
+    `mkdir -p ${wt} && cd ${wt} && git init -q && git remote add origin git@github.com:acme/closed.git && git add -A && git commit -q -m x && git branch -M main && git push -u origin main`,
+    `git clone -q https://github.com/acme/open.git ${wt} && cd ${wt} && git push git@github.com:acme/closed.git main`,
+    `git clone -q https://github.com/acme/open.git ${wt} && cd ${wt} && git push ../other main`,
+  ]) expect([line, await held(line, dir, closed(), "s")]).toEqual([line, null]);
+  // Not when the remote may not be the one the line added: the add may have failed (a clone has an origin), another
+  // command stands between, the line changes remotes some other way, or it was added in another folder.
+  for (const line of [
+    `git clone -q https://github.com/acme/open.git ${wt} && cd ${wt} && git remote add origin git@github.com:acme/closed.git; git push origin main`,
+    `mkdir -p ${wt} && cd ${wt} && git init -q && git remote add origin git@github.com:acme/closed.git && ./fill.sh && git push -u origin main`,
+    `mkdir -p ${wt} && cd ${wt} && git init -q && git remote add origin git@github.com:acme/closed.git && git remote set-url --add origin git@github.com:acme/open.git && git push -u origin main`,
+    `mkdir -p ${wt} && cd ${wt} && git init -q && git remote add origin git@github.com:acme/closed.git && git -c remote.origin.pushurl=git@github.com:acme/open.git push -u origin main`,
+    `git remote add origin git@github.com:acme/closed.git; git clone -q https://github.com/acme/open.git ${wt} && cd ${wt} && git push origin main`,
+    // (Nor a repository made from a template, or one whose .git folder the line names: either can hold a url rewrite.)
+    `mkdir -p ${wt} && cd ${wt} && git init -q --template=/x/tpl && git remote add origin git@github.com:acme/closed.git && git push -u origin main`,
+    `mkdir -p ${wt} && cd ${wt} && git init -q && cp /x/config .git/config && git remote add origin git@github.com:acme/closed.git && git push -u origin main`,
+    `git clone -q https://github.com/acme/open.git ${wt} && cat /x/more >> ${wt}/.git/config && cd ${wt} && git push git@github.com:acme/closed.git main`,
+  ]) expect([line, (await held(line, dir, closed(), "s"))?.unread.join("\n").includes("not there yet")]).toEqual([line, true]);
+});
+
+// A folder that is there, where the line makes a repository before the push: the disk shows none of its own there (a
+// git init of a folder with files in it) or one around it (a clone into an empty folder inside a repository).
+test("a push from a folder that is there, where the same line makes a repository first, is not read, and said", async () => {
+  const dir = await repo("Fix the parser");
+  const plain = mkdtempSync(join(tmp(), "pub-plain-"));
+  writeFileSync(join(plain, "notes.md"), "run on buildbox\n");
+  mkdirSync(join(dir, "E"));
+  const rest = "git add -A && git commit -q -m init && git remote add origin https://github.com/acme/open.git && git push -u origin main";
+  for (const [line, cwd] of [
+    [`git init -q && ${rest}`, plain],
+    [`git init -q ${plain} && cd ${plain} && ${rest}`, tmp()],
+    [`cd ${plain} && git init -q . && ${rest}`, tmp()],
+    [`git init -q ${plain} && bash -c 'cd ${plain} && ${rest}'`, tmp()],
+    [`git clone -q -b main /x/priv E && cd E && git push https://github.com/acme/open.git main`, dir],
+    [`git clone -q -b main /x/priv E && git -C E push https://github.com/acme/open.git HEAD:refs/heads/x`, dir],
+    // (Made in a place the words do not say: only the top of a repository is read from the disk.)
+    [`git clone -q --no-hardlinks /x/priv E && cd E && git push https://github.com/acme/open.git main`, dir],
+  ] as const) expect([line, (await held(line, cwd, deps(), "s"))?.unread.join("\n").includes("makes a repository where it runs")]).toEqual([line, true]);
+  // To a private repository by its own words it is not held.
+  expect(await held(`git init -q && git add -A && git commit -q -m init && git remote add origin git@github.com:acme/closed.git && git push -u origin main`, plain, deps({ "github.com/acme/closed": "private" }), "s")).toBeNull();
+  // An init of a repository that is there changes nothing: the disk is read.
+  await sh(dir, "commit", "-q", "--allow-empty", "-m", "Deploy from buildbox");
+  expect((await held("git init -q && git push origin main", dir, deps(), "s"))?.found[0]?.kind).toBe("host");
+  expect((await held("git clone -q --no-hardlinks /x/priv /x/other; git push origin main", dir, deps(), "s"))?.found[0]?.kind).toBe("host");
+});
+
+// A remote the line gives an address leads there. One it then changes some other way (a second address, a push address,
+// a setting, a config of its own, a rename), or one whose address on the disk a push does not take from the line, leads
+// to a place that is not read: taken as public, and every commit of the revisions counts, since the refs the clone holds
+// under the remote's name are of the address it had.
+test("a push after the line changes where a remote leads is read as going to a public place", async () => {
+  const dir = await repo("Deploy from buildbox");
+  await sh(dir, "update-ref", "refs/remotes/origin/main", "HEAD");
+  mkdirSync(join(dir, "sub"));
+  const CLOSED = "git@github.com:acme/closed.git", PUB = "https://github.com/acme/pub.git";
+  const vis = () => deps({ "github.com/acme/open": "private", "github.com/acme/closed": "private" });
+  for (const line of [
+    `git remote add x ${CLOSED} && git remote set-url --add x ${PUB} && git push x main`,
+    `git remote add x ${CLOSED} && git remote set-url --add --push x ${PUB} && git push x main`,
+    `git remote add x ${CLOSED} && git remote set-url --push x ${PUB} && git push x main`,
+    `git remote add x ${CLOSED} && git config remote.x.pushurl ${PUB} && git push x main`,
+    `git remote add x ${CLOSED} && git config --add remote.x.url ${PUB} && git push x main`,
+    `git remote add x ${CLOSED} && git -c remote.x.pushurl=${PUB} push x main`,
+    `git remote add x ${CLOSED} && git -c url.${PUB}.insteadOf=${CLOSED} push x main`,
+    `git remote add x ${CLOSED} && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.x.pushurl GIT_CONFIG_VALUE_0=${PUB} git push x main`,
+    `git remote add y ${PUB} && git remote add x ${CLOSED} && git remote remove x && git remote rename y x && git push x main`,
+    `git remote add x ${PUB}; git remote add x ${CLOSED}; git push x main`,
+    `git remote add x ${PUB}; true || git remote set-url x ${CLOSED}; git push x main`,
+    `git remote add --mirror=push x ${CLOSED} && git remote set-url x ${PUB} && git push x main`,
+    `git remote set-url origin ${CLOSED} && git remote set-url --add origin ${PUB} && git push origin main`,
+    `git remote set-url origin ${CLOSED} && git config remote.origin.pushurl ${PUB} && git push`,
+    `git config remote.origin.pushurl ${PUB} && git push origin main`,
+    `bash -c 'git remote set-url origin ${PUB}'; git push origin main`,
+    // (Given in another folder, which may be the same repository's.)
+    `git remote set-url origin ${PUB}; cd sub; git push origin main`,
+    // (An address the line gives a remote that is there: what the new place has is not what the clone's refs say.)
+    `git remote set-url origin ${PUB} && git push origin main`,
+  ]) expect([line, (await held(line, dir, vis(), "s"))?.found[0]?.kind]).toEqual([line, "host"]);
+  // Where the line says, and only there: a remote it adds, the same repository under another address, a folder. A
+  // remote that is there is not added again: the push goes where the disk says.
+  for (const line of [
+    `git remote add x ${CLOSED} && git push x main`,
+    `git remote add -f x ${CLOSED} && git push x main`,
+    `git remote set-url origin ${CLOSED} && git push`,
+    `git remote add x ../other && git push x main`,
+    `git remote add origin ${PUB}; git push origin main`,
+    `git remote set-url origin ${CLOSED}; git push`,
+  ]) expect([line, await held(line, dir, vis(), "s")]).toEqual([line, null]);
+  // A set-url the push may run without may not have run: the place the disk has for the remote counts too.
+  const open = () => deps({ "github.com/acme/closed": "private" });
+  for (const line of [`true || git remote set-url origin ${CLOSED}; git push origin main`, `git remote set-url origin ${CLOSED}; git push`, `git remote set-url origin ../other; git push origin main`]) expect([line, (await held(line, dir, open(), "s"))?.acts]).toEqual([line, ["git push to github.com/acme/open"]]);
+  expect(await held(`git remote set-url origin ${CLOSED} && git status && git push`, dir, open(), "s")).toBeNull();
+  expect(await held("git remote set-url origin https://github.com/acme/open.git && git push origin main", dir, deps(), "s")).toBeNull();
+  // A push address of its own on the disk stays when the line sets the remote's address.
+  await sh(dir, "config", "remote.origin.pushurl", PUB);
+  expect((await held(`git remote set-url origin ${CLOSED} && git push origin main`, dir, vis(), "s"))?.found[0]?.kind).toBe("host");
+  expect(await held(`git remote set-url --push origin ${CLOSED} && git push origin main`, dir, vis(), "s")).toBeNull();
+});
+
+// An address written on the line (one it gives a remote, or one the push names) is where the push goes only while no
+// url rewrite is in force there. With one in the repository's config or the owner's own, git may send it elsewhere:
+// the place is not read, and taken as public. The remotes the disk holds are listed as git rewrites them.
+test("a push to an address the line writes is read as going to a public place where a url rewrite is in force", async () => {
+  const CLOSED = "https://github.com/acme/closed.git", PUB = "https://github.com/acme/pub.git";
+  const vis = () => deps({ "github.com/acme/open": "private", "github.com/acme/closed": "private" });
+  const lines = [`git remote add x ${CLOSED} && git push x main`, `git remote set-url origin ${CLOSED} && git push origin main`, `git push ${CLOSED} main`, `git remote add x ../other && git push x main`];
+  for (const key of [`url.${PUB}.insteadOf`, `url.${PUB}.pushInsteadOf`]) {
+    const dir = await repo("Deploy from buildbox");
+    for (const line of lines) expect([line, await held(line, dir, vis(), "s")]).toEqual([line, null]);
+    await sh(dir, "config", key, "https://github.com/acme/closed");
+    for (const line of lines) expect([key, line, (await held(line, dir, vis(), "s"))?.found[0]?.kind]).toEqual([key, line, "host"]);
+    // (A remote that is there, which the rewrite does not touch, goes where it went.)
+    expect(await held("git push origin main", dir, vis(), "s")).toBeNull();
+  }
+  // The owner's own config.
+  const dir = await repo("Deploy from buildbox"), own = join(mkdtempSync(join(tmp(), "pub-own-")), "gitconfig"), was = process.env.GIT_CONFIG_GLOBAL;
+  writeFileSync(own, `[url "${PUB}"]\n\tinsteadOf = https://github.com/acme/closed\n`);
+  process.env.GIT_CONFIG_GLOBAL = own;
+  try {
+    for (const line of lines) expect([line, (await held(line, dir, vis(), "s"))?.found[0]?.kind]).toEqual([line, "host"]);
+    expect(await held("git push origin main", dir, vis(), "s")).toBeNull();
+  } finally { if (was === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = was; }
+});
+
 test("a personal path and a secret are held, and the secret is not repeated", async () => {
   const token = `ghp_${"a1B2c3D4e5".repeat(4).slice(0, 36)}`;
   const dir = await repo("Add notes", "n.md", `see /home/someone/work/x\nTOKEN ${token}\n`);

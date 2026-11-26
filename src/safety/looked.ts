@@ -13,9 +13,10 @@
 // still open at the end counts as not answered, which the policy reads as
 // high risk. The answers stay with the call, so a card that waits is judged
 // again with the same ones.
-import { lstat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { git, gitNames, remotesAsRun } from "../core/git.ts";
+import { git, gitNames, realDirLater, remotesAsRun } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
 import { chunks } from "../core/proc.ts";
 import type { Answer, Manifest, Remotes } from "./accounts.ts";
@@ -37,6 +38,12 @@ export type Looked = {
   manifest?(dir: string): Answer<Manifest>;
   // The host an ssh name of the owner's config stands for (`ssh -G`); null: it names itself or is not a name.
   hostname?(host: string): Answer<string>;
+  // Whether a path is a folder the daemon's own account can change into now (a link to one too). "late": no answer in time.
+  enters?(path: string): "yes" | "no" | "late";
+  // Where a path leads on the disk, links followed. null: nothing there. "late": no answer in time.
+  real?(path: string): string | null | "late";
+  // Whether the owner's own git config rewrites addresses (url.<base>.insteadOf). "late": no answer in time.
+  rewrites?(): boolean | "late";
   // The files under a folder that hold credentials, looked for off the loop (credential-look.ts). "late": not made yet.
   // Absent where no look is made for the call (a replay), where the search looks for itself.
   named?(folder: string): Found[] | "late";
@@ -100,6 +107,17 @@ async function existsAt(path: string): Promise<"file" | "dir" | "none" | "late">
   return within(300, lstat(path).then((st) => (st.isDirectory() ? "dir" as const : "file" as const), () => "none" as const), "late" as const);
 }
 
+async function entersAt(path: string): Promise<"yes" | "no" | "late"> {
+  const ask = async () => { try { if (!(await stat(path)).isDirectory()) return "no" as const; await access(path, constants.X_OK); return "yes" as const; } catch { return "no" as const; } };
+  return within(300, ask(), "late" as const);
+}
+
+// Where a path leads, its links followed and each `..` walked as the disk walks it (src/core/git.ts realDir). null: nothing there.
+export async function realAt(path: string): Promise<string | null | "late"> {
+  if (!path.startsWith("/")) return null;
+  return within(300, realDirLater(path).catch(() => null), "late" as const);
+}
+
 const MOST = 2_000_000; // bytes of a patch, or of an archive's listing, that are read
 async function targetsOf(kind: "patch" | "archive", file: string): Promise<string[] | null> {
   try {
@@ -139,21 +157,24 @@ async function textOf(file: string): Promise<string | null> {
 // address as git rewrites it for a fetch and for a push, what gh marked, and where a bare push goes. Keel's view of
 // the repository's config (src/core/git.ts) holds the remotes and no url rewrite, so the repository's own
 // url.<base>.insteadOf and .pushInsteadOf are given to this one listing (remotesAsRun), which also carries the
-// repository's remote.pushDefault; the owner's own apply by themselves. A repository whose config includes other files is not read ("late"): what those files add, the
-// view does not hold.
+// repository's remote.pushDefault; the owner's own apply by themselves. A repository whose config includes other files
+// says so (`includes`): what those files add, the view does not hold, so the listing may not be where his git pushes.
+const PICKS_MAX = 64;
 export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
   const run = (args: string[]) => git(dir, args, { read: true, timeout: 1_500 });
-  const [verbose, config, branch] = await Promise.all([remotesAsRun(dir, 1_500), run(["config", "--get-regexp", "^(remote\\..+\\.gh-resolved|remote\\.pushdefault|branch\\..+\\.(remote|pushremote))$"]), run(["symbolic-ref", "-q", "--short", "HEAD"])]);
+  const [verbose, config, branch] = await Promise.all([remotesAsRun(dir, 1_500), run(["config", "--get-regexp", "^(remote\\..+\\.gh-resolved|remote\\.pushdefault|branch\\..+\\.(remote|pushremote)|url\\..+\\.(insteadof|pushinsteadof)|includeif\\..+\\.path)$"]), run(["symbolic-ref", "-q", "--short", "HEAD"])]);
   if (verbose.code === -1 || config.code === -1) return "late";
   if (verbose.code !== 0) return null;
-  if (verbose.includes) return "late";
-  const r: Remotes = { push: {}, fetch: {}, resolved: {} };
+  // (A url rewrite in force here, the repository's own or the owner's, or a file the owner's config includes by a
+  // condition, which may hold one: an address written on a line is then not surely where a push to it goes.)
+  const r: Remotes = { push: {}, fetch: {}, resolved: {}, ...(verbose.includes ? { includes: true as const } : {}), ...(verbose.rewrites || /^(url|includeif)\./im.test(config.out) ? { rewrites: true as const } : {}) };
   for (const line of verbose.out.split("\n")) {
     const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(line.trim());
     if (!m) continue;
     if (m[3] === "fetch") r.fetch[m[1]!] = m[2]!; else (r.push[m[1]!] ??= []).push(m[2]!);
   }
   r.branch = branch.code === 0 ? branch.out.trim() : undefined;
+  const picks: string[] = [];
   for (const line of config.out.split("\n")) {
     const m = /^(\S+) (.*)$/.exec(line);
     if (!m) continue;
@@ -161,13 +182,31 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
     const res = /^remote\.(.+)\.gh-resolved$/.exec(key);
     if (res) r.resolved[res[1]!] = value;
     else if (key === "remote.pushdefault") r.pushDefault = value;
-    else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.remote`) r.branchRemote = value;
-    else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.pushremote`) r.branchPushRemote = value;
+    else {
+      if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.remote`) r.branchRemote = value;
+      else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.pushremote`) r.branchPushRemote = value;
+      // (Any branch's, when it is no remote's name: where a checkout of that branch pushes with none named.)
+      if (value && value !== "." && !(value in r.push) && !(value in r.fetch) && !picks.includes(value)) { if (picks.length < PICKS_MAX) picks.push(value); else r.picksCut = true; }
+    }
   }
+  if (picks.length) r.picks = picks;
   // (The repository's own remote.pushDefault is not in the view the listing above reads: it comes with the remotes, and
   // stands over the owner's own, as a repository's config does.)
   if (verbose.pushDefault !== undefined) r.pushDefault = verbose.pushDefault;
   return r;
+}
+
+// Whether the owner's own git config (his and the machine's, no repository's) can give a repository the line makes
+// another remote than the line says: it rewrites addresses (url.<base>.insteadOf or .pushInsteadOf), includes a file
+// by condition (asked outside any repository, no condition holds, so what that file says is not shown), names a
+// template for new repositories (whose config a new one starts with), or holds a remote's or a branch's settings
+// itself. The address a line clones is then not surely where the clone's push goes. Asked in the root folder, which is
+// in no repository.
+export async function rewritesOwn(): Promise<boolean | "late"> {
+  // (Plain git, outside any repository: there is none here to make a view of.)
+  const r = await git("/", ["config", "--get-regexp", "^(url\\..+\\.(insteadof|pushinsteadof)|includeif\\..+\\.path|init\\.templatedir|remote\\.pushdefault|remote\\..+\\.(url|pushurl)|branch\\..+\\.(remote|pushremote))$"], { mode: "plain", read: true, timeout: 1_500 });
+  // (0: a key matched. 1: none did. Anything else: git could not say.)
+  return r.code === 0 ? true : r.code === 1 ? false : "late";
 }
 
 // What `ssh -G NAME` says the host is: it prints the configuration ssh would use and makes no connection. The answers are
@@ -243,11 +282,14 @@ export function looking(workspace: string, seed?: Iterable<[string, unknown]>, m
     return {
       kept: (specs) => get<Kept>(`kept\0${specs.join("\0")}`, "late", () => keptIn(workspace, specs)),
       exists: (path) => get(`exists\0${path}`, "late" as const, () => existsAt(path)),
+      enters: (path) => get(`enters\0${path}`, "late" as const, () => entersAt(path)),
       targets: (kind, file) => get<string[] | null>(`targets\0${kind}\0${file}`, null, () => targetsOf(kind, file)),
       read: (file) => get<string | null>(`read\0${file}`, null, () => textOf(file)),
       remotes: (dir) => get<Answer<Remotes>>(`remotes\0${dir}`, "late", () => remotesIn(dir)),
       manifest: (dir) => get<Answer<Manifest>>(`manifest\0${dir}`, "late", () => manifestIn(dir)),
       hostname: (host) => get<Answer<string>>(`ssh\0${host}`, "late", () => hostnameOf(host)),
+      real: (path) => get<string | null | "late">(`real\0${path}`, "late", () => realAt(path)),
+      rewrites: () => get<boolean | "late">("rewrites\0", "late", () => rewritesOwn()),
       ...(named ? { named: (folder: string) => get<Found[] | "late">(`named\0${folder}`, "late", () => named(folder)) } : {}),
       over: () => over,
     };
@@ -269,8 +311,8 @@ function kept(known: Map<string, unknown>): [string, unknown][] {
   return out;
 }
 // A question of the disk that a later look answers the same (a repository's remotes, a manifest's package, an
-// ssh name's host), unlike what a folder held at the time (kept, exists, targets, read).
-export const lasting = (key: string) => /^(remotes|manifest|ssh)\0/.test(key);
+// ssh name's host, whether his git config rewrites addresses), unlike what a folder held at the time (kept, exists, targets, read).
+export const lasting = (key: string) => /^(remotes|manifest|ssh|rewrites)\0/.test(key);
 
 // Decides with what the disk says: `run` is called with the answers so far, what it asked is answered, and it is
 // called again, at most four times. A question still open then stays not answered.

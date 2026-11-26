@@ -15,6 +15,15 @@ test("splits on operators and finds commands inside substitutions", () => {
   expect(splitCommand("echo 'open")).toBeNull();
 });
 
+// The parentheses of a definition end the word and are dropped: the name is marked, whatever compound command its body is.
+test("a function's name before its () is marked as one", () => {
+  const defs = (line: string) => splitCommand(line)!.filter((p) => p.def).map((p) => p.words.join(" "));
+  for (const line of ["cd () { :; }", "cd() ( : )", "cd\t( ) [[ x ]]", "cd () (( 1 ))", "cd () if :; then :; fi", "cd () for x in; do :; done", "cd ()\n{ :; }"]) expect([line, defs(line)]).toEqual([line, ["cd"]]);
+  expect(defs("function cd () { :; }")).toEqual(["function cd"]);
+  expect(defs("x=$(cd () { :; }; cd /w)")).toEqual(["cd"]);
+  for (const line of ["cd; ( : )", "cd\n( : )", "cd /w || exit\nfor f in a; do :; done", "a=( )", "echo $(( 1 ))", "foo bar () { :; }", "(cd /w)"]) expect([line, defs(line)]).toEqual([line, []]);
+});
+
 test("a redirect is kept wherever it stands", () => {
   const shape = (c: string) => split(c).map((s) => [s.words.join(" "), s.redirects]);
   expect(shape("> f")).toEqual([["", true]]);

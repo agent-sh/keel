@@ -445,7 +445,11 @@ under `~/.cache/keel-work/bun/research/`.
   messages, the index and working tree against HEAD), and the text of the `gh` writes that publish (pr, issue, release,
   gist when public, repo edit, api, with a body file the line writes itself). Public is asked of the remote (`gh repo
   view`, else an anonymous `git ls-remote`, kept ten minutes, each probe cut at its end with its process group); a
-  private repository is not read. Private is learned: sentences the owner typed in the session, the fleet's machines,
+  private repository is not read. A push after the same line changes where a remote leads in a way that is not
+  followed (a second address, a rename, a setting or a config of the line's own) is read as going to a public place,
+  and so is one to an address written on the line (one it gives a remote, or one the push names) where a url rewrite
+  is in force, the repository's or the owner's.
+  Private is learned: sentences the owner typed in the session, the fleet's machines,
   ssh aliases, folders his sessions work in (live ones whose repository is not public, never the repository the text
   goes to), his home path, vault values and token shapes, and the `private.terms` setting; his login, his accounts'
   owners and a URL's owner place are never private, and a short or common word is not found inside a longer name written
@@ -469,8 +473,19 @@ under `~/.cache/keel-work/bun/research/`.
   `writeOut`): the rules place nothing by such a word, the model knows the value, and the line that comes back is read
   exactly. The same line again is judged as it is, at most `WRITE_OUT_MAX` lines of a turn are sent back, and a
   refusal stands where a card stood: nothing runs that did not. `git -C ~/folder` is read as the home folder the shell
-  writes out, only when the word is unquoted and the line cannot give HOME another value. What the owner alone can
-  allow for one call (private words, a target outside content named, an account beyond his) is said on one card.
+  writes out, only when the word is unquoted and the line cannot give HOME another value; a `cd` under `~` by the same
+  rule. A folder the line's own git makes (`git worktree add`, `git clone`, `git init`) is not on the disk when the
+  line is read (`src/safety/line-makes.ts`): a write in it, or where a clone or a new checkout of the line may stand,
+  is not placed, never no write; a push with no remote named after the line gives a remote an address there is not
+  placed either, and what a push from such a repository would send is not read (it is held, unless the push says
+  itself that it goes to a folder or a private repository). A
+  `cd` leaves the shell nowhere else when its failing ends the shell (`|| exit`, a group that only says something and
+  exits, a `set -e` that opens the script), or when it is the line's first command, on a line of its own, to a folder
+  written from the root that the disk says is there, outside a sandbox (`elseOf` in `src/safety/risk-words.ts`); the
+  last three only on a line with no code its words do not show (a sourced file, an eval, a trap, a command an
+  expansion names). What
+  the owner alone can allow for one call (private words, a target outside content named, an account beyond his) is
+  said on one card.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files

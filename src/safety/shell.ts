@@ -19,9 +19,11 @@ import { name, unwrap } from "./risk-words.ts";
 // `inputs`: the files it reads through a redirect. `sep`: the operator that
 // ends it when that is not `;` or a newline. `flow`: a loop, a conditional, a
 // group or an assigning expansion stands before it in the line, so a variable
-// may not hold what the line's first words gave it. `led`: the operator that stands before it when that is `||`, `|` or
-// `|&`, whatever it follows (a command, a group, a subshell): it runs only when that failed, or as one side of a pipe.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; led?: string; flow?: true };
+// may not hold what the line's first words gave it. `led`: the operator that stands before it when that is `||`, `|`,
+// `|&` or `&`, whatever it follows (a command, a group, a subshell): it runs only when that failed, as one side of a
+// pipe, or after what stands before it was sent to the background. `def`: its words are a function's name, with the
+// `()` of a definition right after them (`cd () ...`, `function cd () ...`): they run nothing.
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; led?: string; flow?: true; def?: true };
 
 // What is known of a word an expansion makes. `one`: it stays one word (every
 // expansion in it is inside double quotes, and no glob or brace is). `lead`:
@@ -147,7 +149,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     made = false;
     cur = fresh();
   };
-  const flushCmd = (sep?: string) => {
+  const flushCmd = (sep?: string, def = false) => {
     flushWord();
     if (want) { bad = true; want = null; }
     // (A blank line after an operator continues it; a parenthesis ends a command with no operator of its own.)
@@ -177,7 +179,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         ...(depth > 0 ? { nested: true as const } : {}), ...(unknown ? { unknown: true as const } : {}),
         ...(dyn.length ? { dyn, how } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}),
         ...(targets.length ? { targets } : {}), ...(quoteds.length ? { quotes: quoteds } : {}),
-        ...(sep && sep !== ";" && sep !== "\n" ? { sep } : {}), ...(led === "||" || led === "|" || led === "|&" ? { led } : {}), ...(flow ? { flow: true as const } : {}),
+        ...(sep && sep !== ";" && sep !== "\n" ? { sep } : {}), ...(led === "||" || led === "|" || led === "|&" || led === "&" ? { led } : {}), ...(flow ? { flow: true as const } : {}),
+        ...(def && (words.length === 1 || (words.length === 2 && words[0] === "function")) ? { def: true as const } : {}),
       });
     words = [];
     dyn = [];
@@ -463,7 +466,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         if (end === null) return null;
         if (end !== undefined) { flushCmd(); text = cmd.slice(i, end + 1); unknown = true; i = end; continue; }
       }
-      flushCmd();
+      // (`NAME ()`: the name before an empty pair is a function's, whatever compound command follows as its body.)
+      flushCmd(undefined, c === "(" && /^\([ \t]*\)/.test(cmd.slice(i, i + 32)));
       if (c === ")") closed = true;
       if (c === ")" && inner && depth === 0) return bad ? null : { parts: out, end: i };
       depth = Math.max(0, depth + (c === "(" ? 1 : -1));

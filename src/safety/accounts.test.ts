@@ -96,6 +96,10 @@ const ws = "/w/own";
 const disk: Record<string, Remotes> = {
   "/w/own": remotes({ origin: mine }),
   "/w/fork": remotes({ origin: mine, upstream: theirs }),
+  // (A branch that is not checked out has an address for its remote, as `git push -u URL` leaves it.)
+  "/w/brother": remotes({ origin: mine }, { branch: "main", picks: [theirs] }),
+  // (More branches with a place of their own than are kept.)
+  "/w/many": { ...remotes({ origin: mine }, { branch: "main" }), picksCut: true },
   "/w/clone": remotes({ origin: theirs }, { branch: "main" }),
   "/w/ssh": remotes({ origin: "git@github.com:them/lib.git" }),
   "/w/local": remotes({ origin: "/srv/git/repo.git" }),
@@ -114,6 +118,7 @@ const looked = (): Looked => ({
   kept: () => ({ n: 0 }), exists: () => "dir", targets: () => null, read: () => null,
   // (As the disk reads a folder: a `..` in it resolved. This one has no links.)
   remotes: (d) => disk[resolve(d)] ?? null, manifest: (d) => packages[resolve(d)] ?? null, hostname: (h) => HOSTS[h] ?? null,
+  real: (p) => resolve(p), rewrites: () => false,
 });
 const names = ["me", "ghcr.io/me", "npm:@me", "pypi:metool", "crates:me-crate", "npm:solo"];
 const facts = (mode: Mode, agent = false, list = names) => ({ mode, workspace: ws, sandboxed: false, rules: [], tool: "t", home: "/home/u", looked: looked(), accounts: { names: parseNamespaces(list), ...(agent ? { agent: true as const } : {}) } });
@@ -403,7 +408,7 @@ test("a write after a cd that may not land where it says is placed where the she
     // A folder with nothing in it now, reached by the line: not placed. Where the line started, it is no write.
     ["cd /w/nowhere; git push", "unplaced", "/w/clone"],
     ["cd /w/nowhere && git push", "unplaced"],
-    ["git clone https://github.com/them/lib.git /w/new && cd /w/new && git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git /w/new; cd /w/new && git push", "unplaced"],
     ["git -C /w/nowhere push", "unplaced"],
     ["cd /w/nowhere && gh pr create --fill", "unplaced"],
     ["cd /w/nowhere && npm publish", "unplaced"],
@@ -459,6 +464,276 @@ test("a folder with a .. in it is asked of the disk as written, and not followed
     "env SHELLOPTS=physical bash -c 'cd link/.. && git push'", "CDPATH=/w/clone bash -c 'cd inner && git push'", "env CDPATH=/w/clone bash -c 'cd inner && git push'", "export CDPATH=/w/clone; bash -c 'cd inner && git push'"]) expect([c, where(c)]).toEqual([c, "unplaced"]);
   expect(where("bash -c 'cd link/.. && git push'")).toBeNull();
   expect(where("bash -c 'cd /w/own && git push'", "/w/clone")).toBeNull();
+});
+
+// A folder the line's own git makes is not on the disk when the line is judged: a write in it by a remote's name, or by
+// default, is not placed, whoever's address was cloned. Nor is one in a folder a clone or a new checkout of the line may
+// stand in, whatever the disk holds there now.
+test("a write in a folder the same line makes is not placed", () => {
+  const where = (command: string, cwd = "/w/own") => {
+    const d = run(command, cwd, "ask");
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  const rows: [string, string | null, string?][] = [
+    // A new checkout of the owner's repository, from his folder or another.
+    ["git worktree add -q ../wt-new -b fix && cd ../wt-new && git commit -q --allow-empty -m x && git push -u origin fix", "unplaced"],
+    ["git worktree add -q /x/wt-new -b fix2 && git -C /x/wt-new push -u origin fix2", "unplaced"],
+    ["git -C /w/own worktree add /x/wt -b t && cd /x/wt && git push origin HEAD", "unplaced", "/w/clone"],
+    ["git worktree add ../wt -b t && cd ../wt && git push", "unplaced"],
+    ["git worktree add ../wt -b t && cd ../wt && gh pr create --fill", "unplaced"],
+    // Of a fork, by name or with none named.
+    ["git worktree add ../wt -b t && cd ../wt && git push origin t", "unplaced", "/w/fork"],
+    ["git worktree add ../wt -b t && cd ../wt && git push upstream t", "unplaced", "/w/fork"],
+    ["git worktree add ../wt -b t && cd ../wt && git push", "unplaced", "/w/fork"],
+    ["git worktree add ../wt -b t && cd ../wt && git push", "unplaced", "/w/clone"],
+    // The new checkout is on another branch than its repository.
+    ["git worktree add ../wt-rel rel && cd ../wt-rel && git push", "unplaced", "/w/brother"],
+    ["git worktree add ../wt9 -b t9 && git -C ../wt9 push", "unplaced", "/w/brother"],
+    ["git worktree add ../wt-rel rel && cd ../wt-rel && git push origin rel", "unplaced", "/w/brother"],
+    // Of a repository whose branches name more places of their own than are kept.
+    ["git worktree add ../wt-rel rel70 && cd ../wt-rel && git push", "unplaced", "/w/many"],
+    ["git worktree add ../wt7 -b t7 && cd ../wt7 && git push -u origin t7", "unplaced", "/w/many"],
+    // A checkout added to a repository the same line makes, or may have put another in the place of: the disk does not show it.
+    ["git clone https://github.com/them/lib.git inner && cd inner && git worktree add -q ../wtx -b t && cd ../wtx && git push origin t", "unplaced"],
+    ["git clone https://github.com/them/lib.git inner && cd inner && git worktree add -q ../wtx -b t && cd ../wtx && git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git inner && git -C inner worktree add -q ../wtx -b t && git -C wtx push -u origin t", "unplaced"],
+    ["git clone https://github.com/them/lib.git inner && cd inner && git worktree add -q ../wtx -b t && cd ../wtx && gh pr create --fill", "unplaced"],
+    ["rm -rf own; git clone https://github.com/them/lib.git own; git -C own worktree add -q ../wtx -b t && cd wtx && git push origin t", "unplaced", "/w"],
+    ["mv own own.bak && mv clone own && cd own && git worktree add -q ../wtx -b t && cd ../wtx && git push origin t", "unplaced", "/w"],
+    // A clone of the owner's address, and of another's.
+    ["git clone https://github.com/me/app.git app2 && cd app2 && git push", "unplaced", "/w/plain"],
+    ["git clone https://github.com/me/app.git app3 && git -C app3 push origin main", "unplaced", "/w/plain"],
+    ["git clone https://github.com/me/app.git && cd app && git commit --allow-empty -m x && git push", "unplaced", "/w/clone"],
+    ["git clone https://github.com/them/lib.git /w/new && cd /w/new && git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git inner && cd inner && git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git . && git push", "unplaced", "/w/nowhere"],
+    ["git clone https://github.com/them/lib.git x && cd x && gh pr create --fill", "unplaced"],
+    ["git clone https://github.com/me/app.git x && cd x && git push upstream main", "unplaced"],
+    ["git clone https://github.com/me/app.git x && cd x && git remote add up https://github.com/them/lib.git && git push", "unplaced"],
+    ["git clone https://github.com/me/app.git x && git -C x remote set-url origin https://github.com/them/lib.git && git -C x push", "unplaced"],
+    ["git clone -o up https://github.com/me/app.git x && cd x && git push up main", "unplaced"],
+    ["git clone $URL x && cd x && git push", "unplaced"],
+    // A template gives a new repository a config of its own: one the line names leaves it unplaced.
+    ["GIT_TEMPLATE_DIR=/x/tpl git clone https://github.com/me/app.git c1 && cd c1 && git push origin main", "unplaced", "/w/plain"],
+    ["env GIT_TEMPLATE_DIR=/x/tpl git clone https://github.com/me/app.git c1 && cd c1 && git push", "unplaced", "/w/plain"],
+    ["git config --global init.templateDir /x/tpl && git clone https://github.com/me/app.git c1 && cd c1 && git push", "unplaced", "/w/plain"],
+    ["git clone --reference /w/clone https://github.com/me/app.git c1 && cd c1 && git push", "unplaced", "/w/plain"],
+    // After a subshell the operator is not in the parts: what follows may run though the clone failed, in a folder
+    // that held another repository all along.
+    ["git clone https://github.com/me/app.git clone && (cd clone && git status); cd clone && git push", "unplaced", "/w"],
+    ["git clone https://github.com/me/app.git clone && (date); git -C clone commit --allow-empty -m \"$(date)\" && git -C clone push", "unplaced", "/w"],
+    // A script whose words name a maker: the repository it makes may stand where a later command runs.
+    ["bash -c 'rm -rf own; git clone -q https://github.com/them/lib.git own'; cd own && git push", "unplaced", "/w"],
+    ["bash -c 'rm -rf own; git clone -q https://github.com/them/lib.git own' && git -C own push", "unplaced", "/w"],
+    ["bash -c 'git clone -q https://github.com/them/lib.git .'; bash -c 'git push'", "unplaced", "/w/nowhere"],
+    // With a command between that can put another folder there, or not joined by &&.
+    ["git clone https://github.com/me/app.git x && rm -rf x && mv /w/clone x && cd x && git push", "unplaced"],
+    ["git clone https://github.com/me/app.git x; cd x && git push", "unplaced"],
+    // A clone into a folder that holds the owner's repository now: what is there when the push runs is not known.
+    ["rm -rf own; git clone https://github.com/them/lib.git own; cd own && git push", "unplaced", "/w"],
+    ["git worktree add /w/own -b t; cd /w/own && gh pr create --fill", "unplaced", "/w/clone"],
+    ["git clone https://github.com/them/lib.git $D; cd /w/own && git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git other; git push", null],
+    ["test -d x || git clone https://github.com/me/app.git x && cd x && git push", "unplaced"],
+    ["git clone https://github.com/me/app.git x && cd x && git config remote.origin.pushurl https://github.com/them/lib.git && git push", "unplaced"],
+    // What makes another place the branch's remote, or a remote another's name, after the clone.
+    ["git clone https://github.com/me/app.git x && cd x && git fetch --set-upstream https://github.com/them/lib.git main && git push", "unplaced"],
+    ["git clone https://github.com/me/app.git x && cd x && git pull --rebase --set-upstream https://github.com/them/lib.git main && git push", "unplaced"],
+    ["git clone https://github.com/me/app.git x && cd x && git remote add o https://github.com/them/lib.git && git config --rename-section remote.origin remote.old && git config --rename-section remote.o remote.origin && git push origin main", "unplaced"],
+    ["git fetch --set-upstream https://github.com/them/lib.git main && git push", "unplaced"],
+    // The same options shortened, as git takes them, and as git config's own subcommands.
+    ["git fetch -q --set-upst https://github.com/them/lib.git main && git push", "unplaced"],
+    ["git pull -q --rebase --set-up https://github.com/them/lib.git main && git push", "unplaced"],
+    ["git remote add other https://github.com/them/lib.git && git config --rename-sec remote.origin remote.old && git config --rename-sec remote.other remote.origin && git push origin main", "unplaced"],
+    ["git remote add other https://github.com/them/lib.git && git config rename-section remote.origin remote.old && git config rename-section remote.other remote.origin && git push origin main", "unplaced"],
+    ["git config remove-section branch.main && git push", "unplaced"],
+  ];
+  for (const [command, want, cwd] of rows) expect([command, where(command, cwd)]).toEqual([command, want]);
+});
+
+// A cd leaves the shell nowhere else when its failing ends the shell (cd X || exit, a group that only says something and
+// exits, a set -e that opens the script), or when it is the line's first command, to a folder written from the root that
+// the disk says is there, outside a sandbox.
+test("a cd whose failing ends the shell, or the line's first to a folder that is there, leaves the shell nowhere else", () => {
+  const dirs = new Set(["/w/own", "/w/fork"]);
+  const f = (sandboxed = false) => ({ ...facts("ask"), sandboxed, looked: { ...looked(), enters: (p: string) => (dirs.has(p) ? "yes" as const : "no" as const) } });
+  const where = (command: string, cwd = "/w/clone", fs = f()) => {
+    const d = decide({ kind: "shell", command, cwd }, fs);
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  const theirs = "github.com/them/lib";
+  const rows: [string, string | null][] = [
+    ["cd /w/own; git push", null],
+    ["cd /w/own\ngit add -A\ngit commit -q -m x\ngit push", null],
+    // Not on a line of its own (the list it is in may run in a shell of its own), not the first command, not written
+    // from the root, not there, more than a folder, a redirect that can fail first.
+    ["cd /w/own && git add -A; git push", theirs],
+    ["cd /w/own & git push", theirs],
+    ["cd /w/own | cat; git push", theirs],
+    ["cd /w/own || exit & git push", theirs],
+    ["cd /w/own || { echo no; exit 1; } & git push", theirs],
+    ["cd /w/own || { echo no; exit 1; } | cat; git push", theirs],
+    ["{ cd /w/own || exit; } & git push", theirs],
+    ["{ cd /w/own || exit; echo hi; } & git push", theirs],
+    ["{ true; cd /w/own || exit 1; } | cat; git push", theirs],
+    // (The `&` of a later list sends only that list to the background.)
+    ["cd /w/own || exit 1; git status & git push", null],
+    ["cd /w/own || exit 1\ngit fetch &\ngit push", null],
+    ["cd /w/own || exit 1 && git status & git push", theirs],
+    ["cd /w/own || exit 1 && { git status; } & git push", theirs],
+    ["cd /w/own || (exit 1) & git push", theirs],
+    ["true & cd /w/own || exit; git push", null],
+    ["true | cat; cd /w/own || exit; git push", null],
+    ["true; cd /w/own; git push", theirs],
+    // (A sourced file runs in the line's own shell, and can change folder again.)
+    ["cd /w/own\n. /x/cd.sh\ngit push", theirs],
+    ["cd /w/own\nsource /x/cd.sh; git push", theirs],
+    ["cd ../own; git push", theirs],
+    ["cd /w/own/gone; git push", "unplaced"],
+    ["cd /w/own/../own; git push", theirs],
+    ["cd -P /w/own; git push", theirs],
+    ["cd /w/own >/nonexistent/x; git push", theirs],
+    ["X=1 cd /w/own; git push", theirs],
+    // A set -e that opens the script.
+    ["set -e\ncd ../own\ngit push", null],
+    ["set -euo pipefail; true; cd ../own; git push origin main", null],
+    ["set -o errexit; cd ../own; git push", null],
+    ["bash -c 'set -e; cd ../own; git push'", null],
+    ["set -e; cd ../own; set +e; git push", theirs],
+    ["set -e; true && cd ../own; git push", theirs],
+    ["set -e; cd ../own || true; git push", theirs],
+    ["set -e; ! cd ../own; git push", "unplaced"],
+    ["set -e; if cd ../own; then :; fi; git push", "unplaced"],
+    ["true; set -e; cd ../own; git push", theirs],
+    ["set +e; cd ../own; git push", theirs],
+    ["eval 'set -e; cd ../own; git push'", theirs],
+    // A group that only says something and exits.
+    ["cd ../own || { echo no; exit 1; }; git push", null],
+    ["cd ../own || { echo 'not there' >&2; exit 1; }\ngit push", null],
+    ["cd ../own || { exit 1; }; git push", null],
+    ["cd ../own || exit; git push", null],
+    ["cd ../own || { echo no; }; git push", theirs],
+    ["cd ../own || { echo no; false && exit 1; }; git push", theirs],
+    ["cd ../own || { echo no; (exit 1); }; git push", theirs],
+    ["cd ../own || { echo no; }; git push; exit", theirs],
+    ["cd ../own || { echo no > f; exit 1; }; git push", theirs],
+    // (Only where the cd stands before any function, loop or group: a body may run in a pipe's shell or a subshell.)
+    ["f() { cd ../own || { echo no; exit 1; }; }; f | cat\ngit push", "unplaced"],
+    ["f() { cd ../own || { echo no; exit 1; }; }\n(f)\ngit push", "unplaced"],
+    ["f() { cd ../own || { echo no; exit 1; }; }\nx=$(f)\ngit push", "unplaced"],
+    // A list a later & may send to the background: its exit ends only the shell it runs in.
+    ["cd ../own || exit 1 && git status &\ngit push", theirs],
+    ["cd ../own || exit 1 && true &\ngit push", theirs],
+    ["cd ../own || { echo no; exit 1; } && true &\ngit push", theirs],
+    ["cd ../own || { echo no; exit 1; } || true &\ngit push", theirs],
+    // A cd the line may have given another meaning (a function before any compound command, an enable), or one the
+    // shell that runs the script may not have (BASH_ENV, a function in its environment): no folder is followed.
+    ["cd () ( : )\ncd ../own || exit 1\ngit push", "unplaced"],
+    ["cd () [[ x ]]\ncd ../own || exit 1\ngit push", "unplaced"],
+    ["cd () if :; then :; fi\ncd ../own || exit 1\ngit push", "unplaced"],
+    ["set -e\ncd () (( 1 ))\ncd ../own\ngit push", "unplaced"],
+    ["set -e\ncd () for x in; do :; done\ncd ../own\ngit push", "unplaced"],
+    ["enable -n cd\ncd ../own || exit 1\ngit push", "unplaced"],
+    ["set -e\nenable -n cd\ncd ../own\ngit push", "unplaced"],
+    ["BASH_ENV=/x/nocd.sh bash -c 'set -e\ncd ../own\ngit push'", "unplaced"],
+    ["BASH_ENV=/x/nocd.sh bash -c 'cd ../own || exit 1\ngit push'", "unplaced"],
+    ["env 'BASH_FUNC_cd%%=() { :; }' bash -c 'set -e\ncd ../own\ngit push'", "unplaced"],
+    // Code the parts do not show (a trap's, the callback of a mapfile or readarray), or a command the words do not
+    // name (its first word is an expansion): it can take set -e back, change folder again, or give exit another meaning.
+    ["set -e\ns=set\n$s +e\ncd ../own\ngit push", theirs],
+    ["set -e\n$(echo set) +e\ncd ../own\ngit push", theirs],
+    ["set -e\n${S:-set} +e\ncd ../own\ngit push", theirs],
+    ["set -e\nmapfile -c 1 -C 'set +e #' a <<< x\ncd ../own\ngit push", theirs],
+    ["set -e\nreadarray -c 1 -C 'set +e #' a < /etc/hostname\ncd ../own\ngit push", theirs],
+    ["set -e\ntrap 'set +e' DEBUG\ncd ../own\ngit push", theirs],
+    ["mapfile -c 1 -C 'exit() { :; } #' a <<< x\ncd ../own || { echo no; exit 1; }\ngit push", theirs],
+    ["cd /w/own\nmapfile -c 1 -C 'cd /w/clone #' a <<< x\ngit push", theirs],
+    ["cd /w/own\ntrap 'cd /w/clone' DEBUG\ngit push", theirs],
+    ["cd /w/own\n$go /w/clone\ngit push", theirs],
+    // (An expansion anywhere else in a command names no other command.)
+    ["set -e\nv=$(cat VERSION)\ncd ../own\ngit tag \"$v\"\ngit push", null],
+    // A command env starts in another folder runs there, not where the line is.
+    ["cd /w/own\nenv -C \"$OLDPWD\" git push", "unplaced"],
+    ["cd /w/own\nenv --chdir=/w/clone git push", "unplaced"],
+    ["cd /w/own\nenv -C /w/clone bash -c 'git push'", "unplaced"],
+    // An exit that does not end the shell, or is not the shell's own.
+    ["exit () ( : )\ncd ../own || exit 1\ngit push", theirs],
+    // (The name alone before a compound command is a call: the parser marks a definition.)
+    ["cd /w/own || exit\nfor f in a b; do echo $f; done\ngit push", null],
+    ["cd\n( : )\ncd /w/own || exit 1\ngit push", null],
+    ["enable -n exit; cd /w/own/gone || exit 1; git push", "unplaced"],
+    ["cd ../own || exit & git push", theirs],
+    ["cd ../own || exit | cat; git push", theirs],
+    ["exit() { :; }; cd /w/own || exit; git push", theirs],
+    ["function exit { :; }; cd /w/own || exit; git push", theirs],
+  ];
+  for (const [command, want] of rows) expect([command, where(command)]).toEqual([command, want]);
+  // In a sandbox the shell does not see every folder the daemon does: the disk's word is not taken.
+  expect(where("cd /w/own; git push", "/w/clone", f(true))).toBe(theirs);
+  // Without the disk's word nothing changes.
+  expect(how(run("cd /w/own; git push", "/w/clone", "ask"))).toBe("account");
+});
+
+// A config that includes another file may send a push elsewhere than its remotes say: the card says so.
+test("a repository whose config includes another file is not placed, and the card says why", () => {
+  const f = { ...facts("ask"), looked: { ...looked(), remotes: () => ({ ...remotes({ origin: mine }), includes: true as const }) } };
+  for (const command of ["git push", "git push origin main", "gh pr create --fill"]) {
+    const d = decide({ kind: "shell", command, cwd: "/w/own" }, f) as { ask: { account: string; why: string } };
+    expect([command, d.ask.account]).toEqual([command, ""]);
+    expect(d.ask.why).toContain("includes another file");
+  }
+  expect(how(decide({ kind: "shell", command: "git push https://github.com/me/repo.git main", cwd: "/w/own" }, f))).not.toBe("account");
+});
+
+// A folder with no repository in it now is no write only while the line makes none before the command: a clone, an init
+// or a new worktree may put one there, where the line started too. A push with no remote named then goes to a remote the
+// line itself added.
+test("a push from a folder with no repository is not no write when the line makes one first", () => {
+  const where = (command: string, cwd = "/w/nowhere") => {
+    const d = run(command, cwd, "ask");
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  const rows: [string, string | null][] = [
+    ["git push", null],
+    ["echo hi; git status; git push", null],
+    ["git clone https://github.com/them/lib.git . ; git push origin main", "unplaced"],
+    ["git clone https://github.com/them/lib.git . ; npm publish", "unplaced"],
+    ["git clone https://github.com/them/lib.git . ; gh pr create --fill", "unplaced"],
+    ["git init -q; git push origin main", "unplaced"],
+    ["false && git clone https://github.com/them/lib.git .; git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git $D; git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git .; bash -c 'git push'", "unplaced"],
+    // Made elsewhere: the folder the line is in still holds none.
+    ["git clone https://github.com/them/lib.git lib; git push", null],
+    // A remote the line added is where a push that names it goes.
+    ["mkdir nd && cd nd && git init -q && git remote add origin https://github.com/me/new.git && git push -u origin main", null],
+    ["git init -q && git remote add origin https://github.com/them/lib.git && git push origin main", "github.com/them/lib"],
+    // With none named, the repository the push finds picks it: a new one's template, a copy's, a link's, an archive's
+    // or a clone's settings, which the rules do not read.
+    ["git init -q && git remote add origin https://github.com/them/lib.git && git push", "unplaced"],
+    ["mkdir nd && cd nd && git init -q && git remote add origin https://github.com/me/new.git && git push", "unplaced"],
+    ["git clone -q --bare https://github.com/them/lib.git nd/.git && cd nd && git init -q && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["git clone -q --bare https://github.com/them/lib.git nd/.git && git init -q nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["git clone -q --mirror https://github.com/them/lib.git nd/.git && git -C nd init -q && git -C nd remote add mine https://github.com/me/app.git && git -C nd push", "unplaced"],
+    ["git clone -q https://github.com/them/lib.git nd/.git && git init -q nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["GIT_TEMPLATE_DIR=/x/tpl git init -q nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["git config --global init.templateDir /x/tpl && git init -q nd && cd nd && git remote add mine https://github.com/me/app.git && git push mine main", "unplaced"],
+    ["git init -q; git remote add origin https://github.com/them/lib.git; git push", "unplaced"],
+    ["cp -r /w/clone nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["cp -r /w/clone nd; cd nd; git remote add mine https://github.com/me/app.git; git push", "unplaced"],
+    ["cp -r /w/clone nd && git -C nd remote add mine https://github.com/me/app.git && git -C nd push", "unplaced"],
+    ["ln -s /w/clone nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["rsync -a /w/clone/ nd/ && cd nd && git init -q && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["cp -r /w/clone nd; bash -c 'git init -q nd && cd nd && git remote add mine https://github.com/me/app.git && git push'", "unplaced"],
+    ["git init -q --separate-git-dir /w/clone/.git nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["git clone -q https://github.com/them/lib.git nd && cd nd && git init -q && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["mkdir -p nd/.git && git config -f nd/.git/config branch.main.remote https://github.com/them/lib.git && git init -q nd && cd nd && git remote add mine https://github.com/me/app.git && git push", "unplaced"],
+    ["git init -q && git remote add origin https://github.com/me/new.git && git remote add up https://github.com/them/lib.git && git push", "unplaced"],
+    ["git init -q && git remote add origin $URL && git push", "unplaced"],
+  ];
+  for (const [command, want] of rows) expect([command, where(command)]).toEqual([command, want]);
+  expect((run("git init -q; git push origin main", "/w/nowhere", "ask") as { ask: { why: string } }).ask.why).toContain("the same line makes a repository before it");
+  expect((run("git clone https://github.com/them/lib.git . ; git push origin main", "/w/nowhere", "ask") as { ask: { why: string } }).ask.why).toContain("clones or adds a checkout");
 });
 
 // --git-dir names the repository itself: a -C before or after it changes the folder a relative one is read from, not the

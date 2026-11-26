@@ -8,7 +8,7 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { locate } from "../core/git.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
-import { hostnameOf, isTextMark, manifestIn, remotesIn, textMark } from "./looked.ts";
+import { hostnameOf, isTextMark, manifestIn, remotesIn, rewritesOwn, textMark } from "./looked.ts";
 import { foldersOf, type MarkMcp, type MarkTool } from "./marks.ts";
 import { checkoutsOf } from "./refwatch.ts";
 import { workspaceBins } from "./bins.ts";
@@ -51,6 +51,7 @@ async function answer(key: string): Promise<unknown> {
   if (kind === "remotes") return remotesIn(arg);
   if (kind === "manifest") return manifestIn(arg);
   if (kind === "ssh") return hostnameOf(arg);
+  if (kind === "rewrites") return rewritesOwn();
   return "late";
 }
 

@@ -56,6 +56,7 @@
 // ignores an alias that hides a command of its own).
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { privateHost } from "./hosts.ts";
 import { defaultStateDir } from "./paths.ts";
@@ -181,6 +182,18 @@ export function realDir(path: string): string {
   for (const part of abs.split("/")) {
     if (!part || part === ".") continue;
     at = part === ".." ? dirname(at) : realpathSync(join(at, part));
+  }
+  return at;
+}
+
+// The same, asked of the disk off the loop.
+export async function realDirLater(path: string): Promise<string> {
+  const abs = path.startsWith("/") ? path : `${process.cwd()}/${path}`;
+  if (!/(^|\/)\.\.(\/|$)/.test(abs)) return realpath(abs);
+  let at = "/";
+  for (const part of abs.split("/")) {
+    if (!part || part === ".") continue;
+    at = part === ".." ? dirname(at) : await realpath(join(at, part));
   }
   return at;
 }
@@ -688,11 +701,11 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
 // repository's are this read's own keys, after the owner's as in a repository's config, and a listing connects
 // nowhere). `includes`: the repository's config includes other files, which Keel does not read, so the listing may
 // not be the one his git uses. `pushDefault`: the repository's own remote.pushDefault, when it sets one.
-export async function remotesAsRun(dir: string, timeout: number): Promise<GitResult & { includes?: true; pushDefault?: string }> {
+export async function remotesAsRun(dir: string, timeout: number): Promise<GitResult & { includes?: true; rewrites?: true; pushDefault?: string }> {
   let leads: Leads | undefined;
   try { const w = locate(dir); if (w) leads = made.get(viewOf(w))?.leads; } catch {} // the listing below says what failed
   const r = await git(dir, ["remote", "-v"], { read: true, timeout, ...(leads?.rewrites.length ? { config: leads.rewrites } : {}) });
-  return { ...r, ...(leads?.includes ? { includes: true as const } : {}), ...(leads?.pushDefault !== undefined ? { pushDefault: leads.pushDefault } : {}) };
+  return { ...r, ...(leads?.includes ? { includes: true as const } : {}), ...(leads?.rewrites.length ? { rewrites: true as const } : {}), ...(leads?.pushDefault !== undefined ? { pushDefault: leads.pushDefault } : {}) };
 }
 
 // The entries a listing prints (with -z), handed to `each` a pipe's chunk at a time as they come, so the

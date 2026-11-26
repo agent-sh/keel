@@ -4,8 +4,8 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, realDir, remotesAsRun, setGitReach, setGitViews } from "./git.ts";
-import { remotesIn } from "../safety/looked.ts";
+import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, realDir, realDirLater, remotesAsRun, setGitReach, setGitViews } from "./git.ts";
+import { remotesIn, rewritesOwn } from "../safety/looked.ts";
 import { handsRoutes } from "../fleet/hands-routes.ts";
 import { Shadow } from "../safety/shadow.ts";
 import { Store } from "./store.ts";
@@ -861,8 +861,16 @@ test("the remotes are listed as the owner's own git lists them: the repository's
     for (const dir of [instead, push, both, plain]) expect(await listed(dir)).toBe(own(dir));
     expect(await listed(plain)).toContain("mirror.example/me/app.git");
     expect(await listed(instead)).toContain("forge.example/them/app.git");
+    // (What a clone the line makes would get its remote through: asked outside any repository.)
+    expect(await rewritesOwn()).toBe(true);
   } finally {
     writeFileSync(GLOBAL, global);
+  }
+  expect(await rewritesOwn()).toBe(false);
+  // The same for what else gives a repository the line makes another remote than the line says: a file included by
+  // condition (not shown outside a repository), a template for new repositories, a remote's settings of his own.
+  for (const more of [`[includeIf "gitdir:/w/"]\n\tpath = /w/other.config\n`, "[init]\n\ttemplateDir = /w/tpl\n", "[remote]\n\tpushDefault = fork\n", `[remote "origin"]\n\tpushurl = https://forge.example/them/app.git\n`]) {
+    try { writeFileSync(GLOBAL, global + more); expect([more, await rewritesOwn()]).toEqual([more, true]); } finally { writeFileSync(GLOBAL, global); }
   }
   // Keel's own git still rewrites nothing: a fetch or a push of its own goes to the address the remote names.
   expect((await git(instead, ["remote", "-v"], { read: true })).out).not.toContain("them");
@@ -872,13 +880,25 @@ test("the remotes are listed as the owner's own git lists them: the repository's
   expect((await remotesAsRun(def, 10_000)).pushDefault).toBe("elsewhere");
   expect(((await remotesIn(def)) as { pushDefault?: string }).pushDefault).toBe("elsewhere");
   expect((await remotesAsRun(instead, 10_000)).pushDefault).toBeUndefined();
+  // What any branch's remote or pushRemote says that is no remote's name (an address, as `git push -u URL` leaves it)
+  // comes with the remotes: a checkout of that branch pushes there with no remote named.
+  for (const [k, v] of [["branch.rel.remote", "https://forge.example/them/lib.git"], ["branch.t9.pushRemote", "git@forge.example:them/two.git"], ["branch.side.remote", "."], ["branch.main.remote", "origin"]] as const) must(def, "config", k, v);
+  expect(((await remotesIn(def)) as { picks?: string[] }).picks).toEqual(["https://forge.example/them/lib.git", "git@forge.example:them/two.git"]);
+  expect(((await remotesIn(instead)) as { picks?: string[] }).picks).toBeUndefined();
+  expect(((await remotesIn(def)) as { picksCut?: true }).picksCut).toBeUndefined();
+  // More of them than are kept: said, so a push with no remote named in a new checkout is not placed by a partial list.
+  const many = mk("rw-many");
+  writeFileSync(join(many, ".git", "config"), readFileSync(join(many, ".git", "config"), "utf8") + Array.from({ length: 70 }, (_, n) => `[branch "b${n}"]\n\tremote = https://forge.example/x/r${n}.git\n`).join(""));
+  expect(((await remotesIn(many)) as { picks?: string[]; picksCut?: true })).toMatchObject({ picksCut: true });
+  expect(((await remotesIn(many)) as { picks: string[] }).picks.length).toBe(64);
   expect((await git(def, ["config", "--get", "remote.pushDefault"], { read: true })).out.trim()).toBe("");
   // A config that includes another file: the listing says so, since that file is not read.
   writeFileSync(join(root, "rw-included"), `[remote "origin"]\n\tpushurl = https://forge.example/them/app.git\n`);
   must(plain, "config", "include.path", join(root, "rw-included"));
   expect((await remotesAsRun(plain, 10_000)).includes).toBe(true);
   expect((await remotesAsRun(instead, 10_000)).includes).toBeUndefined();
-  expect(await remotesIn(plain)).toBe("late");
+  expect(((await remotesIn(plain)) as { includes?: true }).includes).toBe(true);
+  expect(((await remotesIn(instead)) as { includes?: true }).includes).toBeUndefined();
   expect(((await remotesIn(push)) as { push: Record<string, string[]> }).push.origin).toEqual(["https://forge.example/them/app.git"]);
 });
 
@@ -895,6 +915,11 @@ test("a folder with a .. after a link is the one the disk walks to, not the one 
   expect(realDir(`${mine}/link/../../real-mine/./link`)).toBe(join(theirs, "sub"));
   expect(realDir(`${mine}/link`)).toBe(join(theirs, "sub"));
   expect(realDir(mine)).toBe(mine);
+  // The same asked off the loop.
+  expect(await realDirLater(`${mine}/link/..`)).toBe(theirs);
+  expect(await realDirLater(`${mine}/link/../../real-mine/./link`)).toBe(join(theirs, "sub"));
+  expect(await realDirLater(mine)).toBe(mine);
+  expect(await realDirLater(`${mine}/gone/..`).catch(() => null)).toBeNull();
   expect(() => realDir(`${mine}/nothere/..`)).toThrow();
   expect(locate(`${mine}/link/..`)?.top).toBe(theirs);
   expect(locate(`${mine}/link`)?.top).toBe(theirs);
