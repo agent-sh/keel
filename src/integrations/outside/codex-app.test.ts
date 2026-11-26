@@ -262,6 +262,8 @@ describe("a Codex session answered in place", () => {
     // Typed into a command it runs: weighed as no command, its text shown.
     expect(commandWords({ kind: "writeStdin" }, "y\n")).toMatchObject({ name: "Codex input", judged: "", shown: "Codex types into a command it runs:\ny\n" });
     expect(commandWords({ kind: "humanCommand" }, "deploy")).toMatchObject({ name: "Codex checkpoint", judged: "deploy" });
+    // More than its sandbox gives, asked with the command: said, and weighed as a permissions request.
+    expect(commandWords({ additionalPermissions: { network: { enabled: true }, fileSystem: { write: ["/"] } } }, "make test")).toMatchObject({ more: true, shown: "make test\nCodex asks for the network, write to / for it" });
     expect(permissionLines({ network: { enabled: true }, fileSystem: { write: ["/a"], read: ["/b"], entries: [
       { access: "write", path: { type: "path", path: "/c" } }, { access: "read", path: { type: "glob_pattern", pattern: "**/*.pem" } },
       { access: "write", path: { type: "special", value: { kind: "root" } } }, { access: "deny", path: { type: "special", value: { kind: "project_roots", subpath: "secrets" } } },

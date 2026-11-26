@@ -103,7 +103,16 @@ export type CodexAppDeps = {
 // The card of a command approval, by its kind: a command (with the host Codex's network asks for, when it names
 // one), text typed into a command Codex already runs, or a checkpoint Codex's own policy leaves to a person.
 // `judged`: the command the gate weighs. Typed text is weighed as no command (high): Keel cannot tell what reads it.
-export function commandWords(p: Json, command: string): { name: string; why: string; judged: string; shown?: string; host?: string } {
+// `more`: it asks for more than its sandbox gives as well (additionalPermissions): the owner's to weigh, as a
+// permissions request is.
+export function commandWords(p: Json, command: string): { name: string; why: string; judged: string; shown?: string; host?: string; more?: true } {
+  const base = commandBase(p, command);
+  const more = permissionLines(p?.additionalPermissions ?? {});
+  if (!more.length) return base;
+  const asks = `Codex asks for ${more.join(", ")} for it`;
+  return { ...base, more: true, why: `${base.why}, with more than its sandbox gives`, shown: `${base.shown ?? command}\n${asks}` };
+}
+function commandBase(p: Json, command: string): { name: string; why: string; judged: string; shown?: string; host?: string } {
   const net = p?.networkApprovalContext;
   const host = net && typeof net.host === "string" && net.host ? `${net.host}${typeof net.protocol === "string" ? ` (${net.protocol})` : ""}` : undefined;
   const reach = host ? `Codex asks to reach ${host}` : undefined;
@@ -625,7 +634,7 @@ export class CodexApp {
         case "item/commandExecution/requestApproval": {
           const command = typeof p?.command === "string" ? p.command : "";
           const words = commandWords(p, command);
-          const ok = await ask({ name: words.name, kind: "shell", input_schema: { properties: { command: {} } } }, { command: words.judged, cwd, ...(words.host ? { host: words.host } : {}) }, words.name, words.why, words.shown);
+          const ok = await ask({ name: words.name, ...(words.more ? {} : { kind: "shell" as const }), input_schema: { properties: { command: {} } } }, { command: words.judged, cwd, ...(words.host ? { host: words.host } : {}), ...(words.more ? { more: p.additionalPermissions } : {}) }, words.name, words.why, words.shown);
           return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
         }
         case "item/fileChange/requestApproval": {
