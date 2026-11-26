@@ -27,6 +27,11 @@ test("a fall of recall is told once, with its numbers, until recall was measured
   w.set([stand("store_prompt", { answered: 86, hits: 2 }, DAY)]);
   await watchFell(w.deps);
   expect(w.alerts).toHaveLength(1);
+  // Still under half of the day's share, though no longer past chance: the fall goes on, nothing is settled.
+  w.set([stand("store_prompt", { answered: 86, hits: 11 }, DAY)]);
+  await watchFell(w.deps);
+  expect(w.marks.size).toBe(1);
+  expect(w.settled).toEqual([]);
   // Measured back above half of the day's share: the mark clears, and the next fall is told.
   w.set([stand("store_prompt", { answered: 60, hits: 18 }, DAY)]);
   await watchFell(w.deps);

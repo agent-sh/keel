@@ -216,21 +216,42 @@ export type MemoryFilter = { since?: number; until?: number; session?: string };
 // of the day's or less. A path asked or answered rarely cannot be said to
 // fall: both windows need FELL_MIN_ASKS answered asks, and the day FELL_MIN_HITS
 // of them with facts (ten hits is the least where a halving is more than a
-// couple of misses in a row). A change of the store or of the store's hook
-// reads here the hour it lands, whatever its cause (the first one this was
-// written for: the store stopped answering the prompts of agents).
+// couple of misses in a row). A halving must also be one chance does not make:
+// so few hits in the recent answers at the day's share has a chance under
+// FELL_CHANCE (the binomial lower tail). A path with a low share (tool calls
+// answer a few in a hundred) halves by chance every few hours: the watch looks
+// every ten minutes at about twelve fresh two-hour windows a day on each path,
+// so one in a thousand is a chance fall about once a month. A change of the
+// store or of the store's hook reads here the hour it lands, whatever its cause
+// (the first one this was written for: the store stopped answering the prompts of agents).
 export const FELL_RECENT_MS = 2 * 3_600_000;
 export const FELL_DAY_MS = 24 * 3_600_000;
 export const FELL_MIN_ASKS = 20;
 export const FELL_MIN_HITS = 10;
+export const FELL_CHANCE = 0.001;
 export type Window = { answered: number; hits: number };
 export type Fell = { path: MemoryPath; recent: Window; day: Window };
 // A path's windows with its fall, if any. `recovered`: both windows hold enough answers and the recent share is back above half of the day's.
 export type Standing = { path: MemoryPath; recent: Window; day: Window; fell: Fell | null };
-export const recovered = (w: Standing): boolean => !w.fell && w.recent.answered >= FELL_MIN_ASKS && w.day.answered >= FELL_MIN_ASKS && w.day.hits >= FELL_MIN_HITS;
+const enough = (recent: Window, day: Window) => recent.answered >= FELL_MIN_ASKS && day.answered >= FELL_MIN_ASKS && day.hits >= FELL_MIN_HITS;
+const halved = (recent: Window, day: Window) => recent.hits / recent.answered <= day.hits / day.answered / 2;
+// (A share that is low but within chance is no fall and no recovery either: a mark clears only above half.)
+export const recovered = (w: Standing): boolean => !w.fell && enough(w.recent, w.day) && !halved(w.recent, w.day);
+// The chance of `hits` or fewer in `n` answers at share `p` (the binomial lower tail), summed in logs so a long window does not underflow to a false zero.
+export function chanceAtMost(hits: number, n: number, p: number): number {
+  if (hits >= n || p <= 0) return 1;
+  if (p >= 1) return 0;
+  const lp = Math.log(p), lq = Math.log1p(-p);
+  let log = n * lq, sum = Math.exp(log);
+  for (let k = 0; k < hits; k++) {
+    log += Math.log((n - k) / (k + 1)) + lp - lq;
+    sum += Math.exp(log);
+  }
+  return Math.min(1, sum);
+}
 export function recallFell(path: MemoryPath, recent: Window, day: Window): Fell | null {
-  if (recent.answered < FELL_MIN_ASKS || day.answered < FELL_MIN_ASKS || day.hits < FELL_MIN_HITS) return null;
-  return recent.hits / recent.answered <= day.hits / day.answered / 2 ? { path, recent, day } : null;
+  if (!enough(recent, day) || !halved(recent, day)) return null;
+  return chanceAtMost(recent.hits, recent.answered, day.hits / day.answered) < FELL_CHANCE ? { path, recent, day } : null;
 }
 
 export class MemoryMeter {

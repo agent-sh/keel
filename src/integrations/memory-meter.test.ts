@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { asksMemory, bansOf, callBreaks, factOf, handlesOf, memoryMeter, recallFell, FELL_DAY_MS, FELL_RECENT_MS } from "./memory-meter.ts";
+import { asksMemory, bansOf, callBreaks, chanceAtMost, factOf, handlesOf, memoryMeter, recallFell, FELL_DAY_MS, FELL_RECENT_MS } from "./memory-meter.ts";
 import { usedBy } from "./memory-meter.ts";
 import { fitMemory, memoryBlock, shownLines } from "./tacit.ts";
 
@@ -119,13 +119,31 @@ test("a path's recall fell when its share of answers with facts in the last two 
   const w = (answered: number, hits: number) => ({ answered, hits });
   // 40 of 160 in the day, none of 43 now: fell. The same share, or a little lower, did not.
   expect(recallFell("store_prompt", w(43, 0), w(160, 40))).toMatchObject({ path: "store_prompt" });
-  expect(recallFell("store_prompt", w(40, 5), w(160, 40))).toMatchObject({ path: "store_prompt" });
+  expect(recallFell("store_prompt", w(40, 1), w(160, 40))).toMatchObject({ path: "store_prompt" });
+  // Halved, but five of 40 at a quarter happens by chance one look in twenty-five: no fall.
+  expect(recallFell("store_prompt", w(40, 5), w(160, 40))).toBeNull();
   expect(recallFell("store_prompt", w(40, 6), w(160, 40))).toBeNull();
   expect(recallFell("store_prompt", w(40, 10), w(160, 40))).toBeNull();
   // Too few answers to say: either window, or a day with too few hits to fall from.
   expect(recallFell("store_prompt", w(19, 0), w(160, 40))).toBeNull();
   expect(recallFell("store_prompt", w(43, 0), w(19, 19))).toBeNull();
   expect(recallFell("store_tool", w(43, 0), w(60_000, 9))).toBeNull();
+});
+
+test("a low share that halves by chance is no fall; the store that stopped answering is one", () => {
+  const w = (answered: number, hits: number) => ({ answered, hits });
+  // A path that answers a few in a hundred: four of 262 against 62 of 1,686, none of 25 against 15 of 664.
+  expect(recallFell("store_tool", w(262, 4), w(1686, 62))).toBeNull();
+  expect(recallFell("store_prompt", w(25, 0), w(664, 15))).toBeNull();
+  expect(recallFell("store_prompt", w(81, 0), w(714, 18))).toBeNull();
+  // Seven in ten answered with facts all day, none of the last 43: a fall.
+  expect(recallFell("store_prompt", w(43, 0), w(550, 382))).toMatchObject({ path: "store_prompt" });
+  // The tail itself: no heads in ten fair tosses, a sure share, a window that would underflow.
+  expect(chanceAtMost(0, 10, 0.5)).toBeCloseTo(1 / 1024, 10);
+  expect(chanceAtMost(3, 3, 0.9)).toBe(1);
+  expect(chanceAtMost(2, 5, 1)).toBe(0);
+  expect(chanceAtMost(1500, 5000, 0.5)).toBeLessThan(1e-100);
+  expect(chanceAtMost(2600, 5000, 0.5)).toBeGreaterThan(0.99);
 });
 
 test("the meter reads each path against its own day, now and not at the range the panel shows", () => {
