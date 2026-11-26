@@ -40,9 +40,9 @@ test("a restart asked while you are at a page waits for you, joined into one, an
   expect((await daemon(request)).restart_waiting).toBeNull();
 });
 
-for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) test.describe(`on a phone ${size.width}x${size.height}`, () => {
+for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) test.describe(`on a phone, ${size.width}x${size.height}`, () => {
   test.use({ viewport: size, hasTouch: true, isMobile: true });
-  test("the band says its sentence whole and its two answers are quiet words in the band", async ({ page, request }) => {
+  test("the band says its sentence whole and its two answers are quiet words in the band, once, on the page where you are", async ({ page, request }) => {
     await page.goto("/");
     await request.post("/api/presence", { data: { session_id: null, focused: true, idle_ms: 0 } });
     await restart(request, "a landing");
@@ -65,7 +65,23 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) t
       expect(box.height, "the band is one line").toBeLessThanOrEqual(now.height + 2);
     }
     await shoot(page, `restart-wait-02-phone-${size.width}`);
-    await band.getByTestId("restart-waiting-off").tap();
-    await expect(band).toHaveCount(0);
+    // On a phone the owner's being there is what holds the restart: the band is said on the page where the
+    // wait began, and the pages gone to after it leave it out.
+    const { session } = await (await request.post("/api/sessions", { data: { title: "Read on the phone" } })).json();
+    try {
+      await page.evaluate((id) => { history.pushState(null, "", `/s/${id}`); dispatchEvent(new PopStateEvent("popstate")); }, session.id);
+      await expect(page.locator(".k-station[data-helm]").getByTestId("station-title")).toBeVisible();
+      await page.waitForTimeout(300);
+      await shoot(page, `restart-wait-03-phone-elsewhere-${size.width}`);
+      await expect(band, "not on every page").toHaveCount(0);
+      expect((await daemon(request)).restart_waiting, "the restart still waits").not.toBeNull();
+      await page.goBack();
+      await expect(band).toBeVisible();
+      await band.getByTestId("restart-waiting-off").tap();
+      await expect(band).toHaveCount(0);
+    } finally {
+      await request.delete("/api/drain/waiting").catch(() => {});
+      await request.delete(`/api/sessions/${session.id}`);
+    }
   });
 });

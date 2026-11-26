@@ -7,11 +7,18 @@ import { useEffect, useRef, useState } from "react";
 import { drainWords, setDrain, setRestartWait, useDrain, useRestartWait, waitWords } from "../lib/drain.ts";
 import { shell } from "../lib/shell.ts";
 import { api, downSince, onFeature, readAtOpen, reportError, useStore } from "../lib/store.ts";
-import { setUI, useUI } from "../lib/ui.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
+import { setUI, useUI, type Route } from "../lib/ui.ts";
 import { clock } from "../lib/utils.ts";
 
 // A drop this short is a blip (the socket opened again at once): nothing is said.
 const AWAY_AFTER_MS = 1_000;
+
+// On a phone the owner's being there is what holds a waiting restart, so a band on every page he goes to
+// would follow him around the whole time he reads. It is said once, on the page where he was when it
+// began waiting; the pages he goes to after that leave it out, and the next wait is said again.
+const pageOf = (r: Route) => `${r.name}:${"id" in r ? r.id : "section" in r ? r.section : ""}`;
+let saidOn: { since: number; page: string } | null = null;
 
 export function AdminBand() {
   // A drain is said from the daemon's first word of it (a stop signal, a restart asked for), with the turns it waits for.
@@ -25,6 +32,8 @@ export function AdminBand() {
   const connected = useStore((s) => s.connected);
   const shellAway = useUI((s) => s.shellAway);
   const shellNote = useUI((s) => s.shellNote);
+  const narrow = usePhoneWidth();
+  const page = pageOf(useUI((s) => s.route));
   useEffect(() => {
     const check = () => api<{ build_id: string; draining: any; restart_waiting?: any; running?: number; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
@@ -145,7 +154,7 @@ export function AdminBand() {
     );
   }
   // A restart that waits for the owner: one quiet line, with the two things to do about it.
-  if (waiting && !draining && !updated && connected) {
+  if (waiting && !draining && !updated && connected && (!narrow || saidHere(waiting.since_ms, page))) {
     return (
       <div role="status" data-testid="restart-waiting" className="k-restart-band flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in"
         title={waiting.reasons.length ? `Asked: ${waiting.reasons.join("; ")}` : undefined}>
@@ -168,4 +177,10 @@ export function AdminBand() {
       ) : <span data-testid="admin-band-note" className={refused ? "shrink-0 text-caption font-medium text-warn" : "shrink-0 text-caption text-faint"}>{refused ? "Not taken: new work waits." : "New work waits."}</span>}
     </div>
   );
+}
+
+// Whether a wait that began at `since` is said on this page: the first page it shows on is its page.
+function saidHere(since: number, page: string): boolean {
+  if (saidOn?.since !== since) saidOn = { since, page };
+  return saidOn.page === page;
 }
