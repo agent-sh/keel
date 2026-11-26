@@ -1323,7 +1323,7 @@ async function begin(id: string, input: Pick<SpawnInput, "background">, model: s
   const waited = await stagger(parentId, model, childId, signal);
   if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
   if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
-  if (input.background === false && signal?.aborted) {
+  if (input.background === false && signal?.aborted && !D().engine.isParking?.(parentId)) {
     const ended = waitFor(id); // this call holds the result: no report is owed to the stopped parent
     stop(id, "parent_turn");
     await ended;

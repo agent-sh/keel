@@ -188,7 +188,9 @@ const MESSAGE_TOOLS = new Set(["SendMessage", "send_input"]);
 export const messageHooks: TurnHooks = {
   callOutcome: (sessionId, callId) => {
     const c = callOf(sessionId, callId);
-    if (c && AGENT_TOOL_NAMES.includes(c.name)) return agents.agentCallCut(sessionId, callId);
+    // Any cut call that started an agent (Agent, spawn_agent, a forked Skill) is answered with that agent, so the
+    // parent never starts it twice; the lookup is by the call's id on the parent index.
+    if (c) { const cut = agents.agentCallCut(sessionId, callId); if (cut) return cut; }
     if (!c || !MESSAGE_TOOLS.has(c.name)) return undefined;
     let to: agents.AgentRecord;
     try { to = agents.resolveInTree(sessionId, String(c.input?.to ?? c.input?.agent_id ?? c.input?.target)); } catch { return undefined; }

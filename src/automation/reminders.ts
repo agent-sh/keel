@@ -15,10 +15,11 @@ import { reachLine, reminderWords, step, waited } from "./reminder-schedule.ts";
 
 const LOOK_MS = 30_000;
 let lookedAt = 0;
-const unrouted = new Set<string>(); // the cards whose due reminder had no channel, said once each
 
 export function migrate() {
   D().store.migrate("CREATE TABLE IF NOT EXISTS card_reminders (card TEXT PRIMARY KEY, anchor INTEGER NOT NULL, sent INTEGER NOT NULL)");
+  // The cards whose due reminder had no channel, said once each across restarts (pruned to the open cards).
+  D().store.migrate("CREATE TABLE IF NOT EXISTS card_unrouted (card TEXT PRIMARY KEY)");
 }
 
 // The card an alert is about, as one key: an approval, a plan or a secret by its id, a question by its call in the session that asked.
@@ -44,6 +45,7 @@ export function tick(now = Date.now(), away: number | null = ownerAwaySince(now)
     const kept = new Map(db.query<Row, []>("SELECT card, anchor, sent FROM card_reminders").all().map((r) => [r.card, r]));
     const live = new Set(open.map(cardOf));
     for (const c of kept.keys()) if (!live.has(c)) db.query("DELETE FROM card_reminders WHERE card = ?").run(c);
+    for (const r of db.query<{ card: string }, []>("SELECT card FROM card_unrouted").all()) if (!live.has(r.card)) db.query("DELETE FROM card_unrouted WHERE card = ?").run(r.card);
     if (away === null || !open.length) return told;
     const bySession = new Map<string, Alert[]>();
     for (const a of open) (bySession.get(a.session_id!) ?? bySession.set(a.session_id!, []).get(a.session_id!)!).push(a);
@@ -56,12 +58,11 @@ export function tick(now = Date.now(), away: number | null = ownerAwaySince(now)
       }
       const lead = due[0]!.a; // the card that has waited longest of those due (the list is oldest first)
       const to = reminderChannels(lead.kind);
-      // Each reminder that came due is a row of the activity record (and a line of the daemon's log), sent or
+      // Each reminder that came due is a row of the activity record, sent or
       // not and where to, so a card that waited long says afterwards whether it was told again.
       const said = `"${lead.title}" waited ${waited(now - lead.ts)}${cards.length > 1 ? ` with ${cards.length - 1} more` : ""}`;
       if (!to.length) {
-        if (!unrouted.has(due[0]!.card)) activity.record("alert", "reminder", session, `Not reminded: ${said}, and no channel that interrupts is set up for ${lead.kind} alerts`, { card: due[0]!.card, sent: false });
-        unrouted.add(due[0]!.card);
+        if (db.query("INSERT OR IGNORE INTO card_unrouted (card) VALUES (?)").run(due[0]!.card).changes) activity.record("alert", "reminder", session, `Not reminded: ${said}, and no channel that interrupts is set up for ${lead.kind} alerts`, { card: due[0]!.card, sent: false });
         continue;
       }
       // Stored before it is sent: a restart in between tells once less, never twice.
