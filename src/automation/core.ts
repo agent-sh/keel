@@ -7,7 +7,8 @@ import type { Deps } from "../server/app.ts";
 
 // The daemon's parts, set once when the automation routes are built (before any
 // turn runs). Tools reach the engine and the store through this.
-let deps: Deps | undefined;
+type AutomationDeps = Deps & { readLoopFailures?: (sessionId: string, loopId: string) => void };
+let deps: AutomationDeps | undefined;
 // What a module runs on a timer against the parts (the looks at agents parked on
 // a command read the store): stopped when they go (`partsGone`).
 const onGone = new Set<() => void>();
@@ -18,7 +19,7 @@ export const whenPartsGo = (stop: () => void) => void onGone.add(stop);
 export const partsGone = () => { for (const stop of onGone) stop(); };
 // What a module set up against the parts before these (the failure notice's
 // rider reads its store's table) goes with them: it is set up again for these.
-export const setDeps = (d: Deps) => {
+export const setDeps = (d: AutomationDeps) => {
   // A flush that waits under the dependencies before these never runs under these.
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
@@ -27,7 +28,7 @@ export const setDeps = (d: Deps) => {
   deps = d;
   rider.get = undefined;
 };
-export function D(): Deps {
+export function D(): AutomationDeps {
   if (!deps) throw new Error("automation is not initialized");
   return deps;
 }

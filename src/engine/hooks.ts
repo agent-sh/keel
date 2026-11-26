@@ -179,6 +179,9 @@ export type TurnHooks = {
   // A turn is starting in the session, whatever started it (a prompt, a queued
   // one, a report, a continuation after a restart).
   turnStart?: (s: Session) => void;
+  // The stored input that started an open loop run. After a refusal the turn
+  // may retry that input once from a capsule, without ending the run.
+  loopRetryInput?: (s: Session) => number | undefined;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
   // The session's prompt was made (its first request, or again after an instruction file changed): a
   // feature that reads the folder's files does its work in the background (src/integrations/agnix.ts).

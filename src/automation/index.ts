@@ -91,7 +91,7 @@ const TURN_WORDS: Record<string, string> = { budget: "stopped at its dollar cap"
 const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
 
 function init(deps: Deps) {
-  setDeps(deps);
+  setDeps({ ...deps, readLoopFailures: alerts.readLoopFailures });
   windowCap.listen();
   fleetPause.listen();
   // What a parked session waits on, for its cache plan.
@@ -218,6 +218,7 @@ function init(deps: Deps) {
     // It stays: what was kept back goes (flush drops it for one that is gone or archived).
     closingOver: (id) => flush(id),
     turnStart: (s) => agents.onTurnStart(s.id),
+    loopRetryInput: (s) => loops.retryInputSeq(s.id),
     // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
     // Another session's message to a top session at its reached cap waits for a raise, as a loop run does.
     holdsInput: (s) => caps.held(s.id),

@@ -3582,6 +3582,7 @@ export class Engine {
             this.append(id, "note", { kind: "fallback", text: `${from} declined${res.stop_details?.category ? ` (${res.stop_details.category})` : ""}. Continuing on ${st.info.name}.` });
             continue;
           }
+          if (!closing && (budget <= 0 || steps < budget) && await this.retryLoopRefusal(session, st, signal)) continue;
           reason = "refusal";
           break;
         }
@@ -4541,15 +4542,42 @@ export class Engine {
   // A capsule of a session's records, with no model call: the text `text` makes from the story of the last
   // checkpoint, inside the summary settle() makes, with the owner's messages and the trail of the work kept
   // beside it (checkpointData). Undefined when the session started or moved while it was made.
-  private async capsuleOf(id: string, events: readonly StoredEvent[], st: Step, text: (before: string | undefined) => string, what: string) {
+  private async capsuleOf(id: string, events: readonly StoredEvent[], st: Step, text: (before: string | undefined) => string, what: string, signal?: AbortSignal) {
+    const head = events.at(-1)?.id;
     const cp = checkpointAt(events);
     const prev = cp.at >= 0 && events[cp.at]!.data.mode === "summary" ? String(events[cp.at]!.data.summary ?? "") : "";
     const words = text(prev ? storyOf(prev) : undefined);
     const PLACE = "\u0000capsule\u0000";
     const settled = (await this.settled(events, PLACE)) ?? settle(events, PLACE, events[cp.at]?.data.statements ?? []);
-    if (this.running.has(id) || this.store.session(id)?.head !== events.at(-1)?.id) return undefined;
+    if ((signal ? signal.aborted : this.running.has(id)) || this.store.session(id)?.head !== head) return undefined;
     const story = { ...settled, summary: settled.summary.replace(PLACE, () => words) };
     return { capsule: { ...timed(() => what, () => checkpointData(events, words, this.wordsBudget(st), story)), capsule: true }, text: words };
+  }
+
+  private async retryLoopRefusal(session: Session, st: Step, signal: AbortSignal): Promise<boolean> {
+    const seq = allHooks().map((h) => h.loopRetryInput?.(session)).find((n) => n !== undefined);
+    const id = session.id;
+    if (seq === undefined || this.byOwner(id) || signal.aborted) return false;
+    const line = this.lineage(id);
+    const at = line.findLastIndex((e) => e.seq <= seq);
+    const input = line[at];
+    if (!input || input.seq !== seq || input.kind !== "user" || typeof input.data.text !== "string") return false;
+    // The checkpoint, not a local retry counter, bounds the retry across daemon restarts.
+    if (line.slice(at + 1).some((e) => e.kind === "compaction" && e.data.trigger === "loop_retry")) return false;
+    const made = await this.capsuleOf(id, line, st, (before) => [
+      "The current loop run is being retried from a capsule of the session's records. Follow the last loop input below. Use the trail to continue without repeating work that already ran.",
+      ...(before ? ["", "What your context held before that work, from its last summary (as it was written then):", before] : []),
+    ].join("\n"), "making a loop retry's capsule", signal);
+    if (signal.aborted) throw abortError();
+    if (!made) return false;
+    // Make room for the current run's exact input, including a trigger's data, even if the normal
+    // compaction budget shortened it. It stays the harness's input, not a new message from the owner.
+    const other = made.capsule.other_messages ?? [];
+    const ev = this.append(id, "compaction", { mode: "summary", ...made.capsule, auto: true, trigger: "loop_retry",
+      other_messages: other.at(-1) === input.data.text ? other : [...other, input.data.text], tokens_before: this.used(line, st), model: st.info.id });
+    this.emitSession(id);
+    void this.compacted(session, ev);
+    return true;
   }
 
   // The owner starts a top-level session again from a capsule of its records, after the model declined its

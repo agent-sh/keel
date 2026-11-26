@@ -200,6 +200,10 @@ const openRuns = (sessionId: string) =>
 const queuedRun = (loopId: string) =>
   db().query<RunRow, [string]>("SELECT * FROM loop_runs WHERE loop_id = ? AND started_ms IS NULL AND ended_ms IS NULL AND skip_reason IS NULL LIMIT 1").get(loopId);
 export const runOpenIn = (sessionId: string) => !!openRun(sessionId);
+export function retryInputSeq(sessionId: string): number | undefined {
+  const first = openRun(sessionId)?.first_seq;
+  return first == null ? undefined : first + 1;
+}
 
 function patch(id: string, p: Record<string, unknown>) {
   const sets: string[] = [];
@@ -581,6 +585,7 @@ function closeRuns(sessionId: string, outcome: NonNullable<RunRecord["outcome"]>
   const usage = { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0 };
   let err = "";
   let continued = false;
+  let retried = false;
   for (const e of evs) {
     if (e.kind === "assistant" && e.data.usage) {
       usage.calls++;
@@ -588,12 +593,14 @@ function closeRuns(sessionId: string, outcome: NonNullable<RunRecord["outcome"]>
     }
     if (e.kind === "error") err = e.data.message;
     if (e.kind === "user" && e.data.origin === "restart") continued = true;
+    if (e.kind === "compaction" && e.data.trigger === "loop_retry") retried = true;
   }
   const detail = why ?? (err || (INCOMPLETE[reason] ? `${reason}: ${INCOMPLETE[reason]}` : reason));
   const now = Date.now();
   for (const r of open) {
     const notes = [
       continued ? "Resumed after a daemon restart." : "",
+      retried ? "Retried once in a fresh context." : "",
       open.length > 1 ? `One turn ran ${open.length} loops' prompts; its usage is shared, not each one's.` : "",
     ].filter(Boolean);
     patchRun(r.id, { ended_ms: now, ok: outcome === "ok", outcome, detail, last_seq: evs.at(-1)?.seq ?? r.first_seq, usage, note: notes.length ? [r.note, ...notes].filter(Boolean).join(" ") : undefined });
@@ -638,6 +645,7 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   sayAt({ session: l.session_id }, loopLine({ name: l.name, said: `${said}${next.enabled ? "" : `; the loop is off: ${next.disabled_reason}`}`, title: D().store.session(l.session_id)?.title }), bad ? "warn" : "info");
   if (outcome === "failed") failures.seen(l.session_id, "loop", l.name, why);
   if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
+  else if (outcome === "ok") D().readLoopFailures?.(l.session_id, l.id);
   if (l.max_runs && next.runs >= l.max_runs && next.enabled) endLoop(l, "ran its runs", now);
   // A webhook request that waited for this run goes now, if the loop still takes one.
   if (isEvent(l.kind)) drainWebhook(l.id, now);

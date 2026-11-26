@@ -204,7 +204,7 @@ export function storyOf(summary: string): string {
   return unframe(text);
 }
 
-const CAPSULE_INTRO = /^(?:You are agent "[^\n]*", taking up new work after you reported|This session's earlier context was replaced by this capsule)[^\n]*\n+/;
+const CAPSULE_INTRO = /^(?:You are agent "[^\n]*", taking up new work after you reported|This session's earlier context was replaced by this capsule|The current loop run is being retried from a capsule)[^\n]*(?:\n+|$)/;
 const CAPSULE_HEADS = /^(What your context held before that work, from its last summary \(as it was written then\):|Your reports of the work so far \(your final messages, as the session that started you got them; the newest first\):|Your replies so far \(your final messages; the newest first\):)\n/gm;
 
 function unframe(text: string): string {

@@ -817,6 +817,11 @@ export class ScriptedProvider implements Provider {
         this.paused.set(req.sessionKey ?? "", JSON.stringify(msgs));
         return reply("Paused at a server tool.", "pause_turn");
       }
+      case "refuse-unless-fresh":
+        if (msgs.some((m) => textOf(m).includes("The current loop run is being retried from a capsule"))) {
+          return reply(msgs.some((m) => textOf(m).includes("Scripted refusal text.")) ? "The declined reply was carried." : "Finished the loop in a fresh context.");
+        }
+        return { ...(await reply("Scripted refusal text.")), stop: "refusal" };
       case "refuse":
       case "refuse-late": {
         // `script:refuse-late`: overloaded once first, so the failed request is kept and sending it again ends in the refusal.

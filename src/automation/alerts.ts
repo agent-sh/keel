@@ -972,6 +972,12 @@ export function farGone(machine: string, sessionId?: string) {
   }
 }
 alertHook.raise = (kind, sessionId, title, body, data) => void raise(kind as AlertKind, sessionId, title, body, data);
+export function readLoopFailures(sessionId: string, loopId: string) {
+  const rows = D().store.db.query<{ id: string }, [string, string]>(
+    "SELECT id FROM alerts WHERE read = 0 AND kept = 0 AND session_id = ? AND kind = 'loop_failed' AND far_id IS NULL AND json_extract(data, '$.loop_id') = ?",
+  ).all(sessionId, loopId);
+  markRead({ ids: rows.map((r) => r.id) });
+}
 inboxCounts.get = unreadCounts;
 
 // The notifications held back while the owner attended a session: each goes to its channels once

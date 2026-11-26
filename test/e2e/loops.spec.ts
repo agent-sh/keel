@@ -78,6 +78,42 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
 
 const STAND_IN = "scripted:stand-in";
 
+test("loops: a refusal retries once in a fresh context before alerting", async ({ request }) => {
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === STAND_IN), "requires the scripted provider");
+  for (const [prompt, outcome] of [["script:refuse-unless-fresh", "ok"], ["script:refuse", "incomplete"]]) {
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Loop refusal" } })).json();
+    const made = await request.post("/api/loops", { data: { session_id: session.id, name: "Retry loop", schedule: "webhook", prompt } });
+    expect(made.status()).toBe(201);
+    const { id } = await made.json();
+    const run = () => request.post(`/api/loops/${id}/run`);
+    const history = async () => (await (await request.get(`/api/loops/${id}/runs`)).json()).runs;
+    const alerts = async () => ((await (await request.get("/api/alerts?limit=200")).json()).alerts as any[])
+      .filter((a) => a.kind === "loop_failed" && a.data?.loop_id === id);
+    try {
+      expect((await run()).ok()).toBe(true);
+      await expect.poll(async () => (await history())[0]?.outcome).toMatch(/^(ok|incomplete)$/);
+      expect(await history()).toMatchObject([{ outcome, usage: { calls: 2 }, note: expect.stringContaining("Retried once in a fresh context.") }]);
+      const { events } = await (await request.get(`/api/sessions/${session.id}/events`)).json();
+      const replies = (events as any[]).filter((e) => e.kind === "assistant").map((e) => e.data);
+      expect(replies.map((r) => r.stop)).toEqual(["refusal", outcome === "ok" ? "end_turn" : "refusal"]);
+      if (outcome === "ok") {
+        expect(replies[1].blocks).toContainEqual({ type: "text", text: "Finished the loop in a fresh context." });
+        expect(await alerts()).toEqual([]);
+      } else {
+        await expect.poll(alerts).toMatchObject([{ title: "Loop did not finish: Retry loop", read: false }]);
+        expect((await request.patch(`/api/loops/${id}`, { data: { prompt: "Say all is quiet." } })).ok()).toBe(true);
+        expect((await run()).ok()).toBe(true);
+        await expect.poll(async () => (await history())[0]?.outcome).toBe("ok");
+        await expect.poll(alerts).toMatchObject([{ read: true }]);
+      }
+    } finally {
+      await request.delete(`/api/loops/${id}`);
+      await request.delete(`/api/sessions/${session.id}`);
+    }
+  }
+});
+
 // A calendar loop made with a time zone of its own keeps it: its times are
 // that zone's wall clock, whatever zone the daemon runs in.
 test("loops: a calendar loop keeps the time zone it is made with", async ({ page, request }) => {
