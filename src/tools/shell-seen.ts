@@ -29,7 +29,9 @@ export function shown(command: string, dir: string): Shown[] {
   const piped = /(^|[^|])\|([^|]|$)/.test(text);
   const out: Shown[] = [];
   let here = dir;
-  for (const seg of segments(command)) {
+  for (const whole of segments(command)) {
+    // (The error stream sent anywhere takes nothing from what the command shows, and its target is no file it prints.)
+    const seg = whole.replace(/(^|\s)2>>?\s*(&1|[^\s&|;<>]+)/g, "$1");
     const w = words(seg);
     let i = 0;
     while (i < w.length && /^\w+=/.test(w[i]!)) i++;
@@ -37,7 +39,8 @@ export function shown(command: string, dir: string): Shown[] {
     const args = w.slice(i + 1);
     if (name === "cd") { if (args[0] && plain(args[0]) && args[0] !== "-") here = at(here, args[0]); continue; }
     if (piped || (!WHOLE.has(name) && name !== "head" && name !== "tail" && name !== "sed")) continue;
-    if (/(^|[^2&])>/.test(seg.replace(/\d?>\s*\/dev\/null|2>&1/g, ""))) continue;
+    // Any other redirect (to a file, to /dev/null, `&>`) sends the lines somewhere the model does not read.
+    if (seg.includes(">")) continue;
     let lines = Infinity;
     const files: string[] = [];
     let script = name === "sed";

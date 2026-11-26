@@ -19,6 +19,9 @@ test("the files a command prints whole, and how many lines it prints at most", (
   expect(shown("cat a.ts > b.ts", "/w")).toEqual([]);
   expect(shown("sed -i s/a/b/ a.ts", "/w")).toEqual([]);
   expect(shown("cat $F", "/w")).toEqual([]);
+  // The error stream sent away shows the same lines; the output sent away, to /dev/null included, shows none.
+  for (const yes of ["cat a.ts 2>/dev/null", "cat a.ts 2>&1", "cat a.ts 2> err.log", "head -n 5 a.ts 2>>err.log"]) expect(shown(yes, "/w").map((s) => s.path)).toEqual(["/w/a.ts"]);
+  for (const no of ["cat a.ts > /dev/null", "cat a.ts 1>/dev/null", "cat a.ts >/dev/null 2>&1", "cat a.ts &>/dev/null", "cat a.ts &> out.log", "cat a.ts >> b.ts", "head -n 5 a.ts 2>&1 >/dev/null", "cat a.ts >&2"]) expect(shown(no, "/w")).toEqual([]);
 });
 
 test("the files a command makes with a redirect or tee", () => {
