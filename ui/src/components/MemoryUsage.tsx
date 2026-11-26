@@ -45,6 +45,7 @@ const pathLabel = (path: string): ReactNode => {
 const PATH: Record<string, string> = {
   store_start: "Memory store, session start",
   store_prompt: "Memory store, with a prompt",
+  store_brief: "Memory store, with an agent's task",
   store_tool: "Memory store, with a tool call",
   store_owed: "Memory store, carried to a later step",
   helper: "Helper records",

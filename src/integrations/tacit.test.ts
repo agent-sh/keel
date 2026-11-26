@@ -1283,12 +1283,17 @@ test("an agent gets no start block, and its brief is asked unwaited; the owner's
   expect(st.calls("prompt").filter((l) => l.includes(agent)).length).toBeGreaterThan(0);
   const { memoryMeter } = await import("./memory-meter.ts");
   const report = () => Object.fromEntries(memoryMeter(w.store).report({ session: agent }).paths.map((p) => [p.path, p]));
-  await until(() => report().store_prompt?.asked === 2);
+  // An agent's asks are measured apart from the owner's prompts.
+  await until(() => report().store_brief?.asked === 2);
   const paths = report();
   expect(paths.store_start).toBeUndefined();
-  expect(paths.store_prompt).toMatchObject({ asked: 2, later: 1, empty: 1 });
-  expect(paths.store_prompt!.wait_ms).toBeLessThan(T(500));
-  expect(paths.store_prompt!.proc_ms).toBeGreaterThan(0);
+  expect(paths.store_prompt).toBeUndefined();
+  expect(paths.store_brief).toMatchObject({ asked: 2, later: 1, empty: 1 });
+  expect(paths.store_brief!.wait_ms).toBeLessThan(T(500));
+  expect(paths.store_brief!.proc_ms).toBeGreaterThan(0);
+  const mineOwner = memoryMeter(w.store).report({ session: owner }).paths;
+  expect(mineOwner.map((p) => p.path)).toContain("store_prompt");
+  expect(mineOwner.map((p) => p.path)).not.toContain("store_brief");
 }), 60_000);
 
 // The recall of a typed prompt holds the turn's first request for PROMPT_HOLD_MS at most, though the store's

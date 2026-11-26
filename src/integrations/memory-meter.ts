@@ -55,12 +55,14 @@ export function asksMemory(d: InputMeta): boolean {
   return !DELIVERED.has(String(d.kind ?? ""));
 }
 
+// store_brief: what an agent's session asked with its inputs (its task, its parent's messages), kept apart
+// from store_prompt (the owner's sessions): the store may answer an agent's brief differently by design.
 // store_owed: lines the store gave earlier that joined a later request (a
 // block was full, or the answer came after its request went).
 // native_read: a tool call that read the model's own harness's memory (Claude's auto memory folder, Codex's memories):
 // the model's choice, not a recall; its row holds the tokens the call's result put into the context.
-export type MemoryPath = "store_start" | "store_prompt" | "store_tool" | "store_owed" | "helper" | "native_read";
-export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store_tool", "store_owed", "helper", "native_read"];
+export type MemoryPath = "store_start" | "store_prompt" | "store_brief" | "store_tool" | "store_owed" | "helper" | "native_read";
+export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store_brief", "store_tool", "store_owed", "helper", "native_read"];
 // Rows are kept this long: three times the longest range the Usage views
 // show (a month), so this month can be read against the ones before it.
 export const KEEP_MS = 90 * 86_400_000;
@@ -272,6 +274,22 @@ export function recallFell(path: MemoryPath, recent: Window, day: Window): Fell 
   return chanceAtMost(recent.hits, recent.answered, day.hits / day.answered) < FELL_CHANCE ? { path, recent, day } : null;
 }
 
+// Once: the rows an agent's asks wrote as store_prompt before store_brief existed move to it, so a
+// range that reaches back reads the owner's prompts alone too.
+const BRIEF_MOVED = "memory_brief_path";
+function briefRows(store: Store) {
+  const db = store.db;
+  db.exec("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  // With no agents' column yet (the agents' module adds it) there is no agent to tell: a later start moves them.
+  if (db.query("SELECT 1 FROM admin_meta WHERE key = ?").get(BRIEF_MOVED) || !store.columnExists("sessions", "parent_id")) return;
+  db.transaction(() => {
+    const agents = "session_id IN (SELECT id FROM sessions WHERE parent_id IS NOT NULL)";
+    db.exec(`UPDATE telemetry_memory SET path = 'store_brief' WHERE path = 'store_prompt' AND ${agents}`);
+    db.exec(`UPDATE memory_given SET path = 'store_brief' WHERE path = 'store_prompt' AND ${agents}`);
+    db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES (?, ?)").run(BRIEF_MOVED, String(Date.now()));
+  })();
+}
+
 export class MemoryMeter {
   // Recalls of each session's running turn, until it ends.
   private open = new Map<string, Open[]>();
@@ -303,6 +321,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     if (!has("memory_given", "rule")) store.db.exec("ALTER TABLE memory_given ADD COLUMN rule INTEGER NOT NULL DEFAULT 0");
     if (!has("memory_given", "bans")) store.db.exec("ALTER TABLE memory_given ADD COLUMN bans TEXT");
     if (!has("memory_given", "held")) store.db.exec("ALTER TABLE memory_given ADD COLUMN held INTEGER");
+    briefRows(store);
     this.prune();
     void this.gone;
     registerHooks({ turnEnd: (s) => this.settle(s.id) });
@@ -527,7 +546,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const hit = "outcome IN ('added', 'repeat', 'later')", answered = "outcome IN ('added', 'repeat', 'later', 'empty')";
     const recentFrom = now - FELL_RECENT_MS;
     const sql = `SELECT path, ts >= ? AS recent, COALESCE(SUM(${answered}), 0) AS answered, COALESCE(SUM(${hit}), 0) AS hits
-      FROM telemetry_memory WHERE ts >= ? AND ts < ? AND path IN ('store_start', 'store_prompt', 'store_tool') GROUP BY path, recent`;
+      FROM telemetry_memory WHERE ts >= ? AND ts < ? AND path IN ('store_start', 'store_prompt', 'store_brief', 'store_tool') GROUP BY path, recent`;
     return { sql, args: [recentFrom, recentFrom - FELL_DAY_MS, now] };
   }
   // Each path's two windows and whether its recall fell.

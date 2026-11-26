@@ -6,7 +6,7 @@
 import { recovered, type Fell, type MemoryPath, type Standing } from "./memory-meter.ts";
 
 const WORDS: Record<string, string> = {
-  store_start: "at session start", store_prompt: "with prompts", store_tool: "with tool calls", store_owed: "carried to a later step", helper: "in the helper's records", native_read: "read by a tool call",
+  store_start: "at session start", store_prompt: "with prompts", store_brief: "with agents' tasks", store_tool: "with tool calls", store_owed: "carried to a later step", helper: "in the helper's records", native_read: "read by a tool call",
 };
 const pct = (w: { answered: number; hits: number }) => `${Math.round((100 * w.hits) / w.answered)}%`;
 

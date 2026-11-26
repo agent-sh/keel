@@ -15,7 +15,7 @@ const bad = (error: string, status = 400) => json({ error }, status);
 
 // The store's own calls among the measured ones: what a session start, a
 // prompt and a tool call asked (a block carried to a later step is no call).
-const CALLS = "path IN ('store_start', 'store_prompt', 'store_tool')";
+const CALLS = "path IN ('store_start', 'store_prompt', 'store_brief', 'store_tool')";
 const STORE = "path LIKE 'store_%'";
 // The facts one report lists; past it the answer says how many there are.
 const FACTS_SHOWN = 200;

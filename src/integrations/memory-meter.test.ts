@@ -263,3 +263,31 @@ test("a call the store refused is the rule acting, and a deny that came after th
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the rows an agent's asks wrote as prompts before store_brief move to it once; the owner's stay", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "memory-brief-"));
+  const store = new Store(dir);
+  try {
+    const { MemoryMeter } = await import("./memory-meter.ts");
+    const meter = memoryMeter(store);
+    const owner = store.createSession({ model: "p:m", workspace: dir });
+    const agent = store.createSession({ model: "p:m", workspace: dir });
+    if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+    store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(owner.id, agent.id);
+    for (const s of [owner.id, agent.id]) meter.record(s, "store_prompt", { outcome: "added", text: "block", facts: [factOf("- alpha-note: text")], by: { hook: "prompt" } });
+    // As a daemon of the build before left them: not moved yet.
+    store.db.query("DELETE FROM admin_meta WHERE key = 'memory_brief_path'").run();
+    new MemoryMeter(store);
+    const paths = (table: string, id: string) => store.db.query<{ path: string }, [string]>(`SELECT DISTINCT path FROM ${table} WHERE session_id = ?`).all(id).map((r) => r.path);
+    expect(paths("telemetry_memory", agent.id)).toEqual(["store_brief"]);
+    expect(paths("memory_given", agent.id)).toEqual(["store_brief"]);
+    expect(paths("telemetry_memory", owner.id)).toEqual(["store_prompt"]);
+    expect(paths("memory_given", owner.id)).toEqual(["store_prompt"]);
+    // Once: a later start moves nothing written since.
+    meter.record(agent.id, "store_prompt", { outcome: "empty" });
+    new MemoryMeter(store);
+    expect(paths("telemetry_memory", agent.id).sort()).toEqual(["store_brief", "store_prompt"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -309,6 +309,8 @@ const WAIT_OF: Record<Hook, number> = { "session-start": START_WAIT_MS, prompt: 
 const PROBE_WAIT: Record<Kind, number> = { ask: PROMPT_WAIT_MS, tool: TOOL_WAIT_MS };
 type OwedHook = "session-start" | "prompt" | "pre-tool";
 const PATH_OF: Record<OwedHook, MemoryPath> = { "session-start": "store_start", prompt: "store_prompt", "pre-tool": "store_tool" };
+// An agent's asks with its inputs are measured apart from the owner's prompts (store_brief).
+const pathOf = (hook: OwedHook, agent: boolean): MemoryPath => (hook === "prompt" && agent ? "store_brief" : PATH_OF[hook]);
 // The session id the probes call the store with: no session of Keel's.
 const PROBE_SESSION = "keel-probe";
 
@@ -1052,7 +1054,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   private later(id: string, hook: OwedHook, call: Running): Promise<unknown> {
     return call.done.then((r) => {
       if (!this.store.session(id)) return;
-      this.meter.record(id, PATH_OF[hook], { outcome: r.outcome === "hit" ? "later" : r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", procMs: r.ms });
+      this.meter.record(id, pathOf(hook, this.isAgent(id)), { outcome: r.outcome === "hit" ? "later" : r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", procMs: r.ms });
       if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim()), true);
     }).catch(() => {});
   }
@@ -1062,7 +1064,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   // `by`: what the block answers (the prompt's event, the tool and its call),
   // kept with each fact's name for the list of what the session was given.
   private admit(id: string, hook: OwedHook, r: HookResult, shown: Set<string>, waitMs: number, by: { hook?: string; call?: string; ref?: string; deny?: "stopped" } = {}): string | null {
-    const path = PATH_OF[hook];
+    const path = pathOf(hook, this.isAgent(id));
     if (!r.text) {
       this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", waitMs, procMs: r.ms });
       return null;
@@ -1300,7 +1302,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         if (fresh) {
           t.done.add(last.id);
           if (asksMemory(last.data)) prompt = t.call(s, "prompt", { prompt: last.data.text ?? "" });
-          else t.meter.record(s.id, "store_prompt", { outcome: "skipped" });
+          else t.meter.record(s.id, pathOf("prompt", agent), { outcome: "skipped" });
         }
         // Only the owner's typed prompt is waited for. Any other input (an agent's brief, a parent's
         // message, a loop's run) is asked beside its request, and what the store answers joins a later one.
@@ -1314,7 +1316,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         const settle = (hook: "session-start" | "prompt", c: Running | null, waitMs: number, by?: { hook?: string; ref?: string }, unwaited = false) => {
           if (!c) return;
           // Not made: one of this session's calls of this hook is still out. The store was not asked.
-          if (c === SKIPPED || c.got?.outcome === "skipped") return void t.meter.record(s.id, PATH_OF[hook], { outcome: "skipped" });
+          if (c === SKIPPED || c.got?.outcome === "skipped") return void t.meter.record(s.id, pathOf(hook, agent), { outcome: "skipped" });
           if (!c.got && unwaited) return void t.later(s.id, hook, c);
           if (!c.got) {
             // The turn goes on without it: what it answers is owed. Waited for
@@ -1323,7 +1325,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
             // as late when it did not wait at all (asking was already out).
             // A prompt's hold ends before the hook's wait: the call is late once that wait is over.
             if (waits) void t.missAt("ask", hook, s.id, c);
-            const row = t.meter.record(s.id, PATH_OF[hook], { outcome: waits ? "timeout" : "late", waitMs });
+            const row = t.meter.record(s.id, pathOf(hook, agent), { outcome: waits ? "timeout" : "late", waitMs });
             c.done.then((r) => t.meter.addProc(row, r.ms), () => {});
             t.oweLater(s.id, hook, c);
             if (t.out.ask) t.tell(s.id, "ask", "timeout");
