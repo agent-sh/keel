@@ -20,7 +20,7 @@ import { basename, dirname, join } from "node:path";
 import { configDir, inConfigDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { expandImports } from "../engine/turn.ts";
-import { carriedPlugins, discoverSkills, frontmatter, pluginDir, skillsConfig, writeSkillsConfig, type SkillRoot } from "../tools/skills.ts";
+import { carriedClaudePlugins, discoverSkills, frontmatter, pluginDir, skillsConfig, writeSkillsConfig, type SkillRoot } from "../tools/skills.ts";
 import { EVENTS, ownerHooksPath, parseHooks, portable, projectRoot } from "./hooks.ts";
 import { configPath, importable, readConfig, writeConfig, type McpServerConfig } from "../mcp/config.ts";
 import { identity, importHome } from "../mcp/sources.ts";
@@ -172,7 +172,7 @@ function outputStyle(claude: string): { name: string; text: string; from: string
   for (const f of ["settings.json", "settings.local.json"]) { try { name = readJson(join(claude, f)).outputStyle ?? name; } catch {} }
   if (!name || name === "Default") return null;
   if (BUILTIN_STYLES[name]) return { name, text: BUILTIN_STYLES[name]!, from: "Claude Code's built-in style" };
-  const dirs = [join(claude, "output-styles"), ...carriedPlugins().map((p) => join(p.dir, "output-styles"))];
+  const dirs = [join(claude, "output-styles"), ...carriedClaudePlugins().map((p) => join(p.dir, "output-styles"))];
   for (const d of dirs) for (const n of list(d)) {
     if (!n.endsWith(".md")) continue;
     const { data, body } = frontmatter(readFileSync(join(d, n), "utf8"));
@@ -385,6 +385,7 @@ function planSkills(items: Planned[], hookPlan: HookCandidate[]) {
   let enabled: Record<string, boolean> = {};
   try { enabled = readJson(join(claude, "settings.json")).enabledPlugins ?? {}; } catch (e) { if (existsSync(join(claude, "settings.json"))) items.push({ id: "plugins:settings", area: "plugins", source: "Claude Code", title: "settings.json", state: "error", reason: (e as Error).message, pick: false }); }
   const carried = new Set((cfg.plugins ?? []).map((p) => p.id));
+  const claudeTaken = new Set<string>(); // the Claude Code plugins port carries or offers: a Codex one of the same name gives way to them
   const off = Object.entries(enabled).filter(([, on]) => !on).map(([id]) => id);
   if (off.length) items.push({ id: "plugins:off", area: "plugins", source: "Claude Code", title: plural(off.length, "plugin") + " turned off", detail: off.join(", "), state: "skip", reason: "turned off in Claude Code", pick: false });
   for (const id of Object.keys(enabled).filter((k) => enabled[k]).sort()) {
@@ -403,6 +404,7 @@ function planSkills(items: Planned[], hookPlan: HookCandidate[]) {
     for (const [event, groups] of Object.entries(parts.hooks)) for (const g of groups ?? []) for (const h of g?.hooks ?? []) hookPlan.push({ source: `plugin ${id}`, event, matcher: g.matcher, hook: expandRoot(h, at.dir) });
     if (!brings.length && !Object.keys(parts.hooks).length && !Object.keys(parts.mcp).length) { items.push({ ...item, path: at.dir, detail: leaves.join("; ") || undefined, state: "skip", reason: "nothing Keel can run: it extends Claude Code's own interface", pick: false }); continue; }
     const state = carried.has(id) ? "done" : "new";
+    claudeTaken.add(id.split("@")[0]!);
     items.push({
       ...item, path: at.dir, detail: [brings.join(", "), leaves.length ? `leaves out ${leaves.join(", ")}` : "", elsewhere.length ? `lists ${elsewhere.join(" and ")}` : ""].filter(Boolean).join("; "),
       state, pick: state === "new",
@@ -427,7 +429,7 @@ function planSkills(items: Planned[], hookPlan: HookCandidate[]) {
   } catch (e) { items.push({ id: "plugins:codex-config", area: "plugins", source: "Codex", title: "config.toml", state: "error", reason: (e as Error).message, pick: false }); }
   const offInClaude = new Set(off.map((id) => id.split("@")[0]!));
   // (A plugin of the same name that Claude Code has turned on is carried from there, once.)
-  const inClaude = new Set([...Object.keys(enabled).filter((k) => enabled[k]), ...(cfg.plugins ?? []).filter((p) => !p.codex).map((p) => p.id)].map((id) => id.split("@")[0]!));
+  const inClaude = new Set([...claudeTaken, ...(cfg.plugins ?? []).filter((p) => !p.codex).map((p) => p.id.split("@")[0]!)]);
   for (const id of codexOn) {
     const ref = { id, codex: codexHome };
     const at = pluginDir(ref);

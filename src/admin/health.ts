@@ -91,9 +91,9 @@ function filesAsk(cwd: string): FilesAsk {
     ...carried.map((p) => ({ dir: join(p.dir, "skills"), kind: "skill" as const, layer: "plugin", prefix: `${p.name}:` })),
     ...skills.filter((r) => r.scope !== "personal").map((r) => ({ dir: r.dir, kind: "skill" as const, layer: "project" })),
     ...commandRoots(cwd).map((r) => ({ dir: r.dir, kind: "command" as const, layer: r.scope === "personal" ? "personal" : "project" })),
-    ...carried.map((p) => ({ dir: join(p.dir, "commands"), kind: "command" as const, layer: "plugin", prefix: `${p.name}:` })),
+    ...carried.filter((p) => !p.codex).map((p) => ({ dir: join(p.dir, "commands"), kind: "command" as const, layer: "plugin", prefix: `${p.name}:` })),
     ...agentFolders(cwd).map((f) => ({ dir: f.dir, kind: f.codex ? ("codex agent" as const) : ("agent" as const), layer: f.layer })),
-    ...carried.map((p) => ({ dir: join(p.dir, "agents"), kind: "agent" as const, layer: "plugin", prefix: `${p.name}:` })),
+    ...carried.filter((p) => !p.codex).map((p) => ({ dir: join(p.dir, "agents"), kind: "agent" as const, layer: "plugin", prefix: `${p.name}:` })),
   ];
   const plugins = units.map((u) => ({
     id: u.id, dir: u.dir,

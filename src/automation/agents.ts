@@ -36,7 +36,7 @@ import { isReviewer, parseWrites } from "../safety/write-scope.ts";
 import * as writeAsks from "./write-asks.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
-import { carriedPlugins, preloadSkillIn } from "../tools/skills.ts";
+import { carriedClaudePlugins, preloadSkillIn } from "../tools/skills.ts";
 import { catalogSources } from "../tools/catalog.ts";
 import { speedOffer } from "../providers/registry.ts";
 import { enabledUnits } from "../plugins/registry.ts";
@@ -698,7 +698,7 @@ export function definitions(cwd: string): AgentDef[] {
     const v = u.options ? valuesOf(u) : null;
     for (const d of readFiles(u.agents.map((a) => a.file), "owner", true)) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}`, ...(v && d.body ? { body: fillContent(d.body, v.specs, v.text) } : {}) });
   }
-  for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner", true)) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
+  for (const p of carriedClaudePlugins()) for (const d of readDir(join(p.dir, "agents"), "owner", true)) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
   for (const def of folders.filter((f) => f.layer === "project").flatMap(read)) if (!BUILTIN.some((b) => b.name === def.name)) byName.set(def.name, def);
   return [...byName.values()];
 }

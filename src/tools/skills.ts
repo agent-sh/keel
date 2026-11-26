@@ -40,6 +40,7 @@ export type Skill = {
   same?: string; // the skill found first whose file is byte for byte this one (a plugin's copy of a folder the owner keeps too): not listed to the model, still loaded by name
   data?: string; // a plugin's folder that outlives its updates (${CLAUDE_PLUGIN_DATA})
   plugin?: string; // the installed plugin it came with
+  asks?: boolean; // a Codex plugin's skill: its allowed-tools ask, as in Codex, which pre-approves nothing from that field
   // Claude Code's frontmatter for how it runs (code.claude.com/docs/en/skills):
   allowedTools?: string[]; // run without asking in the turn that invoked it
   model?: string;          // the model the rest of the turn runs on (with context: fork, the agent's)
@@ -110,10 +111,10 @@ function installedList(claude: string): any {
     return lastInstalled.get(file) ?? null;
   }
 }
-export function pluginDir(p: PluginRef): { name: string; dir: string } | null {
+export function pluginDir(p: PluginRef): { name: string; dir: string; codex?: true } | null {
   try {
     // A Codex plugin: the newest version in Codex's plugin cache.
-    if (p.codex) { const dir = codexPluginDir(p.codex, p.id); return dir ? { name: p.id.split("@")[0]!, dir } : null; }
+    if (p.codex) { const dir = codexPluginDir(p.codex, p.id); return dir ? { name: p.id.split("@")[0]!, dir, codex: true } : null; }
     if (!p.claude) return null;
     const all = installedList(p.claude)?.plugins?.[p.id];
     const hit = (Array.isArray(all) ? all : []).sort((a: any, b: any) => (a.scope === "user" ? -1 : 0) - (b.scope === "user" ? -1 : 0))[0];
@@ -123,7 +124,9 @@ export function pluginDir(p: PluginRef): { name: string; dir: string } | null {
     return null;
   }
 }
-export const carriedPlugins = () => (skillsConfig().plugins ?? []).map(pluginDir).filter((x): x is { name: string; dir: string } => !!x);
+export const carriedPlugins = () => (skillsConfig().plugins ?? []).map(pluginDir).filter((x): x is { name: string; dir: string; codex?: true } => !!x);
+// The carried plugins whose commands, agents and output styles are read: a Codex plugin brings its skills only.
+export const carriedClaudePlugins = () => carriedPlugins().filter((p) => !p.codex);
 
 function gitRoot(dir: string): string | null {
   for (let d = dir; ; d = dirname(d)) {
@@ -177,6 +180,7 @@ export const skillFilter: { allow?: (dir: string) => boolean; held?: (dir: strin
 // skill himself, as it is now. A repository's skill is the repository's
 // words: a clone must not grant itself the shell by being loaded.
 export function mayGrant(skill: Skill): boolean {
+  if (skill.asks) return false;
   if (skill.scope !== "project") return true;
   return !!skillFilter.ownerTrusted?.(skill.kind === "command" ? skill.file : skill.dir);
 }
@@ -221,7 +225,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
   const firstOf = new Map<string, string>();
   const texts = new Map<string, string>(); // the file each name was taken from, to tell a copy from a different file
   // `held` is what the trust pin decides on: a skill's folder, a command's file.
-  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false, unit?: { id: string; data: string }) => {
+  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false, unit?: { id: string; data: string }, asks = false) => {
     let real: string;
     try { if (!statSync(file).isFile()) return; real = realpathSync(file); } catch { return; }
     if (seenReal.has(real)) return;
@@ -258,6 +262,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
       ...(same ? { same } : {}),
       ...(unit ? { data: unit.data, plugin: unit.id } : {}),
       ...frontFields(data),
+      ...(asks ? { asks: true } : {}),
     });
   };
   const list = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
@@ -287,7 +292,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
   const units = enabledUnits();
   for (const u of units) for (const k of u.skills) add(join(k.dir, "SKILL.md"), k.dir, basename(k.dir), u.dir, "plugin", "skill", `${u.id}:`, true, u);
   for (const p of carriedPlugins()) {
-    for (const n of list(join(p.dir, "skills"))) if (!n.startsWith(".")) add(join(p.dir, "skills", n, "SKILL.md"), join(p.dir, "skills", n), n, p.dir, "plugin", "skill", `${p.name}:`);
+    for (const n of list(join(p.dir, "skills"))) if (!n.startsWith(".")) add(join(p.dir, "skills", n, "SKILL.md"), join(p.dir, "skills", n), n, p.dir, "plugin", "skill", `${p.name}:`, false, undefined, !!p.codex);
   }
   for (const { dir, scope } of roots.filter((r) => r.scope !== "personal")) {
     for (const n of list(dir)) if (!n.startsWith(".") && n !== "synced") add(join(dir, n, "SKILL.md"), join(dir, n), n, dir, scope, "skill");
@@ -297,7 +302,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     for (const n of list(dir)) if (n.endsWith(".md") && !n.startsWith(".")) add(join(dir, n), join(dir, n), n.slice(0, -3), dir, scope, "command");
   }
   for (const u of units) for (const c of u.commands) add(c.file, c.file, c.name, u.dir, "plugin", "command", `${u.id}:`, true, u);
-  for (const p of carriedPlugins()) {
+  for (const p of carriedClaudePlugins()) {
     for (const n of list(join(p.dir, "commands"))) if (n.endsWith(".md") && !n.startsWith(".")) add(join(p.dir, "commands", n), join(p.dir, "commands", n), n.slice(0, -3), p.dir, "plugin", "command", `${p.name}:`);
   }
   // By name: the listing in the shared, cached prompt prefix stays byte-stable.
