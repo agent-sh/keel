@@ -113,7 +113,8 @@ async function stampOf(home: string, file: string, program: string) {
   const read = async (path: string, depth: number): Promise<void> => {
     if (depth > MAX_DEPTH) return;
     let text: string;
-    try { if (!(await stat(path)).isFile()) return; text = await readFile(path, "utf8"); } catch { return; }
+    // A read that hangs (an Include on a dead mount) is a missing file, never a route held for it.
+    try { if (!(await within(READ_MS, stat(path))).isFile()) return; text = await within(READ_MS, readFile(path, "utf8")); } catch { return; }
     // An Include can change the destination even when the alias list and main file did not change.
     inputs.push(path, Bun.hash(text).toString());
     for (const [key, word] of directives(text)) {
@@ -134,17 +135,25 @@ async function stampOf(home: string, file: string, program: string) {
 // Cold reads join startup warmup, and changed configs wait for their own groups.
 // Do not publish groups built while the files changed under `ssh -G`.
 const refreshing = new Map<string, Promise<HostGroup[] | undefined>>();
+const READ_MS = 2_000, PASSES = 3;
+let lastBuilt: HostGroup[] | undefined;
+function within<T>(ms: number, p: Promise<T>): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<never>((_, no) => { t = setTimeout(() => no(new Error("read timed out")), ms); })]).finally(() => clearTimeout(t));
+}
 export async function hostGroups(home = ownerHome()): Promise<HostGroup[]> {
   const file = configFile(home), program = sshProgram();
-  for (;;) {
+  // A file that changes on every read is not built again forever: after PASSES the last groups built are used.
+  for (let pass = 1; ; pass++) {
     const { hosts, stamp } = await stampOf(home, file, program);
     if (groupsCache?.stamp === stamp) return groupsCache.groups;
     let done = refreshing.get(stamp);
     if (!done) {
       done = Promise.all(hosts.map((a) => resolveAlias(program, a).catch(() => fieldsOf(""))))
         .then(async (resolved) => {
-          if ((await stampOf(home, file, program)).stamp !== stamp) return;
           const groups = grouped(hosts, resolved);
+          lastBuilt = groups;
+          if ((await stampOf(home, file, program)).stamp !== stamp) return;
           groupsCache = { stamp, groups };
           return groups;
         })
@@ -153,6 +162,7 @@ export async function hostGroups(home = ownerHome()): Promise<HostGroup[]> {
     }
     const groups = await done;
     if (groups) return groups;
+    if (pass >= PASSES && lastBuilt) return lastBuilt;
   }
 }
 

@@ -3576,6 +3576,8 @@ export class Engine {
           // (The same for a write that found the disk full: the turn waits for room.)
           if (!(refusedWrite(e) || diskFull(e)) || signal.aborted || !this.store.pacing?.() || this.store.session(id)?.head !== head0 || ++retaken > 3) throw e;
           steps = steps0;
+          // Waiting for the store is no work a drain should wait on: the step is taken again after it.
+          if (running) running.betweenParts = false;
           await this.store.clear(signal);
         } finally {
           if (running) running.betweenParts = false;
