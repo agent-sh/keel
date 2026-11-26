@@ -450,11 +450,15 @@ export class CodexApp {
         this.starting.set(sessionId, begun);
       }
       const got = await begun;
+      // A daemon that stopped meanwhile marks nothing: the send stays stored, and the next one sends it.
+      if (this.closed) return;
       if (typeof got === "string") { if (this.byId(id)?.state === "stored") this.set(id, "failed", { said: got }); return; }
       r = got;
     }
     const run = r;
-    if (!(await run.ready)) {
+    const ready = await run.ready;
+    if (this.closed) return;
+    if (!ready) {
       if (this.byId(id)?.state === "stored") this.set(id, "failed", { said: "Codex did not resume the session" });
       return;
     }

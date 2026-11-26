@@ -333,6 +333,22 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
+  test("a send taken just before Keel stops is kept for the next daemon, which sends it", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      expect("send" in r.app().send(s.id, "please go on", "k1")).toBe(true);
+      // The drain comes while the child is being prepared.
+      r.app().stop();
+      await Bun.sleep(300);
+      expect(r.app().sends(s.id).map((x) => x.state)).toEqual(["stored"]);
+      r.make().start();
+      // (Delivered sends are no longer listed: the row says it.)
+      await until(() => r.store.db.query<{ state: string }, []>("SELECT state FROM outside_sends").get()?.state === "delivered", 15_000);
+      await until(() => !r.app().ours(s.id), 15_000);
+    } finally { r.done(); }
+  }, 30_000);
+
   test("a delivered send is kept a day (its key stores a resend once), then let go", async () => {
     const r = rig();
     try {
