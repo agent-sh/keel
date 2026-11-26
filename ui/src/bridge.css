@@ -2065,6 +2065,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    (Transcript.tsx writes it as --k-under), the message box stays at its own foot. Where the conversation
    fills the view the room is none and the card is at the box. */
 .k-session .k-tray[data-asking] { transform: translateY(calc(var(--k-under, 0px) * -1)); }
+/* A Look can show the request before its conversation arrives. Keep it at the box so the transcript
+   drawing behind it never moves the answers. */
+.k-view[data-view="look"] .k-tray[data-asking] { transform: none; }
 
 /* The helper's picture maker (HelperIdentity.tsx): the description, the model, and the pictures to pick from. */
 .k-pick { display: flex; flex-direction: column; gap: 0.625rem; padding-block: 1rem; border-bottom: 1px solid var(--line); }

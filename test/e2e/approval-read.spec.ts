@@ -987,9 +987,9 @@ test("every way to a waiting session lands the keyboard on its list, then on All
 // A card reached by the Inbox's Review, as a look over a pane beside another: it stands where it
 // lands from its first frame (it fades in, it does not slide; its column does not shift as the
 // conversation under it is drawn), and the Inbox on its way out lies over none of it, so its Allow
-// once, judged by how long it stood still and whole, takes a press 1.1 s after the card shows.
+// once, judged by how long it stood still and whole, takes a press as soon as it is ready.
 // Three times out of three.
-test("a card reached by the Inbox's Review stands still from its first frame, and a press 1.1 s after it is taken", async ({ page, request }) => {
+test("a card reached by the Inbox's Review stands still from its first frame and takes a press once read", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1920, height: 1040 });
@@ -1009,34 +1009,52 @@ test("a card reached by the Inbox's Review stands still from its first frame, an
       await page.getByTestId("inbox-button").click();
       const item = page.getByTestId("inbox-item").filter({ hasText: `Review: rotate ${rep}` }).first();
       await expect(item).toBeVisible();
+      // Make the cold open deterministic: the card can draw while its transcript response is still on the way.
+      const transcript = new RegExp(`/api/sessions/${s.id}\\?page=\\d+$`);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      await page.route(transcript, async (route) => { await held; await route.continue(); });
       // Every frame from the press on: where its Allow once stands.
       await page.evaluate(() => {
-        const w = window as unknown as { __at: { t: number; x: number; y: number; hit: boolean }[] };
+        const w = window as unknown as { __at: { x: number; y: number; hit: boolean }[] };
         w.__at = [];
         const look = () => {
-          const b = [...document.querySelectorAll<HTMLElement>('[data-testid="allow-once"]')].find((el) => !el.closest("[inert]"));
+          const b = document.querySelector<HTMLElement>('.k-view[data-view="look"]:not([inert]) [data-testid="allow-once"]');
           // Where it stands, and whether a press at its middle would reach it (nothing on its way out lies over it).
           // (A layer on its way out takes no press, so a point does not hit it: it is looked for by its place.)
           if (b) {
             const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
             const leaving = [...document.querySelectorAll<HTMLElement>("[data-ending-style]")].some((g) => { const q = g.getBoundingClientRect(); return !g.contains(b) && x >= q.left && x <= q.right && y >= q.top && y <= q.bottom; });
-            w.__at.push({ t: performance.now(), x: r.x, y: r.y, hit: !leaving && b.contains(document.elementFromPoint(x, y)) });
+            w.__at.push({ x: r.x, y: r.y, hit: !leaving && b.contains(document.elementFromPoint(x, y)) });
           }
-          if (w.__at.length < 120) requestAnimationFrame(look);
+          if (!b?.closest("[data-live]")) requestAnimationFrame(look);
         };
         requestAnimationFrame(look);
       });
-      await item.getByTestId("inbox-open").first().click();
-      const card = page.locator('.k-view[data-view="look"] [data-testid="approval"]');
-      await expect(card).toBeVisible();
-      await page.waitForTimeout(1100);
-      const moves = await page.evaluate(() => { const a = (window as unknown as { __at: { x: number; y: number }[] }).__at; return a.filter((p, i) => i > 0 && (Math.abs(p.x - a[i - 1]!.x) >= 0.5 || Math.abs(p.y - a[i - 1]!.y) >= 0.5)).length; });
-      expect(moves, `rep ${rep}: frames where Allow once moved after it was drawn`).toBe(0);
+      const look = page.locator('.k-view[data-view="look"]');
+      const card = look.getByTestId("approval");
+      try {
+        await item.getByTestId("inbox-open").first().click();
+        await expect(card).toBeVisible();
+        await page.waitForFunction(() => (window as unknown as { __at: unknown[] }).__at.length > 0);
+      } finally {
+        release();
+      }
+      await expect(look.getByTestId("transcript")).toContainText(`rotated-${rep}.txt`);
+      // Readiness counts both the button and the text standing clear. Use the product signal:
+      // the reading after the Inbox closes can run a frame later on a busy page.
+      await expect(card).toHaveAttribute("data-live", "true");
+      const moves = await page.evaluate(() => {
+        const a = (window as unknown as { __at: { x: number; y: number }[] }).__at;
+        return a.filter((p) => Math.abs(p.x - a[0]!.x) >= 0.5 || Math.abs(p.y - a[0]!.y) >= 0.5).map(({ x, y }) => ({ dx: x - a[0]!.x, dy: y - a[0]!.y })).slice(0, 3);
+      });
+      expect(moves, `rep ${rep}: shifts of Allow once from where it first drew`).toEqual([]);
       // Once nothing lies over it any more (the Inbox on its way out may for a frame or two), nothing does again.
       const covered = await page.evaluate(() => { const a = (window as unknown as { __at: { hit: boolean }[] }).__at; const from = a.findIndex((p) => p.hit); return from < 0 ? -1 : a.slice(from).filter((p) => !p.hit).length; });
       expect(covered, `rep ${rep}: frames where something lay over Allow once after it was first clear`).toBe(0);
+      if (rep === 2) await shoot(page, "approval-review-look");
       await card.getByTestId("allow-once").click();
-      await expect.poll(() => states(request, s.id), { message: `rep ${rep}: the press 1.1 s after the card showed`, timeout: 5000 }).toBe("allowed/once");
+      await expect.poll(() => states(request, s.id), { message: `rep ${rep}: the press when the card was ready`, timeout: 5000 }).toBe("allowed/once");
       takes.push("taken");
     }
     expect(takes).toEqual(["taken", "taken", "taken"]);
