@@ -124,11 +124,11 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
     <Popover.Root open={show} onOpenChange={(o) => { setShow(o); if (!o) setQ(""); }}>
       {title ? (
         <Popover.Trigger className="k-surface-switch" title="Switch to another panel" data-testid={testid}>
-          {title}{mark && <span className="k-sum-dot" data-testid="panel-news" title="A panel has news" />}<ChevronDown className="k-surface-switch-more" />
+          {title}{mark && <span className="size-2 shrink-0 rounded-full bg-accent" data-testid="panel-news" title="A panel has news" />}<ChevronDown className="k-surface-switch-more" />
         </Popover.Trigger>
       ) : (
         <Popover.Trigger className="k-hand" data-words={label || undefined} aria-label="Panels" title="Every panel" data-testid={testid}>
-          <PanelRight /><span className="k-hand-word">Panels</span>{mark && <span className="k-sum-dot" data-testid="panel-news" title="A panel has news" />}<ChevronDown className="k-hand-more" />
+          <PanelRight /><span className="k-hand-word">Panels</span>{mark && <span className="size-2 shrink-0 rounded-full bg-accent" data-testid="panel-news" title="A panel has news" />}<ChevronDown className="k-hand-more" />
         </Popover.Trigger>
       )}
       <Popover.Portal>
@@ -154,7 +154,7 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
                     {items.map((p) => (
                       <div key={p.id} className={open === p.id ? "k-picker-row k-picked" : "k-picker-row"} aria-current={open === p.id ? "true" : undefined}>
                         <button type="button" className="k-picker-pick" data-testid={`panel-pick-${p.id}`} onClick={() => pick(p.id)}>
-                          {p.icon}<span>{p.label}</span>{open !== p.id && hasNews(p.id) && <span className="k-sum-dot" data-testid="panel-news-row" />}<span className="k-picker-hint" data-testid="panel-hint">{hintOf(p)}</span>
+                          {p.icon}<span>{p.label}</span>{open !== p.id && hasNews(p.id) && <span className="size-2 shrink-0 rounded-full bg-accent" data-testid="panel-news-row" />}<span className="k-picker-hint" data-testid="panel-hint">{hintOf(p)}</span>
                         </button>
                         <button
                           type="button"
