@@ -29,6 +29,8 @@ test("Up in an empty message box edits the last prompt", async ({ page, request 
   await box.fill(first);
   await box.press("Enter");
   await expect.poll(phase, { timeout: 30_000 }).toBe("working");
+  // The daemon can be working before this tab receives the prompt event.
+  await expect(page.getByTestId("user-message").last()).toContainText(first);
   await expect(box).toHaveValue("");
   await box.press("ArrowUp");
   await expect(edit).toBeFocused();
