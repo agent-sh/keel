@@ -55,6 +55,17 @@ test("a question told to an agent, tracked, in a table, under a heading or after
   expect(closingAsk("**Decision for you:** after how many days should a session that waits on nothing be archived? Undo stays on its row.")).toBe("Decision for you: after how many days should a session that waits on nothing be archived?");
 });
 
+test("a question that says what it would send or tell, or follows a telling or a colon, still asks the owner", () => {
+  expect(closingAsk("The draft is ready. Do you want me to send it?")).toBe("Do you want me to send it?");
+  expect(closingAsk("Want me to message the lane with the fix?")).toBe("Want me to message the lane with the fix?");
+  expect(closingAsk("I sent the PR. Do you want me to land it?")).toBe("Do you want me to land it?");
+  expect(closingAsk("Lane 3: green. Lane 4: red. Do you want me to rerun lane 4?")).toBe("Do you want me to rerun lane 4?");
+  expect(closingAsk("Model: fable. Do you want another model for the rerun?")).toBe("Do you want another model for the rerun?");
+  expect(closingAsk("Two ways forward:\n- land now\n- wait for the rerun. Which do you prefer?")).toBe("Which do you prefer?");
+  // A telling with its own subject inside the question is still told of.
+  expect(closingAsk("Did the reviewer tell you why the build failed, or who sent the fix?")).toBeUndefined();
+});
+
 test("a long reply is judged by its end, in time linear in its length", () => {
   const t = performance.now();
   expect(closingAsk("Done.\n" + "    \n".repeat(64000) + "Ok?")).toBe("Ok?");

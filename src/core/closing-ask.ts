@@ -47,11 +47,21 @@ export function firstLine(text: string): string {
   return "";
 }
 
-// Words that tell of a question someone else asked, was sent or is tracked, not one asked of the owner.
+// Words that tell of a question someone else asked, was sent or is tracked, not one asked of the owner. A lead
+// (a list's, or the words before a question's colon) is told of when it holds any of them.
 const TOLD = /\b(asked|asks|asking|wonder(?:s|ed)?|wants? to know|told|tell(?:s|ing)?|sent|send(?:s|ing)?|messaged|messag(?:e|es|ing) (?:the|to)|answers? to|tracking|track(?:s|ed)?)\b/i;
 // A lead that names another party before a colon: "to the lane:", "the reviewer's question:".
 const OTHER_LEAD = /\b(lanes?|agents?|reviewers?|subagents?|workers?|coordinators?|sessions?|models?|harness)(?:'s|s')?\b[^:?]{0,80}:/i;
 const toldOf = (t: string) => TOLD.test(t) || OTHER_LEAD.test(t);
+// Inside the question itself only a telling with its own subject is ("did the reviewer ask why", "who sent it"):
+// the question's own verb ("Do you want me to send it?") is the owner's to decide.
+const SUBJECT_TOLD = /\b(?:I|we|they|he|she|it|who|(?:the|a|an|its|my|our|their)[ \t]+[\w-]+(?:'s)?)[ \t]+(?:have[ \t]+|has[ \t]+|had[ \t]+|just[ \t]+|already[ \t]+)?(?:asked|told|sent|messaged|wondered|asks|tells|sends|wonders|wants to know)\b|\banswers? to\b|\btracking\b/i;
+// A question told of: the words before its colon tell or name another party, or the question tells with a subject.
+function toldQuestion(s: string): boolean {
+  const c = s.lastIndexOf(":");
+  if (c >= 0 && toldOf(s.slice(0, c + 1))) return true;
+  return SUBJECT_TOLD.test(c >= 0 ? s.slice(c + 1) : s);
+}
 const TO_OWNER = /\b(you|your|yours)\b/i;
 const LIST = /^[ \t]{0,3}([-*+]|\d+[.)])[ \t]+/;
 const TABLE = /^[ \t]*\|/;
@@ -93,8 +103,10 @@ export function closingAsk(text: string): string | undefined {
   for (let i = sentences.length - 1; i >= 0; i--) {
     const s = sentences[i]!;
     if (!/\?[)\]*_]*$/.test(s)) continue;
-    if (toldOf(s) || toldOf(sentences[i - 1] ?? "")) return undefined;
     const you = TO_OWNER.test(s);
+    // The sentence before tells of it only when the question does not speak to the owner ("I sent the PR. Do
+    // you want me to land it?" asks him).
+    if (toldQuestion(s) || (!you && toldOf(sentences[i - 1] ?? ""))) return undefined;
     const closes = i === sentences.length - 1 || (you && sentences.length - i <= 3);
     if (closes && (you || i === 0)) return clip(s.replace(/\s+/g, " "), 240);
     return undefined;
