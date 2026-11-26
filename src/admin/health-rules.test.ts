@@ -46,6 +46,7 @@ test("the sandbox: broken when the profile needs it and it cannot start, a warni
   expect(sandboxRows({ platform: "linux", profile: "read-only" })[0]).toMatchObject({ level: "broken", title: "bubblewrap (bwrap) is not installed" });
   expect(sandboxRows({ ...up, timedOut: true, started: false })[0]!.level).toBe("warning");
   expect(sandboxRows({ ...up, scope: false, scopeSaid: "no user manager" }).map((r) => r.id)).toEqual(["sandbox:ok", "sandbox:scope"]);
+  expect(sandboxRows({ ...up, weights: "Access denied" })).toMatchObject([{ id: "sandbox:ok" }, { id: "sandbox:weights", level: "warning" }]);
   expect(sandboxRows({ platform: "darwin", profile: "off" })[0]!.level).toBe("ok");
 });
 

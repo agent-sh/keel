@@ -314,7 +314,8 @@ export function startJob(o: StartOpts): Job {
     ...(o.wrap ? {} : { unconfined: true as const }) } as Job;
   startedHere.add(id);
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
-  const place = jobSlice({ byOwner: o.by === "owner", attended: attendedOf(o.sessionId) });
+  // The owner's own command is his whatever its session's turn: no need to ask whether one is attended.
+  const place: JobSlice = o.by === "owner" ? "owner" : jobSlice({ attended: attendedOf(o.sessionId) });
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${sliceDir(box.slice, place)}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
   const scoped = (a: string[]) => box.slice ? [...scopeHead(), `--slice=${SLICES[place]}`, `--unit=${unit}`, ...props, ...maxRuntime(), "--", ...a] : a;
@@ -443,7 +444,7 @@ function attendedOf(sessionId: string): boolean | undefined {
 export const sliceDir = (app: string, which: JobSlice) => `${app}/${SLICES[which]}`;
 // The slice a job of `sessionId` goes in, and its cgroup folder (none without scopes).
 export function placeOf(sessionId: string, byOwner = false): { unit: string; dir?: string } {
-  const which = jobSlice({ byOwner, attended: attendedOf(sessionId) });
+  const which: JobSlice = byOwner ? "owner" : jobSlice({ attended: attendedOf(sessionId) });
   const app = jobScope().slice;
   return { unit: SLICES[which], dir: app ? sliceDir(app, which) : undefined };
 }
@@ -460,9 +461,21 @@ export function jobScope(): { slice?: string; why?: string; weights?: string } {
   const r = Bun.spawnSync(["systemctl", "--user", "show", "-p", "ControlGroup", "--value", "app.slice"], { stdout: "pipe", stderr: "ignore" });
   const slice = r.success ? r.stdout.toString().trim() : "";
   if (!slice.startsWith("/")) return (scopeAt = { why: "the user manager names no cgroup for app.slice" });
-  // A runtime drop-in: it holds while the user manager runs, also over a slice that is empty now.
-  const w = Bun.spawnSync(["systemctl", "--user", "set-property", "--runtime", SLICES.unattended, ...unattendedProps()], { stdout: "ignore", stderr: "pipe" });
-  return (scopeAt = { slice, ...(w.success ? {} : { weights: w.stderr.toString().trim().slice(0, 200) || "systemctl set-property failed" }) });
+  scopeAt = { slice };
+  weighUnattended(scopeAt);
+  return scopeAt;
+}
+
+// The unattended slice's weights, set once a daemon, off the loop: a runtime drop-in, which holds while the
+// user manager runs, also over a slice that is empty now. Until it answers, jobs go in the slice at whatever
+// weight it has (the default, or what an earlier daemon set). A failure is kept in `weights` (Settings > Health).
+function weighUnattended(at: { weights?: string }) {
+  try {
+    const p = Bun.spawn(["systemctl", "--user", "set-property", "--runtime", SLICES.unattended, ...unattendedProps()], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+    void Promise.all([p.exited, readText(p.stderr, "set-property")]).then(([code, err]) => {
+      if (code !== 0) at.weights = err.trim().slice(0, 200) || `systemctl set-property exited ${code}`;
+    }, (e) => { at.weights = String(e?.message ?? e).slice(0, 200); });
+  } catch (e: any) { at.weights = String(e?.message ?? e).slice(0, 200); }
 }
 
 // The job scopes that run now in the user manager's app.slice, by the job id their name holds: the

@@ -79,6 +79,8 @@ export type SandboxFacts = {
   // systemd-run --user --scope worked (a command's own cgroup).
   scope?: boolean;
   scopeSaid?: string;
+  // Why the unattended jobs' slice has no weight of its own (systemctl set-property failed; src/tools/jobs.ts).
+  weights?: string;
 };
 
 export function sandboxRows(f: SandboxFacts): Row[] {
@@ -93,6 +95,7 @@ export function sandboxRows(f: SandboxFacts): Row[] {
   else if (!f.started) rows.push({ id: "sandbox:probe", group: "sandbox", level: wanted ? "broken" : "warning", title: "bwrap cannot start a sandbox here", detail: `${f.said || "it exited with an error"}${wanted ? `; the default profile is ${f.profile}, and commands run unconfined` : ""}`, fix: "on Ubuntu 24.04 and later, load the bwrap-userns-restrict AppArmor profile; elsewhere enable unprivileged user namespaces", link, path: f.bwrap, how: "started bwrap with a read-only root and ran true" });
   else rows.push({ id: "sandbox:ok", group: "sandbox", level: "ok", title: "the sandbox starts", detail: `bwrap at ${f.bwrap}; default profile ${f.profile}`, link, how: "started bwrap with a read-only root and ran true" });
   if (f.scope === false) rows.push({ id: "sandbox:scope", group: "sandbox", level: "warning", title: "commands cannot get a scope of their own", detail: f.scopeSaid, fix: "start a systemd user manager (loginctl enable-linger), or accept that commands share the daemon's limits", link, how: "ran systemd-run --user --scope true" });
+  if (f.weights) rows.push({ id: "sandbox:weights", group: "sandbox", level: "warning", title: "unattended jobs have no weight of their own", detail: `systemctl set-property on the unattended jobs' slice failed: ${f.weights}. Its jobs still share one slice, at the default weight, so together they weigh as much as the owner's`, fix: "run systemctl --user set-property --runtime app-keelunattended.slice CPUWeight=50 IOWeight=50 and see what it says", link, how: "set the slice's CPUWeight and IOWeight once at start" });
   return rows;
 }
 

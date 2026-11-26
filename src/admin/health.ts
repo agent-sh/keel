@@ -33,6 +33,7 @@ import type { FilesAsk, FilesResult, HeldFile } from "./health-files.ts";
 import { countsOf, ordered, type HealthReport, type Row } from "./health-rows.ts";
 import { agnix } from "../integrations/agnix.ts";
 import { healthRows as loadRows } from "../automation/load-hold.ts";
+import { jobScope } from "../tools/jobs.ts";
 import { agnixRows, diskRow, hookRows, layerRows, layersOk, mcpRows, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
 
 export type HealthDeps = { store: Store; providers: Providers };
@@ -177,6 +178,7 @@ async function sandbox(): Promise<Row[]> {
     platform: "linux", profile, bwrap, started: b?.ok, said: b?.said, timedOut: b?.timedOut,
     // A machine with no systemd-run wraps nothing and needs no scope: not a fault.
     ...(s ? { scope: s.ok, scopeSaid: s.timedOut ? "it did not answer in time" : s.said } : {}),
+    ...(jobScope().weights ? { weights: jobScope().weights } : {}),
   }), ...processRows({ platform: "linux", held: startedWithSecrets(), yama: yamaScope(), lost: secretsLost() })];
 }
 

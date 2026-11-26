@@ -190,8 +190,9 @@ export function leftLine(s: Settled): string {
 // ---- job scopes that outlive their command: a build tool's daemon, a server, a shell left waiting.
 //
 // Keel acts only on a scope it made: the name startJob gives (`keel-job-<id>-<6 letters>.scope`) in the
-// user manager's app.slice, and this daemon's own record of that job naming that exact cgroup
-// (src/tools/jobs.ts, adoptJobs and adoptScopes). Pure: the facts are read in scopes.ts.
+// user manager's job slices under app.slice (src/tools/job-slice.ts; an older build's in app.slice itself),
+// and this daemon's own record of that job naming that exact cgroup (src/tools/jobs.ts, adoptJobs and
+// adoptScopes). Pure: the facts are read in scopes.ts.
 
 // A build tool's own server, by its command line: a build starts it for the next build to reuse, and it
 // stays when the build ends, by design (Gradle's for three hours by its own idle timeout).

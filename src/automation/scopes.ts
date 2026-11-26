@@ -11,8 +11,9 @@
 // Settings > Leftovers and counted in Settings > Resources.
 //
 // Never a scope Keel did not make: only jobs this daemon holds are looked at, a scope is held only by a job
-// whose own record names that exact cgroup (`keel-job-<id>-<6 letters>.scope` in app.slice), and a job this
-// daemon did not start itself is acted on only while a live process in its scope carries the job's mark and
+// whose own record names that exact cgroup (`keel-job-<id>-<6 letters>.scope` in one of app.slice's job
+// slices, src/tools/job-slice.ts, or in app.slice itself for an older build's), and a job this daemon did
+// not start itself is acted on only while a live process in its scope carries the job's mark and
 // this state folder's id (scopeWhy in src/tools/jobs.ts). A scope with a process someone put in it, or a
 // process with a terminal, or a shared server (adb's), is kept.
 import { readFile, readdir, readlink } from "node:fs/promises";

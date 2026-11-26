@@ -12,11 +12,16 @@
 //               unattended work claims what one command used to.
 //
 // A weight only divides a processor that is short: on an idle machine the unattended slice takes all of it.
+//
+// A job's slice is decided once, when it starts, and kept for its life: a cgroup cannot move a running scope
+// to another slice, so a background job an unattended turn started stays unattended after the owner steers
+// the session (and one his turn started stays his).
 export type JobSlice = "owner" | "unattended";
 
 export const SLICES: Record<JobSlice, string> = { owner: "app-keelowner.slice", unattended: "app-keelunattended.slice" };
 
 // Whose a job is: the owner's terminal command, or one of a turn the owner attends, is his; the rest unattended.
+// A caller with the owner's own command decides "owner" without asking whether the turn is attended.
 // A job whose session cannot be read is counted as attended (what a start did before the slices).
 export function jobSlice(o: { byOwner?: boolean; attended?: boolean }): JobSlice {
   return o.byOwner || o.attended !== false ? "owner" : "unattended";
