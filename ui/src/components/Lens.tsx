@@ -238,7 +238,8 @@ export function Lens({ sessionId }: { sessionId: string }) {
     if (!el || document.hidden) return;
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     const here = presentAt(sessionId);
-    if (!fresh) { if (here && atEnd && now.current) markRead(); return; }
+    // While only the newest part shows, what came before it is not read yet: marking read would hide the new-since jump.
+    if (!fresh) { if (here && atEnd && now.current && !now.current.part) markRead(); return; }
     const r = freshEl()?.getBoundingClientRect(), v = el.getBoundingClientRect();
     const where = !r ? "above" : r.top < v.top - 4 ? "above" : r.top > v.bottom - 24 ? "below" : null;
     if (where !== freshAt) setFreshAt(where);
