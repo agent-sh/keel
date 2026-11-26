@@ -6,44 +6,55 @@
 // function of file texts, run over the tree and over small fixtures of what
 // it must refuse and what it must let through.
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { OFFLINE, QUEUED, STATE_WORD } from "./core/state-words.ts";
 import { sectionsIn } from "../ui/src/lib/settings-find.macro.ts";
 
 type Src = { file: string; text: string };
 const UI = join(import.meta.dir, "../ui/src");
-function files(dir: string, ext: RegExp): string[] {
-  return readdirSync(dir).flatMap((n) => {
-    const p = join(dir, n);
-    return statSync(p).isDirectory() ? files(p, ext) : ext.test(n) && !/\.test\.tsx?$/.test(n) ? [p] : [];
+function files(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const p = join(dir, entry.name);
+    return entry.isDirectory() ? files(p) : [p];
   });
 }
-const read = (dir: string, ext: RegExp): Src[] => files(dir, ext).map((f) => ({ file: relative(dir, f), text: readFileSync(f, "utf8") }));
-const sheets = read(UI, /\.css$/);
-const page = read(UI, /\.tsx?$/);
-const daemon = read(import.meta.dir, /\.ts$/);
+const read = (dir: string, paths: string[], ext: RegExp): Src[] => paths.filter((f) => ext.test(f) && !/\.test\.tsx?$/.test(f)).map((f) => ({ file: relative(dir, f), text: readFileSync(f, "utf8") }));
+const ui = files(UI);
+const sheets = read(UI, ui, /\.css$/);
+const page = read(UI, ui, /\.tsx?$/);
+const daemon = read(import.meta.dir, files(import.meta.dir), /\.ts$/);
 
 // ---------- Reading the source ----------
+
+// Every check reads the same source snapshot. Parse each distinct text once.
+function remember<T>(read: (text: string) => T): (text: string) => T {
+  const kept = new Map<string, T>();
+  return (text) => {
+    const got = kept.get(text);
+    if (got !== undefined) return got;
+    const value = read(text);
+    kept.set(text, value);
+    return value;
+  };
+}
 
 // The text with its comments blanked (line and block, in CSS, TypeScript and
 // JSX), every other character and every line break in its place. Strings,
 // templates and regular expressions are kept: a `//` inside one is not a
 // comment. A quote opens a string only when it closes on its line, so an
 // apostrophe in JSX text does not swallow what follows it.
-const blanked = new Map<string, string>();
-function code(text: string, css = false): string {
-  const key = `${css ? "css" : "ts"}\0${text}`;
-  const known = blanked.get(key);
-  if (known !== undefined) return known;
-  const made = withoutComments(text, css);
-  blanked.set(key, made);
-  return made;
-}
+const tsCode = remember((text) => withoutComments(text, false));
+const cssCode = remember((text) => withoutComments(text, true));
+const code = (text: string, css = false) => (css ? cssCode : tsCode)(text);
 function withoutComments(text: string, css: boolean): string {
-  const out = text.split("");
-  let i = 0;
-  const blank = (to: number) => { for (; i < to; i++) if (out[i] !== "\n") out[i] = " "; };
+  if (!text.includes("/*") && (css || !text.includes("//"))) return text;
+  const out: string[] = [];
+  let i = 0, copied = 0;
+  const blank = (to: number) => {
+    out.push(text.slice(copied, i), text.slice(i, to).replace(/[^\n]/g, " "));
+    copied = i = to;
+  };
   // The end of a quoted run that starts at `from` (its quote), or -1 when it does not close.
   const closes = (from: number, quote: string, lines: boolean) => {
     for (let j = from + 1; j < text.length; j++) {
@@ -68,13 +79,19 @@ function withoutComments(text: string, css: boolean): string {
     }
     return -1;
   };
-  while (i < text.length) {
-    const c = text[i]!, two = text.slice(i, i + 2);
+  // Between quotes and slashes there is nothing to do. Scan spans, not characters.
+  const specials = /["'`/]/g;
+  for (;;) {
+    specials.lastIndex = i;
+    const found = specials.exec(text);
+    if (!found) break;
+    i = found.index;
+    const c = found[0], next = text[i + 1];
     let end = -1;
-    if (two === "/*") {
+    if (c === "/" && next === "*") {
       end = text.indexOf("*/", i + 2);
       blank(end < 0 ? text.length : end + 2);
-    } else if (!css && two === "//" && text[i - 1] !== ":") {
+    } else if (!css && c === "/" && next === "/" && text[i - 1] !== ":") {
       end = text.indexOf("\n", i);
       blank(end < 0 ? text.length : end);
     } else if ((c === '"' || c === "'") && (end = closes(i, c, css)) > 0) i = end + 1;
@@ -82,15 +99,31 @@ function withoutComments(text: string, css: boolean): string {
     else if (!css && c === "/" && (end = regex(i)) > 0) i = end + 1;
     else i++;
   }
-  return out.join("");
+  return out.length ? out.join("") + text.slice(copied) : text;
 }
-const lineOf = (text: string, at: number) => text.slice(0, at).split("\n").length;
+// A line lookup must not split the entire prefix for each declaration or
+// string. Index line ends once, then use the number strictly before `at`.
+const lineEnds = remember((text) => {
+  const ends: number[] = [];
+  for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) ends.push(i);
+  return ends;
+});
+function lineOf(text: string, at: number) {
+  const ends = lineEnds(text);
+  let lo = 0, hi = ends.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (ends[mid]! < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo + 1;
+}
 
 // A stylesheet as its rules: the selector (or the at-rule, for one that holds
 // declarations itself, as @theme does), the at-rules around it, and its
 // declarations, each with the line it starts on.
 type Rule = { selector: string; line: number; within: string[]; decls: { prop: string; value: string; line: number }[] };
-function rules(text: string): Rule[] {
+const rules = remember((text): Rule[] => {
   const css = code(text, true);
   const out: Rule[] = [];
   const stack: { at: string; rule?: Rule }[] = [];
@@ -114,11 +147,11 @@ function rules(text: string): Rule[] {
     else if (c === "}") { declare(stack.at(-1)?.rule, start, i); stack.pop(); start = i + 1; }
   }
   return out;
-}
+});
 
 // The string literals of a module (quoted, and the fixed parts of a
 // template), each with its line: where class lists and inline values live.
-function strings(text: string): { value: string; line: number }[] {
+const strings = remember((text): { value: string; line: number }[] => {
   const src = code(text);
   const out: { value: string; line: number }[] = [];
   for (const m of src.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g)) {
@@ -126,13 +159,13 @@ function strings(text: string): { value: string; line: number }[] {
     out.push({ value, line: lineOf(src, m.index!) });
   }
   return out;
-}
+});
 // A string is a class list when every word of it could be a class: prose (a
 // capital, a full stop, a comma) is not, so a sentence that names a utility is
 // not a use of it.
 const classList = (value: string) => { const w = value.split(/\s+/).filter(Boolean); return w.length > 0 && w.every((c) => /^[a-z0-9@!*&[-](\S*[^\s.,;?])?$/.test(c)) ? w : []; };
 // Every class named in a module: the words of its class lists.
-const classes = (text: string) => strings(text).flatMap((s) => classList(s.value).map((c) => ({ c, line: s.line })));
+const classes = remember((text) => strings(text).flatMap((s) => classList(s.value).map((c) => ({ c, line: s.line }))));
 
 // The opening tag around a position, wherever its lines break: where a
 // component says what an element is and which classes it carries.
@@ -417,17 +450,21 @@ function empties(pageList: Src[], sheetList: Src[]): string[] {
 function pageTimes(list: Src[]): string[] {
   const out: string[] = [];
   for (const s of list) {
-    if (s.file === "lib/utils.ts") continue;
+    if (s.file === "lib/utils.ts" || !mayFormatTime(s.text)) continue;
     for (const c of calls(s.text, /\.toLocaleTimeString/)) out.push(at(s, c.line, "toLocaleTimeString"));
     for (const c of calls(s.text, /\.toLocaleString/)) if (/\b(hour|timeStyle)\b/.test(c.args) || (!c.args.trim() && /Date\([^()]*\)\s*$/.test(c.before))) out.push(at(s, c.line, "toLocaleString with a time"));
     for (const c of calls(s.text, /Intl\.DateTimeFormat/)) if (/\b(hour|minute|second|timeStyle)\b/.test(c.args)) out.push(at(s, c.line, "Intl.DateTimeFormat with a time"));
   }
   return out;
 }
+// Blanking comments cannot add these names. Skip the parse of sources that
+// do not mention a formatter at all, especially on the daemon side.
+const mayFormatTime = (text: string) => /\.toLocale(?:Time)?String|Intl\.DateTimeFormat/.test(text);
 function daemonTimes(list: Src[]): string[] {
   const out: string[] = [];
   const named = (args: string) => /hourCycle:\s*["']h23["']/.test(args);
   for (const s of list) {
+    if (!mayFormatTime(s.text)) continue;
     for (const c of calls(s.text, /\.toLocaleTimeString/)) if (!named(c.args)) out.push(at(s, c.line, "toLocaleTimeString without h23"));
     for (const c of calls(s.text, /\.toLocaleString|Intl\.DateTimeFormat/)) if (/\b(hour|timeStyle)\b/.test(c.args) && !named(c.args)) out.push(at(s, c.line, "a time without h23"));
   }

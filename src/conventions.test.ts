@@ -1,24 +1,35 @@
 // Conventions that kept breaking across lanes, checked over the source tree.
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 function files(dir: string, ext: RegExp): string[] {
-  return readdirSync(dir).flatMap((n) => {
-    const p = join(dir, n);
-    return statSync(p).isDirectory() ? (n === "node_modules" ? [] : files(p, ext)) : ext.test(n) ? [p] : [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const p = join(dir, entry.name);
+    return entry.isDirectory() ? (entry.name === "node_modules" ? [] : files(p, ext)) : ext.test(entry.name) ? [p] : [];
   });
 }
-const offenders = (list: string[], bad: RegExp) => list.filter((f) => bad.test(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f));
+const source = files(join(ROOT, "src"), /\.ts$/);
+const product = source.filter((f) => !f.endsWith(".test.ts"));
+const tests = [...source.filter((f) => f.endsWith(".test.ts")), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
+const cache = new Map<string, string>();
+function textOf(file: string): string {
+  const got = cache.get(file);
+  if (got !== undefined) return got;
+  const text = readFileSync(file, "utf8");
+  cache.set(file, text);
+  return text;
+}
+const offenders = (list: string[], bad: RegExp) => list.filter((f) => bad.test(textOf(f))).map((f) => relative(ROOT, f));
 
 test("specs take test from isolate.ts, which restores daemon-wide settings", () => {
   expect(offenders(files(join(ROOT, "test/e2e"), /\.spec\.ts$/), /from "@playwright\/test"/)).toEqual([]);
 });
 
 test("byte streams (child pipes, HTTP bodies) are read through src/core/proc.ts", () => {
-  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts") && !f.endsWith("core/proc.ts"));
+  const src = product.filter((f) => !f.endsWith("core/proc.ts"));
   expect(offenders(src, /new Response\([\w.!]*\.std(out|err)\b/)).toEqual([]);
   // A reader of its own, or `for await` over a stream, releases the reader when
   // the read stops early, which Bun rejects unhandled ("Reader released");
@@ -27,14 +38,14 @@ test("byte streams (child pipes, HTTP bodies) are read through src/core/proc.ts"
 });
 
 test("path containment is contains(root, p) from src/core/paths.ts", () => {
-  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith("core/paths.ts"));
+  const src = source.filter((f) => !f.endsWith("core/paths.ts"));
   expect(offenders(src, /(const|function) inside\b/)).toEqual([]);
 });
 
 // git runs programs a repository's config names. The daemon runs it through
 // src/core/git.ts only, which does not read that config (see the file's head).
 test("git is run through src/core/git.ts", () => {
-  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts") && !f.endsWith("core/git.ts"));
+  const src = product.filter((f) => !f.endsWith("core/git.ts"));
   // A spawn whose program is git: spawn("git", ...) or spawn(["git", ...]), an
   // argv built apart (["git", ...args], ["git", "-C", ...]), git by its whole
   // path, git in a shell template (Bun's $), and git at the head of a command
@@ -43,13 +54,13 @@ test("git is run through src/core/git.ts", () => {
   expect(offenders(src, /["'`]\/[\w./-]*\/git["'`]\s*[,\]]|\$`\s*git\s|["'`](ba)?sh["'`]\s*,\s*["'`]-l?c["'`]\s*,\s*["'`]\s*git\s/)).toEqual([]);
   // Shell text of the daemon's own that runs git (a script sent to a machine):
   // the file takes the helper's keys or its view for it.
-  const scripts = src.filter((f) => /\$\(git |\$\{GIT\} |^git [a-z-]+ /m.test(readFileSync(f, "utf8")));
+  const scripts = src.filter((f) => /\$\(git |\$\{GIT\} |^git [a-z-]+ /m.test(textOf(f)));
   expect(scripts.map((f) => relative(ROOT, f)).sort()).toEqual(["src/fleet/agents.ts", "src/fleet/handoff.ts"]);
-  for (const f of scripts) expect([relative(ROOT, f), /\bGIT_SHELL_ENV\b/.test(readFileSync(f, "utf8"))]).toEqual([relative(ROOT, f), true]);
+  for (const f of scripts) expect([relative(ROOT, f), /\bGIT_SHELL_ENV\b/.test(textOf(f))]).toEqual([relative(ROOT, f), true]);
   // gh runs git by itself: every spawn of it gets the helper's environment.
-  const gh = src.filter((f) => /["'`]gh["'`]\s*,\s*["'`](pr|repo|auth|api|issue|run|release|workflow)["'`]|KEEL_GH_BIN[^\n]*,\s*["'`](pr|repo|auth|api)["'`]|\[gh,\s*["'`]/.test(readFileSync(f, "utf8")));
+  const gh = src.filter((f) => /["'`]gh["'`]\s*,\s*["'`](pr|repo|auth|api|issue|run|release|workflow)["'`]|KEEL_GH_BIN[^\n]*,\s*["'`](pr|repo|auth|api)["'`]|\[gh,\s*["'`]/.test(textOf(f)));
   expect(gh.map((f) => relative(ROOT, f)).sort()).toEqual(["src/automation/waits.ts", "src/mcp/connectors.ts", "src/prreview/github.ts", "src/safety/public-send.ts", "src/worktree/manager.ts"]);
-  for (const f of gh) expect([relative(ROOT, f), /\bgitEnv\(/.test(readFileSync(f, "utf8"))]).toEqual([relative(ROOT, f), true]);
+  for (const f of gh) expect([relative(ROOT, f), /\bgitEnv\(/.test(textOf(f))]).toEqual([relative(ROOT, f), true]);
 });
 
 // SQLite's locks on the store belong to the process: closing any descriptor
@@ -58,7 +69,7 @@ test("git is run through src/core/git.ts", () => {
 // So the store's files are opened by SQLite and by storeFd only, and who
 // names them is a short list: a file that joins it reads this first.
 test("the store's files are named in few places and opened outside SQLite only through storeFd", () => {
-  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts"));
+  const src = product;
   const names = /["'`]keel\.db|keel\.db-(wal|shm)|\}-(wal|shm)[`"']/;
   expect(offenders(src, names).sort()).toEqual([
     "src/admin/backup.ts",          // a backup's own files (keel.db.zst, a copy made for it), the restored copy, the log's size by stat
@@ -81,7 +92,7 @@ test("the store's files are named in few places and opened outside SQLite only t
   const inCall = new RegExp(String.raw`(?<![\w.])(${OPENS})\([^\n]*(${STORE})`);
   expect(offenders(others, inCall)).toEqual([]);
   const throughVariable = others.filter((f) => {
-    const text = readFileSync(f, "utf8");
+    const text = textOf(f);
     const given = [...text.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+(\w+)\s*(?::[^=\n]+)?=[^\n;]*(${STORE})`, "g"))].map((m) => m[1]!);
     return given.some((name) => new RegExp(String.raw`(?<![\w.])(${OPENS})\(\s*${name}\b`).test(text));
   }).map((f) => relative(ROOT, f));
@@ -103,11 +114,11 @@ test("the store's files are named in few places and opened outside SQLite only t
 // src/admin/daemon-log.ts) are made of names, kinds, states and the harness's words, never of a
 // prompt, a reply, a command, its output or a wait's note.
 test("the daemon's own log lines carry no prompt, command, output or note", () => {
-  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts"));
+  const src = product;
   // (A failure's message is the provider's or the runtime's words, not the session's: it may be said, scrubbed.)
   const bad = /\b(stdout|stderr|summary|blocks)\b|\.(text|input|prompt|note|command|output|outcome|tail)\b/;
   const lines = src.flatMap((f) => {
-    const text = readFileSync(f, "utf8");
+    const text = textOf(f);
     if (!/from "[./]*(admin\/)?daemon-log\.ts"/.test(text)) return [];
     return text.split("\n").flatMap((l, i) => (/\bsay(At)?\(/.test(l) && !/^\s*(\/\/|export function say|private say)/.test(l) && bad.test(l.replace(/\/\/.*$/, "")) ? [`${relative(ROOT, f)}:${i + 1}`] : []));
   });
@@ -118,7 +129,7 @@ test("the daemon's own log lines carry no prompt, command, output or note", () =
 // later (a test preload, a probe) is not seen by it, and a daemon read the
 // owner's folders from it. The home is homeDir() in src/core/paths.ts.
 test("the home folder is homeDir() from src/core/paths.ts, never os.homedir() or os.userInfo().homedir", () => {
-  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !/core\/paths(\.test)?\.ts$|conventions\.test\.ts$/.test(f));
+  const src = source.filter((f) => !/core\/paths(\.test)?\.ts$|conventions\.test\.ts$/.test(f));
   expect(offenders(src, /\bhomedir\b|userInfo\(\)\.homedir/)).toEqual([]);
 });
 
@@ -127,15 +138,14 @@ test("the home folder is homeDir() from src/core/paths.ts, never os.homedir() or
 // test makes a repository of its own (mkdtemp, `git init`) and runs git there. What the checkout is called
 // in a test: process.cwd(), import.meta.dir, __dirname, and the ROOT or HERE a file takes from them.
 test("no test runs git in the checkout it was started from", () => {
-  const tests = [...files(join(ROOT, "src"), /\.test\.ts$/), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
   const here = String.raw`(?:process\.cwd\(\)|import\.meta\.dir(?:name)?|__dirname|import\.meta\.url|\bROOT\b|\bHERE\b|\bREPO_ROOT\b)`;
   // A helper called with the checkout first (git(ROOT, ...), g(HERE, ...)), a cwd or -C naming it, a -C in a shell line.
   const named = new RegExp(String.raw`\b(?:git|g|gitIn|must|raw|sh|run)\(\s*${here}|\bcwd:\s*${here}|["'\`]-C["'\`]\s*,\s*${here}|git -C \$\{${here}`);
-  const found = tests.flatMap((f) => readFileSync(f, "utf8").split("\n").flatMap((l, i) => (/\bgit\b|["'`]-C["'`]/.test(l) && named.test(l.replace(/\/\/.*$/, "")) ? [`${relative(ROOT, f)}:${i + 1}`] : [])));
+  const found = tests.flatMap((f) => textOf(f).split("\n").flatMap((l, i) => (/\bgit\b|["'`]-C["'`]/.test(l) && named.test(l.replace(/\/\/.*$/, "")) ? [`${relative(ROOT, f)}:${i + 1}`] : [])));
   expect(found).toEqual([]);
   // And git spawned with no folder at all runs in the checkout: only for the programs that touch no repository
   // (`--version`, `init <folder>`, `clone` to a folder).
-  const bare = tests.flatMap((f) => readFileSync(f, "utf8").split("\n").flatMap((l, i) => {
+  const bare = tests.flatMap((f) => textOf(f).split("\n").flatMap((l, i) => {
     if (!/(spawn|spawnSync|execFile|execFileSync|exec|execSync)\(\s*\[?\s*["'`]git["'`]/.test(l) || /cwd|"-C"/.test(l)) return [];
     return /["'`](--version|init|clone)["'`]/.test(l) ? [] : [`${relative(ROOT, f)}:${i + 1}`];
   }));
@@ -149,10 +159,9 @@ test("no test runs git in the checkout it was started from", () => {
 test("a test that calls mkdtemp makes it under the run's TMPDIR or removes it", () => {
   expect(readFileSync(join(ROOT, "test/preload.ts"), "utf8")).toMatch(/TMPDIR: made\("tmp"\)/);
   expect(tmpdir()).toBe(join(dirname(process.env.KEEL_STATE_DIR!), "tmp"));
-  const tests = [...files(join(ROOT, "src"), /\.test\.ts$/), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
   const removes = /\b(rmSync|rmdirSync|rm|rmdir|cleanup|tempTree)\(|rm -rf/;
   const found = tests.flatMap((f) => {
-    const text = readFileSync(f, "utf8");
+    const text = textOf(f);
     if (removes.test(text)) return [];
     // Without a removal, every base is the run's: tmpdir(), $TMPDIR, or a folder the file named from them.
     return text.split("\n").flatMap((l, i) => {
@@ -170,11 +179,10 @@ test("a test that calls mkdtemp makes it under the run's TMPDIR or removes it", 
 // (ENOENT on the next settings save), and which files come after depends on the folder's order on the disk.
 // A file that needs a folder to remove makes one of its own (tempTree in test/env.ts).
 test("a test file removes none of the run's shared folders and puts the settings back", () => {
-  const tests = [...files(join(ROOT, "src"), /\.test\.ts$/), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
   // (The sandbox specs remove the TMPDIR they set for one command, which is theirs: they put it back.)
   const removing = /\b(rmSync|rmdirSync|rm|rmdir)\(\s*(join\(\s*)?process\.env\.(KEEL_STATE_DIR|KEEL_CONFIG_DIR|KEEL_IMPORT_\w+|HOME)\b/;
-  expect(tests.filter((f) => removing.test(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f))).toEqual([]);
-  expect(tests.filter((f) => leavesSettingsOwn(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f))).toEqual([]);
+  expect(tests.filter((f) => removing.test(textOf(f))).map((f) => relative(ROOT, f))).toEqual([]);
+  expect(tests.filter((f) => leavesSettingsOwn(textOf(f))).map((f) => relative(ROOT, f))).toEqual([]);
 });
 
 // The settings file is the last one loaded (src/admin/settings.ts): a file that loads one from a folder of its own
