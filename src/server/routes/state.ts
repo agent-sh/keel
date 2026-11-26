@@ -24,7 +24,9 @@ import { registerSettings } from "../../admin/settings.ts";
 import { timed } from "../../admin/stall.ts";
 import { seesOutside } from "../admission.ts";
 import { factsOf, lens, progressOf, sessionState, stuckAfter, type Lens } from "../../automation/state.ts";
+import { ResultLandings } from "../../automation/result-landings.ts";
 import type { Deps, RouteModule } from "../app.ts";
+import { landing } from "./landing.ts";
 
 // Changes that arrive together (a turn ending, its card closing) are read once.
 const SETTLE_MS = 25;
@@ -66,7 +68,7 @@ export class StateBoard {
   // Sessions seen not at rest (told so, or read so by a snapshot): looked at again by the sweep.
   private live = new Set<string>();
 
-  constructor(private deps: Pick<Deps, "store" | "bus" | "engine">) {}
+  constructor(private deps: Pick<Deps, "store" | "bus" | "engine">, private landings?: ResultLandings) {}
 
   private from() { return { store: this.deps.store, engine: this.deps.engine }; }
 
@@ -87,6 +89,7 @@ export class StateBoard {
       const st = this.read(s.id, l)!;
       out[s.id] = st;
       this.note(s.id, st);
+      if (!s.parent_id && !s.outside && !s.machine) this.landings?.refresh(s.id);
     }
     return out;
   }
@@ -171,7 +174,10 @@ export class StateBoard {
 
   onFrame(f: Frame) {
     if (f.t === "session") return f.deleted ? this.gone(f.session.id) : this.touch(f.session.id);
-    if (f.t === "event") return this.touch(f.event.session_id);
+    if (f.t === "event") {
+      if (f.event.kind === "turn_end") this.landings?.refresh(f.event.session_id, true);
+      return this.touch(f.event.session_id);
+    }
     if (f.t === "status" || f.t === "queue") return this.touch(f.session_id);
     if (f.t === "questions") {
       if (f.machine) return;
@@ -181,12 +187,17 @@ export class StateBoard {
       return;
     }
     if (f.t !== "feature" || f.name === "state") return;
+    // The tree-review feed already tells us when a tool moved one of this
+    // tree's refs, including the base. A landing made by hand then shows up
+    // without waiting for the coordinator's turn to end.
+    if (f.name === "tree_review" && f.session_id) this.landings?.refresh(f.session_id, true);
     // A module's frame names its session on the frame or in what it carries (an agent's record names both ends).
     const d = f.data as any;
     for (const x of [f.session_id, d?.session_id, d?.parent_id, d?.card?.session_id, d?.data?.session_id, d?.data?.parent_id]) if (typeof x === "string") this.touch(x);
   }
 
   private gone(id: string) {
+    this.landings?.forget(id);
     this.dirty.delete(id);
     this.sent.delete(id);
     this.readAt.delete(id);
@@ -214,7 +225,9 @@ export const stateRoutes: RouteModule = (deps) => {
   if (deps.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'approvals'").get()) {
     deps.store.migrate("CREATE INDEX IF NOT EXISTS approvals_pending ON approvals(created, id) WHERE state = 'pending'");
   }
-  const b = (board = new StateBoard(deps));
+  const gitLandings = new ResultLandings(deps.store, async (repo) => (await landing?.baseOf(repo)) ?? null,
+    (id) => b.touch(id), (e, id) => deps.errors.capture("server", e, { at: "state landing", session: id }));
+  const b = (board = new StateBoard(deps, gitLandings));
   const g = globalThis as { __keelStateOff?: () => void };
   g.__keelStateOff?.();
   g.__keelStateOff = deps.bus.on((f) => b.onFrame(f));
