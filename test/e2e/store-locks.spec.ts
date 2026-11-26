@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { daemon, exited, ROOT } from "./own-daemon.ts";
 
@@ -27,12 +27,14 @@ function locks(pid: number, file: string): number {
     return f[1] === "POSIX" && Number(f[4]) === pid && f[5]?.endsWith(`:${ino}`);
   }).length;
 }
-// The process runs its own code still: it is there, and neither a zombie nor on its way out.
-const runs = (pid: number) => {
+// An open descriptor of this database, not just a process still finishing shutdown.
+const dbFd = (pid: number, db: string) => {
+  const dir = `/proc/${pid}/fd`;
   try {
-    const line = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return !/^[ZX]$/.test(line.slice(line.lastIndexOf(")") + 2).split(" ")[0]!);
-  } catch { return false; }
+    return readdirSync(dir).find((fd) => {
+      try { return readlinkSync(join(dir, fd)) === db; } catch { return false; }
+    });
+  } catch { return undefined; }
 };
 
 test("the daemon keeps its locks on the store through a backup, its reports and a second process, until it closes the store", async ({ request }) => {
@@ -97,19 +99,19 @@ sys.stdout.write(str(n))
     `], { encoding: "utf8", env: { ...process.env, STORE_DB: db, STORE_SESSION: s.id } });
     expect(Number(seen.trim())).toBe(4);
 
-    // A clean stop: while the log is there the daemon's lock on the store is too. (The lock table is
-    // read first and the log looked for after: a lock gone with the log still there is the daemon
-    // without its lock on an open store.)
+    // A clean stop: count a missing lock only while the store is still open. The process can
+    // outlive database close, and the lock table and files are not one atomic snapshot.
     let bare = 0, samples = 0;
     const gone = exited(d.proc);
     let ended = false;
     void gone.then(() => (ended = true));
     d.proc.kill("SIGTERM");
     while (!ended) {
-      const had = locks(pid, db) > 0;
+      const fd = dbFd(pid, db);
+      const had = !fd || locks(pid, db) > 0;
       let log = 0;
       try { log = statSync(wal).size; } catch {}
-      if (!had && log > 0 && runs(pid)) bare++;
+      if (!had && log > 0 && dbFd(pid, db) === fd && locks(pid, db) === 0 && dbFd(pid, db) === fd) bare++;
       samples++;
       await new Promise((r) => setTimeout(r, 2));
     }
