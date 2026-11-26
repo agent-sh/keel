@@ -72,6 +72,7 @@ import { ifHolds } from "../integrations/hooks.ts";
 import { AGENT_FILE_MAX } from "../core/agent-file.ts";
 import { choiceOf as turnChoiceOf } from "../tools/skill-turn.ts";
 import { isApiGrant, listReach, type ApiGrant } from "./api-grant.ts";
+import { codexIntegrations, pluginSkillsBlock, type PluginSkill } from "./codex-agent.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. The child gets the same system
@@ -190,6 +191,10 @@ export type AgentDef = {
   notTaken?: string[];    // what its definition asks for that Keel does not run, each with why: told to its parent at the start
   budget?: Budget; // the budget its agents get unless the call gives one (frontmatter: budget_steps, budget_minutes, budget_usd)
   external?: ExternalInfo; // run by another program, not by Keel's engine (see AgentRecord)
+  // A Codex agent file's integrations (src/automation/codex-agent.ts): its plugins' skills, told in its task; and why
+  // it cannot run here at all (it turns on ChatGPT app connectors): left out of the types offered, its spawn refused.
+  pluginSkills?: PluginSkill[];
+  unavailable?: string;
 };
 
 // A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
@@ -607,8 +612,9 @@ function readFiles(files: string[], source: string, plugin = false): AgentDef[] 
 }
 
 // Codex's custom agents: one TOML file each (name, description and
-// developer_instructions required; model, model_reasoning_effort and
-// features.shell_tool = false read too). Its sandbox and approval keys never
+// developer_instructions required; model, model_reasoning_effort,
+// features.shell_tool = false, and the mcp_servers, plugins and apps it turns on
+// read too: src/automation/codex-agent.ts). Its sandbox and approval keys never
 // override the parent's in Codex, and do not here either.
 function readCodexDir(dir: string, source: string): AgentDef[] {
   if (!existsSync(dir)) return [];
@@ -622,10 +628,12 @@ function readCodexDir(dir: string, source: string): AgentDef[] {
       const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
       const name = str(t.name), description = str(t.description), body = str(t.developer_instructions);
       if (!name || !description || !body) throw new Error("a Codex agent file needs name, description and developer_instructions");
+      const own = codexIntegrations(t, ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex"));
       out.push({
         name, description, body, source, file: p, format: "codex",
         model: str(t.model), effort: str(t.model_reasoning_effort), ...(str(t.tier) ? { tier: str(t.tier) } : {}),
         disallowed: t.features?.shell_tool === false ? ["Bash"] : undefined,
+        ...own,
       });
     } catch (e) {
       capture(e, { at: "agent definition", path: p });
@@ -673,6 +681,8 @@ export function agentFolders(cwd: string): { dir: string; layer: "owner" | "proj
   return out;
 }
 export const builtinAgentNames = (): string[] => BUILTIN.map((d) => d.name);
+// The owner's agent types as the system prompt offers them, one line each: not one that cannot run here.
+export const offeredTypes = (cwd: string): string => definitions(cwd).filter((d) => d.source !== "built-in" && !d.unavailable).map((d) => `- ${d.name}: ${d.description}`).join("\n");
 
 // Built-ins, then the owner's, then the project's (nearest directory wins). A
 // project file never takes a built-in's name.
@@ -1025,6 +1035,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   if (!input.prompt?.trim()) throw new Error("the agent needs a prompt");
   const def = defFor(definitions(parent.workspace), input.type);
   if (!def) throw new Error(`no agent type "${input.type}"; available: ${definitions(parent.workspace).map((d) => d.name).join(", ")}, and Codex's ${Object.keys(ROLE_ALIASES).join(", ")}`);
+  if (def.unavailable) throw Object.assign(new Error(`the agent type ${def.name} cannot run in Keel: ${def.unavailable}. Do the work another way, or say in your report that it needs Codex.`), { status: 409 });
   if (input.output_schema !== undefined) {
     const bad = validSchema(input.output_schema);
     if (bad) throw new Error(bad);
@@ -1215,6 +1226,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     bytes += n;
     preloaded.push(r.text);
   }
+  // (Its plugins' skills are files on this machine: an agent whose tools run on another cannot read them.)
+  const pluginSkills = placed ? "" : pluginSkillsBlock(def.pluginSkills ?? []);
+  if (placed && def.pluginSkills?.length) left.push(`the skills of its Codex plugins: they are on this machine, and the agent's tools run on ${placed.name}`);
   const have = catalogSources(child.id).map((x) => x.name.split("@")[0]!);
   for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
   if (wantEffort && !effort && (input.effort || inheritedEffort || def.format !== "codex")) left.push(`${inheritedEffort ? "your effort" : "the effort"} ${wantEffort}: ${model} does not list it`);
@@ -1233,7 +1247,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   let lessonsBlock = "";
   try { lessonsBlock = lessonStart.block?.(store.session(child.id) ?? child, id) ?? ""; } catch (e) { capture(e, { at: "agent lessons", agent: id }); }
   const task = [
-    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded, lessonsBlock,
+    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded, pluginSkills, lessonsBlock,
     reviews || isReviewer(def.name) ? VERDICT_LINE : "",
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",

@@ -156,7 +156,7 @@ function init(deps: Deps) {
     },
     // The owner's agent types are their side of the block (hooks.ts SystemBlock).
     system: (s) => {
-      const lines = agents.definitions(s.workspace).filter((d) => d.source !== "built-in").map((d) => `- ${d.name}: ${d.description}`).join("\n");
+      const lines = agents.offeredTypes(s.workspace);
       return { name: "Agent types you can start besides the built-ins", data: lines, text: lines ? `Agent types you can start besides the built-ins:\n${lines}` : "" };
     },
     beforeTool: async (s, call) => {

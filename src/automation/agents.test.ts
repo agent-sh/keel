@@ -1596,6 +1596,51 @@ test("an agent file's memory folder starts its task with MEMORY.md, within its b
   await settled();
 });
 
+// INT-S58: a Codex agent file's integrations. One that turns on a ChatGPT app connector (Gmail through Codex's sign-in)
+// cannot do its work in Keel: it is not offered and its spawn is refused with why. One that turns on a plugin of
+// skills starts with those skills named in its task, and a plugin's own servers are told as not carried.
+test("a Codex agent file's plugins and app connectors are read: an app's agent is refused, a plugin's skills are named", async () => {
+  const codex = join(dir, "codex-home");
+  const plugin = (id: string, version: string, files: Record<string, string>) => {
+    const [name, market] = id.split("@") as [string, string];
+    const at = join(codex, "plugins", "cache", market, name, version);
+    for (const [f, text] of Object.entries(files)) { mkdirSync(join(at, f, ".."), { recursive: true }); writeFileSync(join(at, f), text); }
+    return at;
+  };
+  plugin("gmail@remote", "0.1.0", { ".app.json": "{}", ".codex-plugin/plugin.json": "{}" });
+  const docs = plugin("documents@runtime", "1.0.0", { "skills/documents/SKILL.md": "---\nname: documents\ndescription: Make and edit DOCX files.\n---\nUse python-docx." });
+  plugin("security@remote", "0.2.0", { ".mcp.json": "{\"mcpServers\":{}}", "skills/scan/SKILL.md": "---\nname: scan\ndescription: Scan a repo.\n---\nScan." });
+  const folder = join(dir, ".codex", "agents");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "mailer.toml"), ['name = "mailer"', 'description = "Gmail searches"', 'developer_instructions = "Use the Gmail integration."', '[plugins."gmail@remote"]', "enabled = true", "[apps.connector_1]", "enabled = true"].join("\n"));
+  writeFileSync(join(folder, "writer.toml"), ['name = "writer"', 'description = "DOCX documents"', 'developer_instructions = "Write the document."', '[plugins."documents@runtime"]', "enabled = true", '[plugins."security@remote"]', "enabled = true", '[plugins."gone@remote"]', "enabled = true", '[plugins."off@remote"]', "enabled = false", "[mcp_servers.crm]", "enabled = true"].join("\n"));
+  const was = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codex;
+  try {
+    const defs = agents.definitions(dir);
+    const mailer = defs.find((d) => d.name === "mailer")!;
+    expect(mailer.unavailable).toContain("ChatGPT app connector (gmail@remote)");
+    expect(agents.offeredTypes(dir)).not.toContain("mailer");
+    expect(agents.offeredTypes(dir)).toContain("- writer: DOCX documents");
+    const refused = await tool("Agent").run({ description: "mail", prompt: "find the invoice", subagent_type: "mailer", run_in_background: true, isolation: "none" }, ctx as any);
+    expect(String(refused.content)).toContain("the agent type mailer cannot run in Keel: it turns on ChatGPT app connector");
+    expect(agents.list(parent.id).some((a) => a.type === "mailer")).toBe(false);
+    const writer = defs.find((d) => d.name === "writer")!;
+    expect([writer.unavailable, writer.mcpServers, writer.pluginSkills?.map((x) => x.name)]).toEqual([undefined, ["crm"], ["documents", "scan"]]);
+    expect(writer.notTaken).toEqual([expect.stringContaining("the MCP servers of the Codex plugin security@remote"), expect.stringContaining("the Codex plugin gone@remote: it is not in Codex's plugin cache")]);
+    const r = await tool("Agent").run({ description: "doc", prompt: "write the memo", subagent_type: "writer", run_in_background: true, isolation: "none" }, ctx as any);
+    expect(String(r.content)).toContain("gone@remote");
+    const a = agents.list(parent.id).find((x) => x.type === "writer")!;
+    const task = sends.find((x) => x.id === a.session_id)!.text;
+    expect(task).toContain(`- documents (Codex plugin documents@runtime): Make and edit DOCX files. Read ${join(docs, "skills", "documents", "SKILL.md")} before you use it`);
+    end(a, "end_turn");
+    await settled();
+  } finally {
+    if (was === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = was;
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
 // RSH-S42: an entry with a specifier is one entry for its tool. Claude Code's sub-agents doc: `Bash(git push *)` in
 // disallowedTools takes the whole of Bash away, and `Agent(worker, researcher)` in a subagent's tools lets it spawn.
 test("an agent file's tool entries with a specifier work as Claude Code reads them", async () => {
