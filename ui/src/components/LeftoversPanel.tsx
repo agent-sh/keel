@@ -211,10 +211,10 @@ export function LeftoversPanel() {
                   title={p.scope.builds.length ? p.scope.builds.map((b) => `${b.kind}, pid ${b.pid}, ${mb(b.memory_bytes)}`).join("\n") : undefined}>{fateLine(p.scope)}</span>}
                 meta={<>
                   {p.ports.map((port) => <Status key={port} tone="info" testid="leftover-port">:{port}</Status>)}
-                  {!p.running && <Status title="Its command ended; what it started runs on.">command ended</Status>}
-                  {p.earlier && <Status title="A daemon before this one started it; this one took it back at its start." testid="leftover-earlier">before restart</Status>}
-                  {!!p.scope?.builds.length && <Status>{[...new Set(p.scope.builds.map((b) => b.kind))].join(", ")}</Status>}
-                  {p.agent && <Status tone={p.agent.status === "running" || p.agent.status === "waiting" ? "quiet" : "warn"}>agent {p.agent.status}</Status>}
+                  {!p.running && <Status bare title="Its command ended; what it started runs on.">command ended</Status>}
+                  {p.earlier && <Status bare title="A daemon before this one started it; this one took it back at its start." testid="leftover-earlier">before restart</Status>}
+                  {!!p.scope?.builds.length && <Status bare>{[...new Set(p.scope.builds.map((b) => b.kind))].join(", ")}</Status>}
+                  {p.agent && (p.agent.status === "running" || p.agent.status === "waiting" ? <Status bare>agent {p.agent.status}</Status> : <Status tone="warn">agent {p.agent.status}</Status>)}
                   <span className="w-14 text-right" data-testid="leftover-memory" title="Memory of its scope">{p.scope ? mb(p.scope.memory_bytes) : ""}</span>
                   <span className="text-faint" title={`pid ${p.pids.join(", ")}`}>pid {p.pids[0]}{p.pids.length > 1 ? ` +${p.pids.length - 1}` : ""}</span>
                   {!procBy && <Who by={{ session_id: p.session_id, title: p.title }} />}
@@ -268,7 +268,7 @@ export function LeftoversPanel() {
                   </span>
                 </span>}
                 meta={<>
-                  {w.landed && <Status tone={w.landed.how === "whole" ? "ok" : "quiet"} testid="leftover-landed" title={`${w.landed.words}${w.landed.how === "whole" ? ": its branch goes with it" : ": its branch stays"}`}>{w.landed.how === "whole" ? "landed" : w.landed.how === "earlier" ? "landed, changed since" : "landed with changes"}</Status>}
+                  {w.landed && <Status bare tone={w.landed.how === "whole" ? "ok" : "quiet"} testid="leftover-landed" title={`${w.landed.words}${w.landed.how === "whole" ? ": its branch goes with it" : ": its branch stays"}`}>{w.landed.how === "whole" ? "landed" : w.landed.how === "earlier" ? "landed, changed since" : "landed with changes"}</Status>}
                   {w.bytes !== undefined && w.bytes >= 1 << 20 && <span className="w-14 text-right" title="What it holds on disk">{mb(w.bytes)}</span>}
                   {!treeBy && <Who by={w.by} />}{age(w.made)}
                 </>}

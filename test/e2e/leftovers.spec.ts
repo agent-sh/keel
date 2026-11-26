@@ -281,6 +281,8 @@ test("the landed pass removes worktrees whose branch's work is on the base, and 
     await page.goto("/settings/leftovers");
     const w = page.locator(`[data-testid="leftover-worktree"][data-path="${whole}"]`), e = page.locator(`[data-testid="leftover-worktree"][data-path="${edited}"]`);
     await expect(w.getByTestId("leftover-landed")).toHaveText("landed");
+    // Said by a dot and plain words, not a chip: a list of worktrees is not a column of them.
+    expect(await w.getByTestId("leftover-landed").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
     await expect(e.getByTestId("leftover-landed")).toHaveText("landed with changes");
     await expect(page.getByTestId("leftovers-remove-landed")).toContainText(/^Remove \d+ landed worktrees? and \d+ branch/);
     await expect(page.getByTestId("leftovers-remove-all")).toContainText(/^Remove all: /);
