@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { shoot } from "./shots.ts";
+import { openFolds, shoot } from "./shots.ts";
 
 // Feature: an agent whose context is lost (here the model declines after some
 // work) is taken up by a fresh context of the same agent, in the same
@@ -80,7 +80,10 @@ test("a declined agent goes on in a fresh context, moves family after a second r
   // The card says it lost two contexts, and lists them.
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${session.id}`);
+  await page.getByTestId("lens-to-stream").click({ timeout: 15_000 });
   const card = page.getByTestId("agent-call").first();
+  await expect(page.getByTestId("work-fold").or(card).first()).toBeVisible();
+  await openFolds(page);
   await expect(card.getByTestId("agent-call-successor")).toHaveText("2 fresh contexts");
   await shoot(page, "successor-01-card");
   await card.locator("button.k-line").first().click();

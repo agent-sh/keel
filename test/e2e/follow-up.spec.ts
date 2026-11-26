@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { openFolds, shoot } from "./shots.ts";
 
 // Feature: a message to an agent that has finished starts its new work in
 // the cheapest context that still holds the work. An agent reads three long
@@ -67,7 +67,10 @@ test("a follow-up to a finished agent at a large context starts from a capsule, 
   // The card: a chip on its line, and why when it is opened.
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${session.id}`);
+  await page.getByTestId("lens-to-stream").click({ timeout: 15_000 });
   const card = page.getByTestId("agent-call").first();
+  await expect(page.getByTestId("work-fold").or(card).first()).toBeVisible();
+  await openFolds(page);
   await expect(card.getByTestId("agent-call-start")).toHaveText("fresh start");
   await expect(card.getByTestId("agent-call-start")).toHaveAttribute("title", /capsule of its work/);
   await shoot(page, "follow-up-01-card");

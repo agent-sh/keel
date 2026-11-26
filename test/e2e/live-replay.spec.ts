@@ -194,8 +194,8 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
   const origin = d.url;
   const gate = join(state, "release-the-hold");
   try {
-    // One station at a time, as the other specs: the transcript on screen is the session's.
-    await context.addInitScript(() => localStorage.setItem("keel.focus", "true"));
+    // Keep one conversation on screen, with the session list one press away.
+    await context.addInitScript(() => localStorage.setItem("keel.workbench", "false"));
     const got = snapshots(page);
     let seqs: number[] = [];
     let hold: Promise<void> | undefined;
@@ -266,11 +266,17 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     // Both sessions are loaded in the page; the kept one is on screen.
     await page.goto(`${origin}/s/${doomed}`);
     await expect(lastNote).toBeVisible({ timeout: 30_000 });
-    await row(id!).click();
+    const sessions = page.getByTestId("focus-edge");
+    await sessions.click({ timeout: 15_000 });
+    await expect(row(doomed!)).toBeVisible();
+    await row(id!).click({ timeout: 15_000 });
     await expect(page).toHaveURL(new RegExp(`/s/${id}$`));
+    await expect(page.getByTestId("sidebar")).toBeHidden();
     await expect(lastNote).toBeVisible({ timeout: 30_000 });
     // Opening them read the newest page of each.
-    expect(new Set(got.map((g) => `${g.id} ${g.events}`))).toEqual(new Set([`${doomed} ${PAGE}`, `${id} ${PAGE}`]));
+    await expect.poll(() => new Set(got.map((g) => `${g.id} ${g.events}`))).toEqual(new Set([`${doomed} ${PAGE}`, `${id} ${PAGE}`]));
+    await expect.poll(() => !!cut).toBe(true);
+    await expect(page.getByTestId("sync-state")).toHaveCount(0);
     const full = got.find((g) => g.id === id)!.bytes;
 
     // Cut, and kept out. Meanwhile: half a reply, a queued prompt, a deletion.
@@ -305,7 +311,11 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     expect(seqs.length).toBeGreaterThan(0);
     expect(seqs).toEqual((await eventsAfter(origin, id!, NOTES)).map((e) => e.seq));
     // The session deleted meanwhile left the page.
+    await sessions.click({ timeout: 15_000 });
+    await expect(row(id!)).toBeVisible();
     await expect(row(doomed!)).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("sidebar")).toBeHidden();
     await expect.poll(() => got.find((g) => g.id === doomed)?.status).toBe(404);
 
     // The turn goes on and the queued prompt runs, all while the snapshot is still out.

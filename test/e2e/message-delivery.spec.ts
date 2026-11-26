@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sessionsFolder, specEnv } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { openFolds, shoot } from "./shots.ts";
 
 // Feature: a message a session was told is sent is delivered, once. A message
 // to a working session is kept in its queue (the page and the sender's agent
@@ -15,10 +15,10 @@ import { shoot } from "./shots.ts";
 // stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
-function daemon(state: string, extra: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
+function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)], {
     // An environment made from nothing, its own config folder: never the owner's.
-    env: specEnv(state, extra),
+    env: specEnv(state),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -51,6 +51,15 @@ async function rig(name: string) {
   const hold = (g: string) => ({ name: "Bash", input: { command: `timeout 120 cat ${g} > /dev/null; echo released` } });
   const release = (g: string) => spawnSync("sh", ["-c", `echo go > ${g}`], { timeout: 10_000 });
   const view = (id: string) => call(`/api/sessions/${id}`, undefined, "GET");
+  const streamingHold = async (id: string, gate: string) => {
+    await call(`/api/sessions/${id}/messages`, { text: `script:hold ${gate}` });
+    await expect.poll(async () => (await view(id)).draft?.[0]?.text, { timeout: 15_000 }).toContain("before the hold");
+  };
+  const drain = async (id: string) => {
+    const answer = await call("/api/drain", { timeout_seconds: 20 });
+    expect(answer.running).toContain(id);
+    expect((await call("/api/daemon", undefined, "GET")).draining).toBeTruthy();
+  };
   const events = async (id: string) => (await view(id)).events as any[];
   // The commands of the tool calls the session's model made, in order.
   const commands = async (id: string) => (await events(id)).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => String(b.input?.command ?? b.name)) : []));
@@ -61,12 +70,10 @@ async function rig(name: string) {
     return session.id as string;
   };
   return {
-    state, call, gate, hold, release, view, events, commands, prompts, session,
+    state, call, gate, hold, release, view, events, commands, prompts, session, streamingHold, drain,
     url: () => d.url,
-    // SIGTERM stops the daemon as `keel restart` and the unit do: a drain, then the turns still running are parked.
-    stop: (how: "SIGTERM" | "SIGKILL") => { d.proc.kill(how); },
-    start: async (extra: Record<string, string> = {}) => { await exited(d.proc); d = await daemon(state, extra); },
-    restart: async (how: "SIGTERM" | "SIGKILL", extra: Record<string, string> = {}) => { d.proc.kill(how); await exited(d.proc); d = await daemon(state, extra); },
+    start: async () => { await exited(d.proc); d = await daemon(state); },
+    restart: async (how: "SIGTERM" | "SIGKILL") => { d.proc.kill(how); await exited(d.proc); d = await daemon(state); },
     end: () => d.proc.kill("SIGKILL"),
   };
 }
@@ -108,8 +115,11 @@ test("a working agent takes its parent's message at its next step, and a restart
     expect.soft((await agent()).messages_waiting).toBe(1);
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${parent}`);
+    await page.getByTestId("lens-to-stream").click({ timeout: 15_000 });
+    await expect(page.getByTestId("work-fold").or(page.getByTestId("agent-call")).first()).toBeVisible();
+    await openFolds(page);
     const chip = page.getByTestId("agent-call-waiting").first();
-    await expect.soft(chip).toHaveText(/^1\s*message waiting$/, { timeout: 10_000 });
+    await expect(chip).toHaveText(/^1\s*message waiting$/, { timeout: 10_000 });
     // The chip shrinks to its icon and count before the agent's title loses a letter more than it must.
     const title = page.getByTestId("agent-call-title").first();
     expect.soft(await title.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
@@ -191,22 +201,21 @@ test("a message waiting for a working agent survives a kill of the daemon", asyn
 test("a message from another session is delivered after a restart, also when the turn it waited for ended while the daemon stopped", async () => {
   const r = await rig("message-peer");
   try {
-    const [a, b] = ["a", "b"].map(r.gate) as [string, string];
+    const gate = join(r.state, "finish-while-draining");
+    const b = r.gate("b");
     const receiver = await r.session("Receiver across a restart");
     const sender = await r.session("Sender across a restart");
     const send = (text: string) => r.call(`/api/sessions/${sender}/messages`, { text: `script:calls ${JSON.stringify([{ name: "keel__session_send", input: { to: receiver, text } }])}` });
     const queued = async () => (await r.call(`/api/sessions/${receiver}/queue`, undefined, "GET")).queue.length;
 
-    // The receiver's turn ends by itself while the daemon is stopping: no turn is cut, and the message still waits.
-    await r.restart("SIGKILL", { KEEL_DRAIN_MS: "20000" });
-    await r.call(`/api/sessions/${receiver}/messages`, { text: `script:calls ${JSON.stringify([r.hold(a)])}` });
-    await expect.poll(async () => (await r.commands(receiver)).length, { timeout: 30_000 }).toBe(1);
+    // A tool would pause at the next model request during the drain. Hold a
+    // final reply in flight so this turn can finish without another request.
+    await r.streamingHold(receiver, gate);
     await send("Peer note one, sent while the receiver worked.");
     await expect.poll(queued, { timeout: 30_000 }).toBe(1);
     await expect.poll(async () => (await r.view(sender)).running, { timeout: 30_000 }).toBe(false);
-    r.stop("SIGTERM");
-    await new Promise((res) => setTimeout(res, 1_000)); // the drain has begun
-    r.release(a);
+    await r.drain(receiver);
+    writeFileSync(gate, "");
     await r.start();
     await expect.poll(async () => (await r.prompts(receiver, "Peer note one")).length, { timeout: 60_000 }).toBe(1);
     await expect.poll(queued, { timeout: 15_000 }).toBe(0);
@@ -215,7 +224,7 @@ test("a message from another session is delivered after a restart, also when the
 
     // The receiver's turn is cut by a kill: the message is its next turn after the continued one.
     await r.call(`/api/sessions/${receiver}/messages`, { text: `script:calls ${JSON.stringify([r.hold(b)])}` });
-    await expect.poll(async () => (await r.commands(receiver)).length, { timeout: 30_000 }).toBe(2);
+    await expect.poll(async () => (await r.commands(receiver)).length, { timeout: 30_000 }).toBe(1);
     await send("Peer note two, sent before the kill.");
     await expect.poll(queued, { timeout: 30_000 }).toBe(1);
     await r.restart("SIGKILL");
@@ -236,7 +245,7 @@ test("a message from another session is delivered after a restart, also when the
 test("the owner's steer and queued prompt are delivered once across a restart", async ({ page }) => {
   const r = await rig("message-owner");
   try {
-    const [a, b] = ["a", "b"].map(r.gate) as [string, string];
+    const a = r.gate("a");
     const s = await r.session("Steered across a restart");
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${s}`);
@@ -269,18 +278,17 @@ test("the owner's steer and queued prompt are delivered once across a restart", 
     await shoot(page, "message-delivery-04-owner-after-restart");
 
     // The turn ends by itself while the daemon is stopping: the queued prompt is not left behind.
-    await r.restart("SIGKILL", { KEEL_DRAIN_MS: "20000" });
-    await r.call(`/api/sessions/${s}/messages`, { text: `script:calls ${JSON.stringify([r.hold(b)])}` });
-    await expect.poll(async () => (await r.commands(s)).length, { timeout: 30_000 }).toBe(2);
+    const gate = join(r.state, "finish-while-draining");
+    await r.streamingHold(s, gate);
     await r.call(`/api/sessions/${s}/messages`, { text: "Queued when the daemon stopped.", mode: "queue" });
-    r.stop("SIGTERM");
-    await new Promise((res) => setTimeout(res, 1_000));
-    r.release(b);
+    await r.drain(s);
+    writeFileSync(gate, "");
     await r.start();
     await expect.poll(async () => (await r.prompts(s, "Queued when the daemon stopped.")).length, { timeout: 60_000 }).toBe(1);
     await expect.poll(async () => (await r.view(s)).running, { timeout: 30_000 }).toBe(false);
     ev = await r.events(s);
     expect(ev.filter((e) => e.kind === "user" && e.data.text === "Queued when the daemon stopped.")).toHaveLength(1);
+    expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn", "end_turn", "end_turn", "end_turn"]);
     expect((await r.call(`/api/sessions/${s}/queue`, undefined, "GET")).queue).toHaveLength(0);
   } finally {
     r.end();
@@ -356,12 +364,18 @@ test("a message to an agent the owner stopped waits for the owner's Resume, and 
     expect(await words()).toEqual(["Sent before the stop.", "The owner's own queued prompt.", "Sent after the stop."]);
     expect(await agent()).toMatchObject({ status: "stopped", stopped_by: "owner", messages_waiting: 2 });
     await expect(page.getByTestId("queue-held")).toBeVisible();
-    await expect(page.getByTestId("queue-item")).toHaveCount(3);
+    const rows = page.getByTestId("queue-item");
+    await expect(rows).toHaveCount(2);
+    await page.getByTestId("queue-more").click();
+    await expect(rows).toHaveText([/Sent before the stop/, /The owner's own queued prompt/, /Sent after the stop/]);
     await shoot(page, "message-delivery-05-held-for-the-owner");
     // The stopped agent's report says what brings the messages to it, and the parent's card counts them.
     const report = (await r.events(parent)).filter((e) => e.kind === "user" && String(e.data.text).includes("<subagent_result")).map((e) => String(e.data.text)).join("\n");
     expect(report).toContain("the owner stopped it, and it reads");
     await page.goto(`${r.url()}/s/${parent}`);
+    await page.getByTestId("lens-to-stream").click({ timeout: 15_000 });
+    await expect(page.getByTestId("work-fold").or(page.getByTestId("agent-call")).first()).toBeVisible();
+    await openFolds(page);
     const chip = page.getByTestId("agent-call-waiting").first();
     await expect(chip).toHaveText(/^2\s*messages waiting$/, { timeout: 10_000 });
     // A short title is whole while the chip still has room to give.
@@ -406,9 +420,7 @@ test("an agent's finished report is not replaced by its reply to a message that 
       await expect.poll(async () => (await agent())?.session_id, { timeout: 30_000 }).toBeTruthy();
       const child = (await agent()).session_id as string;
       await expect.poll(async () => (await r.view(parent)).running, { timeout: 30_000 }).toBe(false);
-      // Its answer is being written.
-      await expect.poll(async () => { const v = await r.view(child); return v.running && v.events.some((e: any) => e.kind === "turn_start"); }, { timeout: 30_000 }).toBe(true);
-      await page.waitForTimeout(500);
+      await expect.poll(async () => (await r.view(child)).draft?.[0]?.text, { timeout: 15_000 }).toContain("before the hold");
       const reports = async () => (await r.events(parent)).filter((e) => e.kind === "user" && String(e.data.text).includes("<subagent_result")).map((e) => String(e.data.text));
       return { parent, child, agent, reports, finish: () => writeFileSync(gate, "") };
     };
@@ -423,13 +435,15 @@ test("an agent's finished report is not replaced by its reply to a message that 
     // The agent read the message in the turn of its final answer, after it, and answered.
     const ev = (await r.events(one.child)).filter((e) => e.kind === "assistant" || e.kind === "user" || e.kind === "turn_end").map((e) => (e.kind === "assistant" ? e.data.blocks.find((b: any) => b.type === "text")?.text : e.kind === "user" ? `user:${e.data.kind}` : `end:${e.data.reason}`));
     expect(ev).toEqual(["user:task", FINAL, "user:steer", "The file is parse.ts.", "end:end_turn"]);
-    // What the parent receives, and what the listing of its agents serves: the reply and the report before it.
+    // What the parent receives and what opening the agent's report serves: the reply and the report before it.
     const want = `The file is parse.ts.\n\nEarlier reports, oldest first:\n\n${FINAL}`;
     expect((await one.reports())[0]).toContain(want);
-    expect((await one.agent()).result).toBe(want);
-    expect((await r.call(`/api/sessions/${one.parent}/background`, undefined, "GET")).agents[0].result).toBe(want);
+    const reportOf = async (parent: string, aid: string) =>
+      (await r.call(`/api/sessions/${parent}/agents/${aid}/report`, undefined, "GET")).report;
+    expect(await reportOf(one.parent, id)).toBe(want);
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${one.parent}`);
+    await page.getByTestId("lens-to-stream").click({ timeout: 15_000 });
     await page.getByTestId("agent-report").first().click();
     await expect(page.getByTestId("agent-report").first()).toContainText("The second half, after it.");
     await shoot(page, "message-delivery-07-final-and-reply");
@@ -449,7 +463,7 @@ test("an agent's finished report is not replaced by its reply to a message that 
     expect(count(got, FINAL)).toBe(1);
     expect(got.indexOf("Answered after a slow start.")).toBeLessThan(got.indexOf("Earlier reports, oldest first:"));
     expect(got.indexOf("Earlier reports, oldest first:")).toBeLessThan(got.indexOf(FINAL));
-    expect((await two.agent()).result).toContain(FINAL);
+    expect(await reportOf(two.parent, id2)).toContain(FINAL);
     expect(await r.prompts(two.child, "First extra question.")).toHaveLength(1);
     expect(await r.prompts(two.child, "Second extra question.")).toHaveLength(1);
     expect((await two.agent()).status).toBe("completed");
