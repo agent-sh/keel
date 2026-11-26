@@ -293,9 +293,12 @@ test("a script and its written-out form are each read once however deep they nes
   // A here-document of the line itself past NESTED_MAX is read as it stands and not written out: it asks as a
   // script too long does. One within it is read both ways.
   // (A name set twice: the line's own written-out form leaves it, the document's own gives the last value.)
-  const doc = (pad: number) => `bash <<'EOF'\nf=~/x\nf=~/.bashrc\n${"echo a\n".repeat(pad)}echo x >> $f\nEOF`;
+  const doc = (pad: number, set = "c=cat\nc=tee", write = "echo x | $c -a ~/.bashrc") => `bash <<'EOF'\n${set}\n${"echo a\n".repeat(pad)}${write}\nEOF`;
   expect(verdict(doc(700))).toBe("owner");
   expect(verdict(doc(3000))).toBe("asks high");
+  // (A file such a name spells is found past the bound too: the names a line sets are followed to the paths its words show.)
+  expect(verdict(doc(700, "f=~/x\nf=~/.bashrc", "echo x >> $f"))).toBe("owner");
+  expect(verdict(doc(3000, "f=~/x\nf=~/.bashrc", "echo x >> $f"))).toBe("owner");
   // Many such chains in one line: more nested text than the bound is not read through, and asks.
   const chain = (tag: number) => { let c = "f=~/x; echo $f\n".repeat(240); for (let i = 1; i <= 8; i++) c = `v${i}=~/y${tag}; echo $v${i}\nbash <<'E${i}'\n${c}\nE${i}`; return c; };
   const many = Array.from({ length: 25 }, (_, i) => chain(i)).join("\n");

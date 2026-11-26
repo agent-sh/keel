@@ -45,7 +45,7 @@ import { UNSPLIT } from "./risk.ts";
 import { onlyScript } from "./nested-shell.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
-import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, unspeltCredentials, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { cardOrder } from "./card-order.ts";
 import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
@@ -1542,7 +1542,8 @@ export class Gate {
           await l.answer(asked);
         }
       }
-      paths = reads?.paths ?? [];
+      // (And the credentials it may read through names the line sets, which the rules above do not place.)
+      paths = [...(reads?.paths ?? []), ...unspeltCredentials(cls.command, cls.cwd ?? session.workspace, session.workspace, (p) => this.credentialOf(p))];
       const links = new Set(reads?.hits.filter((h) => h.foreign).map((h) => h.path));
       // A command in the sandbox reads what the sandbox shows: its own folder's `.env` and kin as they always were,
       // and a store the owner opened for it, whose values are kept from the model as an allowed read's are. What the

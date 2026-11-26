@@ -166,7 +166,7 @@ function substituted(how: Made | undefined, depth = 0): string[] {
 // a `.` in it; a relative one with no pattern characters, since a regular expression is no wildcard) and, outside
 // the home's stores, when the disk has it (a route '/oauth/token' is no file). Not read: a path the code puts
 // together (os.path.join, Path.home() / '.ssh'), a string in backticks, code piped in from an echo.
-export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts: boolean | Inner[] = true, code = false, unplaced?: (word: string, at: number) => void): Reads | null {
+export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts: boolean | Inner[] = true, code = false, unplaced?: (word: string, at: number, by: string) => void): Reads | null {
   let first: { what: string; by: string; api?: string } | null = null;
   const paths: string[] = [];
   const hits: Hit[] = [];
@@ -194,7 +194,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
   let now = 0; // the part being read
   const reads = (w: string, dir: string | null, by: string): boolean => {
     const p = at(w, dir);
-    if (!p) { unplaced?.(w, now); return false; }
+    if (!p) { unplaced?.(w, now, by); return false; }
     if (!/[*?[{]/.test(w)) return note(p, by);
     let abs = w.replace(/^(?:\$HOME|\$\{HOME\})(?=\/|$)/, "~");
     abs = abs === "~" ? home : abs.startsWith("~/") ? join(home, abs.slice(2)) : abs;

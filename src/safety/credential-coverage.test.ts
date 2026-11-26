@@ -149,6 +149,21 @@ test("a recursive shell search of a project folder asks or is told to leave the 
   }
 });
 
+test("a listed file read through names the line sets is the owner's card, refused to an agent, and its values go to the vault when it runs", async () => {
+  for (const c of ["p=~/.config; q=$p/gh; cat $q/hosts.yml", "export G=~/.config/gh; bash -c 'cat $G/hosts.yml'", "ls ~/.config/gh | while read y; do cat ~/.config/gh/$y; done", "for d in ~/.config/gh; do cat $d/hosts.yml; done"]) {
+    const [o, a] = [await bash(c), await agentBash(c)];
+    expect([c, isOwner(o) ? "owner" : o]).toEqual([c, "owner"]);
+    expect([c, isRefused(a) ? "refused" : a]).toEqual([c, "refused"]);
+  }
+  // Full auto asks nobody and runs it: what the file holds is kept in the vault for that session first, so it sees placeholders.
+  const free = (gate as any).store.createSession({ model: "fixture:m", workspace: ws }) as Session;
+  gate.setPerm(free.id, { mode: "full-auto", sandbox: "off" });
+  const held = () => vault.list(free.id).filter((e) => e.kind === "credential file").length;
+  expect(held()).toBe(0);
+  expect(await through(free, "Bash", { command: "p=~/.aws; q=$p; cat $q/credentials" })).toBe("ran");
+  expect(held()).toBeGreaterThan(0);
+});
+
 test(".envrc, history and Keel's own files: refused to an agent; the servers and providers say where the masked view is", async () => {
   for (const p of [join(ws, ".envrc"), join(home, ".bash_history"), join(state, "keel.db"), join(state, "api-token"), join(state, "secret-key"), join(state, "mcp-oauth.json")]) {
     expect([p, isOwner(await through(owner, "Read", { file_path: p }))]).toEqual([p, true]);
