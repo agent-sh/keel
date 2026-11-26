@@ -16,7 +16,7 @@ import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { stopJob, jobsOf } from "./jobs.ts";
 import { DIFF_LINES, expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, shellSaw, touched } from "./reading.ts";
-import { SEEN_BYTES } from "./shell-seen.ts";
+import { markSeen, SEEN_BYTES } from "./shell-seen.ts";
 import type { Tool, ToolContext } from "./types.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "reading-"));
@@ -343,6 +343,24 @@ describe("an edit after a reading", () => {
     expect(knownOf(ctx, p)).toBeUndefined();
     expect((await Edit.run({ file_path: p, old_string: line(400), new_string: "x" }, ctx)).is_error).toBeFalsy();
   }, 30_000);
+
+  test("an output longer than the session keeps inline was cut before the model read it: its lines are not the session's", async () => {
+    // The session keeps 12,000 characters of a result: a print of 16,000 is cut, one of 4,000 is not.
+    const { ctx } = rig({ more: { inline: { cap: 12_000, head: 0.6 } } });
+    const p = file();
+    await Read.run({ file_path: p }, ctx);
+    shellSaw(ctx, `head -n 400 ${p}`, dir, "x".repeat(16_000));
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 120, to: 122 }]);
+    markSeen(ctx, `cat ${p}`, dir, "x".repeat(16_000));
+    expect(knownOf(ctx, p)).toBeDefined();
+    shellSaw(ctx, `head -n 100 ${p}`, dir, "x".repeat(4_000));
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 1, to: 100 }, { from: 120, to: 122 }]);
+    // With no carry size the shell's own cut decides.
+    const plain = rig();
+    await Read.run({ file_path: p }, plain.ctx);
+    shellSaw(plain.ctx, `head -n 400 ${p}`, dir, "x".repeat(16_000));
+    expect(knownOf(plain.ctx, p)!.lines).toEqual([{ from: 1, to: 400 }]);
+  });
 
   test("a long file is never read to count its lines: its first N lines are the session's as printed, its tail adds nothing", async () => {
     const { ctx } = rig();

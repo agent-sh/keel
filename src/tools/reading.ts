@@ -29,7 +29,7 @@ import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/
 import { READING_HEAD } from "../safety/addresses.ts";
 import { FLOOR } from "./carry.ts";
 import { diffLines, splitLines, type Op } from "./diff.ts";
-import { INLINE, lineCount, SEEN_BYTES, shown } from "./shell-seen.ts";
+import { lineCount, SEEN_BYTES, shown, uncut } from "./shell-seen.ts";
 import type { ToolContext } from "./types.ts";
 
 export type Span = { from: number; to: number };
@@ -211,15 +211,15 @@ export function sawText(ctx: Pick<ToolContext, "seen">, p: string, mtime: number
 // A command that ran to its end with status 0 and printed lines of a file the session has a reading of: the
 // lines it printed are the session's. Which lines is read as the overwrite guard reads it (`shown`,
 // src/tools/shell-seen.ts): a file printed from its first line (cat, head, sed -n '1,Np') or to its last
-// (tail), with nothing filtering the output and the output not cut. A command that only names the file (a
+// (tail), with nothing filtering the output and the output not cut (`uncut`). A command that only names the file (a
 // listing, a count, a search) showed none of its lines. (A file printed whole is the session's by markSeen.)
 // The file is never read here for a print of its first N lines: they are lines 1 to N whatever its length (a
 // file with fewer has no line past its last to edit). Which lines a tail printed, and how many a whole print
 // did, needs the file's line count, which reads the file whole on the loop: counted only for a file under
 // the size the overwrite guard counts (SEEN_BYTES), and a longer file's tail adds nothing.
-export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string, dir: string, output: string): void {
+export function shellSaw(ctx: Pick<ToolContext, "seen" | "inline">, command: string, dir: string, output: string): void {
   const b = books.get(ctx.seen);
-  if (!b?.files.size || output.length > INLINE) return;
+  if (!b?.files.size || !uncut(ctx, output)) return;
   try {
     for (const s of shown(command, dir)) {
       const p = realOf(s.path);

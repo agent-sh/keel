@@ -10,6 +10,9 @@ import type { ToolContext } from "./types.ts";
 
 // A command's output past this is cut before the model reads it (INLINE_OK in claude.ts).
 export const INLINE = 30_000;
+// Whether the model reads all of a command's output: the shell tool cuts it past INLINE, and the engine cuts a
+// result past what the session keeps inline for what carrying it costs (`ctx.inline`, src/tools/carry.ts).
+export const uncut = (ctx: Pick<ToolContext, "inline">, output: string) => output.length <= Math.min(INLINE, ctx.inline?.cap ?? INLINE);
 
 const WHOLE = new Set(["cat", "nl", "bat", "batcat", "less", "more"]);
 const words = (s: string) => s.trim().split(/\s+/).map((w) => w.replace(/^['"]|['"]$/g, "")).filter(Boolean);
@@ -102,7 +105,7 @@ export function markSeen(ctx: ToolContext, command: string, dir: string, output:
   try {
     for (const s of shown(command, dir)) {
       const st = statSync(s.path);
-      if (!st.isFile() || st.size > SEEN_BYTES || output.length > INLINE) continue;
+      if (!st.isFile() || st.size > SEEN_BYTES || !uncut(ctx, output)) continue;
       if (Number.isFinite(s.lines) && lineCount(s.path) > s.lines) continue;
       ctx.seen.set(realOf(s.path), st.mtimeMs);
     }
