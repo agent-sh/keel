@@ -22,6 +22,7 @@ import { timed } from "../admin/stall.ts";
 import { RESTART_RAN } from "../core/stops.ts";
 import { lastDown, whileDown } from "../core/late.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
+import { jobSlice, SLICES, unattendedProps, type JobSlice } from "./job-slice.ts";
 
 export type Job = {
   id: string;            // short text id (Claude task_id)
@@ -313,9 +314,10 @@ export function startJob(o: StartOpts): Job {
     ...(o.wrap ? {} : { unconfined: true as const }) } as Job;
   startedHere.add(id);
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
-  if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
+  const place = jobSlice({ byOwner: o.by === "owner", attended: attendedOf(o.sessionId) });
+  if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${sliceDir(box.slice, place)}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
-  const scoped = (a: string[]) => box.slice ? [...scopeHead(), "--slice=app.slice", `--unit=${unit}`, ...props, ...maxRuntime(), "--", ...a] : a;
+  const scoped = (a: string[]) => box.slice ? [...scopeHead(), `--slice=${SLICES[place]}`, `--unit=${unit}`, ...props, ...maxRuntime(), "--", ...a] : a;
   // Known secret values never reach the log: its output is filtered on the way in.
   const pairs = secretPairs();
   if (o.pty) {
@@ -431,17 +433,36 @@ function maxRuntime(): string[] {
   return n > 0 ? ["-p", `RuntimeMaxSec=${n}`] : [];
 }
 
-// Where jobs' scopes go: the user manager's app.slice, when systemd --user
-// and cgroup v2 are there (read once).
-let scopeAt: { slice?: string; why?: string } | undefined;
-export function jobScope(): { slice?: string; why?: string } {
+// Whether a session's turn is one the owner attends (set by src/automation/index.ts from the load hold's
+// reading): its jobs go in the owner's slice, the others in the unattended one (src/tools/job-slice.ts).
+export const jobAttended: { of?: (sessionId: string) => boolean } = {};
+function attendedOf(sessionId: string): boolean | undefined {
+  try { return jobAttended.of?.(sessionId); } catch { return undefined; }
+}
+// The cgroup folder (under /sys/fs/cgroup) of a job slice, from app.slice's.
+export const sliceDir = (app: string, which: JobSlice) => `${app}/${SLICES[which]}`;
+// The slice a job of `sessionId` goes in, and its cgroup folder (none without scopes).
+export function placeOf(sessionId: string, byOwner = false): { unit: string; dir?: string } {
+  const which = jobSlice({ byOwner, attended: attendedOf(sessionId) });
+  const app = jobScope().slice;
+  return { unit: SLICES[which], dir: app ? sliceDir(app, which) : undefined };
+}
+
+// Where jobs' scopes go: slices of the user manager's app.slice, when systemd --user
+// and cgroup v2 are there (read once). `weights`: why the unattended slice has no weight of its own (it then
+// weighs what any slice does, still one share for all its jobs).
+let scopeAt: { slice?: string; why?: string; weights?: string } | undefined;
+export function jobScope(): { slice?: string; why?: string; weights?: string } {
   if (scopeAt) return scopeAt;
   if (!existsSync("/sys/fs/cgroup/cgroup.controllers")) return (scopeAt = { why: "cgroup v2 is not mounted" });
   const st = sandboxStatus();
   if (!st.scope) return (scopeAt = { why: st.scopeReason ?? "no systemd user manager" });
   const r = Bun.spawnSync(["systemctl", "--user", "show", "-p", "ControlGroup", "--value", "app.slice"], { stdout: "pipe", stderr: "ignore" });
   const slice = r.success ? r.stdout.toString().trim() : "";
-  return (scopeAt = slice.startsWith("/") ? { slice } : { why: "the user manager names no cgroup for app.slice" });
+  if (!slice.startsWith("/")) return (scopeAt = { why: "the user manager names no cgroup for app.slice" });
+  // A runtime drop-in: it holds while the user manager runs, also over a slice that is empty now.
+  const w = Bun.spawnSync(["systemctl", "--user", "set-property", "--runtime", SLICES.unattended, ...unattendedProps()], { stdout: "ignore", stderr: "pipe" });
+  return (scopeAt = { slice, ...(w.success ? {} : { weights: w.stderr.toString().trim().slice(0, 200) || "systemctl set-property failed" }) });
 }
 
 // The job scopes that run now in the user manager's app.slice, by the job id their name holds: the
@@ -454,10 +475,12 @@ export function scopesNow(): Map<string, string> {
   if (process.platform !== "linux") return out;
   const slice = jobScope().slice;
   if (!slice) return out;
-  const dir = `/sys/fs/cgroup${slice}`;
-  let names: string[] = [];
-  try { names = readdirSync(dir); } catch { return out; }
-  for (const n of names) { const id = SCOPE_NAME.exec(n)?.[1]; if (id) out.set(id, `${dir}/${n}`); }
+  // app.slice itself holds the scopes of builds before the job slices.
+  for (const dir of [`/sys/fs/cgroup${slice}`, `/sys/fs/cgroup${sliceDir(slice, "owner")}`, `/sys/fs/cgroup${sliceDir(slice, "unattended")}`]) {
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const n of names) { const id = SCOPE_NAME.exec(n)?.[1]; if (id) out.set(id, `${dir}/${n}`); }
+  }
   return out;
 }
 
@@ -1599,12 +1622,12 @@ export function sessionMark(sessionId: string, kind: string, cgroup?: string): {
 // confinement left it, its scope's properties taken into this one as startJob does (`argv` back as it is
 // where there are no scopes; `cgroup` is where the scope will be), with its mark (sessionMark).
 export function sessionScope(kind: string, argv: string[], sessionId: string): { argv: string[]; cgroup?: string; env: Record<string, string>; hold(pid: number): () => void } {
-  const box = jobScope();
   const unit = `keel-${kind}-${Math.random().toString(36).slice(2, 10)}.scope`;
   const { props, argv: inner } = splitScope(argv);
-  const cgroup = box.slice ? `/sys/fs/cgroup${box.slice}/${unit}` : undefined;
+  const place = placeOf(sessionId);
+  const cgroup = place.dir ? `/sys/fs/cgroup${place.dir}/${unit}` : undefined;
   const mark = sessionMark(sessionId, kind, cgroup);
-  return { argv: box.slice ? [...scopeHead(), "--slice=app.slice", `--unit=${unit}`, ...props, "--", ...inner] : argv, cgroup, env: mark.env, hold: mark.hold };
+  return { argv: place.dir ? [...scopeHead(), `--slice=${place.unit}`, `--unit=${unit}`, ...props, "--", ...inner] : argv, cgroup, env: mark.env, hold: mark.hold };
 }
 // The cgroups that hold a session's commands and programs now, each with its session: the folder of
 // each live job's scope and of each held program's, with any folder made under one (a process may make

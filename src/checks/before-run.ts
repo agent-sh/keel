@@ -16,7 +16,8 @@ import { chunksUntil, readText } from "../core/proc.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { sandboxStatus, scopeHead } from "../safety/sandbox.ts";
-import { jobScope, sessionMark, toolEnv } from "../tools/jobs.ts";
+import { jobScope, sessionMark, sliceDir, toolEnv } from "../tools/jobs.ts";
+import { inSlice, SLICES } from "../tools/job-slice.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import * as cache from "./package-cache.ts";
 import { BEFORE_DIR, clipWhy, commandFor, declaredOf, howToRun, keyOf, limitFor, lockDirOf, missingOnBase, needsOf, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type BasePackages, type FileResult } from "./before.ts";
@@ -447,11 +448,14 @@ export async function runCommand(o: One): Promise<Ran | { error: string }> {
   const argv = [...LOW(), "bash", "-c", withTimes(o.command, times)];
   const scoped = !o.wrap && sandboxStatus().scope && scopeHead().length > 0;
   // (Its scope ends by its own time limit too, a little after the run's: what a killed daemon left goes by itself.)
-  const full = o.wrap ? o.wrap(argv) : scoped ? [...scopeHead(), `--unit=${o.unit}`, "-p", `RuntimeMaxSec=${Math.ceil(o.limitMs / 1000) + SCOPE_SLACK_S}`, "--", ...argv] : argv;
+  // Keel's own checks are unattended work: their scope goes in the unattended slice (src/tools/job-slice.ts).
+  const app = sandboxStatus().scope ? jobScope().slice : undefined;
+  const into = (a: string[]) => app ? inSlice(a, scopeHead(), SLICES.unattended) : a;
+  const full = into(o.wrap ? o.wrap(argv) : scoped ? [...scopeHead(), `--unit=${o.unit}`, "-p", `RuntimeMaxSec=${Math.ceil(o.limitMs / 1000) + SCOPE_SLACK_S}`, "--", ...argv] : argv);
   const started = performance.now();
   let timedOut = false;
   let p: ReturnType<typeof Bun.spawn>;
-  const slice = scoped ? jobScope().slice : undefined;
+  const slice = scoped && app ? sliceDir(app, "unattended") : undefined;
   const mark = o.session ? sessionMark(o.session, o.mark ?? "before", slice ? `/sys/fs/cgroup${slice}/${o.unit}.scope` : undefined) : undefined;
   try { p = Bun.spawn(full, { cwd: o.cwd, env: { ...tempEnv(o.env), ...mark?.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); }
   catch (e) { return { error: (e as Error).message }; }

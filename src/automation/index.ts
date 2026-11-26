@@ -32,6 +32,7 @@ import * as caps from "./caps.ts";
 import * as windowCap from "./window-cap.ts";
 import * as fleetPause from "./fleet-pause.ts";
 import * as loadHold from "./load-hold.ts";
+import { jobAttended } from "../tools/jobs.ts";
 import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
@@ -97,6 +98,8 @@ function init(deps: Deps) {
   deps.engine.waitShape = (id) => waits.shapeOf(id);
   // What a wait on the owner costs as it begins, kept with its alert (the next-look queue's key).
   alerts.waitHook.of = (id) => waitCost(id);
+  // Whose a job is, for the slice its scope goes in (src/tools/job-slice.ts): the load hold's reading of an attended turn.
+  jobAttended.of = (id) => { const s = deps.store.session(id); return !s || loadHold.exempt(s); };
   alerts.waitHook.now = (id) => waitNow(id);
   agents.migrate();
   caps.migrate();
