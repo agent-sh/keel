@@ -78,6 +78,52 @@ test("a command whose plain shape writes an owner-only file is the owner's, befo
   expect(shell('git commit -m "docs: > ~/.bashrc is yours"')).toBe("ask-low");
 });
 
+test("a protected file named through a name the line sets is a path the command does not spell out", () => {
+  const shell = (command: string, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "shell", command, cwd: ws }, facts(mode, more)));
+  const why = (command: string) => { const d = decide({ kind: "shell", command, cwd: ws }, facts("full-auto")); return "ask" in d ? d.ask.why : ""; };
+  // The folder set in two steps: the rules read a name one step back, and these ran in Full auto.
+  const two = "p=/home/u; q=$p/own; D=$q; ";
+  expect(why(`${two}printf x > $D/.git/config`)).toBe("the command writes a path it does not spell out ($D/.git/config), which may be ~/own/.git/config: write the path into the command");
+  expect(why(`${two}cat $D/../.ssh/id_rsa`)).toBe("the command reads a path it does not spell out ($D/../.ssh/id_rsa), which may be ~/.ssh/id_rsa: write the path into the command");
+  for (const command of [
+    `${two}printf x > $D/.git/config`, `${two}cat $D/../.ssh/id_rsa`, `${two}printf x >> "\${D}/.git/config"`, `${two}echo x > $D/.git/hooks/pre-push`,
+    `${two}sed -i s/a/b/ $D/.git/config`, `${two}echo x | tee -a $D/../.bashrc`, `${two}cp k $D/../.ssh/authorized_keys`, `${two}dd if=k of=$D/.git/config`,
+    `${two}git config -f $D/.git/config remote.origin.url u`, `${two}head -1 "$D"/../.ssh/id_rsa`, `${two}cat < $D/../.ssh/id_rsa`, `${two}cp $D/../.ssh/id_rsa k`,
+    // In a folder a `cd` spelled so leads to, and in a script the line hands a shell.
+    `${two}cd $D && printf x > .git/config`, `${two}cd $D; cat ../.ssh/id_rsa`, `${two}bash -c "printf x > $D/.git/config"`, `bash -c '${two}cat $D/../.ssh/id_rsa'`,
+    // The protected part in the value, more steps, and a name glued to what follows it.
+    "a=/home/u; b=$a/.ssh; c=$b; cat $c/id_rsa", "x=id_rsa; y=$x; cat ~/.ssh/$y", "p=/home/u; q=$p/own; D=$q/; sed -i s/a/b/ $D.git/config",
+    // A value the words do not show: tried in the folders a line usually means.
+    "D=$(pwd); printf x > $D/.git/config", "D=`pwd`; echo x >> $D/.envrc", "read D < f; cat $D/.ssh/id_rsa", "D=$(echo /home/u/.bashrc); printf x >> $D",
+    // A name the rules do not write out for another reason: a loop's, one set where its command may not run, twice
+    // in ways they do not follow, by a builtin, or used in a form that is not its plain value, a loop or a group.
+    "for D in /home/u; do cat $D/.ssh/id_rsa; done", "for f in id_rsa; do cat ~/.ssh/$f; done", "true && D=/home/u; cat $D/.ssh/id_rsa", "export D=/home/u; cat $D/.ssh/id_rsa",
+    "D=/home/u; cat \"${D%/}/.ssh/id_rsa\"", "D=/home/u; if true; then cat $D/.ssh/id_rsa; fi", "D=/home/u; { cat $D/.ssh/id_rsa; }", "D=/tmp; for D in ~/.ssh; do cat $D/id_rsa; done",
+  ]) {
+    for (const mode of ["ask", "auto-edits", "auto", "reviewer", "full-auto"] as Mode[]) expect([command, mode, shell(command, mode)]).toEqual([command, mode, "ask-high"]);
+  }
+  // A read only line through such a name asks in Read only too, as the written-out read does.
+  expect(shell("for f in id_rsa; do cat ~/.ssh/$f; done", "read-only")).toBe("ask-high");
+  // The written-out line, and a name the rules do read, are the owner's as they were.
+  for (const command of ["printf x > /home/u/own/.git/config", "cat /home/u/own/../.ssh/id_rsa", "D=/home/u/own; printf x > $D/.git/config", "D=/home/u/own; cat $D/../.ssh/id_rsa"]) {
+    expect([command, shell(command)]).toEqual([command, "owner"]);
+    expect([command, shell(command, "full-auto")]).toEqual([command, "ask-high"]);
+  }
+  // A name with nothing protected in sight asks nobody: it runs as it did.
+  for (const [command, ask] of [
+    [`${two}echo hi > $D/notes.txt; cat $D/notes.txt`, "ask-low"], ["D=$(pwd); cat $D/README.md > $D/out.txt", "ask-low"], ["for f in a b; do cat $f; done", "allow"],
+    ["for f in *.log; do cat $f; done", "allow"], ["F=$(ls -t | head -1); cat $F", "ask-low"], ["S=/w/repo/scratch; L=$S/run.log; bun test > $L 2>&1; tail -5 $L", "ask-low"],
+    ["T=$(mktemp -d); git init $T; echo x > $T/.git/hooks/pre-commit", "ask-low"], [`${two}git -C $D config user.name x`, "ask-low"],
+    // (A script handed to another machine that starts like an assignment gives the name no value here.)
+    [`D=/w/repo/scratch; ssh host 'D=/srv/app; test -e "$D/node_modules/.bin/tool"' > "$D/out.log" 2>&1`, "ask-low"],
+    // (A name the line does not set is an unknown variable, as before.)
+    ["cat $D/.ssh/id_rsa", "allow"], ["source ./env.sh; printf x > $OUT/.git/config", "ask-low"],
+  ] as const) {
+    expect([command, shell(command)]).toEqual([command, ask]);
+    expect([command, shell(command, "full-auto")]).toEqual([command, "allow"]);
+  }
+});
+
 test("a tool given an owner-only file's path is the owner's; other paths and text are not paths", () => {
   expect(pathsNamed({ path: "~/.bashrc", content: "x", nested: { files: ["/etc/hosts", "relative/a.txt"] }, note: "see /home/u/.bashrc for more" })).toEqual(["~/.bashrc", "/etc/hosts"]);
   const tool = (input: unknown, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "other", paths: pathsNamed(input) }, facts(mode, more)));

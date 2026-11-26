@@ -526,6 +526,17 @@ under `~/.cache/keel-work/bun/research/`.
   commit, before what it sends is read; the same line again is judged as it is. A turn nobody started is refused it every
   time, as a merge is, when the line names its folder (one spelled with a variable is only written out). A push of the commit the base already is here (the queue landed it and its push did not go) is no
   landing, and the owner's own terminal is never judged.
+- A protected file named through a name the line sets is a path the command does not spell out (`unspelt` in
+  `src/safety/policy.ts`). The rules read a name as its value one step back, where the line sets it once, written out,
+  in a command that always runs; a name set in steps (`q=$p/own; D=$q`), by a substitution, a loop or a `read`, or
+  used in a loop, a group or a `${D%/}` is not read, and nothing is placed by one. A word that holds such a name where
+  a protected path is looked for (a redirect's target, a file a writer or reader the rules know is given, the file
+  `git config -f` sets something in, a relative one of those after a `cd` spelled so) is tried as the paths the words
+  of the line let it be: the values they show the name given, and for a value they do not show the folder the line
+  runs in, the session's and the home, with its steps back up and without. When one is a file that is the owner's
+  alone to change or a credential, the line asks as high risk and says the path to write into the command. It only
+  raises: it is asked of a line every other rule lets run or asks about as low risk, and a name with nothing
+  protected in sight asks nobody. A name the line does not set is an unknown variable, as before.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files

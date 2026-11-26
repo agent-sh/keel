@@ -603,7 +603,13 @@ const HOME_LEAD = /^(?:\$HOME|\$\{HOME\})(\/[A-Za-z0-9_.\/@:+,%^-]*)?$/;
 // in the shell of the words after it (otherwise `text` is null: the name is not known after it). A name set twice has
 // two events; `at` is the part, `k` the word. The map is left empty when the line can give a name a value unseen.
 export type SetEvent = { at: number; k: number; text: string | null };
-export function valuesOf(parts: Simple[], runs: Run[], home?: string, hist?: Map<string, SetEvent[]>): Values {
+// The builtins that read a value into the names they are handed.
+const TAKES = /^(read|mapfile|readarray|getopts|printf)$/;
+// `sets`: filled with every name the words of the line show it giving a value, whatever is known of the value: an
+// assignment in any command (a subshell's, one after `export` or `declare`), the name of a `for` or a `select`, a
+// name handed to a builtin that reads a value into it (read, mapfile, getopts, printf -v), and one a `${NAME:=word}`
+// sets where it is read. With it, the values hold no name that a loop, `printf -v` or `${NAME:=word}` sets too.
+export function valuesOf(parts: Simple[], runs: Run[], home?: string, hist?: Map<string, SetEvent[]>, sets?: Set<string>): Values {
   // (A home that is not a plain absolute folder is not written out.)
   if (home !== undefined) home = /^\/[A-Za-z0-9_.\/@:+,%^-]*$/.test(home) && home.length > 1 ? home.replace(/\/+$/, "") : undefined;
   const out: Values = new Map();
@@ -611,24 +617,36 @@ export function valuesOf(parts: Simple[], runs: Run[], home?: string, hist?: Map
   if (!hist && !parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
   const count = new Map<string, number>();
   const bare = new Set<string>();
+  let unseen = false;
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]!, prog = name(runs[i]!.words[0]);
-    if (/^(eval|source|\.|declare|typeset|local)$/.test(prog) || (p.dyn && BINDS.test(prog))) { hist?.clear(); return out; }
+    if (/^(eval|source|\.|declare|typeset|local)$/.test(prog) || (p.dyn && BINDS.test(prog))) { if (!sets) { hist?.clear(); return out; } unseen = true; }
     // A name the line can set where its words do not show it: a readonly name (a later assignment fails), a trap or the
     // prompt command (code that runs between the words).
-    if (hist && (prog === "readonly" || /(^|[\s;&|(])(trap|PROMPT_COMMAND)\b/.test(p.text))) { hist.clear(); return out; }
+    if (hist && (prog === "readonly" || /(^|[\s;&|(])(trap|PROMPT_COMMAND)\b/.test(p.text))) { if (!sets) { hist.clear(); return out; } unseen = true; }
+    if (sets) {
+      // (A loop's name takes each of its words in turn: it is read as no one value.)
+      if (p.loop) { sets.add(p.loop.name); bare.add(p.loop.name); }
+      const head = p.flow && !p.words.length ? /^\s*(?:for|select)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(p.text) : null;
+      if (head) { sets.add(head[1]!); bare.add(head[1]!); }
+      // (`${NAME:=word}` gives the name a value where it is read.)
+      if (p.text.includes("=")) for (const m of p.text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):?=/g)) { sets.add(m[1]!); bare.add(m[1]!); }
+    }
+    const takes = !!sets && TAKES.test(prog);
     for (const [k, w] of p.words.entries()) {
       const m = /^([A-Za-z_][A-Za-z0-9_]*)(\+?=|\[)/.exec(w);
       // `printf -vNAME` sets NAME: a place of its own, with no value known after it.
-      const v = hist ? /^-v([A-Za-z_][A-Za-z0-9_]*)$/.exec(w) : null;
-      if (v) { const l = hist!.get(v[1]!); const e = { at: i, k, text: null }; if (l) l.push(e); else hist!.set(v[1]!, [e]); }
+      const v = hist || sets ? /^-v([A-Za-z_][A-Za-z0-9_]*)$/.exec(w) : null;
+      if (v) { if (sets) { sets.add(v[1]!); bare.add(v[1]!); } if (hist) { const l = hist.get(v[1]!); const e = { at: i, k, text: null }; if (l) l.push(e); else hist.set(v[1]!, [e]); } }
       else if (m) {
+        sets?.add(m[1]!);
         count.set(m[1]!, (count.get(m[1]!) ?? 0) + 1);
         if (hist) { const l = hist.get(m[1]!); const e = { at: i, k, text: null }; if (l) l.push(e); else hist.set(m[1]!, [e]); }
       }
-      else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(w)) bare.add(w);
+      else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(w)) { bare.add(w); if (takes && k > 0) sets!.add(w); }
     }
   }
+  if (unseen) { hist?.clear(); return out; }
   let prev = -1; // the part outside a substitution before this one
   parts.forEach((p, at) => {
     const before = prev;
