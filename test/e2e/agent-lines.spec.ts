@@ -44,8 +44,12 @@ test("under the step that started them, a line per agent of the whole tree", asy
   const id = await session(request, "Refactor the parser");
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${id}`);
+  // Start in the stream. A short stream has room beneath its last row, which
+  // must not lift a waiting card over the Lens when the first agent opens it.
+  await expect(page.getByTestId("transcript")).toBeVisible();
+  await expect.poll(() => page.locator(".k-session").evaluate((el) => parseFloat(el.style.getPropertyValue("--k-under")))).toBeGreaterThan(0);
   const t = await tree(request, id);
-  await page.getByTestId("lens-to-stream").click();
+  await page.getByTestId("lens-to-stream").click({ timeout: 10_000 });
   const step = page.locator('[data-testid="work-step"][data-family="agents"]').first();
   const lines = step.getByTestId("agent-lines").getByTestId("agent-line");
   // The whole tree, in its order: each agent's own agents right under it, a level further in.

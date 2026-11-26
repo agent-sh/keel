@@ -1563,6 +1563,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     const c = content.current;
     if (!c) return;
+    const box = c.closest<HTMLElement>(".k-session");
     // The style writes and the block-window redraw can resize observed elements.
     // Do those in the next frame, outside the observer's delivery pass.
     const fit = afterSize(() => {
@@ -1572,7 +1573,6 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       // The message box keeps the column's edges: it gets the scroll bar's width as padding.
       // Set on this session's own column, and only when it changes: a write on the
       // document restyled every station's transcript at each streamed line.
-      const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) box.style.setProperty("--sbw", sbw);
       // The room under the last row of a conversation that does not fill its view: a card that waits on the
@@ -1635,7 +1635,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // Re-pin in that commit as well: the line takes height from the viewport,
     // not from the transcript the draft just measured.
     const el = scroller.current;
-    const dock = el?.closest(".k-session")?.querySelector(":scope > .k-compose");
+    const dock = box?.querySelector(":scope > .k-compose");
     let dockView = el?.clientHeight;
     const dockChanged = new MutationObserver(() => {
       if (!el || !stick.current || short.current || dockView === el.clientHeight) return;
@@ -1646,7 +1646,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // End is for the pane worked in: the command names its session.
     const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
-    return () => { ro.disconnect(); fit.stop(); dockChanged.disconnect(); removeEventListener("keel:end", onEnd); };
+    return () => {
+      ro.disconnect();
+      fit.stop();
+      dockChanged.disconnect();
+      removeEventListener("keel:end", onEnd);
+      // The same pane can switch to Conversation without remounting its composer.
+      // Its tray must not use geometry measured in a transcript that is gone.
+      box?.style.removeProperty("--sbw");
+      box?.style.removeProperty("--k-under");
+    };
   }, [!!events, sessionId]);
 
   // History read away from the end stays whole in the store meanwhile, also under a cover (a
