@@ -20,7 +20,37 @@ export const blobSize = (v: unknown) =>
   JSON.stringify(v, (k, x) => (k === "data" && typeof x === "string" && x.length > BLOB_BYTES ? " ".repeat(BLOB_BYTES) : x))?.length ?? 0;
 export const markOf = (m: unknown) => Bun.hash(JSON.stringify(m)).toString(36);
 
-const reckon = (m: Message): MessageFacts => ({ mark: markOf(m), size: blobSize(m), contentBytes: Buffer.byteLength(JSON.stringify(m.content)) });
+// The three facts from one JSON text of the message: the text is its mark's input; its size is that
+// text with each long `data` string counted as BLOB_BYTES (as blobSize writes it); its content's bytes
+// are the text less the `{"role":..,"content":` around it. Each is the value blobSize and the content's
+// own text give. A message after a start is measured cold, all of it, and three texts of every long
+// history were hundreds of MB the collector had not yet taken.
+export const reckon = (m: Message): MessageFacts => {
+  const text = JSON.stringify(m);
+  return { mark: Bun.hash(text).toString(36), size: text.length - blobSaved(m), contentBytes: contentBytesOf(m, text) };
+};
+
+// What blobSize's replacer takes off the text: for each long `data` string, its JSON length less that of
+// BLOB_BYTES spaces. A base64 string is its length and two quotes; any other is measured as JSON writes it.
+const PLAIN = /^[A-Za-z0-9+/=_-]*$/;
+function blobSaved(v: unknown): number {
+  if (!v || typeof v !== "object") return 0;
+  let n = 0;
+  if (Array.isArray(v)) { for (const x of v) n += blobSaved(x); return n; }
+  for (const [k, x] of Object.entries(v)) {
+    if (k === "data" && typeof x === "string" && x.length > BLOB_BYTES) n += (PLAIN.test(x) ? x.length + 2 : JSON.stringify(x).length) - (BLOB_BYTES + 2);
+    else n += blobSaved(x);
+  }
+  return n;
+}
+
+// The UTF-8 bytes of `JSON.stringify(m.content)`, read off the message's own text when the message is
+// a role and a content and nothing else, in that order (the text is then that prefix, the content, `}`).
+function contentBytesOf(m: Message, text: string): number {
+  const keys = Object.keys(m);
+  if (keys.length !== 2 || keys[0] !== "role" || keys[1] !== "content" || typeof m.role !== "string" || m.content === undefined) return Buffer.byteLength(JSON.stringify(m.content) ?? "");
+  return Buffer.byteLength(text) - Buffer.byteLength(`{"role":${JSON.stringify(m.role)},"content":`) - 1;
+}
 
 // A message made of stored blocks alone: plain role and content, every block frozen.
 function stored(m: Message): boolean {

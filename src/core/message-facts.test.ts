@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { requestShape } from "../admin/trace.ts";
 import { zoneBytes } from "../admin/zones.ts";
 import type { Message } from "./types.ts";
-import { blobSize, derived, keyBlocks, markOf, messageFacts } from "./message-facts.ts";
+import { BLOB_BYTES, blobSize, derived, keyBlocks, markOf, messageFacts, reckon } from "./message-facts.ts";
 
 // As the store hands bodies out: frozen all the way down.
 const frozen = <T>(v: T): T => {
@@ -100,4 +100,27 @@ test("a prompt's text and a checkpoint's summary, made of a stored body, are the
   const c = derived(again, "text", () => ({ type: "text", text: again.text }));
   expect(c).not.toBe(a);
   expect(longTexts(() => { expect(messageFacts({ role: "user", content: [c] } as Message)).toBe(facts); })).toBe(0);
+});
+
+test("a message's facts come from one text of it and equal what blobSize and the content's own text give", () => {
+  const png = "iVBORw0KGgo".repeat(2_000);
+  const odd = `${"é\"\\\n".repeat(2_000)}\u2014`;
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "plain" }] },
+    { role: "assistant", content: [{ type: "text", text: "a dash \u2014 and \u{1F600}" }, { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/x" } }] },
+    { role: "user", content: [{ type: "image", media_type: "image/png", data: png }, { type: "text", text: "short", system: true }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "image", media_type: "image/png", data: png }, { type: "text", text: "x" }] }] },
+    { role: "user", content: [{ type: "document", media_type: "application/pdf", data: odd, name: "a.pdf" }] },
+    { role: "user", content: [{ type: "image", media_type: "image/png", data: "short" }] },
+    { content: [{ type: "text", text: "keys in another order" }], role: "user" },
+    { role: "user", content: [{ type: "text", text: "and a key more" }], pinned: true },
+  ] as unknown as Message[];
+  for (const m of messages) {
+    expect(reckon(m)).toEqual({ mark: markOf(m), size: blobSize(m), contentBytes: Buffer.byteLength(JSON.stringify(m.content)) });
+  }
+  expect(blobSize(messages[2]) < JSON.stringify(messages[2]).length).toBe(true);
+  expect(png.length > BLOB_BYTES).toBe(true);
+  // One long text a message, not three.
+  const long = { role: "user", content: [{ type: "text", text: "word ".repeat(10_000) }] } as Message;
+  expect(longTexts(() => reckon(long))).toBe(1);
 });
