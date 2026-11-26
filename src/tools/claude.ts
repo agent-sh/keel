@@ -59,7 +59,8 @@ const Bash: Tool = {
     if (r.state === "refused") return fail(r.error);
     if (r.state === "running") {
       const moved = !input.run_in_background;
-      const head = moved && r.movedBy ? `The owner moved the command to the background with ID: ${r.job.id}; it still runs, and you are told when it ends.`
+      const head = moved && r.movedBy === "steer" ? `The owner wrote to you while the command ran, so it was moved to the background with ID: ${r.job.id}; it still runs, and you are told when it ends.`
+        : moved && r.movedBy ? `The owner moved the command to the background with ID: ${r.job.id}; it still runs, and you are told when it ends.`
         : moved
         ? `Command did not complete within its ${Math.round(timeout / 1000)}s timeout and was moved to the background with ID: ${r.job.id}.`
         : `Command running in background with ID: ${r.job.id}.`;

@@ -780,6 +780,47 @@ test("a steer or queued prompt from momentum or a hook keeps its origin", async 
   expect(prompts).toEqual([["start", undefined, true], ["from momentum", "momentum", false], ["from a hook", "hook", false]]);
 });
 
+// The owner's steer joins the next step with a note in the system role after it: reply in this step's
+// text. A steer that is not the owner's (momentum, an agent's parent) gets none.
+test("the owner's steer is followed by a reply-first note, another sender's is not", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "reply-first-"));
+  const store = new Store(dir);
+  const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  const usage = { input: 1, output: 1, cache_read: 0, cache_write: 0 };
+  let calls = 0;
+  let engine: any;
+  const seen: Message[][] = [];
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async (req: any) => {
+      seen.push(req.messages);
+      calls++;
+      if (calls === 1) engine.send(s.id, "from momentum", { mode: "steer", meta: { origin: "momentum" } });
+      if (calls === 2) engine.send(s.id, "why is it slow?", { mode: "steer" });
+      if (calls < 3) return { blocks: [{ type: "tool_use", id: `t${calls}`, name: "nope", input: {} }], usage, stop: "tool_use", model: "m" };
+      return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  engine.send(s.id, "start");
+  await engine.idle(s.id);
+  const tail = (m: Message[]) => (m.at(-1)!.content as any[]).filter((b) => b.type === "text").map((b) => [b.text.slice(0, 40), b.system === true]);
+  // The step that took momentum's steer: no note.
+  expect(tail(seen[1]!)).toEqual([["from momentum", false]]);
+  // The step that took the owner's question: the steer, then the note as the harness's own text.
+  expect(tail(seen[2]!)).toEqual([["why is it slow?", false], ["[harness] The owner wrote the message ab", true]]);
+  expect((seen[2]!.at(-1)!.content as any[]).at(-1).text).toContain("Answer the question first");
+  // The note stays in the history: the next request sends the same bytes.
+  expect(store.events(s.id).filter((e) => e.kind === "note" && e.data.kind === "reply_first")).toHaveLength(1);
+});
+
 test("a queue request cannot start a stopped session with an empty queue", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { join } = await import("node:path");

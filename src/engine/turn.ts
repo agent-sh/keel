@@ -18,6 +18,7 @@ import { diskFull, refusedWrite, type Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { ownerPrompt, ownersMeta } from "../core/owner.ts";
+import { REPLY_FIRST, replyFirst, STEER_MOVE_MS } from "./reply-first.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
@@ -37,7 +38,7 @@ import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFo
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop, stopSays } from "../core/stoppers.ts";
-import { dropCallEnv, stopReleased } from "../tools/jobs.ts";
+import { dropCallEnv, moveToBackground, stopReleased } from "../tools/jobs.ts";
 import { runningData } from "./running.ts";
 import { StepOrder } from "./step-order.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
@@ -908,6 +909,18 @@ export class Engine {
     return this.store.queueCounts(this.sending);
   }
 
+  // The steers the running turn takes in at a step boundary. The owner's own words among them are
+  // followed by a note for the model to reply in that step's text (src/engine/reply-first.ts).
+  private takeSteers(id: string) {
+    const took: { text: string; owner: boolean }[] = [];
+    for (const q of this.liveSteers(id)) {
+      const owner = ownersMeta(q.meta);
+      if (this.deliver(q.id, "steer", { release: owner })) { this.emitQueue(id); took.push({ text: q.text, owner }); }
+    }
+    const note = replyFirst(took);
+    if (note) this.append(id, "note", { kind: REPLY_FIRST, model: true, system: true, text: note });
+  }
+
   // A queued prompt leaves the queue and enters the history in one write: a
   // daemon killed at any point finds the row still queued or its one stored
   // prompt, never neither and never both. `release`: the queue's hold ends in
@@ -1088,7 +1101,7 @@ export class Engine {
       const tick = setTimeout(off, SPEND_RECHECK_MS);
       try { await held.wait(asked.signal); } finally { clearTimeout(tick); signal.removeEventListener("abort", off); if (running) running.providerWaiting = false; }
       if (signal.aborted) { planned?.(); return noted; }
-      for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
+      this.takeSteers(id);
     }
   }
 
@@ -1464,6 +1477,7 @@ export class Engine {
     if (this.running.has(id) || (mode === "queue" && (this.held.has(id) || this.store.queue(id).length)) || this.inputHeld(id, opts.meta)) {
       const q = this.store.enqueue(id, text, mode !== "queue" && this.running.has(id), opts.images, opts.meta);
       this.emitQueue(id);
+      if (q.steer && ownersMeta(opts.meta)) this.steerWaits(id, q.id);
       return { queued: q, steer: q.steer };
     }
     // Input that is not the owner's (a report, a wake) never releases a held queue.
@@ -1480,6 +1494,17 @@ export class Engine {
     this.start(id);
     this.emitQueue(id);
     return { event: ev };
+  }
+
+  // The owner's steer that still waits for the step boundary after STEER_MOVE_MS waits on commands
+  // the turn's calls run in front: they go on behind the call (as the owner's Move does), and the
+  // steer joins the step at once (src/engine/reply-first.ts).
+  private steerWaits(id: string, qid: string) {
+    const t = setTimeout(() => {
+      if (!this.running.has(id) || !this.store.queueItem(qid)) return;
+      for (let n = 0; n < 64 && moveToBackground(id, {}, "steer"); n++);
+    }, STEER_MOVE_MS);
+    (t as any).unref?.();
   }
 
   // Whether a hook keeps this input (another session's message) from starting a turn now: it waits in the queue.
@@ -3313,7 +3338,7 @@ export class Engine {
         // The owner's own words (a steer with no meta) release a held queue, as
         // a prompt typed while idle does: the turn they joined may be one a wait
         // or a loop started in a session the owner had stopped.
-        for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
+        this.takeSteers(id);
         // Tool, approval and provider waits can outlive the bodies. Read
         // them again once any owner steer has joined this step.
         if (steps) await this.warmContext(id, undefined, true);

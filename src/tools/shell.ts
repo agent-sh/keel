@@ -46,7 +46,7 @@ export function goneCwd(ctx: ToolContext, dir: string): string | undefined {
 
 export type ShellRun =
   | { state: "done"; output: string; exitCode: number | null; signal?: string | null; cwdNote?: string; job: Job }
-  | { state: "running"; job: Job; output: string; movedBy?: "owner" }   // movedBy: the owner moved it, no timeout
+  | { state: "running"; job: Job; output: string; movedBy?: "owner" | "steer" }   // movedBy: the owner moved it (or the owner's steer did), no timeout
   | { state: "refused"; error: string };   // nothing started (see goneCwd)
 
 export type ShellOpts = {

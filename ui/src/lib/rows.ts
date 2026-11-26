@@ -238,6 +238,8 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
       else if (e.data.kind === "images") row("images");
       // What the new model is told after a switch: the switch note above already says it.
       else if (e.data.kind === "model_told") continue;
+      // What the model is told to reply first after the owner's steer: the steer above is what the owner sees.
+      else if (e.data.kind === "reply_first") continue;
       else if (e.data.kind === "model") row("model");
       else row("note");
     } else if (e.kind === "turn_end") {

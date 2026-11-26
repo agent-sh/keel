@@ -52,7 +52,7 @@ const run_shell_command: Tool = {
     });
     if (r.state === "refused") return fail(r.error);
     if (r.state === "running") {
-      return ok(`${r.movedBy ? "The owner moved the command to the background; it still runs, and you are told when it ends." : "Command moved to the background."}\nBackground PIDs: ${r.job.pid}\nOutput file: ${r.job.log}${r.output.trim() ? `\nOutput so far: ${headTail(r.output, 2000)}` : ""}`);
+      return ok(`${r.movedBy === "steer" ? "The owner wrote to you while the command ran, so it was moved to the background; it still runs, and you are told when it ends." : r.movedBy ? "The owner moved the command to the background; it still runs, and you are told when it ends." : "Command moved to the background."}\nBackground PIDs: ${r.job.pid}\nOutput file: ${r.job.log}${r.output.trim() ? `\nOutput so far: ${headTail(r.output, 2000)}` : ""}`);
     }
     const out = headTail(r.output.trimEnd(), 30_000) || "(empty)";
     const lines = [`Command: ${input.command}`, `Directory: ${r.job.cwd}`, `Output: ${out}`, `Exit Code: ${r.exitCode ?? "(none)"}`];

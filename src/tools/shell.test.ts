@@ -111,3 +111,22 @@ test("Write replaces at once a file a Bash command printed whole or made", async
   const w = await write.run({ file_path: join(root, "unseen.txt"), content: "new\n" }, ctx);
   expect(JSON.stringify(w.content)).toContain("was not read in this session");
 });
+
+// The owner's steer that waits on a command moves it behind the call (src/engine/reply-first.ts):
+// the call returns at once and says why, and the command goes on.
+test("a command moved for the owner's steer returns at once and says so", async () => {
+  const { moveToBackground, stopJob, jobsOf } = await import("./jobs.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "steer-move-"));
+  const ctx: any = { sessionId: "steer-move", cwd: root, spillDir: join(root, "spill"), signal: new AbortController().signal, seen: new Map() };
+  const bash = claudeTools.find((t) => t.name === "Bash")!;
+  const t0 = Date.now();
+  const call = bash.run({ command: "sleep 30" }, ctx);
+  let moved = false;
+  for (let i = 0; i < 200 && !moved; i++) { await Bun.sleep(25); moved = moveToBackground("steer-move", {}, "steer"); }
+  expect(moved).toBe(true);
+  const r = await call;
+  expect(Date.now() - t0).toBeLessThan(10_000);
+  expect(String(r.content)).toStartWith("The owner wrote to you while the command ran, so it was moved to the background");
+  for (const j of jobsOf("steer-move")) await stopJob(j, "test over");
+  rmSync(root, { recursive: true, force: true });
+});

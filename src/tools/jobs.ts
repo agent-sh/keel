@@ -60,9 +60,10 @@ export type Job = {
   // what became of it (cutCommand), so its end is no input of its own unless the call waits on it (`wake`).
   front?: boolean;
   // A command in front of a call that the owner can move behind it at any time (moveToBackground):
-  // the call waits on this signal as well as on the command and its timeout. `movedBy` says who did.
+  // the call waits on this signal as well as on the command and its timeout. `movedBy` says who did:
+  // the owner, or the owner's steer that waited on it (src/engine/reply-first.ts).
   mover?: AbortController;
-  movedBy?: "owner";
+  movedBy?: "owner" | "steer";
   // A restart let it run on from in front of its call (releaseFronts): the call does not stop it when the
   // restart parks its turn, and the next daemon takes it back as the command that turn waits on.
   released?: boolean;
@@ -570,7 +571,7 @@ export function backgrounded(job: Job) {
 // session's next turn like any background command's. False for one that is not in front of a call
 // (already behind, ended, an exec session, or one a restart cut).
 // `which` names it by its ID or by its tool call's, or neither: the newest of the session's that is in front.
-export function moveToBackground(sessionId: string, which: { job?: string; call?: string } = {}, by: "owner" = "owner"): boolean {
+export function moveToBackground(sessionId: string, which: { job?: string; call?: string } = {}, by: "owner" | "steer" = "owner"): boolean {
   const mine = [...jobs.values()].filter((x) => x.sessionId === sessionId);
   const j = which.job ? findJob(sessionId, which.job) : which.call ? mine.findLast((x) => x.callId === which.call) : mine.findLast((x) => x.mover && !x.mover.signal.aborted);
   if (!j || j.ended !== undefined || j.background || !j.mover || j.mover.signal.aborted) return false;
