@@ -25,8 +25,8 @@
 // before its sender is answered, started (the transcript's size kept) before
 // it goes, delivered when the transcript holds it. A restart that cut a started
 // send looks for it in the transcript and never sends it again by itself.
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Bus } from "../../core/bus.ts";
 import type { Store } from "../../core/store.ts";
 import type { Holder } from "../../core/types.ts";
@@ -267,6 +267,31 @@ function repoOf(cwd: string): string | undefined {
   }
 }
 
+// The main repository of a linked worktree, as Claude Code resolves it (C: 2.1.332): the worktree's .git is a file
+// "gitdir: <dir>", that dir's commondir names the common git folder, the dir sits in its worktrees/ folder, and its
+// gitdir file points back at this worktree's .git. Every link of that chain must hold, else the folder is its own root.
+// A common folder named .git is a main worktree's (its parent is the root); another is a bare repository's (its own
+// root, unless it holds a .git of its own).
+export function mainRootOf(root: string): string | undefined {
+  const text = (p: string) => { try { return lstatSync(p).isFile() ? readFileSync(p, "utf8").trim() : undefined; } catch { return undefined; } };
+  const real = (p: string) => { try { return realpathSync(p); } catch { return undefined; } };
+  const dot = text(join(root, ".git"));
+  if (!dot?.startsWith("gitdir:")) return undefined;
+  const g = dot.slice(7).trim();
+  if (!g) return undefined;
+  const a = resolve(root, g);
+  const common = text(join(a, "commondir"));
+  if (!common) return undefined;
+  const f = resolve(a, common);
+  if (dirname(a) !== join(f, "worktrees")) return undefined;
+  const back = text(join(a, "gitdir"));
+  if (!back) return undefined;
+  const r = real(root);
+  if (!r || real(resolve(a, back)) !== join(r, ".git")) return undefined;
+  if (basename(f) !== ".git") return existsSync(join(f, ".git")) ? undefined : f;
+  return dirname(f);
+}
+
 // Whether a kept process is still claude in print mode answering over the control channel, by its arguments: a
 // check of a row Keel kept (its pid and start time), never a way to find one.
 function printChild(pid: number): boolean {
@@ -428,7 +453,12 @@ export class ClaudeCode {
   // does not end its turn in a few seconds is ended.
   async interrupt(sessionId: string): Promise<boolean> {
     const r = this.runs.get(sessionId);
-    if (!r) return false;
+    // What the owner sent and Claude Code has not been given yet never runs after the Stop, also while the child is
+    // only starting (no child yet, or one not initialized): it is marked not run, and begin and deliver go on for no
+    // send that is not stored.
+    const starting = this.starting.has(sessionId);
+    const halted = this.stopStored(sessionId);
+    if (!r) return starting || halted;
     for (const c of r.cards.values()) c.abort();
     if (!r.open.size) { void this.end(r); return true; }
     const first = !r.stopping;
@@ -453,6 +483,13 @@ export class ClaudeCode {
       (t as any).unref?.();
     }
     return true;
+  }
+
+  // The sends still stored (taken, not yet given to Claude Code) are marked not run: the owner stopped first.
+  private stopStored(sessionId: string): boolean {
+    let n = 0;
+    for (const s of this.sends(sessionId)) if (s.state === "stored") { this.set(s.id, "failed", { said: STOPPED }); n++; }
+    return n > 0;
   }
 
   private async deliver(sessionId: string, id: string): Promise<void> {
@@ -487,7 +524,11 @@ export class ClaudeCode {
       return;
     }
     const send = this.byId(id);
-    if (!send || send.state !== "stored") return;
+    if (!send || send.state !== "stored") {
+      // Stopped before it was given (and nothing else for this child): the child ends with nothing run.
+      if (!run.open.size && !this.sends(sessionId).some((s) => s.state === "stored")) void this.end(run);
+      return;
+    }
     // Stopped or ending since: the send goes with the next child.
     if (run.stopping || run.ending || run.killing) return this.deliver(sessionId, id);
     // A terminal that opened the session while Keel's child runs: nothing more goes to it.
@@ -516,7 +557,8 @@ export class ClaudeCode {
     for (const file of [join(dir ?? home, ".claude.json"), join(dir ?? join(home, ".claude"), ".config.json")]) {
       let config: Json;
       try { config = JSON.parse(await Bun.file(file).text()); } catch { continue; }
-      return trusted(config, cwd, repoOf(cwd));
+      const repo = repoOf(cwd);
+      return trusted(config, cwd, repo, repo ? mainRootOf(repo) : undefined);
     }
     return false;
   }
@@ -552,6 +594,8 @@ export class ClaudeCode {
     const missing = routeMissing(routeOf(b.model), { ...env, ...(await this.settingsEnv()) });
     if (missing) return `Keel cannot answer it on the route it ran on: ${missing}. It did not go`;
     if (this.closed) return "Keel stopped before Claude Code started";
+    // The owner's Stop came while this was read: nothing is left to send, and no child starts.
+    if (!this.sends(sessionId).some((s) => s.state === "stored")) return STOPPED;
     // Read again right before the child starts: another process may have taken the session since.
     const held = this.stranger(sessionId, row.source_id);
     if (held) return `${held.said}: it did not go`;

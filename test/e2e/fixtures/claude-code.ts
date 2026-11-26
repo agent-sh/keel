@@ -23,6 +23,7 @@
 //     script (never written), then a reply naming the decision.
 //   - "stuck ...": a reply, then nothing: an interrupt and SIGTERM are ignored (a claude that hangs).
 //   - anything else: Bash `make test`, then a reply naming the decision.
+// With KEEL_STANDIN_START_MS=N it reads its input only N ms after it started (a slow start).
 // With KEEL_STANDIN_HELPERS=FILE it starts two processes of its own as Claude Code's MCP servers and a
 // turn's jobs would be (their arguments look like its own), and writes "helper PID" lines to FILE.
 // It refuses to run without --permission-prompt-tool stdio, stream-json both ways
@@ -177,7 +178,11 @@ async function run(m: any) {
 }
 
 let rest = "";
-process.stdin.on("data", (c) => {
+// With KEEL_STANDIN_START_MS it reads nothing for that long after it started, as a Claude Code that loads its session
+// and MCP servers does; what came meanwhile is then read in order.
+let started = sleep(Number(process.env.KEEL_STANDIN_START_MS ?? 0));
+process.stdin.on("data", (c) => { started = started.then(() => take(c)); });
+function take(c: string | Buffer) {
   rest += c.toString();
   const lines = rest.split("\n");
   rest = lines.pop() ?? "";
@@ -212,8 +217,9 @@ process.stdin.on("data", (c) => {
       void run(m);
     }
   }
-});
+}
 process.stdin.on("end", async () => {
+  await started;
   while (turn || queue.length) await sleep(20);
   bye(0);
 });

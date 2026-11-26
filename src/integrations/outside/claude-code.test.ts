@@ -7,7 +7,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { Bus } from "../../core/bus.ts";
 import type { Frame } from "../../core/types.ts";
@@ -21,7 +21,7 @@ import { HelperCards } from "../../helper/cards.ts";
 import { forPeers } from "../../core/outside.ts";
 import { statFields } from "./writer.ts";
 import type { CardGate } from "./codex-app.ts";
-import { ClaudeCode } from "./claude-code.ts";
+import { ClaudeCode, mainRootOf } from "./claude-code.ts";
 import type { Answer, PlanCard } from "../../server/routes/plan.ts";
 import { answersOf, argsOf, Back, cardOf, childEnv, holdsMessage, modeFor, namesFolder, planMode, projectOf, questionsOf, readOut, routeMissing, routeOf, trusted, turnEnded, userLine } from "./claude-wire.ts";
 
@@ -195,6 +195,15 @@ describe("the wire, pure", () => {
     expect(turnEnded(recs, "go on")).toBe(false);
     expect(turnEnded([...recs, { type: "assistant", message: { stop_reason: "end_turn" } }], "go on")).toBe(true);
     expect(turnEnded([...recs, { type: "user", message: { content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] } }], "go on")).toBe(true);
+    // A reply that calls a tool waits for its result whatever its stop_reason says (a stop sequence cut after the call).
+    const calls = { type: "assistant", message: { stop_reason: "stop_sequence", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "make all" } }] } };
+    expect(turnEnded([...recs, calls], "go on")).toBe(false);
+    const b = new Back();
+    b.take(calls);
+    expect(b.open).toBe(true);
+    const ended = new Back();
+    ended.take({ type: "assistant", message: { stop_reason: "stop_sequence", content: [{ type: "text", text: "Done." }] } });
+    expect(ended.open).toBe(false);
   });
 
   test("AskUserQuestion's answers by question text; a call's card by its tool", () => {
@@ -335,6 +344,35 @@ describe("a Claude Code session answered in place", () => {
       expect(readFileSync(o.path, "utf8")).not.toContain("and then this");
       expect(o.app().sends(s.id).map((x) => [x.key, x.state])).toEqual([["k2", "failed"]]);
     } finally { o.done(); }
+  }, 40_000);
+
+  test("a Stop while Claude Code is still starting: the send never runs, and no second child takes it", async () => {
+    // Stopped before any child started (its folder and transcript still being read).
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "fix the build", "k1");
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 15_000);
+      await Bun.sleep(300);
+      expect(r.log()).toEqual([]);
+      expect(r.app().sends(s.id).map((x) => [x.key, x.state, x.said])).toEqual([["k1", "failed", "Not run: you stopped the turn before Claude Code took it"]]);
+    } finally { r.done(); }
+    // Stopped while the child loads the session (it reads nothing for 1.5 s).
+    const w = rig({ env: { KEEL_STANDIN_START_MS: "1500" } });
+    try {
+      const s = await w.session();
+      w.app().send(s.id, "fix the build", "k1");
+      await until(() => w.log().some((l) => l.argv), 15_000);
+      expect(await w.app().interrupt(s.id)).toBe(true);
+      await until(() => !w.app().ours(s.id), 15_000);
+      await Bun.sleep(2500);
+      expect(w.app().ours(s.id)).toBe(false);
+      expect(w.log().filter((l) => l.argv).length).toBe(1);
+      expect(w.log().filter((l) => l.in === "user")).toEqual([]);
+      expect(readFileSync(w.path, "utf8")).not.toContain("fix the build");
+      expect(w.app().sends(s.id).map((x) => [x.key, x.state, x.said])).toEqual([["k1", "failed", "Not run: you stopped the turn before Claude Code took it"]]);
+    } finally { w.done(); }
   }, 40_000);
 
   test("a send after a Stop goes with a new child once the stopped one ended", async () => {
@@ -558,7 +596,29 @@ describe("a Claude Code session answered in place", () => {
       expect(failed.said).toContain(`Claude Code's trust record does not cover ${u.cwd}`);
       expect(u.log()).toEqual([]);
     } finally { u.done(); }
-  }, 30_000);
+    // A linked worktree of a repository the owner trusted: Claude Code reads the worktree's trust at the main one.
+    const t = rig({ trust: false });
+    try {
+      const main = join(t.dir, "main");
+      const git = (cwd: string, ...a: string[]) => Bun.spawnSync(["git", ...a], { cwd, env: { PATH: process.env.PATH!, HOME: t.dir, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } });
+      mkdirSync(main);
+      git(main, "init", "-q");
+      writeFileSync(join(main, "a.txt"), "a");
+      git(main, "add", "a.txt");
+      git(main, "commit", "-q", "-m", "a");
+      rmSync(t.cwd, { recursive: true });
+      expect(git(main, "worktree", "add", "-q", t.cwd).exitCode).toBe(0);
+      writeFileSync(join(t.config, ".claude.json"), JSON.stringify({ projects: { [main]: { hasTrustDialogAccepted: true } } }));
+      const s = await t.session();
+      t.app().send(s.id, "fix the build", "k1");
+      await until(() => readFileSync(t.path, "utf8").includes("The command was allowed: fix the build"), 15_000);
+      expect(mainRootOf(t.cwd)).toBe(main);
+      expect(mainRootOf(main)).toBeUndefined();
+      // A .git file whose worktree folder does not point back at it is no worktree of that repository.
+      writeFileSync(join(main, ".git", "worktrees", basename(t.cwd), "gitdir"), join(t.dir, "elsewhere", ".git") + "\n");
+      expect(mainRootOf(t.cwd)).toBeUndefined();
+    } finally { t.done(); }
+  }, 40_000);
 
   test("the mode is the last user record's, however far back, else default; a session over the base window goes on with the 1M one", async () => {
     const r = rig();

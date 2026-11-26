@@ -130,7 +130,7 @@ export class Back {
     if (!this.seen.mode && r.type === "user" && typeof r.permissionMode === "string" && r.permissionMode) { this.seen.mode = true; this.mode = r.permissionMode; }
     if (!this.seen.last && (r.type === "assistant" || (r.type === "user" && !r.isMeta && !r.isCompactSummary))) {
       this.seen.last = true;
-      this.open = r.type === "assistant" ? r.message?.stop_reason === "tool_use" : !INTERRUPTED.test(promptText(r)?.trim() ?? "");
+      this.open = r.type === "assistant" ? r.message?.stop_reason === "tool_use" || callsTool(r) : !INTERRUPTED.test(promptText(r)?.trim() ?? "");
     }
     return this.done();
   }
@@ -151,10 +151,12 @@ export function routeMissing(route: ClaudeRoute | undefined, env: Record<string,
 
 // Whether Claude Code's own trust record covers a folder: `projects[<path>].hasTrustDialogAccepted` in its global
 // config for the folder or a folder above it, not above the git repository it is in (C: 2.1.332's trust check). A
-// print run asks nothing: an untrusted folder's settings, hooks and MCP servers would load unasked.
-export function trusted(config: Json, cwd: string, repoRoot?: string): boolean {
+// print run asks nothing: an untrusted folder's settings, hooks and MCP servers would load unasked. A linked worktree
+// is covered by its main repository's record too (mainRoot: Claude Code records and reads a worktree's trust there).
+export function trusted(config: Json, cwd: string, repoRoot?: string, mainRoot?: string): boolean {
   const projects = config && typeof config === "object" ? config.projects : undefined;
   if (!projects || typeof projects !== "object") return false;
+  if (mainRoot && projects[mainRoot]?.hasTrustDialogAccepted === true) return true;
   for (let p = cwd.replace(/\/+$/, "") || "/"; ; ) {
     if (projects[p]?.hasTrustDialogAccepted === true) return true;
     if (p === repoRoot || p === "/") return false;
@@ -238,12 +240,23 @@ export function holdsMessage(records: Json[], text: string, uuid?: string): bool
 }
 
 const INTERRUPTED = /^\[Request interrupted by user/;
+// A reply that ends its turn: it stopped (any stop_reason but tool_use) and calls no tool. A reply that holds a tool_use
+// block waits for that call's result whatever its stop_reason says (a stop sequence that cut after the call, as many
+// do), so its turn is open.
+function callsTool(r: Json): boolean {
+  const content = r?.message?.content;
+  return Array.isArray(content) && content.some((b: Json) => b?.type === "tool_use");
+}
+function endsTurn(r: Json): boolean {
+  const s = r?.message?.stop_reason;
+  return typeof s === "string" && s !== "tool_use" && !callsTool(r);
+}
 // Whether the turn the message is in ended in the records: a reply that stopped for good, or its interrupt.
 export function turnEnded(records: Json[], text: string, uuid?: string): boolean {
   const at = records.findIndex((r) => holdsMessage([r], text, uuid));
   if (at < 0) return false;
   return records.slice(at + 1).some((r) => {
-    if (r?.type === "assistant") { const s = r.message?.stop_reason; return typeof s === "string" && s !== "tool_use"; }
+    if (r?.type === "assistant") return endsTurn(r);
     return INTERRUPTED.test(promptText(r)?.trim() ?? "");
   });
 }
