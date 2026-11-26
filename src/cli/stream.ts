@@ -8,7 +8,7 @@
 import { resolve } from "node:path";
 import { chunks } from "../core/proc.ts";
 import type { StoredEvent } from "../core/types.ts";
-import { ApiError, type Client, EXIT, type Found, usageError } from "./client.ts";
+import { ApiError, type Client, EXIT, type Found, out, usageError } from "./client.ts";
 import { assistantText, deltaLine, Follower, STREAM_SCHEMA, streamLine } from "./events.ts";
 import { daemonFor, exitOf, heldNote, resultObject, RUN_USAGE, type Watched } from "./run.ts";
 
@@ -149,7 +149,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   // The first line written, whatever it is, says the schema version.
   let said = false;
   const say = (o: Record<string, unknown>) => {
-    console.log(JSON.stringify(said || "schema_version" in o ? o : { type: o.type, ...("subtype" in o ? { subtype: o.subtype } : {}), schema_version: STREAM_SCHEMA, ...o }));
+    out(JSON.stringify(said || "schema_version" in o ? o : { type: o.type, ...("subtype" in o ? { subtype: o.subtype } : {}), schema_version: STREAM_SCHEMA, ...o }) + "\n");
     said = true;
   };
   const fmt = v["stream-json"] ? "stream-json" : v["output-format"];

@@ -32,6 +32,7 @@ import { portHolder, waitForLeaving } from "../core/daemon-lock.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
 import { beginLife, endLife, lifeListening, Restarts } from "../admin/life.ts";
 import { drainLine, exitLine, providersLine, say } from "../admin/daemon-log.ts";
+import { installLogs } from "../admin/logs.ts";
 import { during as spanning } from "../admin/activity.ts";
 import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
@@ -81,6 +82,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // The state folder is claimed before anything of it is opened: a second
   // daemon on it stops here, with the database untouched.
   acquireLock(stateDir);
+  if (opts.client) installLogs(stateDir);
   startMark("claim");
   const cut = undoCutRestore(stateDir);
   if (cut === "undone") console.error(`keel: a restore of a backup into ${stateDir} was cut part way. It was undone: the state is the one before it.`);

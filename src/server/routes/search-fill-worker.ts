@@ -85,7 +85,7 @@ self.onmessage = async (ev: MessageEvent) => {
       // (What the step took with the lock held sizes the next one; a wait for the lock does not.)
       const ms = r.held_ms || performance.now() - t;
       postMessage({ progress: filled, ms });
-      if (process.env.KEEL_TRACE_FILL && ms > 50) console.log(`[fill] a step of ${bytes} bytes, ${r.events} events: ${ms.toFixed(0)} ms`);
+      if (process.env.KEEL_TRACE_FILL && ms > 50) console.error(`[fill] a step of ${bytes} bytes, ${r.events} events: ${ms.toFixed(0)} ms`);
       if (!r.left) break;
       bytes = next(bytes, ms, LEAST_BYTES, MOST_BYTES);
       await Bun.sleep(Math.max(10, 2 * ms));
@@ -97,7 +97,7 @@ self.onmessage = async (ev: MessageEvent) => {
       await logRoom(shm);
       const r = await held(() => dropStep(db!, rows));
       postMessage({ dropping: r.rows, ms: r.held_ms });
-      if (process.env.KEEL_TRACE_FILL && r.held_ms > 50) console.log(`[fill] a step removing ${rows} rows of the old index: ${r.held_ms.toFixed(0)} ms`);
+      if (process.env.KEEL_TRACE_FILL && r.held_ms > 50) console.error(`[fill] a step removing ${rows} rows of the old index: ${r.held_ms.toFixed(0)} ms`);
       if (!r.left) break;
       rows = next(rows, r.held_ms, 10, MOST_ROWS);
       await Bun.sleep(Math.max(10, 2 * r.held_ms));

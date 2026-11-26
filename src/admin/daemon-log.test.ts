@@ -181,11 +181,13 @@ test("inside a command's process no line of the daemon's own reaches standard ou
     expect(parseLines(file).map((l) => [l.level, l.session, l.text])).toEqual([
       ["info", S, "[turn] context compacted by itself, from 9000 tokens"], ["info", S, "[turn] continued after the restart"], ["info", S, "[turn] cut at step 1, during Bash, after 2 s: a daemon stop parked it"],
     ]);
-    // A warning still goes to standard error; what the command prints is its own, byte for byte.
+    // A late daemon diagnostic is still kept, but does not share the command's output.
+    console.log("[store] late daemon diagnostic");
+    expect(out).toEqual([]);
+    expect(readdirSync(join(dir, "logs")).map((f) => readFileSync(join(dir, "logs", f), "utf8")).join("")).toContain("[store] late daemon diagnostic");
+    // A warning still goes to standard error.
     logAt({ session: S }, "[turn] not continued after the restart: held for the owner", "warn");
-    const line = JSON.stringify({ type: "result", result: "sk-not-a-key and key=value pairs" });
-    console.log(line);
-    expect([out, err]).toEqual([[[line]], [["[turn] not continued after the restart: held for the owner"]]]);
+    expect([out, err]).toEqual([[], [["[turn] not continued after the restart: held for the owner"]]]);
   } finally {
     runMode.client = was;
     for (const m of methods) (console as any)[m] = saved[m];

@@ -351,16 +351,9 @@ export async function daemonFor(c: Client, found: Found, workspace: string): Pro
   if (found.from === "flag" || found.from === "env") throw new ApiError(`no daemon answers at ${c.base}`, 0);
   const held = lockedDaemon(found.stateDir);
   if (held) throw new ApiError(`a daemon (pid ${held.pid}) holds ${found.stateDir} but does not answer${held.url ? ` at ${held.url}` : ""}`, 0);
-  // Its log lines are not the command's output.
-  const log = console.log;
-  console.log = (...a: unknown[]) => console.error(...a);
-  try {
-    // The daemon's code is loaded only by a command that runs one in its own process.
-    const own = await (await import("../server/start.ts")).startDaemon({ stateDir: found.stateDir, bind: "127.0.0.1:0", workspace, client: true });
-    return { c: new Client(own.url), own };
-  } finally {
-    console.log = log;
-  }
+  // The daemon's code is loaded only by a command that runs one in its own process.
+  const own = await (await import("../server/start.ts")).startDaemon({ stateDir: found.stateDir, bind: "127.0.0.1:0", workspace, client: true });
+  return { c: new Client(own.url), own };
 }
 
 export async function runPrompt(v: any, pos: string[], c0: Client, found: Found, name = "run"): Promise<number> {
@@ -435,9 +428,9 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
     const url = (own ? c0 : c).url(sessionId);
 
     if (!stay) {
-      if (v.json) console.log(JSON.stringify({ session_id: sessionId, replayed: !!sent.replayed, url, ...(sent.queued ? { queued: true } : {}) }));
+      if (v.json) out(JSON.stringify({ session_id: sessionId, replayed: !!sent.replayed, url, ...(sent.queued ? { queued: true } : {}) }) + "\n");
       else {
-        console.log(`session ${sessionId}`);
+        out(`session ${sessionId}\n`);
         console.error(`${sent.replayed ? "already sent with this key; " : ""}follow it: keel logs ${sessionId} -f`);
       }
       return EXIT.ok;
@@ -448,13 +441,13 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
       const st = await c.get<any>(`/api/cli/state/${sessionId}`);
       const perm = await c.get<any>(`/api/sessions/${sessionId}/permissions`).catch(() => null);
       const s = st.session;
-      console.log(JSON.stringify({ type: "system", subtype: "init", schema_version: STREAM_SCHEMA, session_id: sessionId, cwd: s.workspace, model: s.model, provider: String(s.model).split(":")[0], permission_mode: perm?.perm?.mode ?? null, keel_version: "bun", url }));
+      out(JSON.stringify({ type: "system", subtype: "init", schema_version: STREAM_SCHEMA, session_id: sessionId, cwd: s.workspace, model: s.model, provider: String(s.model).split(":")[0], permission_mode: perm?.perm?.mode ?? null, keel_version: "bun", url }) + "\n");
     }
     const partial = stream && v["include-partial-messages"];
     const follow = (at: { after_seq: number; event_id: string | null; queue_id?: string | null }, text: string) => watch({
       c, sessionId: sessionId!, afterSeq: at.after_seq, eventId: at.event_id, queueId: at.queue_id, prompt: text, stay: stay!, onAsk, timeoutS,
-      onEvent: stream ? (e) => console.log(JSON.stringify(streamLine(e))) : undefined,
-      onDelta: partial ? (d) => console.log(JSON.stringify(deltaLine(sessionId, d))) : undefined,
+      onEvent: stream ? (e) => { out(JSON.stringify(streamLine(e)) + "\n"); } : undefined,
+      onDelta: partial ? (d) => { out(JSON.stringify(deltaLine(sessionId, d)) + "\n"); } : undefined,
       t0,
     });
     const w = await follow(sent, sentText);
@@ -492,13 +485,13 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
     if (w.subtype === "timeout") console.error(`keel ${name}: --timeout ran out${own ? "; the turn was stopped" : "; the session keeps running"}`);
     for (const e of w.errors) if (format === "text" || !print) console.error(`keel ${name}: ${clean(e)}`);
 
-    if (stream || format === "json" || (v.json && !print)) console.log(stream ? JSON.stringify(res) : JSON.stringify(res, null, 2));
+    if (stream || format === "json" || (v.json && !print)) out((stream ? JSON.stringify(res) : JSON.stringify(res, null, 2)) + "\n");
     else if (print) {
       // With a schema the answer printed is the value itself, nothing around it.
       if (value) out(JSON.stringify(value.value) + "\n");
       else if (w.answer && !schema) out(clean(w.answer) + "\n");
     } else {
-      console.log(`session ${sessionId}\noutcome ${w.outcome ?? w.subtype}\nsummary ${JSON.stringify(clean(w.answer))}`);
+      out(`session ${sessionId}\noutcome ${w.outcome ?? w.subtype}\nsummary ${JSON.stringify(clean(w.answer))}\n`);
     }
     return exitOf(w);
   } finally {

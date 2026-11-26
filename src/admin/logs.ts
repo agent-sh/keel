@@ -83,10 +83,10 @@ export function installLogs(stateDir: string) {
       // is what the file gets, scrubbed before either sees it.
       let text: string;
       try { text = logText(a); } catch { text = "(a log line that could not be formatted)"; }
-      // A daemon a command runs inside its own process (keel run with no daemon answering): the
-      // console is the command's own (its answer, a protocol's lines, its words to the terminal).
-      // What it prints goes out as it was given; the file keeps the scrubbed text, as before.
-      if (runMode.client) orig(...a); else orig(text);
+      // In a client process stdout belongs to the answer or protocol. The
+      // client writes those bytes directly; console diagnostics stay in the
+      // log, with warnings and errors also on stderr.
+      if (!runMode.client || level === "warn" || level === "error") orig(text);
       try {
         const at = errorScope.getStore();
         keep({ ts: Date.now(), level, text, ...(at?.session ? { session: at.session, ...(at.turn ? { turn: at.turn } : {}) } : {}) });
