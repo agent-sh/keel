@@ -106,7 +106,7 @@ test("a session with agents opens on the conversation, its stretches folded and 
     await expect(lens.getByTestId("lens-run-came").filter({ hasText: "Asks you" })).toHaveCount(0);
     // A loop's run asks him again, and the next run that asks nothing pays it too: the session went on past it.
     const loopRun = async (prompt: string) => {
-      const loop = (await (await api.post(`${d.url}/api/loops`, { data: { session_id: id, name: "Lane check", schedule: "1h", prompt } })).json()).loop as { id: string };
+      const loop = (await (await api.post(`${d.url}/api/loops`, { data: { session_id: id, name: "Lane check", schedule: "1h", prompt } })).json()) as { id: string };
       expect((await api.post(`${d.url}/api/loops/${loop.id}/run`)).ok()).toBe(true);
       // (Its turn ended.)
       await expect.poll(async () => ((await (await api.get(`${d.url}/api/loops/${loop.id}/runs`)).json()).loop as { last_status?: string }).last_status, { timeout: 30_000 }).toBe("ok");
