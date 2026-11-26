@@ -123,6 +123,32 @@ test("a skill past the scan's cap is held with its reason", async ({ page, reque
   }
 });
 
+// On a phone the panel's heading stays one line: a long repository path beside it gives way, cut, and is said whole on hover.
+test.describe("Trust on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("the Repository files heading keeps its line beside a long path", async ({ page, request }) => {
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `trust-phone-a-repository-with-a-long-name-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    git(ws, "init", "-q", "-b", "main");
+    writeFileSync(join(ws, "AGENTS.md"), "# Rules\n\nAnswer in one line.\n");
+    try {
+      const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+      await page.goto(`/s/${session.id}`);
+      await openTrust(page);
+      // (The heading row itself, as the base has it too: two lines there when the words wrap.)
+      const heading = page.getByTestId("trust-panel").locator("h3").first();
+      await expect(heading).toContainText("Repository files");
+      const one = await heading.evaluate((el) => el.getBoundingClientRect().height <= parseFloat(getComputedStyle(el).lineHeight) * 1.2);
+      expect(one).toBe(true);
+      await expect(page.getByTestId("trust-panel").getByTitle(ws)).toBeAttached();
+      await shoot(page, "trust-06-phone-heading");
+      await request.delete(`/api/sessions/${session.id}`);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
 // An instruction file the landing queue landed for the owner, at the head their page showed, is trusted with
 // the landing: no card, the timeline says so and the Trust panel lists it with the landing. A commit made by
 // hand after it is held.

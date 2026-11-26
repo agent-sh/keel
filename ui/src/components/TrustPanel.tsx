@@ -50,9 +50,10 @@ export function TrustPanel({ session }: { session: Session }) {
       {!view.root && <p className="px-1 text-caption text-muted">The session's folder is not in a repository: only your own instruction files and hooks apply.</p>}
       {view.root && (
         <section className="flex flex-col gap-2">
-          <h3 className="flex items-center gap-2 px-1 text-ui font-medium">
-            <ShieldCheck className="size-4 text-accent" /> Repository files
-            <span className="truncate font-mono text-micro font-normal text-faint">{view.root}</span>
+          {/* The heading stays one line; the folder beside it gives way and is said whole on hover. */}
+          <h3 className="flex min-w-0 items-center gap-2 px-1 text-ui font-medium">
+            <ShieldCheck className="size-4 shrink-0 text-accent" /> <span className="shrink-0 whitespace-nowrap">Repository files</span>
+            <span className="min-w-0 truncate font-mono text-micro font-normal text-faint" title={view.root}>{view.root}</span>
           </h3>
           {held.length > 0 ? (
             <>
