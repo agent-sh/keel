@@ -16,7 +16,7 @@ import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
 import { descendants, statFields } from "./writer.ts";
-import { CodexApp, holdsMessage, lastRecord, recordsFrom, threadFacts, turnEnded, type CardGate } from "./codex-app.ts";
+import { CodexApp, commandWords, holdsMessage, lastRecord, permissionLines, recordsFrom, threadFacts, turnEnded, type CardGate } from "./codex-app.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-codex-app-"));
 ownEnv({ KEEL_IMPORT_CODEX_DIR: undefined, KEEL_IMPORT_CLAUDE_DIR: undefined });
@@ -117,7 +117,7 @@ describe("a Codex session answered in place", () => {
       expect(text).toContain('"message":"fix the build"');
       expect(text).toContain("The command was allowed: fix the build");
       // One card, for its one command, in the harness's words.
-      expect(r.cards).toEqual([{ name: "Codex command", input: { command: "make test", cwd: expect.any(String), item: "c1" }, why: "Codex runs this command in the session if you allow it, under the sandbox its turn has", shown: undefined, notice: "Codex says: It runs the project's tests" }]);
+      expect(r.cards).toEqual([{ name: "Codex command", input: { command: "make test", cwd: expect.any(String), item: "c1" }, why: "Codex runs this command in the session if you allow it", shown: undefined, notice: "Codex says: It runs the project's tests" }]);
       // The reply streamed as deltas; nothing was stored as an event of the session by the driver: the mirror stores the rollout's.
       const deltas = r.frames.filter((f): f is Extract<Frame, { t: "delta" }> => f.t === "delta" && f.session_id === s.id).map((f) => f.text).join("");
       expect(deltas).toContain("The command was allowed: fix the build");
@@ -215,6 +215,48 @@ describe("a Codex session answered in place", () => {
       expect(wipe.risk).toBe("high");
       expect(wipe.why).not.toBe("Codex runs this command");
     } finally { r.done(); }
+  });
+
+  test("Keel's sandbox never runs what Codex asks: in a sandboxed session its command is judged as one with none", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      const sess = r.store.session(s.id)!;
+      // A session whose own commands run in Keel's sandbox: what Codex runs is not one of them.
+      const g = new Gate(r.store, r.bus, () => true);
+      g.setPerm(s.id, { sandbox: "workspace-write" });
+      writeFileSync(join(r.cwd, ".env"), "TOKEN=x\n");
+      let n = 0;
+      const asks = (tool: string, input: any, kind?: "shell" | "edit") => {
+        const id = `codex-s-${++n}-${n}`;
+        const call = { id, tool: { name: tool, ...(kind ? { kind } : {}), description: "", readOnly: false, input_schema: kind === "shell" ? { properties: { command: {} } } : {}, run: async () => ({ content: "" }) }, input, ctx: { sessionId: s.id, cwd: r.cwd, signal: new AbortController().signal, spillDir: "", seen: new Map() } } as any;
+        void g.askOnce(sess, call, tool, "Codex asks", "harness");
+        return until(() => g.approvals({ session: s.id, pending: true }).find((a) => a.call_id === id));
+      };
+      const command = (c: string) => asks("Codex command", { command: c, cwd: r.cwd }, "shell");
+      for (const c of ["rm -rf ~/projects", "/bin/bash -lc 'rm -rf ~/projects'", "chmod -R 777 /home/someone", `python3 -c "import shutil; shutil.rmtree('/home/someone')"`, "mv ~/.ssh ~/.ssh.bak"])
+        expect([c, (await command(c)).risk]).toEqual([c, "high"]);
+      // A credential it reads goes to Codex's provider, not through Keel's vault: the folder's own .env too.
+      expect((await command("cat .env")).risk).toBe("high");
+      expect((await command("make test")).risk).toBe("low");
+      // A command it does not name, and more permissions, are the owner's to weigh: high.
+      expect((await command("")).risk).toBe("high");
+      expect((await asks("Codex permissions", { network: { enabled: true } })).risk).toBe("high");
+    } finally { r.done(); }
+  });
+
+  test("each kind of approval Codex asks for says what it is, the host its network asks for, and every entry of a permission", () => {
+    expect(commandWords({}, "make test")).toEqual({ name: "Codex command", why: "Codex runs this command in the session if you allow it", judged: "make test" });
+    const net = commandWords({ networkApprovalContext: { host: "collect.example.net", protocol: "https" } }, "");
+    expect(net).toMatchObject({ name: "Codex command", judged: "", shown: "Codex asks to reach collect.example.net (https)", host: "collect.example.net (https)" });
+    expect(commandWords({ networkApprovalContext: { host: "x.example", protocol: "http" } }, "curl x.example").shown).toBe("curl x.example\nCodex asks to reach x.example (http) for it");
+    // Typed into a command it runs: weighed as no command, its text shown.
+    expect(commandWords({ kind: "writeStdin" }, "y\n")).toMatchObject({ name: "Codex input", judged: "", shown: "Codex types into a command it runs:\ny\n" });
+    expect(commandWords({ kind: "humanCommand" }, "deploy")).toMatchObject({ name: "Codex checkpoint", judged: "deploy" });
+    expect(permissionLines({ network: { enabled: true }, fileSystem: { write: ["/a"], read: ["/b"], entries: [
+      { access: "write", path: { type: "path", path: "/c" } }, { access: "read", path: { type: "glob_pattern", pattern: "**/*.pem" } },
+      { access: "write", path: { type: "special", value: { kind: "root" } } }, { access: "deny", path: { type: "special", value: { kind: "project_roots", subpath: "secrets" } } },
+    ] }, macos: { x: 1 } })).toEqual(["the network", "write to /a", "read /b", "write to /c", "read the files matching **/*.pem", "write to / (every file)", "no access to the project's folders/secrets", 'macos: {"x":1}']);
   });
 
   test("Codex's question is a question card; its answer goes back by question id", async () => {

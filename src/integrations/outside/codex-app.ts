@@ -100,6 +100,39 @@ export type CodexAppDeps = {
   cutAsks?: () => void;
 };
 
+// The card of a command approval, by its kind: a command (with the host Codex's network asks for, when it names
+// one), text typed into a command Codex already runs, or a checkpoint Codex's own policy leaves to a person.
+// `judged`: the command the gate weighs. Typed text is weighed as no command (high): Keel cannot tell what reads it.
+export function commandWords(p: Json, command: string): { name: string; why: string; judged: string; shown?: string; host?: string } {
+  const net = p?.networkApprovalContext;
+  const host = net && typeof net.host === "string" && net.host ? `${net.host}${typeof net.protocol === "string" ? ` (${net.protocol})` : ""}` : undefined;
+  const reach = host ? `Codex asks to reach ${host}` : undefined;
+  if (p?.kind === "writeStdin")
+    return { name: "Codex input", why: "Codex types this into a command it already runs if you allow it: Keel cannot tell what reads it", judged: "", shown: `Codex types into a command it runs:\n${command || "(no text)"}` };
+  if (p?.kind === "humanCommand")
+    return { name: "Codex checkpoint", why: "Codex's own policy leaves this command to you: Codex runs it if you allow it", judged: command, ...(command ? {} : { shown: "Codex stops for your decision on a command it does not name" }) };
+  if (!command) return { name: "Codex command", why: reach ? "Codex reaches this host if you allow it" : "Codex runs a command it does not name if you allow it", judged: "", shown: reach ?? "Codex asks to run a command it does not name", ...(host ? { host } : {}) };
+  return { name: "Codex command", why: reach ? `Codex runs this command if you allow it, and it reaches ${host}` : "Codex runs this command in the session if you allow it", judged: command, ...(reach ? { shown: `${command}\n${reach} for it`, host } : {}) };
+}
+
+// What a permissions request asks for, a line each: the network, each folder by its access (the old read and
+// write lists, and the entries that replace them), and any other key by its own words.
+export function permissionLines(want: Json): string[] {
+  const out: string[] = [];
+  if (want?.network?.enabled) out.push("the network");
+  const fs = want?.fileSystem ?? {};
+  for (const x of (Array.isArray(fs.write) ? fs.write : []) as unknown[]) out.push(`write to ${String(x)}`);
+  for (const x of (Array.isArray(fs.read) ? fs.read : []) as unknown[]) out.push(`read ${String(x)}`);
+  const SPECIAL: Record<string, string> = { root: "/ (every file)", minimal: "what a command needs to start", project_roots: "the project's folders", tmpdir: "the temporary folder", slash_tmp: "/tmp" };
+  for (const e of (Array.isArray(fs.entries) ? fs.entries : []) as Json[]) {
+    const at = e?.path?.type === "path" ? String(e.path.path) : e?.path?.type === "glob_pattern" ? `the files matching ${String(e.path.pattern)}`
+      : e?.path?.type === "special" ? `${SPECIAL[String(e.path.value?.kind)] ?? String(e.path.value?.path ?? e.path.value?.kind ?? "a place it does not name")}${e.path.value?.subpath ? `/${String(e.path.value.subpath)}` : ""}` : JSON.stringify(e?.path ?? null).slice(0, 200);
+    out.push(e?.access === "write" ? `write to ${at}` : e?.access === "read" ? `read ${at}` : e?.access === "deny" ? `no access to ${at}` : `${String(e?.access)} ${at}`);
+  }
+  for (const [k, v] of Object.entries(want ?? {})) if (k !== "network" && k !== "fileSystem" && v != null) out.push(`${k}: ${JSON.stringify(v).slice(0, 200)}`);
+  return out;
+}
+
 // What the rollout says of the thread: its provider (a resume under another is refused with
 // modelProviderMismatch), its folder, and the approval policy and sandbox its last turn ran with.
 export type ThreadFacts = { provider?: string; cwd?: string; approval?: string; sandbox?: string };
@@ -572,7 +605,8 @@ export class CodexApp {
       switch (method) {
         case "item/commandExecution/requestApproval": {
           const command = typeof p?.command === "string" ? p.command : "";
-          const ok = await ask({ name: "Codex command", kind: "shell", input_schema: { properties: { command: {} } } }, { command, cwd }, "Codex command", "Codex runs this command in the session if you allow it, under the sandbox its turn has", command ? undefined : "Codex asks to run a command it does not name");
+          const words = commandWords(p, command);
+          const ok = await ask({ name: words.name, kind: "shell", input_schema: { properties: { command: {} } } }, { command: words.judged, cwd, ...(words.host ? { host: words.host } : {}) }, words.name, words.why, words.shown);
           return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
         }
         case "item/fileChange/requestApproval": {
@@ -584,12 +618,8 @@ export class CodexApp {
         }
         case "item/permissions/requestApproval": {
           const want = p?.permissions ?? {};
-          const lines = [
-            ...(want.network?.enabled ? ["the network"] : []),
-            ...((want.fileSystem?.write ?? []) as string[]).map((x) => `write to ${x}`),
-            ...((want.fileSystem?.read ?? []) as string[]).map((x) => `read ${x}`),
-          ];
-          const ok = await ask({ name: "Codex permissions" }, want, "Codex permissions", "Codex gets more than its sandbox gives for the rest of this turn if you allow it", `Codex asks for ${lines.join(", ") || "more permissions"} for this turn`);
+          const lines = permissionLines(want);
+          const ok = await ask({ name: "Codex permissions" }, want, "Codex permissions", "Codex gets more than its sandbox gives for the rest of this turn if you allow it", `Codex asks for ${lines.join(", ") || "more permissions it does not name"} for this turn`);
           const granted = ok ? { ...(want.network ? { network: want.network } : {}), ...(want.fileSystem ? { fileSystem: want.fileSystem } : {}) } : {};
           return { permissions: granted, scope: "turn" };
         }

@@ -1408,15 +1408,16 @@ export class Gate {
   // the program itself here (see `shimmed`). Without it those forms ask.
   // `before`: only the standing rules that are not younger than this time (a held card's own).
   // `mode`: decided as in that mode, not the session's (what Ask would make of the call: its own risk).
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, facts?: CallFacts, before?: number, mode?: Mode): Decision {
-    const p = mode ? { ...this.perm(session.id), mode } : this.perm(session.id);
+  // `free`: the call runs with no sandbox of Keel's whatever the session's is (another harness runs it).
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, facts?: CallFacts, before?: number, mode?: Mode, free?: true): Decision {
+    const p = mode ? { ...this.perm(session.id), mode, ...(free ? { sandbox: "off" as const } : {}) } : this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     // (Folders named as the session's own are its scratch to the rules; Keel's own files are judged by its own scratch alone.)
     const named = facts?.own?.filter((x) => x.from === "parent" || x.from === "owner").map((x) => x.path) ?? [];
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: !(cls.kind === "shell" && cls.unconfined) && this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
+      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: !free && !(cls.kind === "shell" && cls.unconfined) && this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
       // The owner's namespaces: a write with his accounts beyond them is his alone (accounts.ts).
       accounts: { names: accountNames(), ...(session.parent_id ? { agent: true as const } : {}) },
       // An agent in a worktree Keel made: what it shares with the other checkouts (shared-branches.ts).
@@ -2210,14 +2211,20 @@ export class Gate {
     const short = inShort(cls, call.input);
     // Another harness's request (a command Codex asks about) is judged by the rules Keel's own calls are: the
     // risk of its class, red only for what Ask would mark high, with the gate's reason then.
-    const own = held === "harness" ? this.ownRisk(session, call) : { risk: "high" as const };
+    const own = held === "harness" ? this.harnessRisk(session, call) : { risk: "high" as const };
     const risk = own.risk === "high" ? { risk: "high" as const, why: own.why ?? why } : { risk: "low" as const, why };
     return this.card(session, call, name, cls, shown ?? short.summary, { ...risk, suggest: [], cut: shown === undefined ? short.cut : undefined, held, ...(notice ? { notice } : {}) }, true);
   }
 
-  // A call's own risk and reason as Ask would judge it, whatever the session's mode.
-  private ownRisk(session: Session, call: ToolCall): { risk: "high" | "low"; why?: string } {
-    const d = this.evaluate(session, call.tool.name, callClass(call, null), undefined, undefined, undefined, "ask");
+  // What another harness asks to run or write, as Ask would judge Keel's own call, whatever the session's mode: as a
+  // call with no sandbox of Keel's, since Keel's sandbox never runs it (Codex asks to run it outside its own). A
+  // credential it reads goes to that harness's provider, not through Keel's vault: the session's own folder's too.
+  // A command it does not name, and anything that is neither a command nor a file change (more permissions), is
+  // the owner's to weigh: high, with the asker's words.
+  private harnessRisk(session: Session, call: ToolCall): { risk: "high" | "low"; why?: string } {
+    const c = callClass(call, null);
+    if (c.kind === "shell" ? !c.command.trim() : c.kind !== "edit") return { risk: "high" };
+    const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, unconfined: true } : c, undefined, undefined, undefined, "ask", true);
     return "ask" in d ? { risk: d.ask.risk, why: d.ask.why } : "deny" in d ? { risk: "high", why: d.deny } : { risk: "low" };
   }
 
