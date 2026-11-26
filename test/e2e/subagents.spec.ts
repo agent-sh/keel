@@ -141,6 +141,7 @@ test("a parked subagent notifies its busy parent before the final report", async
   test.skip(!model, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const { session } = await (await request.post("/api/sessions", { data: { model: model!.id, title: "Parked subagent" } })).json();
   try {
+    expect((await request.patch(`/api/sessions/${session.id}`, { data: { settings: { pace_min: 0 } } })).ok()).toBe(true);
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     const child = (title: string, seconds: number) => ({
       name: "spawn_agent",

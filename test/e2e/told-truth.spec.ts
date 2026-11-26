@@ -126,6 +126,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await send(twice, calls([agent(`Twice lane\n${calls([until("t1"), until("t2")])}`), bash("echo led")]));
     const fail3 = (i: number) => bash(`echo 'error: lane ${i} build failed at step ${i}' >&2; exit 2`);
     const coord = await open("Dozen lanes");
+    await call(`/api/sessions/${coord}`, { settings: { pace_min: 0 } }, "PATCH");
     await send(coord, `Run twelve lanes\n${calls([
       ...[1, 2, 3, 4].map((i) => agent(`Quota lane ${i}\nscript:billing`)),
       ...[1, 2, 3].map((i) => agent(`Tool lane ${i}\n${calls([fail3(i), fail3(i), fail3(i), bash("echo recovered")])}`)),
