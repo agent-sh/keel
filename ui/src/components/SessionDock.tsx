@@ -22,6 +22,11 @@ import { hasAsks } from "../lib/asks-eligible.ts";
 import { PlanCard } from "./ToolCall.tsx";
 import { openPanel } from "./SidePanel.tsx";
 import { DockNow } from "./DockNow.tsx";
+import { Mark } from "./Mark.tsx";
+import { countWord, STATE_WORD } from "../../../src/core/state-words.ts";
+import { goToAsk, useQueue } from "./AnswerQueue.tsx";
+import { useCalm } from "../lib/focus.ts";
+import { PHONE_QUERY } from "../lib/phone.ts";
 
 // The tree review (land, send back or drop each area), the one action the work board offers for landing.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
@@ -191,6 +196,26 @@ function McpCallRow({ w }: { w: WaitRecord }) {
   );
 }
 
+// Who else waits on the owner while this pane's session asks nothing: one quiet item at the end of the dock's line,
+// by name when it is one. A press goes there the answering sequence's way (AnswerQueue.tsx), so the answers lead
+// back to this pane: reading one agent, the owner answers another without finding either in the list.
+// The ids, the first to go to first ("" when none). Its own agents are not elsewhere (what they ask shows here), a
+// session that asks has the chip above its cards, Focus has its line and a phone its bar.
+function useNeedElsewhere(sessionId: string): string {
+  const ids = useQueue((s) => (s.order.includes(sessionId) ? "" : s.order.filter((id) => !s.above[id]?.includes(sessionId)).join(" ")));
+  return useCalm() || matchMedia(PHONE_QUERY).matches ? "" : ids;
+}
+function NeedElsewhere({ ids }: { ids: string }) {
+  const list = ids.split(" ");
+  const title = useStore((s) => s.sessions[list[0]!]?.title || "A session");
+  const words = list.length === 1 ? `${title} ${STATE_WORD.need.toLowerCase()}` : countWord("need", list.length);
+  return (
+    <button type="button" className="k-docket-line k-docket-need" data-testid="dock-others" title={`${words}. Answer and come back here.`} onClick={() => goToAsk(list[0]!)}>
+      <Mark w="need" className="!size-2" /><span className="min-w-0 truncate">{words}</span>
+    </button>
+  );
+}
+
 // `panel`: this pane has the side panel. While its Tasks tab is open the plan
 // is read there, and the strip here gives way: the plan shows once.
 export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: boolean }) {
@@ -271,10 +296,12 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
       <span>Your asks</span>
     </button>
   ) : null;
-  const row = (planLineEl || agents || jobs.length > 0 || calls.length > 0) ? (
+  const elsewhere = useNeedElsewhere(sessionId);
+  const row = (planLineEl || agents || elsewhere || jobs.length > 0 || calls.length > 0) ? (
     <div className="k-docket-row">
       {planLineEl}
       {asksEl}
+      {elsewhere && <NeedElsewhere ids={elsewhere} />}
       {agents && <AgentsDock sessionId={sessionId} />}
       {(jobs.length > 0 || calls.length > 0) && <JobsChip sessionId={sessionId} jobs={jobs} calls={calls} cut={cut} />}
     </div>

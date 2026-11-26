@@ -922,6 +922,8 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-docket-top[data-open] > .k-docket-row > .k-docket-planline { border-radius: var(--radius-xl) 0 0 0; }
 .k-docket-panel { border-top: 1px solid var(--line); }
 .k-docket-row > .k-docket-asks { flex: 0 0 auto; }
+/* Who else waits on the owner: at the row's end, its dot the one colour. */
+.k-docket-row > .k-docket-need { margin-left: auto; max-width: 60%; }
 /* Your asks (AsksPanel.tsx): the owner's words and one word of state a row; what decided it opens under the row.
    Quiet: ink only for the one live mark and a stop that needs him. */
 .k-myask { border-bottom: 1px solid var(--line); }

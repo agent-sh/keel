@@ -95,7 +95,8 @@ type State = {
 let state: State = { order: [], above: {}, card: {}, on: false, at: null };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; subs.forEach((f) => f()); };
-const useQueue = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
+// (Read outside this file by the dock's "who else waits" item, SessionDock.tsx.)
+export const useQueue = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
 const here = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
 const say = (text: string) => { tipSay(null, text, 2400); announce(text); };
 // Where the owner was when the sequence began: the page, and the pane worked in.

@@ -77,3 +77,53 @@ test("what each agent is on is read from the tree and from the Agents list with 
     await shoot(page, "follow-agents-03-list");
   } finally { await stop(); }
 });
+
+test("reading one agent, what two others ask is answered in four presses and he is back where he read", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await skipless(request);
+  const { session: s } = await (await request.post("/api/sessions", { data: { model: MODEL, title: "Land the week" } })).json();
+  const id = s.id as string;
+  const stopAll = async () => { for (const a of await treeOf(request, id)) await request.post(`/api/sessions/${id}/agents/${a.id}/stop`); };
+  try {
+    // One agent at work (the one he reads), then two that wait on him: a question, and a command to allow.
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn(`Reader\n${calls([bash("sleep 300; echo read")])}`)])}` } });
+    await expect.poll(async () => (await treeOf(request, id)).map((a) => a.title), { timeout: 30_000 }).toEqual(["Reader"]);
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    const asker = `Asker\n${calls([{ name: "AskUserQuestion", input: { questions: [{ question: "Which parser should I keep?", header: "Parser", options: [{ label: "Old" }, { label: "New" }], multiSelect: false }] } }])}`;
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn(asker), spawn(`Pusher\n${calls([bash("touch pushed.txt")])}`)])}` } });
+    await expect.poll(async () => (await treeOf(request, id)).length, { timeout: 30_000 }).toBe(3);
+    const reader = (await treeOf(request, id)).find((a) => a.title === "Reader")!;
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${reader.session_id}`);
+    const { c, press } = counter(page);
+    const helm = page.locator(".k-station[data-helm]");
+    const title = helm.getByTestId("session-title");
+    // Before: nothing in an agent's pane said that others wait. The way was the coordinator's row in the list (one
+    // press), its cards (three), then the tree and the agent's row to come back (two): six, five with the tree open.
+    // Now the pane's dock says who waits, and a press on it goes the answering sequence's way.
+    const others = helm.getByTestId("dock-others");
+    await expect(others).toHaveText("2 need you", { timeout: 45_000 });
+    await shoot(page, "follow-agents-04-others");
+    await press(others);
+    // Each answer moves on to the next that waits; the last one leads back.
+    for (let i = 0; i < 2; i++) {
+      await expect(title).toHaveText(/^(Asker|Pusher)$/, { timeout: 20_000 });
+      const asks = helm.getByTestId("composer-asks");
+      await expect(asks.locator("[data-ask-card]")).toHaveCount(1, { timeout: 20_000 });
+      if ((await title.innerText()) === "Asker") {
+        await press(asks.getByRole("radio", { name: "New" }));
+        await press(asks.getByRole("button", { name: "Answer", exact: true }));
+        await expect(title).not.toHaveText("Asker", { timeout: 20_000 });
+      } else {
+        await press(asks.getByRole("button", { name: /^Allow once/ }));
+        await expect(title).not.toHaveText("Pusher", { timeout: 20_000 });
+      }
+    }
+    await expect(title).toHaveText("Reader", { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/s/${reader.session_id}`));
+    expect(c).toEqual({ presses: 4, dwells: 0 });
+    // Nothing waits: the dock says nothing of it.
+    await expect(others).toHaveCount(0);
+  } finally { await stopAll(); }
+});
