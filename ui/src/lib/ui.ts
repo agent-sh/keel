@@ -1,6 +1,7 @@
 // Page state that is not daemon state: the route, theme, which overlays are
 // open, and the owner's local preferences. Components read it with useUI.
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { opening } from "./open-mark.ts";
 import type { PromptBlock } from "../../../src/core/types.ts";
 import { opened } from "./self-focus.ts";
 import { isCustomize } from "./customize-ids.ts";
@@ -148,6 +149,7 @@ const urlOf = (r: Route) => (r.name === "session" ? `/s/${r.id}` : r.name === "s
 
 export function navigate(to: Route, replace = false) {
   const r = placed(to);
+  if (r.name === "session") opening(r.id);
   const url = urlOf(r);
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
   opened();
@@ -155,7 +157,7 @@ export function navigate(to: Route, replace = false) {
 }
 // (An old Settings address of a Customize section is put right in the history entry, so Back does not meet it again.)
 const landed = () => { const r = parse(); if (r.name === "customize" && urlOf(r) !== location.pathname) history.replaceState(null, "", urlOf(r)); return r; };
-addEventListener("popstate", () => { opened(); setUI({ route: landed() }); });
+addEventListener("popstate", () => { opened(); const r = landed(); if (r.name === "session") opening(r.id); setUI({ route: r }); });
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 if (state.route.name === "customize") landed();
 

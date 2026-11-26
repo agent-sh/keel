@@ -23,17 +23,23 @@ import type { ModelPick } from "./ModelMenu.tsx";
 import { navigate } from "../lib/ui.ts";
 import { useAgentCount } from "../lib/watch.ts";
 import { whenIdle } from "../lib/utils.ts";
+import { chunked } from "../lib/preload.ts";
+import { viewing } from "../lib/open-mark.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import "../lib/gutter.ts";
 import { useAppSays } from "./Stale.tsx";
 import { DESK_QUERY } from "../lib/phone.ts";
-import { useLensView } from "../lib/lens-view.ts";
+import { useLensView, useLensViewKnown } from "../lib/lens-view.ts";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
-// not need it, and a session link starts loading it with the page.
-const loadTranscript = () => import("./Transcript.tsx");
-const Transcript = lazy(() => loadTranscript().then((m) => ({ default: m.Transcript })));
-const Lens = lazy(() => import("./Lens.tsx").then((m) => ({ default: m.Lens })));
+// not need it, and a session link starts loading it with the page. Drawn once its
+// code is here, it is drawn at once (lib/preload.ts `chunked`): React.lazy would show
+// the fallback first and hold the text back 300 ms after it, at every first open.
+const transcriptChunk = chunked(() => import("./Transcript.tsx").then((m) => m.Transcript));
+const lensChunk = chunked(() => import("./Lens.tsx").then((m) => m.Lens));
+const Transcript = transcriptChunk.View;
+const Lens = lensChunk.View;
+const loadTranscript = () => Promise.all([transcriptChunk.start(), lensChunk.start()]);
 const HeldMessages = lazy(() => import("./FleetMessages.tsx").then((m) => ({ default: m.HeldMessages })));
 const SessionDock = lazy(() => import("./SessionDock.tsx").then((m) => ({ default: m.SessionDock })));
 if (location.pathname.startsWith("/s/")) loadTranscript();
@@ -59,6 +65,7 @@ export function SessionView(props: ViewProps) {
 
 function OwnSessionView({ id, header, missingHeader, panel = true, focus = true, back }: ViewProps) {
   const session = useStore((s) => s.sessions[id]);
+  useMemo(() => viewing(id), [id]);
   const said = useAppSays() ?? "Keel is not reachable";
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
   const [missing, setMissing] = useState<string | null>(null);
@@ -96,7 +103,8 @@ function OwnSessionView({ id, header, missingHeader, panel = true, focus = true,
   // header, the panel, the message box): a long one is not gone through again for those.
   // A session with agents opens on the Conversation lens, the full stream a choice away (lib/lens-view.ts).
   const view = useLensView(id);
-  const transcript = useMemo(() => (view === "conversation" ? <Lens sessionId={id} /> : <Transcript sessionId={id} />), [id, view]);
+  const viewKnown = useLensViewKnown(id);
+  const transcript = useMemo(() => (view === "conversation" ? <Lens key={id} sessionId={id} /> : <Transcript sessionId={id} />), [id, view]);
   // The session and its panel: the words selected anywhere in them are offered for a quote or a comment.
   const body = useRef<HTMLDivElement>(null);
   if (!session && (missing === id || gone)) {
@@ -128,8 +136,9 @@ function OwnSessionView({ id, header, missingHeader, panel = true, focus = true,
       {header ?? <SessionHeader session={session} />}
       <div ref={body} className="relative flex min-h-0 flex-1">
         <div className="k-session flex min-w-0 flex-1 flex-col" inert={covered}>
-          {/* Until the conversation is here (its events, and the chunk that draws them), the pane says it is loading. */}
-          <Boundary><Suspense fallback={<TranscriptLoading />}>{loaded ? transcript : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
+          {/* Until the conversation is here (its events, and the chunk that draws them), the pane says it is loading.
+              The lens reads its own part (GET /lens) at once: it does not wait for the stream's. */}
+          <Boundary><Suspense fallback={<TranscriptLoading />}>{viewKnown && (loaded || view === "conversation") ? transcript : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
           {/* Its right padding is the conversation's scroll bar, measured once the conversation is drawn; until then the
               width a scroll bar takes on this page (lib/gutter.ts), so nothing in it moves sideways as it arrives. */}

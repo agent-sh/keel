@@ -11,6 +11,7 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
+import { restOff, restOn } from "../lib/open-ahead.ts";
 import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, ListFilter, MessageSquareMore, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, Settings, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
@@ -104,7 +105,9 @@ function useCard() {
       const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8, row, cut });
       if (ms) timer.current = setTimeout(set, ms); else set();
     };
-    return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide, onDragStart: hide };
+    // (A row the hand rests on is read ahead of the press: lib/open-ahead.ts.)
+    const enter = show(wait);
+    return { onPointerEnter: (e: { currentTarget: HTMLElement }) => { enter(e); restOn(s.id); }, onPointerLeave: () => { hide(); restOff(); }, onFocus: show(0), onBlur: hide, onClick: hide, onDragStart: hide };
   };
   useEffect(() => () => clearTimeout(timer.current), []);
   return { card, bind, hide };

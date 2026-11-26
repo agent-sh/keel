@@ -19,18 +19,17 @@ import { useFindAsk } from "../lib/find-ask.ts";
 import type { Place } from "../lib/find.ts";
 import { keptJournal } from "../lib/kept.ts";
 import { setLensView } from "../lib/lens-view.ts";
+import { keepLens, keptLens, lensOnItsWay, readLens, type LensPage } from "../lib/lens-data.ts";
+import { shown as textShown } from "../lib/open-mark.ts";
 import { placeOf, putPlace } from "../lib/place.ts";
 import { api, failed, useStore } from "../lib/store.ts";
 import { getUI, setUI } from "../lib/ui.ts";
 import { clock, cn } from "../lib/utils.ts";
 import { useWatch } from "../lib/watch.ts";
 import { CopyButton } from "./CopyButton.tsx";
+import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { Live, StreamRows } from "./Transcript.tsx";
 
-type LensPage = {
-  items: LensItem[]; events: Record<string, StoredEvent>; stable: number; stable_id: string | null;
-  last: { id: string; seq: number } | null; earlier?: boolean; whole?: boolean;
-};
 type Run = Extract<LensItem, { t: "run" }>;
 const keyOf = (it: LensItem) => (it.t === "run" ? `r:${it.first}` : it.id);
 const endOf = (it: LensItem) => (it.t === "run" ? it.to : it.seq);
@@ -54,6 +53,7 @@ const PART = 200;
 const NONE: StoredEvent[] = [];
 // (The bar's own chunk, the one the full stream loads: lib/preload.ts fetches it once the page settles.)
 const FindBar = lazy(() => import("./FindBar.tsx").then((m) => ({ default: m.FindBar })));
+const TAIL = 24, STEP = 150;
 
 // One folded stretch: its line, and its full stream in place once opened (read a part at a time).
 // `reveal`: a seq Find reaches in it: the stretch opens (when it was folded) and is read as far as
@@ -153,24 +153,28 @@ const Shown = memo(function Shown({ sid, e, turn, fresh, lensKey }: { sid: strin
 export function Lens({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const watch = useWatch(session);
-  const [data, setData] = useState<LensPage | null>(null);
+  // A lens this page read before is drawn at once, and only what came since is read (lib/lens-data.ts).
+  const [data, setData] = useState<LensPage | null>(() => keptLens(sessionId));
+  const fromKept = useRef(data);
   const [error, setError] = useState<string | null>(null);
   const now = useRef<LensPage | null>(null);
   now.current = data;
+  useEffect(() => { if (data) keepLens(sessionId, data); }, [data]);
   // One read at a time; what changes meanwhile is read once after it.
-  const busy = useRef(false), again = useRef(false), soon = useRef(0);
+  const busy = useRef(false), again = useRef(false), soon = useRef(0), first = useRef(true);
   const pull = () => {
     if (busy.current) { again.current = true; return; }
     busy.current = true;
     const was = now.current;
-    const q = was?.stable && was.stable_id ? `?after=${was.stable}&at=${encodeURIComponent(was.stable_id)}` : "";
-    api<LensPage>(`/api/sessions/${sessionId}/lens${q}`)
+    // (A first read the page started ahead of the press is the one taken.)
+    const read = (!was && lensOnItsWay(sessionId)) || readLens(sessionId, was ?? undefined);
+    read
       .then((r) => { setError(null); setData((d) => merged(d, r)); }, (e) => setError(failed(e, { at: "lens", session_id: sessionId })))
       .finally(() => { busy.current = false; if (again.current) { again.current = false; pull(); } });
   };
   const head = session?.head;
   useEffect(() => {
-    if (!now.current) { pull(); return; }
+    if (first.current) { first.current = false; pull(); return; }
     clearTimeout(soon.current);
     soon.current = window.setTimeout(pull, 600);
   }, [head]);
@@ -182,6 +186,17 @@ export function Lens({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   const items = useMemo(() => (data ? joinRuns(data.items) : []), [data]);
+  // The newest screen first: a long lens draws its last TAIL items with its first frame and the older ones in
+  // parts of STEP after it, a frame apart, so its text shows before the rest of the lens is made.
+  const [cut, setCut] = useState<number | null>(null);
+  const hidden = Math.min(cut ?? (data ? Math.max(0, items.length - TAIL) : 0), items.length);
+  useEffect(() => { if (data && cut === null) setCut(Math.max(0, items.length - TAIL)); }, [data]);
+  useEffect(() => {
+    if (!hidden) return;
+    let t = 0;
+    const r = requestAnimationFrame(() => { t = window.setTimeout(() => setCut(Math.max(0, hidden - STEP)), 0); });
+    return () => { cancelAnimationFrame(r); clearTimeout(t); };
+  }, [hidden]);
   const working = session?.phase === "working";
   // The owner's own turn runs (a message of his has no reply yet): its reply streams here.
   const lastYou = items.findLastIndex((x) => x.t === "you");
@@ -200,7 +215,8 @@ export function Lens({ sessionId }: { sessionId: string }) {
   };
   const endFresh = () => { clearTimeout(going.current); going.current = 0; saw.current = false; setFresh(null); markRead(); };
   useEffect(() => {
-    if (!data || arrived.current) return;
+    // (Where what is new starts is read from the lens as the daemon has it now, not as the page kept it.)
+    if (!data || arrived.current || data === fromKept.current) return;
     arrived.current = true;
     const p = placeOf(sessionId);
     if (p?.readSeq === undefined) return markRead(); // the first sight of it on this device: nothing is new
@@ -226,6 +242,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
   useEffect(() => () => clearTimeout(going.current), []);
   const toFresh = () => {
     const el = scroller.current, on = freshEl();
+    if (el && !on && hidden) { setCut(0); requestAnimationFrame(() => requestAnimationFrame(toFresh)); return; }
     if (!el || !on) return;
     stick.current = false;
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -239,6 +256,8 @@ export function Lens({ sessionId }: { sessionId: string }) {
   // Where the view stood and what Find opened, put back when it closes.
   const before = useRef<{ top: number; stick: boolean; back: () => void } | null>(null);
   const finding = find.ask > 0;
+  // A find seeks through every item: the older ones not drawn yet are drawn at once.
+  useLayoutEffect(() => { if (finding) setCut(0); }, [finding]);
   // (Before the bar's own effects: what its first place opens is in the journal.)
   useLayoutEffect(() => {
     if (!finding || before.current) return;
@@ -286,6 +305,16 @@ export function Lens({ sessionId }: { sessionId: string }) {
 
   // ---------- The end is followed while the reader is at it ----------
   useLayoutEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [items, awaited]);
+  useLayoutEffect(() => { if (data) textShown(sessionId); }, [!!data, sessionId]);
+  // Older items drawn above a reader who left the end keep what they read where it was.
+  const tall = useRef(0);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (stick.current) el.scrollTop = el.scrollHeight;
+    else if (tall.current) el.scrollTop += el.scrollHeight - tall.current;
+  }, [hidden]);
+  useLayoutEffect(() => { tall.current = scroller.current?.scrollHeight ?? 0; });
   useEffect(() => {
     const c = content.current, el = scroller.current;
     if (!c || !el) return;
@@ -295,6 +324,8 @@ export function Lens({ sessionId }: { sessionId: string }) {
   }, [!!data]);
 
   if (!session) return <div className="flex-1" />;
+  // (The lens is drawn before the session's stream is read: until its own read is in, it says it is loading.)
+  if (!data && !error) return <TranscriptLoading />;
   const needs = watch === "need";
   const lastRun = items.findLastIndex((x) => x.t === "run");
   const said = (it: LensItem) => (fresh && keyOf(it) === fresh.key ? newSinceAt(clock(fresh.at)) : undefined);
@@ -321,6 +352,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
           )}
           {data && !items.length && <p className="text-caption text-faint" data-testid="lens-empty">No messages yet.</p>}
           {items.map((it, i) => {
+            if (i < hidden) return null;
             const k = keyOf(it);
             if (it.t === "run") return <RunLine key={k} lensKey={k} sid={sessionId} run={it} live={working && i === items.length - 1} needs={needs && i === lastRun && i === items.length - 1} fresh={said(it)} reveal={reveal?.key === k ? reveal.seq : undefined} />;
             const e = data!.events[it.id];

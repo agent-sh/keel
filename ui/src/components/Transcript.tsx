@@ -26,6 +26,7 @@ import { useFindAsk } from "../lib/find-ask.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { preloadSettled } from "../lib/preload.ts";
+import { shown as textShown } from "../lib/open-mark.ts";
 import { every } from "../lib/clock.ts";
 import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, type Place } from "../lib/place.ts";
 import { auto, autoState, panesInView, presentAt } from "../lib/automation.ts";
@@ -1893,6 +1894,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // A session's first frame: the view says which blocks before it is painted. (After that, what
   // changes size is measured by the size observer, when the layout is done.)
   useLayoutEffect(() => { if (events && win?.sid !== sessionId) measureWindow(); }, [events]);
+  // Its first rows are laid out: the press that opened it has its text (lib/open-mark.ts).
+  useLayoutEffect(() => { if (events) textShown(sessionId); }, [!!events, sessionId]);
   // The blocks under the keyboard and a selection stay drawn: the row that holds the focus, and every
   // drawn block a selection spans (what is copied is what is drawn; a selection made by dragging
   // has drawn every block it passed).

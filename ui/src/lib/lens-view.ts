@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { useAuto } from "./automation.ts";
 import { flushPlaces, placeOf, putPlace } from "./place.ts";
-import { api, useStore } from "./store.ts";
+import { api, getState, useStore } from "./store.ts";
 
 export type LensView = "conversation" | "stream";
 const subs = new Set<() => void>();
@@ -22,16 +22,34 @@ export function setLensView(session: string, view: LensView) {
 // A session has agents when an agent of it is known here, or the daemon says it started one (the page's
 // list of agents holds the live and recent ones only): asked once a session, a seek on the daemon.
 const asked = new Map<string, boolean | null>();
+const asking = new Map<string, Promise<boolean>>();
+// Whether the session has agents, asked once (a read ahead of the press asks it too: lib/open-ahead.ts).
+export function agentsOf(session: string): Promise<boolean> {
+  const known = asked.get(session);
+  if (known != null) return Promise.resolve(known);
+  if (kidsHere(session)) return Promise.resolve(true);
+  ask(session);
+  return asking.get(session) ?? Promise.resolve(false);
+}
+// The view a session opens on, once its agents are known (as useLensView says it).
+export const viewOf = (session: string, agents: boolean): LensView => placeOf(session)?.view ?? (agents ? "conversation" : "stream");
 function ask(session: string) {
   if (asked.has(session)) return;
   asked.set(session, null);
-  api<{ agents: boolean }>(`/api/sessions/${session}/has-agents`).then((r) => {
-    asked.set(session, r.agents);
-    if (r.agents) { tick++; for (const f of subs) f(); }
-  }, () => asked.set(session, false));
+  const p = api<{ agents: boolean }>(`/api/sessions/${session}/has-agents`).then((r) => r.agents, () => false).then((agents) => {
+    asked.set(session, agents);
+    asking.delete(session);
+    tick++;
+    for (const f of subs) f();
+    return agents;
+  });
+  asking.set(session, p);
 }
+// (A session whose agents' sessions the page's list holds has agents: known with no question.)
+const kidsHere = (session: string) => Object.values(getState().sessions).some((s) => s.parent_id === session);
 export function useHasAgents(session: string): boolean {
-  const auto = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === session));
+  const kids = useStore((s) => Object.values(s.sessions).some((x) => x.parent_id === session));
+  const auto = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === session)) || kids;
   if (!auto) ask(session);
   return auto || asked.get(session) === true;
 }
@@ -43,4 +61,14 @@ export function useLensView(session: string): LensView {
   const elsewhere = useStore((s) => !!s.sessions[session]?.machine || !!s.sessions[session]?.outside);
   if (elsewhere) return "stream";
   return placeOf(session)?.view ?? (agents ? "conversation" : "stream");
+}
+
+// Whether the view is known yet: a session whose owner picked a view, that is elsewhere, or whose agents are
+// known. Until then the pane waits for the answer rather than draw the stream and then the lens over it.
+export function useLensViewKnown(session: string): boolean {
+  useSyncExternalStore(subscribe, () => tick);
+  const kids = useStore((s) => Object.values(s.sessions).some((x) => x.parent_id === session));
+  const auto = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === session)) || kids;
+  const elsewhere = useStore((s) => !!s.sessions[session]?.machine || !!s.sessions[session]?.outside);
+  return auto || elsewhere || !!placeOf(session)?.view || (asked.get(session) ?? null) !== null;
 }

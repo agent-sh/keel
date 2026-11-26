@@ -17,6 +17,7 @@
 // KEEL_FIXTURE_FIND=word (coordinator): the word in the output of one call of the second stretch,
 // past the part a stretch opens with (220 events into it), and of one call early in the third, and
 // nowhere else.
+//     KEEL_FIXTURE_ASKS=n gives it n prompts of the owner's instead of four.
 // KEEL_FIXTURE_FIND=word (turns): the word in the second turn's prompt (older
 // than the part a page opens with), in the prompt of a turn half way down that
 // part (far from the end the page opens at), and in the output of a call near
@@ -85,7 +86,7 @@ function run(id: string, model: string) {
 // A coordinator's history (KEEL_FIXTURE_SHAPE=coordinator): four prompts of the owner's and, between
 // them, stretches of the harness's turns. Its events are spread over 65 hours before now.
 function coordinator(id: string, model: string) {
-  const per = Math.max(60, Math.floor(N / 5));
+  const per = Math.max(Number(process.env.KEEL_FIXTURE_ASKS) > 4 ? 10 : 60, Math.floor(N / (Number(process.env.KEEL_FIXTURE_ASKS ?? 4) + 1)));
   const t0 = Date.now() - 65 * 3600_000;
   let n = 0, k = 0;
   const step = (65 * 3600_000) / Math.max(1, N + 8);
@@ -121,12 +122,14 @@ function coordinator(id: string, model: string) {
     add("assistant", { model, usage, stop: "end_turn", blocks: [{ type: "text", text: last }] });
     add("turn_end", { reason: "end_turn", usage, ms: 38_000 + (k % 5) * 4000, steps: 2, tools: 1 });
   };
-  const asks = [
+  const four = [
     "Start three workers on the parser lanes and land what passes.",
     "How far are the lanes? Land the ones that are green.",
     "Retry the failed lane with a smaller change.",
     "Summarize what landed today.",
   ];
+  // KEEL_FIXTURE_ASKS=n: n prompts of the owner's (the four, then numbered ones), the stretches between them shorter.
+  const asks = Array.from({ length: Number(process.env.KEEL_FIXTURE_ASKS ?? 4) }, (_, i) => four[i] ?? `Message ${i + 1}: ${say(i, 12)}.`);
   for (let p = 0; p < asks.length; p++) {
     add("user", { text: asks[p] });
     work(`lane-${p}`, `Reply to your message ${p + 1}: ${say(p + 3, 30)}.`);
