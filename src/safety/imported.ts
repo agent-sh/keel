@@ -40,11 +40,12 @@ const PERSON_ORIGINS: ReadonlySet<unknown> = new Set([undefined, "steer", "queue
 // A stored prompt a person gave, for a writer that marks the owner's typing for another reader (the memory
 // store's transcript, src/integrations/claude-format.ts): of the copy, only what ownersImported takes (its reader's
 // mark, kept only when the drive did not send the words: src/drive/sent.ts); of Keel's own, the owner's words with
-// a person's origin, never the harness's notices or a peer's message.
+// a person's origin, never the harness's notices, a peer's message or a prompt that came another way (`via`: a
+// program's `keel run`, the debug fix's brief).
 export const personTyped = (imp: Imported, e: { kind: string; seq: number; ts: number; data: any }): boolean => {
   if (e.kind !== "user" || !e.data) return false;
   const d = e.data;
   if (inCopy(imp, e)) return ownersImported(imp, d);
   const text = typeof d.text === "string" ? d.text : "";
-  return !d.kind && PERSON_ORIGINS.has(d.origin) && !text.startsWith("[harness]") && !text.startsWith(PEER_PREFIX);
+  return !d.kind && !d.via && PERSON_ORIGINS.has(d.origin) && !text.startsWith("[harness]") && !text.startsWith(PEER_PREFIX);
 };

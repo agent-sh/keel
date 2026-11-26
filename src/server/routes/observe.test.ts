@@ -7,6 +7,7 @@ import { Bus } from "../../core/bus.ts";
 import { Store } from "../../core/store.ts";
 import { allHooks } from "../../engine/hooks.ts";
 import { fixKey, observeRoutes, topFrame } from "./observe.ts";
+import { personTyped } from "../../safety/imported.ts";
 
 const hooksAtStart = allHooks().length; // the routes register turn hooks on this store: taken off before it closes
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "observe-routes-"));
@@ -14,9 +15,10 @@ const store = new Store(dir);
 // The errors a fix is asked for, and the prompts the fix sessions were sent.
 const rows = new Map<string, any>();
 const sent: string[] = [];
+const sentData: any[] = [];
 const routes = observeRoutes({
   store, bus: new Bus(), workspace: dir,
-  engine: { isRunning: () => false, statusOf: () => undefined, send: (id: string) => void sent.push(id) },
+  engine: { isRunning: () => false, statusOf: () => undefined, send: (id: string, text: string, o?: { meta?: object }) => { sent.push(id); sentData.push({ text, ...o?.meta }); } },
   providers: { defaultModel: async () => "p:m", resolve: async () => ({}) },
   errors: { capture: () => {}, get: (id: string) => rows.get(id), find: (id: string) => rows.get(id) },
 } as any) as any;
@@ -79,6 +81,8 @@ test("two Fix presses on one cause start one session, and a later one opens it",
   expect(a.session.id).toBe(b.session.id);
   expect(one.status === 200 ? a.existing : b.existing).toBe(true);
   expect(sent).toEqual([a.session.id]);
+  // Keel's brief, never the owner's typing in the memory transcript.
+  expect(personTyped({ own: false, until: 0 }, { kind: "user", seq: 1, ts: 1, data: sentData[0] })).toBe(false);
   const reopened = await fix("stall-b");
   expect(reopened.status).toBe(200);
   const later = (await reopened.json()) as any;

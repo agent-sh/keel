@@ -285,7 +285,8 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         : ["Find the cause. If it is a bug in code you can change here, fix it and say how you checked the fix. If it is not a code problem (a key, a quota, the network, a provider outage), say what it is and what the owner should do."]),
     ].join("\n");
     if (key) store.db.query("INSERT INTO debug_fixes (key, session_id, ts) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET session_id = excluded.session_id, ts = excluded.ts").run(key, s.id, Date.now());
-    engine.send(s.id, text);
+    // Keel's words, written for the owner's press: `via` keeps them from being marked as his typing (personTyped).
+    engine.send(s.id, text, { meta: { via: "debug_fix" } });
     return { session: store.session(s.id)!, path };
   }
 

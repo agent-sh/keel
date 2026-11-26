@@ -228,9 +228,11 @@ export const runRoutes: RouteModule = (deps) => {
           }
         }
 
+        // A program's prompt as often as a person's: `via` says so to what marks a person's typing (personTyped,
+        // src/safety/imported.ts) and to nothing else (an origin would change whose words the gate counts it).
         // The images are fitted first: what is read and sent after it is one
         // step, so after_seq is the last event before this prompt.
-        const { after_seq, r } = await fitted(s.id, b.images, (images) => ({ after_seq: lastSeq(deps, s.id), r: engine.send(s.id, text, { mode: b.mode, images }) }));
+        const { after_seq, r } = await fitted(s.id, b.images, (images) => ({ after_seq: lastSeq(deps, s.id), r: engine.send(s.id, text, { mode: b.mode, images, meta: { via: "run" } }) }));
         const event_id = "event" in r && r.event ? r.event.id : null;
         const queue_id = "queued" in r && r.queued ? r.queued.id : null;
         if (key) store.db.run("INSERT OR REPLACE INTO cli_runs (key, session_id, after_seq, event_id, created, fingerprint, queue_id) VALUES (?, ?, ?, ?, ?, ?, ?)", [key, s.id, after_seq, event_id, Date.now(), fingerprint, queue_id]);
