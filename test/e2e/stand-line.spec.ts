@@ -37,6 +37,8 @@ test("a row says where its session stands from facts: its wait and when it gives
     await expect(row(page, id).getByTestId("row-why")).toBeVisible({ timeout: 30_000 });
     await row(page, id).hover();
     await expect(page.getByTestId("rail-card-why")).toContainText("Its wait gives up at ", { timeout: 15_000 });
+    // A wait is well: its line is in the card's own ink, and the wait's colour stays on the mark, the word and the edge.
+    expect(await page.getByTestId("rail-card-why").evaluate((el) => { const p = el.appendChild(document.createElement("i")); p.style.color = "var(--fg)"; const fg = getComputedStyle(p).color; p.remove(); return getComputedStyle(el).color === fg; })).toBe(true);
     await shoot(page, "stand-line-01-waits");
     await page.mouse.move(1200, 600);
     writeFileSync(gate, "go\n");

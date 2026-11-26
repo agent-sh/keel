@@ -263,11 +263,11 @@
 .k-rail-card-work { margin-top: 0.375rem; font-size: var(--text-caption); line-height: 1.4; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card-work b { margin-right: 0.4375rem; font-size: var(--text-micro); font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
 .k-rail-card-why, .k-rail-card-new { margin-top: 0.375rem; font-size: var(--text-caption); font-weight: 400; }
-/* Why, in the state's ink: the ask, the step, the wait, the failure. Three lines at most. */
+/* Why, in the ink of a state that needs you: the ask, the failure. A wait is well: what it waits on and when it gives
+   up are in the card's ink, and its state's colour stays on the mark, the word and the edge. Three lines at most. */
 .k-rail-card-why { line-height: 1.4; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .k-rail-card[data-watch="need"] .k-rail-card-why { color: var(--st-need-ink); }
 .k-rail-card:is([data-watch="fail"], [data-watch="declined"]) .k-rail-card-why { color: var(--st-fail-ink); }
-.k-rail-card[data-watch="wait"] .k-rail-card-why { color: var(--st-wait-ink); }
 .k-rail-card-why[data-why="stalled"] { color: var(--st-work-ink); }
 .k-rail-card-row .k-row-class { margin-left: 0.125rem; }
 .k-rail-card-time[data-live] { color: var(--muted); font-weight: 600; }
