@@ -2222,6 +2222,12 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-restart-band > .k-btn:first-of-type { margin-left: 0.625rem; }
   .k-restart-band > .k-btn + .k-btn { color: var(--muted); }
 }
+/* A phone on its side has the width for the sentence and its answers on one line, and no height for a second:
+   the band is one finger's line, the sentence taking what the answers leave. */
+@media (pointer: coarse) and (max-height: 499px) {
+  .k-restart-band { flex-wrap: nowrap; padding-block: 0; }
+  .k-restart-band > span { flex: 1 1 0; }
+}
 
 /* The bar of another harness's session on a phone (OutsideBar.tsx; after its desk rules, which it overrides). */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {

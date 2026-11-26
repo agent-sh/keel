@@ -40,8 +40,8 @@ test("a restart asked while you are at a page waits for you, joined into one, an
   expect((await daemon(request)).restart_waiting).toBeNull();
 });
 
-test.describe("on a phone", () => {
-  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) test.describe(`on a phone ${size.width}x${size.height}`, () => {
+  test.use({ viewport: size, hasTouch: true, isMobile: true });
   test("the band says its sentence whole and its two answers are quiet words in the band", async ({ page, request }) => {
     await page.goto("/");
     await request.post("/api/presence", { data: { session_id: null, focused: true, idle_ms: 0 } });
@@ -58,7 +58,13 @@ test.describe("on a phone", () => {
       expect(r.y + r.height, `${id} stays inside the band`).toBeLessThanOrEqual(box.y + box.height + 0.5);
       expect(await b.evaluate((e) => getComputedStyle(e).boxShadow), `${id} has no frame`).toBe("none");
     }
-    await shoot(page, "restart-wait-02-phone");
+    // On its side the phone has the width for one line and no height for two: the answers sit beside the sentence.
+    if (size.width > size.height) {
+      const line = (await said.boundingBox())!, now = (await band.getByTestId("restart-waiting-now").boundingBox())!;
+      expect(Math.abs(line.y + line.height / 2 - (now.y + now.height / 2)), "the answers are on the sentence's line").toBeLessThanOrEqual(4);
+      expect(box.height, "the band is one line").toBeLessThanOrEqual(now.height + 2);
+    }
+    await shoot(page, `restart-wait-02-phone-${size.width}`);
     await band.getByTestId("restart-waiting-off").tap();
     await expect(band).toHaveCount(0);
   });
