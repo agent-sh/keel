@@ -5,7 +5,8 @@ import { machine } from "../tools/heavy.ts";
 import type { WaitShape } from "../engine/cache-plan.ts";
 import { capture, D } from "./core.ts";
 import * as failures from "./failures.ts";
-import { decide, IDLE, loadWhy, MAX_WAIT_MS, over, SAMPLE_MS, SETTLE_MS, type LoadState, type Reading, type Tree } from "./load-rules.ts";
+import { decide, IDLE, loadWhy, MAX_WAIT_MS, over, SAMPLE_MS, SETTLE_MS, type LoadState, type Psi, type Reading, type Tree } from "./load-rules.ts";
+import type { Pressures } from "../tools/pressure.ts";
 import { blocksOnAgents } from "./tools.ts";
 
 // Agent trees wait while the machine is over its thread count (the decision is pure, in ./load-rules.ts). It is
@@ -157,6 +158,13 @@ function account(r: Reading, gap: number) {
   for (const h of overByHour.keys()) if (h < hour - 24) overByHour.delete(h);
 }
 
+// The pressure beside the load (src/automation/load-rules.ts): none where the machine's processors' is not read.
+function psiOf(p: Pressures | undefined): { psi?: Psi } {
+  const cpu = p?.host.cpu;
+  if (cpu === undefined) return {};
+  return { psi: { cpu, ...(p!.host.memory !== undefined ? { memory: p!.host.memory } : {}), ...(p!.unattended.cpu !== undefined ? { slice_cpu: p!.unattended.cpu } : {}) } };
+}
+
 // One pass of the automation's pulse: a reading every five seconds and the decision on it.
 export function tick(now = Date.now()) {
   if (now - lastAt < SAMPLE_MS) return;
@@ -166,7 +174,9 @@ export function tick(now = Date.now()) {
     const c = conf();
     if (!c.on) { if (st.held.length) settle(IDLE, now); readings = []; tell(); return; }
     const m = machine.read();
-    const r: Reading = { at: now, load1: m.load1, threads: c.threads ?? m.cores };
+    // The pressure's lines are measured against the machine's own thread count: a line the owner set
+    // (load_hold.threads) is his, and the load alone is read against it.
+    const r: Reading = { at: now, load1: m.load1, threads: c.threads ?? m.cores, ...(c.threads === null ? psiOf(m.pressure) : {}) };
     loadKept(now);
     const had = waited.length ? waited[0] : undefined;
     // Readings older than the minute (and a sample) are no longer read. A hole in them (the pulse paused while
@@ -188,6 +198,8 @@ export type LoadHoldView = {
   load1: number | null;
   threads: number | null;
   over: boolean;
+  // The pressure read beside the load (some avg10, percent): null where the kernel has none.
+  pressure: { cpu: number; memory: number | null; unattended_cpu: number | null } | null;
   since: number | null;
   held: { key: string; title: string; since: number }[];
   // The last day: minutes over the line, and the trees that waited and let go.
@@ -205,6 +217,7 @@ export function state(now = Date.now()): LoadHoldView {
     load1: r ? Math.round(r.load1 * 10) / 10 : null,
     threads: r?.threads ?? null,
     over: over(readings, now),
+    pressure: r?.psi ? { cpu: r.psi.cpu, memory: r.psi.memory ?? null, unattended_cpu: r.psi.slice_cpu ?? null } : null,
     since: st.since,
     held: st.held.map((k) => ({ key: k, title: known.get(k)?.title ?? "an agent", since: heldAt.get(k) ?? now })),
     over_min_day: Math.round(overMs / 60_000),
@@ -255,10 +268,11 @@ const min = (ms: number) => `${Math.max(1, Math.round(ms / 60_000))} min`;
 // Settings > Health: whether trees wait for the machine now, and the day's account.
 export function healthRows(now = Date.now()): Row[] {
   const v = state(now);
-  const how = "read the 1-minute load average every five seconds against the thread count";
+  const how = v.pressure ? "read every five seconds: the 1-minute load against the thread count, and beside it the share of the last ten seconds tasks waited for a processor, the machine's and the unattended jobs'" : "read the 1-minute load average every five seconds against the thread count (this kernel reports no pressure)";
   if (!v.on) return [{ id: "machine:load", group: "machine", level: "ok", title: "agent trees do not wait for the machine", detail: "the load hold is off (load_hold.on)" }];
   const day = `over the line ${v.over_min_day} min in the last day${v.waited.length ? `; ${v.waited.length} ${v.waited.length === 1 ? "tree" : "trees"} waited, the longest ${min(Math.max(...v.waited.map((w) => w.ms)))}` : ""}`;
-  const load = v.load1 === null ? "no reading yet" : `load ${v.load1} on ${v.threads} threads`;
+  const psi = v.pressure ? `, processors waited ${Math.round(v.pressure.cpu)}% of the last 10 s${v.pressure.unattended_cpu !== null ? ` (unattended jobs ${Math.round(v.pressure.unattended_cpu)}%)` : ""}${v.pressure.memory !== null && v.pressure.memory >= 1 ? `, memory ${Math.round(v.pressure.memory)}%` : ""}` : "";
+  const load = v.load1 === null ? "no reading yet" : `load ${v.load1} on ${v.threads} threads${psi}`;
   if (v.held.length) {
     const names = v.held.slice(0, 5).map((h) => `${h.title} (${min(now - h.since)})`).join(", ");
     return [{ id: "machine:load", group: "machine", level: "warning", title: `${v.held.length} agent ${v.held.length === 1 ? "tree waits" : "trees wait"} for the machine`, detail: `${load}; waiting: ${names}${v.held.length > 5 ? ` and ${v.held.length - 5} more` : ""}; ${day}`, fix: "nothing to do: they go on as the load falls, the oldest first", how }];

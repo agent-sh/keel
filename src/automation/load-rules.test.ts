@@ -1,7 +1,7 @@
 // Which agent trees wait for the machine: over only after a whole minute above the line, the newest held first,
 // the oldest let go first, and nothing let go while its share would put the machine over again.
 import { expect, test } from "bun:test";
-import { decide, IDLE, MAX_WAIT_MS, over, SAMPLE_MS, SETTLE_MS, type LoadState, type Reading, type Tree } from "./load-rules.ts";
+import { CPU_OVER, CPU_ROOM, decide, IDLE, MAX_WAIT_MS, over, SAMPLE_MS, SETTLE_MS, SLICE_OVER, type LoadState, type Psi, type Reading, type Tree } from "./load-rules.ts";
 
 const T = 24;
 // A minute of readings at one load, ending at `now`.
@@ -98,4 +98,38 @@ test("a tree held past the cap goes on, the newest working tree takes its place,
   expect(next.capped).toEqual([]);
   // Under the line at the cap nothing takes its place.
   expect(decide(held, minute(10, MAX_WAIT_MS), three, MAX_WAIT_MS)).toMatchObject({ held: [], capped: ["t2"] });
+});
+
+// A minute at one load with this pressure beside it.
+const pressed = (load1: number, now: number, psi: Psi): Reading[] => minute(load1, now).map((r) => ({ ...r, psi }));
+
+test("with pressure read, a load over the line holds only while tasks wait and the unattended slice's are among them", () => {
+  const now = 1_000_000;
+  // Over by the load and by the pressure, the slice waiting too: over, as the load alone says.
+  expect(over(pressed(36, now, { cpu: CPU_OVER + 10, slice_cpu: SLICE_OVER + 10 }), now)).toBe(true);
+  // A load that queues nobody for a processor (tasks waiting on the disk count in it): not over.
+  expect(over(pressed(36, now, { cpu: CPU_OVER - 1, slice_cpu: SLICE_OVER + 10 }), now)).toBe(false);
+  // The machine waits, the unattended jobs do not: holding trees would not take it away.
+  expect(over(pressed(36, now, { cpu: CPU_OVER + 30, slice_cpu: 0 }), now)).toBe(false);
+  // No slice read (jobs have no scopes here): the machine's pressure is enough.
+  expect(over(pressed(36, now, { cpu: CPU_OVER + 10 }), now)).toBe(true);
+  // A hot slice under the line is not over: the load still has to be.
+  expect(over(pressed(20, now, { cpu: 40, slice_cpu: 60 }), now)).toBe(false);
+  expect(decide(IDLE, pressed(36, now, { cpu: 50, slice_cpu: 0 }), trees, now).held).toEqual([]);
+});
+
+test("calm by the pressure lets every held tree go while the minute's load still says over", () => {
+  const now = 1_000_000;
+  const held = hold(["t16", "t15", "t14", "t13"], now - SETTLE_MS);
+  // The load lags a burst that ended: 30 on 24 threads, but nothing waited in the last ten seconds.
+  const calm = decide(held, pressed(30, now, { cpu: CPU_ROOM - 1, slice_cpu: 0 }), trees, now);
+  expect(calm.held).toEqual([]);
+  expect(calm.changed_at).toBe(now);
+  // At the room line it is not calm, and the load alone decides: 30 over 13 working trees leaves no room.
+  expect(decide(held, pressed(30, now, { cpu: CPU_ROOM, slice_cpu: 0 }), trees, now).held).toEqual(held.held);
+  // Calm still waits a minute after the last change.
+  expect(decide({ ...held, changed_at: now - 10_000 }, pressed(30, now, { cpu: 0 }), trees, now).held).toEqual(held.held);
+  // With every tree held, calm lets them all go, not one a minute.
+  const four = trees.slice(0, 4);
+  expect(decide(hold(["t3", "t2", "t1", "t0"], 0), pressed(30, SETTLE_MS, { cpu: 1 }), four, SETTLE_MS).held).toEqual([]);
 });

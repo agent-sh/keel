@@ -12,7 +12,8 @@ import { availableParallelism, freemem, loadavg, platform, totalmem } from "node
 import { readFileSync } from "node:fs";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { splitCommand } from "../safety/shell.ts";
-import { cpuMs, jobSlots, running, startJob, type Job, type StartOpts } from "./jobs.ts";
+import { cpuMs, jobScope, jobSlots, running, sliceDir, startJob, type Job, type StartOpts } from "./jobs.ts";
+import { readPressures, type Pressures } from "./pressure.ts";
 import { before, checkConfig, memoryReason, compile, cpuList, loadBetween, nextQuiet, quiet, schedTime, heavyPattern, order, placeLine, room, type Cost, type Gone, type Held, type Match, type PoolConfig, type Quiet, type Reading, type Room, type Who } from "./heavy-pool.ts";
 
 // The defaults. Each kind's cost is measured, one command at a time in a
@@ -91,12 +92,17 @@ const allowedCpus = () => {
   return allowed ?? undefined;
 };
 
-// What the machine is read as, and a job's processor time in ms (a test sets its own).
+// The unattended jobs' slice folder, when jobs have scopes (its pressure is read beside the machine's).
+const unattendedDir = () => { const app = jobScope().slice; return app ? `/sys/fs/cgroup${sliceDir(app, "unattended")}` : undefined; };
+
+// What the machine is read as, and a job's processor time in ms (a test sets its own). `pressure`: the
+// machine's and the unattended slice's (src/tools/pressure.ts), empty where the kernel has none.
 export const machine = {
   cpu: (job: Job): Promise<number> => cpuMs(job),
-  read: (): { cores: number; load1: number; runnable?: number; sched_ns?: number; mem_available_mb: number; mem_total_mb?: number } => ({
+  read: (): { cores: number; load1: number; runnable?: number; sched_ns?: number; mem_available_mb: number; mem_total_mb?: number; pressure?: Pressures } => ({
     cores: allowedCpus()?.size || availableParallelism(), load1: loadavg()[0]!, runnable: runnableNow(),
     sched_ns: platform() === "linux" ? schedTime(read("/proc/schedstat"), allowedCpus()) : undefined, mem_available_mb: memAvailableMb(), mem_total_mb: memTotalMb(),
+    pressure: readPressures(unattendedDir()),
   }),
 };
 
@@ -289,7 +295,7 @@ class Pool {
     const rd = this.reading();
     return {
       config: config(),
-      machine: { cores: rd.cores, load1: Math.round(rd.load1 * 100) / 100, runnable: rd.runnable === undefined ? null : Math.round(rd.runnable * 10) / 10, mem_available_mb: rd.mem_available_mb },
+      machine: { cores: rd.cores, load1: Math.round(rd.load1 * 100) / 100, runnable: rd.runnable === undefined ? null : Math.round(rd.runnable * 10) / 10, mem_available_mb: rd.mem_available_mb, pressure: machine.read().pressure ?? null },
       room: { slots: r.slots, free: r.free, limit: Math.round(r.limit * 10) / 10, busy: Math.round(r.busy * 10) / 10, cause: r.cause, why: r.why },
       held: [...this.held.values()].map((h) => ({ session_id: h.session, who: h.who, command: h.command, pattern: h.pattern, cores: h.cost.cores, since: h.since, ms: now - h.since })),
       line: order(this.line).map((e, i) => ({ place: i + 1, session_id: e.session, who: e.who, command: e.command, pattern: e.pattern, cores: e.cost.cores, since: e.at, ms: now - e.at })),
