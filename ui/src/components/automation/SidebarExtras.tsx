@@ -12,7 +12,6 @@ import { cn } from "../../lib/utils.ts";
 import { AgentMark, agentOn, agentSaid, IconButton, nowMeta, ReportButton, StopAgent } from "./bits.tsx";
 import { ROW_BEAT, timed, useNow as useSecond } from "../Mark.tsx";
 import { beatOf } from "../../lib/clock.ts";
-import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
 import { useAskCount, useNeedCount, useToldState, useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
@@ -24,6 +23,8 @@ import { treeRows } from "../../../../src/core/agent-tree.ts";
 import { isCounted } from "../../../../src/core/agent-count.ts";
 import { setUI } from "../../lib/ui.ts";
 
+// An agent's lane loads the first time a row's lane is opened.
+const AgentLane = lazy(() => import("./Lane.tsx").then((m) => ({ default: m.AgentLane })));
 // The loops panel loads the first time it opens.
 const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default: m.LoopsPanel })));
 
@@ -136,7 +137,7 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
               </IconButton>
               {isLive(a) && <StopAgent a={a} title={title} testid="child-stop" />}
             </span>
-            {lanes.has(a.id) && <AgentLane a={a} className="k-child-lane" testid="child-lane" />}
+            {lanes.has(a.id) && <Suspense fallback={null}><AgentLane a={a} className="k-child-lane" testid="child-lane" /></Suspense>}
           </div>
         );
       })}

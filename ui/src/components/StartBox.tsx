@@ -9,7 +9,6 @@ import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { MachineSep, machineRuns } from "./Where.tsx";
 import { Mark, folderOf } from "./Mark.tsx";
 import { Composer } from "./Composer.tsx";
-import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
@@ -23,6 +22,11 @@ import { fleet, useFleet } from "../lib/fleet.ts";
 import { isFailure } from "../lib/home.ts";
 import { useRail } from "../lib/rail.ts";
 import { createInWorktree, isGitFolder, startBase, startPr, useStartInWorktree } from "../lib/worktree.ts";
+
+// The first run's two parts (no provider yet, no session yet) load when a first run draws them: every later start
+// of the page leaves them out.
+const SetupProviders = lazy(() => import("./Onboarding.tsx").then((m) => ({ default: m.SetupProviders })));
+const FirstSteps = lazy(() => import("./Onboarding.tsx").then((m) => ({ default: m.FirstSteps })));
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
 const WorktreeNotice = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeNotice })));
@@ -140,7 +144,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
           )}
           </div>
           {blocked && <MachineBlocked blocked={blocked} />}
-          {noModels && <SetupProviders />}
+          {noModels && <Suspense fallback={null}><SetupProviders /></Suspense>}
           <div data-testid="new-composer" className="k-start-box">
             <Composer
               model={model}
@@ -164,7 +168,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
             <span className="flex items-center gap-1.5"><Kbd keys="alt+m" /> model</span>
             <span className="flex items-center gap-1.5"><Kbd keys="mod+/" /> all shortcuts</span>
           </div>}
-          {firstRun && <FirstSteps />}
+          {firstRun && <Suspense fallback={null}><FirstSteps /></Suspense>}
         </div>
         {!autoThere && !beside && <WatchLists className="min-w-0 @[74rem]:col-start-2 @[74rem]:row-span-2 @[74rem]:row-start-1 @[74rem]:[&>section:first-child]:mt-[4.25rem]" />}
           {/* Recent is for where the titled list is not on screen (a phone, a rail folded to its marks): beside the list it would say the same sessions again. */}
