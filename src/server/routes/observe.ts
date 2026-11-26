@@ -7,9 +7,9 @@
 //        task: the instruction for the agent, in place of the stock one (the helper's look writes one for a bug of
 //        Keel's); repo "keel": the agent works in Keel's own source folder (from the checkout the daemon runs from, else helper.keel_repo, else the folder the binary was built from; 409 saying which is missing)
 //        writes the bundle under the state folder and starts a session that is
-//        asked to find the cause and fix it -> { session, path }. One fix a cause: while the session started for the
+//        asked to find the cause and fix it -> 201 { session, path }. One fix a cause: while the session started for the
 //        failure's cause (its error group, else its span or turn) is there and not archived, a press opens it
-//        -> { session, existing: true }; two presses at once start one session.
+//        -> 200 { session, existing: true }; two presses at once start one session.
 // GET  /api/debug/fixes?error_ids=a,b            { fixes: { <error id>: <session id> } }: the open fix of each one's cause
 // GET  /api/debug/traces?session_id=&limit=     a session's traces (their root spans), newest first
 //                                               (limit: a whole number from 1, 50 by default, at most 200)
@@ -32,6 +32,7 @@ import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
 import { causeOf } from "../../helper/error-look.ts";
 import { keelRepo } from "../../core/keel-source.ts";
+import type { Session } from "../../core/types.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
 import { agentLine, say, sayAt, stopLine } from "../../admin/daemon-log.ts";
 import { bindStory } from "../../admin/story.ts";
@@ -107,7 +108,9 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   };
   const folderOf = (id: string) => store.session(id)?.workspace || undefined;
   // A fix being started now, by key: a second press waits for it and opens the same session.
-  const starting = new Map<string, Promise<Response>>();
+  type StartedFix = { session: Session; path: string };
+  const starting = new Map<string, Promise<StartedFix | Response>>();
+  const reopen = (session: Session) => json({ session, existing: true });
   const t = (tracer = new Tracer(store, bus, (id) => engine.isRunning(id)));
   // An error that names a span is filed under that span's session and turn.
   errors.spanOf = (id) => t.span(id);
@@ -251,7 +254,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   };
 
   // A new fix session for the failure the body names, kept under its key.
-  async function startFix(body: any, key: string | undefined): Promise<Response> {
+  async function startFix(body: any, key: string | undefined): Promise<StartedFix | Response> {
     const b = bundleFor({ error_id: body.error_id, session_id: body.session_id, turn_event: body.turn_event, span_id: body.span_id });
     if ("status" in b) return json({ error: b.error }, b.status);
     const dir = join(store.stateDir, "debug");
@@ -283,7 +286,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     ].join("\n");
     if (key) store.db.query("INSERT INTO debug_fixes (key, session_id, ts) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET session_id = excluded.session_id, ts = excluded.ts").run(key, s.id, Date.now());
     engine.send(s.id, text);
-    return json({ session: store.session(s.id), path }, 201);
+    return { session: store.session(s.id)!, path };
   }
 
   return {
@@ -317,13 +320,17 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const key = fixKey(body, at, folderOf);
         if (key) {
           const open = openFix(key);
-          if (open) return json({ session: open, existing: true });
+          if (open) return reopen(open);
           const going = starting.get(key);
-          if (going) return (await going).clone();
+          if (going) {
+            const fix = await going;
+            return fix instanceof Response ? fix.clone() : reopen(fix.session);
+          }
         }
         const run = startFix(body, key);
         if (key) { starting.set(key, run); const clear = () => void starting.delete(key); run.then(clear, clear); }
-        return (await run).clone();
+        const fix = await run;
+        return fix instanceof Response ? fix.clone() : json(fix, 201);
       },
     },
 

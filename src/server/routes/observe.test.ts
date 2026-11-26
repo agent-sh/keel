@@ -74,10 +74,14 @@ test("two Fix presses on one cause start one session, and a later one opens it",
   rows.set("other", { id: "other", ts: now, source: "server", message: "TypeError: x is undefined", stack: null, context: null });
   const fix = (error_id: string) => routes["/api/debug/fix"].POST(new Request("http://x/api/debug/fix", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ error_id }) })) as Promise<Response>;
   const [one, two] = await Promise.all([fix("stall-a"), fix("stall-b")]);
+  expect([one.status, two.status].sort()).toEqual([200, 201]);
   const a = (await one.json()) as any, b = (await two.json()) as any;
   expect(a.session.id).toBe(b.session.id);
+  expect(one.status === 200 ? a.existing : b.existing).toBe(true);
   expect(sent).toEqual([a.session.id]);
-  const later = (await (await fix("stall-b")).json()) as any;
+  const reopened = await fix("stall-b");
+  expect(reopened.status).toBe(200);
+  const later = (await reopened.json()) as any;
   expect([later.session.id, later.existing]).toEqual([a.session.id, true]);
   // Another cause is another fix.
   const other = (await (await fix("other")).json()) as any;
@@ -86,7 +90,9 @@ test("two Fix presses on one cause start one session, and a later one opens it",
   expect(listed.fixes).toEqual({ "stall-a": a.session.id, "stall-b": a.session.id, other: other.session.id });
   // An archived fix frees its cause: the next press starts a fresh one.
   store.db.query("UPDATE sessions SET archived = 1 WHERE id = ?").run(a.session.id);
-  const fresh = (await (await fix("stall-a")).json()) as any;
+  const created = await fix("stall-a");
+  expect(created.status).toBe(201);
+  const fresh = (await created.json()) as any;
   expect(fresh.session.id).not.toBe(a.session.id);
   expect(fresh.existing).toBeUndefined();
 });

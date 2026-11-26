@@ -2583,15 +2583,21 @@ describe("an agent started on a bug of Keel's, from the compiled binary", () => 
     const sid = json((await keel(["send", "--new", "--json", "start", "--wait"], { state })).out).session_id as string;
     await idle(sid);
     const start = (body: object) => fetch(`${dm.url}/api/debug/fix`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: sid, repo: "keel", task: "Find it.", ...body }) });
-    const where = async (r: Response) => {
+    const created = async (r: Response, workspace: string) => {
       expect(r.status).toBe(201);
       const s = (await r.json()).session;
+      expect(s.workspace).toBe(workspace);
       await idle(s.id);
-      return s.workspace as string;
+      return s.id as string;
     };
     // The binary has no sources beside it: the folder it was stamped with, this checkout.
     expect((await api("/api/helper/keel-repo")).repo).toMatchObject({ dir: ROOT, from: "build" });
-    expect(await where(await start({}))).toBe(ROOT);
+    const first = await created(await start({}), ROOT);
+    const reopened = await start({});
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({ session: { id: first }, existing: true });
+    const archive = (id: string) => api(`/api/sessions/${id}`, { archived: true }, "PATCH");
+    await archive(first);
     // A checkout of the owner's, set once, is worked in instead.
     const mine = join(SCRATCH, "keel-checkout");
     mkdirSync(join(mine, "src/engine"), { recursive: true });
@@ -2600,9 +2606,10 @@ describe("an agent started on a bug of Keel's, from the compiled binary", () => 
     writeFileSync(join(mine, "src/engine/turn.ts"), "");
     expect((await api("/api/settings", { helper: { keel_repo: mine } }, "PATCH")).settings.helper.keel_repo).toBe(mine);
     expect((await api("/api/helper/keel-repo")).repo).toMatchObject({ dir: mine, from: "setting" });
-    expect(await where(await start({}))).toBe(mine);
+    const second = await created(await start({}), mine);
+    await archive(second);
     // A setting that is not a Keel checkout is refused to be used and the build's folder serves.
     await api("/api/settings", { helper: { keel_repo: join(SCRATCH, "nowhere") } }, "PATCH");
-    expect(await where(await start({}))).toBe(ROOT);
+    await created(await start({}), ROOT);
   }, 60_000);
 });
