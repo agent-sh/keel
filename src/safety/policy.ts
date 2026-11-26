@@ -1087,7 +1087,7 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // names deep the reading is; `given`: where the line's words give each name a value, a loop's words among them,
 // in the line's order; `cost`: what is left of the bound, and what each path looked at came to.)
 type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null> };
-type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; deep: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string; items?: string[] }[]>; from?: { scope: Line; at: number } };
+type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; taken: Set<string>; memo: Map<string, string[]>; busy: Map<string, { out: string[]; deep: number }>; deep: number; low: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string; items?: string[] }[]>; from?: { scope: Line; at: number } };
 // (`shown`: every part of the path is in the line's words, with what the written-out line would be told of it.)
 type Unspelt = { word: string; path: string; rule: string; reads?: true; shown?: { why: string; by?: string; api?: string } };
 // (A value the words do not show: a candidate that starts with it stands in some folder.)
@@ -1106,7 +1106,7 @@ const UP = /(^|\/)\.\.(\/|$)/;
 const clean = (c: string) => c.replace(/["'\x02]/g, "").replace(/[*?[\]{}\x01]/g, "_");
 function scopeOf(parts: Simple[], pre: Laid, home: string, cost: Cost, from?: Line["from"]): Line {
   const sets = new Set<string>(), taken = new Set<string>();
-  return { parts, pre, vals: valuesOf(parts, pre.runs, home, undefined, sets, taken), sets, taken, memo: new Map(), busy: new Map(), deep: 0, cost, ...(from ? { from } : {}) };
+  return { parts, pre, vals: valuesOf(parts, pre.runs, home, undefined, sets, taken), sets, taken, memo: new Map(), busy: new Map(), deep: 0, low: Infinity, cost, ...(from ? { from } : {}) };
 }
 // Where the words of a line give each name a value, read once.
 function givenOf(s: Line): NonNullable<Line["given"]> {
@@ -1143,14 +1143,17 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
   const kept = s.memo.get(n);
   if (kept) return kept;
   const sofar = s.busy.get(n);
-  if (sofar) return sofar.length ? [...sofar] : [SOMEWHERE];
-  // (Names set from names, deeper than a line goes: not followed, and not known to lead nowhere protected.)
+  if (sofar) { s.low = Math.min(s.low, sofar.deep); return sofar.out.length ? [...sofar.out] : [SOMEWHERE]; }
+  // (Names set from names, deeper than a line goes: not followed, and not known to lead nowhere protected. Past
+  // the line's bound nothing more is worked out.)
+  if (s.cost.over) return [];
   if (s.deep >= DEEP) { s.cost.over = true; return []; }
   // (A name a builtin reads a value into, a loop over words the parser did not keep, a `${D:=..}`: a value the
   // words do not show, whatever else the line gives the name, and what a value set from the name itself may hold.)
   const out: string[] = s.taken.has(n) ? [SOMEWHERE] : [];
-  s.busy.set(n, out);
-  s.deep++;
+  const deep = s.deep++, low = s.low;
+  s.busy.set(n, { out, deep });
+  s.low = Infinity;
   // (In the line's order, a loop's words and an assignment alike: one that holds the name itself reads what the
   // line gave it before.)
   for (const { at: j, k, op, value, items } of givenOf(s).get(n) ?? []) {
@@ -1166,7 +1169,11 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
   const all = each(out.length || s.cost.over ? out : [SOMEWHERE], s);
   s.deep--;
   s.busy.delete(n);
-  s.memo.set(n, all);
+  // (Worked out while a name it is set from was itself being worked out, it read only part of that name: it is
+  // not kept, and is worked out whole when it is asked for by itself. In whatever order the words are read, a
+  // name then stands for the same values.)
+  if (s.low >= deep) s.memo.set(n, all);
+  s.low = Math.min(low, s.low);
   return all;
 }
 const loose = (v: string) => (v.startsWith(SOMEWHERE) ? v : LOOSE + v);

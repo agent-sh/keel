@@ -280,6 +280,21 @@ test("a name set from itself reads what the line gave it before: an assignment b
   expect(shell("f=a; for f in $f.log $f.txt; do cat $f; done", "full-auto")).toBe("allow");
 });
 
+test("a name stands for the same values in whatever order the line's words are read", () => {
+  const judged = (command: string, mode: Mode, agent = false) => how(decide({ kind: "shell", command, cwd: ws }, facts(mode, agent ? { agent: true } : {})));
+  // Two names set from each other: the one a word asks for first is worked out through the other, and the other is
+  // then worked out whole, not kept as the part that was known half-way.
+  const ring = "D=/tmp; for p in $D .git/hooks; do true; done; D=$p; ";
+  for (const command of [`${ring}echo x > /tmp/$p.log; cp k $D/pre-commit`, `${ring}cp k $D/pre-commit; echo x > /tmp/$p.log`, `${ring}cat /tmp/$p.log; cp k $D/pre-commit`])
+    expect([command, judged(command, "ask"), judged(command, "full-auto"), judged(command, "ask", true)]).toEqual([command, "owner", "ask-high", "owner"]);
+  expect(judged("D=/tmp; for p in $D out; do true; done; D=$p; echo x > /tmp/$p.log; cp k $D/notes.txt", "full-auto")).toBe("allow");
+  // A ring of names, each set from two of the next, costs no more than the line's bound.
+  const web = `${Array.from({ length: 40 }, (_, i) => `x${i}=$x${(i + 1) % 40}/a$x${(i + 1) % 40}; `).join("")}cat $x0/f; echo x > $x3/g`;
+  const t0 = performance.now();
+  expect(judged(web, "ask")).toBe("ask-high");
+  expect(performance.now() - t0).toBeLessThan(2000);
+});
+
 test("a tool given an owner-only file's path is the owner's; other paths and text are not paths", () => {
   expect(pathsNamed({ path: "~/.bashrc", content: "x", nested: { files: ["/etc/hosts", "relative/a.txt"] }, note: "see /home/u/.bashrc for more" })).toEqual(["~/.bashrc", "/etc/hosts"]);
   const tool = (input: unknown, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "other", paths: pathsNamed(input) }, facts(mode, more)));
