@@ -310,7 +310,7 @@ const send_input: Tool = {
   urgent: "follow-up-start", // it messages the other agents of its tree; a message to a finished agent may start its work fresh (src/engine/follow-up.ts)
   families: OTHERS,
   readOnly: false, kind: "own",
-  description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent starts its new work where it is cheapest: in its context, or fresh from a capsule of its work (its task, its report, the files and commands of its work); the result says which. Its next result goes to the agent that spawned it.",
+  description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Report progress to your parent in your final answer, not by messaging a session above you. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent starts its new work where it is cheapest: in its context, or fresh from a capsule of its work (its task, its report, the files and commands of its work); the result says which. Its next result goes to the agent that spawned it.",
   input_schema: {
     type: "object",
     properties: {

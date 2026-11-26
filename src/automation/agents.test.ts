@@ -112,12 +112,18 @@ const tool = (name: string) => automationTools.find((t) => t.name === name)!;
 const ctx = { sessionId: parent.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
 
 test("an agent that messages the session that started it is told that its report is what goes there", async () => {
+  expect(tool("send_input").description).toContain("Report progress to your parent in your final answer");
   const a = await spawn();
   const r = await tool("SendMessage").run({ to: parent.id, message: "a word" }, { ...ctx, sessionId: a.session_id });
   expect(r.is_error).toBe(true);
   expect(String(r.content)).toContain("is the session that started you, not an agent of this tree");
   // Named by a word for it, or by its title, it is the same session.
-  for (const to of ["parent", "Parent"]) expect(String((await tool("send_input").run({ target: to, message: "a word" }, { ...ctx, sessionId: a.session_id })).content)).toContain("is the session that started you");
+  for (const to of [parent.id, "parent", "Parent"]) {
+    const refused = await tool("send_input").run({ target: to, message: "a word" }, { ...ctx, sessionId: a.session_id });
+    expect(refused.is_error).toBe(true);
+    expect(String(refused.content)).toContain("is the session that started you");
+    expect(String(refused.content)).toContain("Your final answer is your report");
+  }
   const other = await tool("SendMessage").run({ to: "no-such-agent", message: "a word" }, { ...ctx, sessionId: a.session_id });
   expect(String(other.content)).toContain("no agent \"no-such-agent\" in this session's tree");
   end(a, "end_turn");
