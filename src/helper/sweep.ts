@@ -291,7 +291,8 @@ export function measured(s: System, facts: FactRow[] = [], recall?: Recall): Sys
     m = { given: f.checked ?? 0, used: f.recalls_used ?? 0, mistakes: 0, tokens: f.tokens ?? 0 };
     if (f.stale) extra.push({ text: `Forget ${f.stale} stale record${f.stale === 1 ? "" : "s"} no turn used in ${RECORD_STALE_DAYS} days.`, score: 20 + f.stale });
   } else if (s.id === "momentum") {
-    m = { given: f.acts ?? 0, used: f.ended ?? 0, mistakes: 0, tokens: 0 };
+    // A nudge is judged once the session's next turn ended: then it either ended on its own or did not.
+    m = { given: (f.ended ?? 0) + (f.interrupted ?? 0) + (f.failed ?? 0), used: f.ended ?? 0, mistakes: 0, tokens: 0 };
     if (!f.acts) extra.push({ text: "momentum sent Keel no command today: its session scan does not read Keel's control socket (momentum.sock in Keel's state folder), so it supervises no Keel session.", score: 10 });
     else if ((f.interrupted ?? 0) > (f.ended ?? 0)) extra.push({ text: `More of momentum's nudges were stopped (${f.interrupted}) than ended on their own (${f.ended}): review what it steers.`, score: 30 });
   } else {
