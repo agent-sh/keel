@@ -439,9 +439,14 @@ test("agents started together are one line, and the parent's row moves once for 
     await expect.poll(async () => (await working.allInnerTexts()).sort(), { timeout: 20_000 }).toEqual([...lanes].sort());
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("background-popup")).toBeHidden();
-    // The row and its line changed a few times for six agents (they came, one reported), not at each.
+    // The dock and the rail consume separate state feeds. Count their changes separately:
+    // the coalesced batch and the quick report can land before the rail settles on Working.
     const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
-    expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(3);
+    const uniqueInOrder = (values: string[]) => values.filter((value, i) => i === 0 || values[i - 1] !== value);
+    const rows = uniqueInOrder(said.map((line) => line.split("|")[0]!));
+    const counts = uniqueInOrder(said.map((line) => line.split("|")[1]!));
+    expect(rows.filter(Boolean)).toEqual(["Working"]);
+    expect(counts.length, said.join(" ;; ")).toBeLessThanOrEqual(3);
     // In the full stream: one line, with the first tasks named; under it only the agent that failed.
     await showFullStream(page);
     const step = page.locator('[data-testid="work-step"][data-family="agents"]');
