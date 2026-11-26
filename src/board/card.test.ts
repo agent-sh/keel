@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { areasOf, isCard, landCard, missingOf, proofOf } from "./card.ts";
-import type { BoardRow } from "./rules.ts";
+import { canLand, type BoardRow } from "./rules.ts";
 
 const HEAD = "a".repeat(40);
 const row = (o: Partial<BoardRow> = {}): BoardRow => ({
@@ -73,4 +73,24 @@ test("a branch that fails together with another live branch is not ready, and sa
   expect(c.together).toEqual(["fails together with keel/other: unit (stamp keeps bots)"]);
   expect(c.missing[0]).toBe("fails together with keel/other: unit (stamp keeps bots)");
   expect(c.fp).not.toBe(card(row({ together: [] })).fp);
+});
+
+test("a conflict the forecast names makes the card not ready with a new print, and its clearance makes it ready again", () => {
+  const clean = card(row({ forecast: [] }));
+  expect([clean.ready, clean.missing, clean.conflicts]).toEqual([true, [], []]);
+  expect(canLand(row({ forecast: [] }))).toBe(true);
+  // Only the forecast changes: the base now conflicts in one file. The board holds Land back, and so does the card.
+  const base = row({ forecast: [{ with: "main", with_agent: null, base: true, files: ["src/a.ts"] }] });
+  expect(canLand(base)).toBe(false);
+  const held = card(base);
+  expect(held.ready).toBe(false);
+  expect(held.missing).toEqual(["would conflict with the base main in src/a.ts"]);
+  expect(held.fp).not.toBe(clean.fp);
+  // Another branch's conflict is its own fact.
+  const peer = card(row({ forecast: [{ with: "keel/other", with_agent: "ag2", base: false, files: ["src/b.ts"] }] }));
+  expect([peer.ready, peer.missing]).toEqual([false, ["would conflict with keel/other (ag2) in src/b.ts"]]);
+  expect(peer.fp).not.toBe(held.fp);
+  // The conflict clears: the card is ready on the print it had before.
+  const cleared = card(row({ forecast: [] }));
+  expect([cleared.ready, cleared.fp]).toEqual([true, clean.fp]);
 });

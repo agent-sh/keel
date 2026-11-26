@@ -3,7 +3,7 @@
 // evidence is missing, and a print of what the card shows. A decision names the print it was taken on, and
 // is refused when the facts read again print otherwise. Pure: the daemon reads the facts
 // (src/integrations/mobile/landings.ts).
-import type { BoardReview, BoardRow, QueueFact } from "./rules.ts";
+import { forecastWords, type BoardReview, type BoardRow, type QueueFact } from "./rules.ts";
 
 export type CardChecks =
   | { state: "known"; passed: string[]; failed: string[]; not_run: string[] }
@@ -27,6 +27,7 @@ export type LandCard = {
   areas: Area[];
   queue: { state: string; why: string | null } | null; // its branch's latest entry, of this head
   together: string[];          // what fails when it is merged with another live branch (src/landing/together.ts), in words
+  conflicts: string[];         // what the overlap forecast says its head would conflict with now (the base or another branch), in words
   ready: boolean;              // nothing is missing
   missing: string[];           // what of the evidence is not there, in words
   fp: string;
@@ -88,8 +89,8 @@ const VERDICT_SAYS: Record<string, string> = {
 
 // What of the evidence is missing: checks that failed, did not run or are not known, and a review that
 // did not approve this head. The repository naming no checks is said on the card, not missing.
-export function missingOf(checks: CardChecks, review: CardReview | null, together: readonly string[] = []): string[] {
-  const out: string[] = [...together];
+export function missingOf(checks: CardChecks, review: CardReview | null, together: readonly string[] = [], conflicts: readonly string[] = []): string[] {
+  const out: string[] = [...together, ...conflicts];
   if (checks.state === "unknown") out.push(`the checks are not known (${checks.why})`);
   if (checks.state === "known") {
     if (checks.failed.length) out.push(`failed: ${checks.failed.join(", ")}`);
@@ -102,9 +103,11 @@ export function missingOf(checks: CardChecks, review: CardReview | null, togethe
   return out;
 }
 
-// The print of what a card shows: a decision is taken on these facts and no others.
+// The print of what a card shows: a decision is taken on these facts and no others. Every fact that decides
+// whether it is ready is one of them (the work board's landBlock reads the same), so a change of readiness
+// is a change of the print and a decision taken on the older one is refused.
 export function cardPrint(c: Omit<LandCard, "fp" | "ready" | "missing">): string {
-  const facts = [c.key, c.branch, c.head, c.base ?? "", c.base_tip ?? "", String(c.ahead ?? ""), String(c.behind ?? ""), c.agent_state, JSON.stringify(c.checks), JSON.stringify(c.review && { v: c.review.verdict, by: c.review.by, cur: c.review.current, line: c.review.line }), c.proof, JSON.stringify(c.queue), JSON.stringify(c.together)];
+  const facts = [c.key, c.branch, c.head, c.base ?? "", c.base_tip ?? "", String(c.ahead ?? ""), String(c.behind ?? ""), c.agent_state, JSON.stringify(c.checks), JSON.stringify(c.review && { v: c.review.verdict, by: c.review.by, cur: c.review.current, line: c.review.line }), c.proof, JSON.stringify(c.queue), JSON.stringify(c.together), JSON.stringify(c.conflicts)];
   return Bun.hash(facts.join("\u0000")).toString(36);
 }
 
@@ -121,8 +124,10 @@ export function landCard(o: { root: string; title: string; row: BoardRow; report
     checks, review, proof: proofOf(o.report), areas: areasOf(o.numstat),
     queue: q ? { state: q.state, why: q.why } : null,
     together: (r.together ?? []).filter((p) => p.state === "red").map((p) => `fails together with ${p.with}: ${p.checks.map((c) => `${c.name}${c.tests?.length ? ` (${c.tests.slice(0, 3).join(", ")}${c.tests.length > 3 ? ` and ${c.tests.length - 3} more` : ""})` : ""}`).join("; ")}`),
+    // One line a conflict, with its files: the same words the work board holds Land back with.
+    conflicts: (r.forecast ?? []).map((f) => forecastWords([f])),
   };
-  const missing = missingOf(checks, review, body.together);
+  const missing = missingOf(checks, review, body.together, body.conflicts);
   return { ...body, ready: !missing.length, missing, fp: cardPrint(body) };
 }
 
