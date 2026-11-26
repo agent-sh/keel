@@ -264,7 +264,7 @@ const SHORT: Record<SystemId, string> = { tacit: "tacit", helper: "helper", clau
 // A native system's day: each session that loaded it (the newest SESSIONS_MAX judged), its facts as its
 // files hold them now, and the session's next steps. The tokens are every load's block, at the
 // session's model's own bytes a token.
-const LOADS = `SELECT l.session_id, MIN(l.ts) AS ts, l.file AS dir, SUM(l.bytes) AS bytes, s.model AS model FROM native_memory_log l LEFT JOIN sessions s ON s.id = l.session_id
+const LOADS = `SELECT l.session_id, MIN(l.ts) AS ts, l.file AS dir, SUM(l.bytes) AS bytes, s.model AS model FROM native_memory_log l LEFT JOIN sessions s ON s.id = l.session_id AND s.outside IS NULL
   WHERE l.system = ? AND l.action = 'loaded' AND l.ts >= ? AND l.ts < ? GROUP BY l.session_id, l.file ORDER BY MAX(l.ts) DESC`;
 const STEPS = `SELECT data FROM events WHERE session_id = ? AND kind = 'assistant' AND ts >= ? AND ts < ? ORDER BY seq LIMIT ?`;
 const TOUCHED = `SELECT DISTINCT file FROM native_memory_log WHERE session_id = ? AND system = ? AND action IN ('read', 'wrote') AND file != '' AND ts >= ? AND ts < ?`;
