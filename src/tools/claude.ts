@@ -6,6 +6,7 @@ import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, mtim
 import { CLAUDE_RAW } from "./reading.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
+import { memoryWords } from "./job-slice.ts";
 import { noMatch } from "./no-match.ts";
 import { headTail, runShell, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
@@ -74,7 +75,7 @@ const Bash: Tool = {
     const failed = r.signal ? true : r.exitCode !== 0 && !noMatch(command, r.exitCode);
     const note = r.cwdNote ? `\n${r.cwdNote}` : "";
     if (failed) {
-      const why = r.job.stopReason ? `Command ${r.job.stopReason}` : r.signal ? `Killed by ${r.signal}` : `Exit code ${r.exitCode}`;
+      const why = r.job.stopReason ? `Command ${r.job.stopReason}` : r.job.oom ? `${memoryWords(r.job.oom, r.job.oomCap)} Exit code ${r.exitCode ?? "unknown"}.` : r.signal ? `Killed by ${r.signal}` : `Exit code ${r.exitCode}`;
       return fail(`${why}\n${headTail(out, INLINE_FAIL)}${note}`.trimEnd());
     }
     if (out.length > INLINE_OK) {

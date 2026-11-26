@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agnixRows, DISK_BROKEN, diskRow, hookRows, layerRows, mcpRows, matcherVerdict, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts } from "./health-rules.ts";
+import { agnixRows, DISK_BROKEN, diskRow, hookRows, layerRows, mcpRows, matcherVerdict, memoryCapRow, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts } from "./health-rules.ts";
 
 const facts: MatcherFacts = {
   tools: new Set(["Bash", "Edit", "Write", "Read", "shell", "mcp_call"]),
@@ -146,4 +146,15 @@ test("agnix: a line a folder with findings or a failed run, the clean folders on
   expect(rows.map((r) => [r.id, r.level])).toEqual([["agnix:/a", "warning"], ["agnix:/c", "warning"], ["agnix:/e", "ok"], ["agnix:clean", "ok"]]);
   expect(rows.at(-1)!.title).toBe("2 folders linted with no errors or warnings");
   expect(agnixRows({ installed: false, folders: [] }).map((r) => r.id)).toEqual(["agnix:missing"]);
+});
+
+test("the unattended memory cap says its size and whether it is in force; nothing breaks when it is not", () => {
+  const G = 1024 ** 3;
+  expect(memoryCapRow({ cap: 24 * G, alone: true, live: String(24 * G) })).toMatchObject({ level: "ok", title: "unattended commands share a memory cap of 24 GB" });
+  expect(memoryCapRow({ cap: 24 * G, alone: false, aloneWhy: "Unknown assignment" })).toMatchObject({ level: "warning", title: "unattended commands share a memory cap of 24 GB" });
+  expect(memoryCapRow({ cap: 24 * G, noSlice: "cgroup v2 is not mounted" })).toMatchObject({ level: "warning", title: "the unattended memory cap of 24 GB is not in force" });
+  expect(memoryCapRow({ cap: 24 * G, refused: "Access denied" }).detail).toContain("Access denied");
+  expect(memoryCapRow({ cap: 24 * G, live: "max" }).title).toBe("the unattended memory cap of 24 GB is not in force");
+  expect(memoryCapRow({ cap: 24 * G, pending: true }).title).toBe("the unattended memory cap of 24 GB is being set");
+  expect(memoryCapRow({ cap: null })).toMatchObject({ level: "ok", title: "unattended commands have no memory cap" });
 });

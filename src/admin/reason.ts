@@ -23,8 +23,10 @@ const lines = (t: string) => own(t).split("\n").map(printable).filter(Boolean);
 // Lines the shell tools write around the output: no cause is in them.
 const NOISE = /^(Shell cwd was reset to .*|\[\.\.\. \d+ characters cut \.\.\.\]|\(empty\)|\(no output\))$/;
 // How a shell result says the command ended: Claude's Bash leads with it, Gemini's ends with it.
-const HEAD = /^(Exit code -?\d+|Killed by \w+|Command (was|did) .*)$/;
-const TAIL = /^(Exit Code: .*|Signal: .*)$/;
+// A command the kernel killed for memory says so on a line of its own (src/tools/job-slice.ts memoryWords): the lead.
+const HEAD = /^(Exit code -?\d+|Killed by \w+|Killed for memory: .*|Command (was|did) .*)$/;
+const MEMORY = /^Killed for memory: /;
+const TAIL = /^(Exit Code: .*|Signal: .*|Killed for memory: .*)$/;
 // A line shaped like an error, and one that names a place in a file.
 const ERROR = /\b\w*(?:error|Error|ERROR)(?:\s?[\[A-Z][\w\]]{0,12})?:|\b(?:fatal|FATAL|panic|PANIC)\b|\bFAILED\b|\bFAIL\b|^npm (?:error|ERR!) (?!A complete log|To see a list)\S/;
 const PLACE = /[\w./-]+:\d+:\d+/;
@@ -47,7 +49,7 @@ function shell(content: unknown) {
   let body: string[] = [];
   let lead = head;
   if (HEAD.test(head)) {
-    how = head.charAt(0).toLowerCase() + head.slice(1);
+    how = MEMORY.test(head) ? "killed for memory" : head.charAt(0).toLowerCase() + head.slice(1);
     body = ls.slice(1);
   } else if (head.startsWith("Command: ") && ls.some((l) => /^Exit Code: /.test(l))) {
     const from = ls.findIndex((l) => l.startsWith("Output: "));
@@ -55,6 +57,8 @@ function shell(content: unknown) {
     how = `exit code ${ls[to]!.slice("Exit Code: ".length)}`;
     body = from >= 0 && to > from ? [ls[from]!.slice("Output: ".length).trim(), ...ls.slice(from + 1, to)] : [];
     lead = `Exit code ${ls[to]!.slice("Exit Code: ".length)}`;
+    const mem = ls.slice(to + 1).find((l) => MEMORY.test(l));
+    if (mem) { lead = mem; how = "killed for memory"; }
   }
   const said = body.filter((l) => l && !NOISE.test(l) && !TAIL.test(l));
   const cause = said.findLast((l) => ERROR.test(l) && !FRAME.test(l)) ?? said.findLast((l) => PLACE.test(l) && !FRAME.test(l)) ?? said.at(-1);

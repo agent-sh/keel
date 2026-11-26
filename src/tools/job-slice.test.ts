@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { inSlice, jobSlice, SLICES, unattendedProps } from "./job-slice.ts";
+import { inSlice, jobSlice, memoryCap, memoryProps, memoryWords, MEMORY_DEFAULT, sizeText, SLICES, unattendedProps } from "./job-slice.ts";
 
 test("a job is the owner's when he typed it or attends its turn, else unattended; unknown stays the owner's", () => {
   expect(jobSlice({ byOwner: true, attended: false })).toBe("owner");
@@ -19,4 +19,28 @@ test("a scope's command is put in a slice once, after systemd-run's head; anythi
     .toEqual([...head, "--slice=app-keelunattended.slice", "-p", "CPUWeight=50", "--", "bwrap", "x"]);
   expect(inSlice(["bwrap", "x"], head, SLICES.unattended)).toEqual(["bwrap", "x"]);
   expect(inSlice([...head, "bash"], head, SLICES.unattended)).toEqual([...head, "bash"]);
+});
+
+test("the unattended memory cap is a size as systemd writes one, or 0 for none; anything else is refused", () => {
+  const G = 1024 ** 3;
+  expect(memoryCap(MEMORY_DEFAULT)).toEqual({ bytes: 24 * G });
+  expect(memoryCap("512M")).toEqual({ bytes: 512 * 1024 ** 2 });
+  expect(memoryCap(" 1.5gb ")).toEqual({ bytes: 1.5 * G });
+  expect(memoryCap("2T")).toEqual({ bytes: 2 * 1024 ** 4 });
+  expect(memoryCap("4096")).toEqual({ bytes: 4096 });
+  expect(memoryCap(4096)).toEqual({ bytes: 4096 });
+  expect(memoryCap("0")).toEqual({ bytes: null });
+  expect(memoryCap(0)).toEqual({ bytes: null });
+  for (const bad of ["", "24 X", "-1G", "0.0001", "24GiB", "50%", null, true, {}, "infinity"]) expect(memoryCap(bad)).toHaveProperty("error");
+});
+
+test("a cap is MemoryMax with MemoryHigh a little under it and no swap; no cap sets each back to infinity", () => {
+  const G = 1024 ** 3;
+  expect(memoryProps(24 * G)).toEqual([`MemoryMax=${24 * G}`, `MemoryHigh=${24 * G - 0.75 * G}`, "MemorySwapMax=0"]);
+  expect(memoryProps(null)).toEqual(["MemoryMax=infinity", "MemoryHigh=infinity", "MemorySwapMax=infinity"]);
+  expect(sizeText(24 * G)).toBe("24 GB");
+  expect(sizeText(1.5 * G)).toBe("1.5 GB");
+  expect(memoryWords(1, 24 * G)).toStartWith("Killed for memory: the kernel ended a process of this command");
+  expect(memoryWords(2, 24 * G)).toContain("a memory cap of 24 GB");
+  expect(memoryWords(3)).not.toContain("cap");
 });

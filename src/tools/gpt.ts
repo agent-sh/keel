@@ -9,6 +9,7 @@ import { hold } from "./files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
+import { memoryWords } from "./job-slice.ts";
 import { slotRefusal, startHeld, takeFor, waitedLine } from "./heavy.ts";
 import { BASH_PROGRAM, goneCwd, logDir, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
@@ -43,7 +44,7 @@ function execResult(job: Job, t0: number, maxTokens: number): string {
   // Counted on everything this read covered, not only the part kept in memory.
   const original = cut.original || (job.taken ?? 0) > raw.length ? Math.max(cut.original ?? 0, Math.ceil((job.taken ?? 0) / 4)) : undefined;
   const lines = [`Chunk ID: ${Math.random().toString(16).slice(2, 8)}`, `Wall time: ${((Date.now() - t0) / 1000).toFixed(4)} seconds`];
-  if (!running(job)) lines.push(`Process exited with code ${job.exitCode ?? (job.signal ? 128 : -1)}`);
+  if (!running(job)) lines.push(`Process exited with code ${job.exitCode ?? (job.signal ? 128 : -1)}`, ...(job.oom ? [memoryWords(job.oom, job.oomCap)] : []));
   else lines.push(`Process running with session ID ${job.num}`);
   if (original) lines.push(`Original token count: ${original}`);
   lines.push("Output:");

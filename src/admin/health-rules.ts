@@ -81,7 +81,35 @@ export type SandboxFacts = {
   scopeSaid?: string;
   // Why the unattended jobs' slice has no weight of its own (systemctl set-property failed; src/tools/jobs.ts).
   weights?: string;
+  // The unattended jobs' memory cap (job_slice.unattended_memory_max) and where it stands.
+  memory?: MemoryCapFacts;
 };
+
+// The one memory cap of every unattended command together (src/tools/jobs.ts capUnattended). `cap`: bytes, null for
+// none. `noSlice`: why jobs get no scopes here, so nothing is under the cap. `pending`: set-property has not answered.
+// `refused`: why the cap is not in force. `alone`: the user manager takes OOMPolicy=continue on a scope (undefined:
+// not asked yet). `live`: the slice's memory.max as the kernel has it, when the slice runs now.
+export type MemoryCapFacts = { cap: number | null; noSlice?: string; pending?: boolean; refused?: string; alone?: boolean; aloneWhy?: string; live?: string };
+
+export function memoryCapRow(f: MemoryCapFacts): Row {
+  const link = { section: "resources" };
+  const base = { id: "sandbox:memory", group: "sandbox" as const, link, how: "read the setting job_slice.unattended_memory_max and what systemctl set-property on app-keelunattended.slice answered" };
+  if (f.cap === null) return { ...base, level: "ok", title: "unattended commands have no memory cap", detail: "job_slice.unattended_memory_max is 0: unattended commands together may use all the machine's memory" };
+  const size = gb(f.cap);
+  const off = (why: string, fix = SET_CAP): Row => ({ ...base, level: "warning", title: `the unattended memory cap of ${size} is not in force`, detail: `${why}. Unattended commands run without it; nothing else changes`, fix });
+  if (f.noSlice) return off(`commands get no scope of their own here: ${f.noSlice}`, "run Keel under a systemd user manager on cgroup v2 (loginctl enable-linger)");
+  if (f.refused) return off(`systemctl set-property refused it: ${f.refused}`, `run systemctl --user set-property --runtime app-keelunattended.slice MemoryMax=${f.cap} and see what it says`);
+  if (f.pending) return { ...base, level: "ok", title: `the unattended memory cap of ${size} is being set`, detail: "systemctl set-property has not answered yet" };
+  // (The kernel keeps a limit in whole pages.)
+  if (f.live !== undefined && (f.live === "max" || Math.abs(Number(f.live) - f.cap) >= 65_536)) return off(`the slice's memory.max is ${f.live}, not the ${f.cap} bytes set: something else changed it`, "save the setting again, or look at what else sets properties on app-keelunattended.slice");
+  const killed = f.alone === false
+    ? ` This user manager does not take OOMPolicy=continue on a scope (${f.aloneWhy ?? "refused"}): past the cap the command the kernel picked is stopped whole, and its result cannot say it was memory`
+    : " Past it the kernel ends the largest command's process alone, the other commands go on, and its result says it was killed for memory";
+  return { ...base, level: f.alone === false ? "warning" : "ok", title: `unattended commands share a memory cap of ${size}`,
+    detail: `MemoryMax ${size} on app-keelunattended.slice, MemoryHigh a thirty-second under it to slow them first, and no swap. The owner's own commands and the daemon are not under it.${killed}` };
+}
+const SET_CAP = `set job_slice.unattended_memory_max ("24G" by default, "0" for none) with PATCH /api/settings`;
+const gb = (b: number) => { for (const [u, n] of [["TB", 1024 ** 4], ["GB", 1024 ** 3], ["MB", 1024 ** 2]] as const) if (b >= n) return `${Number((b / n).toFixed(2))} ${u}`; return `${b} bytes`; };
 
 export function sandboxRows(f: SandboxFacts): Row[] {
   const link = { section: "safety" };
@@ -95,6 +123,7 @@ export function sandboxRows(f: SandboxFacts): Row[] {
   else if (!f.started) rows.push({ id: "sandbox:probe", group: "sandbox", level: wanted ? "broken" : "warning", title: "bwrap cannot start a sandbox here", detail: `${f.said || "it exited with an error"}${wanted ? `; the default profile is ${f.profile}, and commands run unconfined` : ""}`, fix: "on Ubuntu 24.04 and later, load the bwrap-userns-restrict AppArmor profile; elsewhere enable unprivileged user namespaces", link, path: f.bwrap, how: "started bwrap with a read-only root and ran true" });
   else rows.push({ id: "sandbox:ok", group: "sandbox", level: "ok", title: "the sandbox starts", detail: `bwrap at ${f.bwrap}; default profile ${f.profile}`, link, how: "started bwrap with a read-only root and ran true" });
   if (f.scope === false) rows.push({ id: "sandbox:scope", group: "sandbox", level: "warning", title: "commands cannot get a scope of their own", detail: f.scopeSaid, fix: "start a systemd user manager (loginctl enable-linger), or accept that commands share the daemon's limits", link, how: "ran systemd-run --user --scope true" });
+  if (f.memory) rows.push(memoryCapRow(f.memory));
   if (f.weights) rows.push({ id: "sandbox:weights", group: "sandbox", level: "warning", title: "unattended jobs have no weight of their own", detail: `systemctl set-property on the unattended jobs' slice failed: ${f.weights}. Its jobs still share one slice, at the default weight, so together they weigh as much as the owner's`, fix: "run systemctl --user set-property --runtime app-keelunattended.slice CPUWeight=50 IOWeight=50 and see what it says", link, how: "set the slice's CPUWeight and IOWeight once at start" });
   return rows;
 }

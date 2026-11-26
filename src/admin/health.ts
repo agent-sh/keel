@@ -33,8 +33,8 @@ import type { FilesAsk, FilesResult, HeldFile } from "./health-files.ts";
 import { countsOf, ordered, type HealthReport, type Row } from "./health-rows.ts";
 import { agnix } from "../integrations/agnix.ts";
 import { healthRows as loadRows } from "../automation/load-hold.ts";
-import { jobScope } from "../tools/jobs.ts";
-import { agnixRows, diskRow, hookRows, layerRows, layersOk, mcpRows, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
+import { jobScope, sliceDir, unattendedCap } from "../tools/jobs.ts";
+import { agnixRows, diskRow, hookRows, layerRows, layersOk, mcpRows, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type MemoryCapFacts, type ProviderFacts } from "./health-rules.ts";
 
 export type HealthDeps = { store: Store; providers: Providers };
 
@@ -179,7 +179,19 @@ async function sandbox(): Promise<Row[]> {
     // A machine with no systemd-run wraps nothing and needs no scope: not a fault.
     ...(s ? { scope: s.ok, scopeSaid: s.timedOut ? "it did not answer in time" : s.said } : {}),
     ...(jobScope().weights ? { weights: jobScope().weights } : {}),
+    memory: memoryFacts(),
   }), ...processRows({ platform: "linux", held: startedWithSecrets(), yama: yamaScope(), lost: secretsLost() })];
+}
+
+// The unattended slice's memory cap as the job scopes have it (src/tools/jobs.ts), with the kernel's memory.max
+// when the slice runs now.
+function memoryFacts(): MemoryCapFacts {
+  const at = jobScope();
+  const live = at.slice ? (() => { try { return readFileSync(`/sys/fs/cgroup${sliceDir(at.slice!, "unattended")}/memory.max`, "utf8").trim(); } catch { return undefined; } })() : undefined;
+  const m = at.memory;
+  const cap = m?.bytes ?? unattendedCap();
+  return { cap, ...(at.slice ? {} : { noSlice: at.why ?? "no systemd user manager" }), ...(m?.pending ? { pending: true } : {}), ...(m?.refused ? { refused: m.refused } : {}),
+    ...(at.alone !== undefined ? { alone: at.alone } : {}), ...(at.aloneWhy ? { aloneWhy: at.aloneWhy } : {}), ...(live !== undefined && !m?.pending ? { live } : {}) };
 }
 
 function yamaScope(): number | undefined {

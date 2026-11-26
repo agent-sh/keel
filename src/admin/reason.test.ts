@@ -80,3 +80,13 @@ test("a shell failure is told by how it ended and the cause line, never by the f
   expect(shellMessage("File does not exist: /a")).toBe("File does not exist: /a");
   expect(shellMessage("Exit code 1")).toBe("Exit code 1");
 });
+
+test("a command the kernel killed for memory is told by those words, never by a bare exit 137", () => {
+  const words = "Killed for memory: the kernel ended a process of this command when memory ran out. Use less memory at once before running it again.";
+  const claude = `${words} Exit code 137.\nrunning 4 workers\nbun test v1.3`;
+  expect(reasonLine(claude)).toBe("bun test v1.3 (killed for memory)");
+  expect(shellMessage(claude).split("\n")[0]).toStartWith("Killed for memory: the kernel ended a process");
+  const gemini = `Command: bun test\nDirectory: /work\nOutput: running 4 workers\nExit Code: 137\n${words}`;
+  expect(reasonLine(gemini)).toBe("running 4 workers (killed for memory)");
+  expect(shellMessage(gemini).split("\n")[0]).toBe(words);
+});

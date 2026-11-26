@@ -10,6 +10,7 @@ import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, line
 import { GEMINI_RAW } from "./reading.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
+import { memoryWords } from "./job-slice.ts";
 import { noMatch } from "./no-match.ts";
 import { headTail, runShell, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
@@ -58,6 +59,7 @@ const run_shell_command: Tool = {
     const out = headTail(r.output.trimEnd(), 30_000) || "(empty)";
     const lines = [`Command: ${input.command}`, `Directory: ${r.job.cwd}`, `Output: ${out}`, `Exit Code: ${r.exitCode ?? "(none)"}`];
     if (r.signal) lines.push(`Signal: ${r.signal}`);
+    if (r.job.oom) lines.push(memoryWords(r.job.oom, r.job.oomCap));
     if (r.cwdNote) lines.push(r.cwdNote);
     return { content: lines.join("\n"), is_error: (r.exitCode !== 0 && !noMatch(String(input.command ?? ""), r.exitCode)) || !!r.signal };
   },

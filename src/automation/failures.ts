@@ -2,6 +2,7 @@ import { keyShaped } from "../core/conceal.ts";
 import { errorClass } from "../admin/classes.ts";
 import { exitOf, shellMessage } from "../admin/reason.ts";
 import { silentExit } from "../tools/no-match.ts";
+import { jobMemoryKilled, jobWhat, killedHow } from "../tools/jobs.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { TurnHooks } from "../engine/hooks.ts";
@@ -377,4 +378,11 @@ export function recover() {
 // With any other input of the session: what is owed goes along, at no turn of its own.
 export function init() {
   rider.get = (sessionId, parts) => (parts.some((p) => p.kind === "failures") ? undefined : notice(sessionId, parts));
+  // A background command killed for memory is a failure of its session's scope, told in plain words.
+  jobMemoryKilled.tell = (job) => {
+    const s = D().store.session(job.sessionId);
+    if (!s) return;
+    const at = scope(s);
+    record(at.root, { kind: "tool", cls: "killed for memory", message: `Background command ${jobWhat(job)} ${killedHow(job)}.`, ref: at.ref, tell: at.told ? "ride" : undefined }, s.id);
+  };
 }

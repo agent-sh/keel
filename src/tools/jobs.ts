@@ -22,7 +22,8 @@ import { timed } from "../admin/stall.ts";
 import { RESTART_RAN } from "../core/stops.ts";
 import { lastDown, whileDown } from "../core/late.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
-import { jobSlice, SLICES, unattendedProps, type JobSlice } from "./job-slice.ts";
+import { jobSlice, MEMORY_DEFAULT, memoryCap, memoryProps, memoryWhy, SLICES, unattendedProps, type JobSlice } from "./job-slice.ts";
+import { onSettings, registerSettings, settings } from "../admin/settings.ts";
 
 export type Job = {
   id: string;            // short text id (Claude task_id)
@@ -38,6 +39,11 @@ export type Job = {
   exitCode?: number | null;
   signal?: string | null;
   stopReason?: string;
+  // How many of its processes the kernel killed for memory (its scope's memory.events, written by its
+  // wrapper with the exit code): its result says so instead of a bare exit 137.
+  oom?: number;
+  // The unattended slice's memory cap it ran under (bytes), for those words.
+  oomCap?: number | null;
   // What holds the job's processes: its own transient systemd user scope (a
   // cgroup no descendant leaves, setsid and double forks included), or where
   // that is missing its process group and session, and why.
@@ -325,7 +331,12 @@ export function startJob(o: StartOpts): Job {
   const place: JobSlice = o.by === "owner" ? "owner" : jobSlice({ attended: attendedOf(o.sessionId) });
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${sliceDir(box.slice, place)}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
-  const scoped = (a: string[]) => box.slice ? [...scopeHead(), `--slice=${SLICES[place]}`, `--unit=${unit}`, ...props, ...maxRuntime(), "--", ...a] : a;
+  // An unattended job's scope lets the kernel end the one process it picked when the slice passes its memory cap,
+  // and goes on (OOMPolicy=continue, where the user manager takes it): the default stops the whole scope at once,
+  // its wrapper with it, and nothing is left to say why.
+  const alone = box.slice && place === "unattended" && box.alone ? ["-p", "OOMPolicy=continue"] : [];
+  if (box.slice && place === "unattended") job.oomCap = box.memory?.bytes ?? null;
+  const scoped = (a: string[]) => box.slice ? [...scopeHead(), `--slice=${SLICES[place]}`, `--unit=${unit}`, ...props, ...alone, ...maxRuntime(), "--", ...a] : a;
   // Known secret values never reach the log: its output is filtered on the way in.
   const pairs = secretPairs();
   if (o.pty) {
@@ -342,9 +353,12 @@ export function startJob(o: StartOpts): Job {
     // a daemon restart as the command does; the values reach it in its
     // environment only, and the command never sees that variable.
     const fd = openSync(log, "a");
+    // A job in a scope of its own that failed asks its cgroup whether the kernel killed any of its processes for
+    // memory, while the scope is still there (it goes with its last process), and writes the count beside the code.
+    const exit = job.contain === "cgroup" ? OOM_EXIT : 'echo $c > "$0"';
     const script = pairs.length
-      ? 'p=$KEEL_CONCEAL; b=$KEEL_CONCEAL_BIN; f=$KEEL_CONCEAL_JS; unset KEEL_CONCEAL KEEL_CONCEAL_BIN KEEL_CONCEAL_JS; "$@" 2>&1 | KEEL_CONCEAL="$p" BUN_BE_BUN=1 "$b" -e "$f"; c=${PIPESTATUS[0]}; echo $c > "$0"; exit $c'
-      : '"$@"; c=$?; echo $c > "$0"; exit $c';
+      ? `p=$KEEL_CONCEAL; b=$KEEL_CONCEAL_BIN; f=$KEEL_CONCEAL_JS; unset KEEL_CONCEAL KEEL_CONCEAL_BIN KEEL_CONCEAL_JS; "$@" 2>&1 | KEEL_CONCEAL="$p" BUN_BE_BUN=1 "$b" -e "$f"; c=\${PIPESTATUS[0]}; ${exit}; exit $c`
+      : `"$@"; c=$?; ${exit}; exit $c`;
     const wrapEnv = pairs.length ? { ...env, KEEL_CONCEAL: JSON.stringify(pairs), KEEL_CONCEAL_BIN: process.execPath, KEEL_CONCEAL_JS: FILTER_JS } : env;
     try {
       job.proc = Bun.spawn(scoped(["bash", "-c", script, exitPath(log), ...argv]), {
@@ -458,9 +472,12 @@ export function placeOf(sessionId: string, byOwner = false): { unit: string; dir
 
 // Where jobs' scopes go: slices of the user manager's app.slice, when systemd --user
 // and cgroup v2 are there (read once). `weights`: why the unattended slice has no weight of its own (it then
-// weighs what any slice does, still one share for all its jobs).
-let scopeAt: { slice?: string; why?: string; weights?: string } | undefined;
-export function jobScope(): { slice?: string; why?: string; weights?: string } {
+// weighs what any slice does, still one share for all its jobs). `memory`: the unattended slice's memory cap
+// and whether it is in force. `alone`: the user manager takes OOMPolicy=continue on a scope (probed once).
+export type MemoryFacts = { bytes: number | null; pending?: true; refused?: string };
+export type ScopeAt = { slice?: string; why?: string; weights?: string; memory?: MemoryFacts; alone?: boolean; aloneWhy?: string };
+let scopeAt: ScopeAt | undefined;
+export function jobScope(): ScopeAt {
   if (scopeAt) return scopeAt;
   if (!existsSync("/sys/fs/cgroup/cgroup.controllers")) return (scopeAt = { why: "cgroup v2 is not mounted" });
   const st = sandboxStatus();
@@ -470,6 +487,8 @@ export function jobScope(): { slice?: string; why?: string; weights?: string } {
   if (!slice.startsWith("/")) return (scopeAt = { why: "the user manager names no cgroup for app.slice" });
   scopeAt = { slice };
   weighUnattended(scopeAt);
+  capUnattended(scopeAt);
+  probeAlone(scopeAt);
   return scopeAt;
 }
 
@@ -477,13 +496,66 @@ export function jobScope(): { slice?: string; why?: string; weights?: string } {
 // user manager runs, also over a slice that is empty now. Until it answers, jobs go in the slice at whatever
 // weight it has (the default, or what an earlier daemon set). A failure is kept in `weights` (Settings > Health).
 function weighUnattended(at: { weights?: string }) {
-  try {
-    const p = Bun.spawn(["systemctl", "--user", "set-property", "--runtime", SLICES.unattended, ...unattendedProps()], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-    void outputOf(p, { where: "set-property" }).then(({ code, err }) => {
-      if (code !== 0) at.weights = err.trim().slice(0, 200) || `systemctl set-property exited ${code}`;
-    }, (e) => { at.weights = String(e?.message ?? e).slice(0, 200); });
-  } catch (e: any) { at.weights = String(e?.message ?? e).slice(0, 200); }
+  setProps(unattendedProps(), (why) => { at.weights = why; });
 }
+
+// `systemctl --user set-property --runtime` on the unattended slice, off the loop; `done` gets why it failed, or
+// undefined when it held.
+function setProps(props: string[], done: (why: string | undefined) => void) {
+  try {
+    const p = Bun.spawn(["systemctl", "--user", "set-property", "--runtime", SLICES.unattended, ...props], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+    void outputOf(p, { where: "set-property" }).then(({ code, err }) => {
+      done(code !== 0 ? err.trim().slice(0, 200) || `systemctl set-property exited ${code}` : undefined);
+    }, (e) => done(String(e?.message ?? e).slice(0, 200)));
+  } catch (e: any) { done(String(e?.message ?? e).slice(0, 200)); }
+}
+
+// The one memory cap of all unattended work (job_slice.unattended_memory_max), set on the unattended slice off
+// the loop with its weights, apart from them (a refused memory property leaves the weights set), and again when
+// the setting changes. The owner's slice and the daemon's own unit are not under it. A cap needs the memory
+// controller in app.slice: where the user manager has none to give, the cap is said to be not in force.
+registerSettings("job_slice", { unattended_memory_max: MEMORY_DEFAULT }, (v) => {
+  const c = memoryCap(v.unattended_memory_max);
+  return "error" in c ? c.error : undefined;
+});
+export const unattendedCap = (): number | null => { const c = memoryCap(settings().job_slice?.unattended_memory_max); return "error" in c ? null : c.bytes; };
+function capUnattended(at: ScopeAt) {
+  const bytes = unattendedCap();
+  if (at.memory && at.memory.bytes === bytes && !at.memory.refused) return;
+  const facts: MemoryFacts = { bytes, pending: true };
+  at.memory = facts;
+  // A test shares the user manager of the machine it runs on: it never changes that manager's slices.
+  if (process.env.NODE_ENV === "test") { delete facts.pending; facts.refused = "a test does not change the user manager's slices"; return; }
+  let controllers = "";
+  try { controllers = readFileSync(`/sys/fs/cgroup${at.slice}/cgroup.controllers`, "utf8"); } catch {}
+  if (bytes !== null && !/\bmemory\b/.test(controllers)) {
+    delete facts.pending;
+    facts.refused = "the user manager has no memory controller to give its slices (app.slice's cgroup.controllers names none)";
+    return;
+  }
+  setProps(memoryProps(bytes), (why) => {
+    if (at.memory !== facts) return; // a later setting took its place
+    delete facts.pending;
+    if (why) facts.refused = why;
+  });
+}
+onSettings(() => { if (scopeAt?.slice) capUnattended(scopeAt); });
+
+// Whether a scope takes OOMPolicy=continue (systemd 253 and later read it on scopes), asked once off the loop with a
+// scope that runs true. Until it answers, unattended jobs start without it.
+function probeAlone(at: ScopeAt) {
+  try {
+    const p = Bun.spawn([...scopeHead(), "-p", "OOMPolicy=continue", "--", "true"], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+    void outputOf(p, { where: "oom policy" }).then(({ code, err }) => {
+      at.alone = code === 0;
+      if (code !== 0) at.aloneWhy = err.trim().slice(0, 200) || `systemd-run exited ${code}`;
+    }, (e) => { at.alone = false; at.aloneWhy = String(e?.message ?? e).slice(0, 200); });
+  } catch (e: any) { at.alone = false; at.aloneWhy = String(e?.message ?? e).slice(0, 200); }
+}
+
+// The end of a job's wrapper in a scope of its own: the exit code, and when the command failed the kernel's count of
+// its processes killed for memory, read from the scope's memory.events while the scope is still there.
+const OOM_EXIT = 'k=; [ $c -ne 0 ] && k=$(sed -n \'s/^oom_kill //p\' "/sys/fs/cgroup$(cut -d: -f3- /proc/self/cgroup)/memory.events" 2>/dev/null); echo "$c${k:+ oom_kill=$k}" > "$0"';
 
 // The job scopes that run now in the user manager's app.slice, by the job id their name holds: the
 // cgroup folder of each (`keel-job-<id>-<6 letters>.scope`, as startJob names them). A name alone says
@@ -521,13 +593,14 @@ export type Meta = {
   // running with the job's mark. A copy of the folder made after that carries this folder's id.
   state_taken?: string;
   ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
+  oom?: number; oom_cap?: number | null; // processes of it the kernel killed for memory, and the cap it ran under
   read_off?: number; // bytes of the log the model was handed (a later daemon goes on from there)
   concealed?: true;  // written with placeholders for the values the secrets vault knew then
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
   started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, handle: j.handle, trace_file: j.traceFile, stopping: j.stopping || undefined, wake: j.wake || undefined, read_off: j.readOff,
-  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy, state_id: j.stateId, state_taken: j.stateTaken, kind: j.kind,
+  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy, state_id: j.stateId, state_taken: j.stateTaken, kind: j.kind, oom_cap: j.oomCap,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
 function writeMeta(log: string, m: Meta) {
@@ -609,6 +682,9 @@ export function commandInFront(sessionId: string): { job: string; call?: string;
 // (src/checks) records the runs of a repository's checks from these.
 export const jobStarted: { tell?: (job: Job) => void } = {};
 export const jobDone: { tell?: (job: Job) => void } = {};
+// A background job the kernel killed processes of for memory: the session's failures record it (src/automation/failures.ts).
+// (A call's own command is recorded from its result.)
+export const jobMemoryKilled: { tell?: (job: Job) => void } = {};
 
 export const jobEnded: {
   // `key`: the end of a command a cut call waited on, also lined up as a note under this key.
@@ -625,9 +701,19 @@ export function jobWhat(job: Pick<Job, "description" | "command">): string {
   return job.description ? `"${line(job.description)}"` : `\`${line(job.command.slice(0, 80))}\``;
 }
 // How a command that ended ended: who stopped it, the signal, or its exit code.
-export function endedHow(job: Pick<Job, "stopReason" | "signal" | "exitCode">): string {
+export function endedHow(job: Pick<Job, "stopReason" | "signal" | "exitCode" | "oom" | "oomCap">): string {
   const { signal, exitCode: code } = job;
-  return job.stopReason ?? (signal ? `was killed by ${signal}` : code === null || code === undefined ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
+  return job.stopReason ?? (job.oom ? killedHow(job) : signal ? `was killed by ${signal}` : code === null || code === undefined ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
+}
+
+// How a job the kernel killed processes of for memory ended, as the words after "The command": the exit code and why.
+export function killedHow(job: Pick<Job, "exitCode" | "oom" | "oomCap">): string {
+  return `was killed for memory (exit code ${job.exitCode ?? "unknown"}): ${memoryWhy(job.oom ?? 1, job.oomCap)}`;
+}
+
+// The count of a job's processes the kernel killed for memory, as its wrapper wrote it beside the exit code.
+function oomOf(log: string): number | undefined {
+  try { const k = Number(/\boom_kill=(\d+)/.exec(readFileSync(exitPath(log), "utf8"))?.[1] ?? 0); return k > 0 ? k : undefined; } catch { return undefined; }
 }
 
 // `at`: when it ended, for one that ended while no daemon watched it (its exit file's time).
@@ -637,6 +723,7 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
   try { job.slot?.release(); } catch {}
   job.exitCode = code;
   job.signal = signal;
+  if (job.contain === "cgroup" && code !== 0 && !job.stopReason) job.oom = oomOf(job.log);
   if (job.background) queueMicrotask(() => jobsChanged.tell?.(job.sessionId));
   // A background job's end counts as reported once its note is stored (ackNotices), not before:
   // a restart between the two reports it again.
@@ -646,13 +733,14 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     rmSync(job.traceFile, { force: true });
   }
   try { jobDone.tell?.(job); } catch {}
+  if (job.oom && job.background) try { jobMemoryKilled.tell?.(job); } catch {}
   try {
-    writeMeta(job.log, { ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason });
+    writeMeta(job.log, { ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason, ...(job.oom ? { oom: job.oom } : {}) });
   } catch {}
   if (job.background) {
     const what = jobWhat(job);
     const code_ = job.kind === "code";
-    const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? (code_ ? "was interrupted when its daemon went down; it is not run again, run it again if its work is still needed" : "ended; its exit code was not recorded (it ended under another daemon, or was killed)") : `exited with code ${code}`);
+    const how = job.stopReason ?? (job.oom ? killedHow(job) : signal ? `was killed by ${signal}` : code === null ? (code_ ? "was interrupted when its daemon went down; it is not run again, run it again if its work is still needed" : "ended; its exit code was not recorded (it ended under another daemon, or was killed)") : `exited with code ${code}`);
     const noun = code_ ? "program" : "command";
     const carried = code_ && job.result ? `\nWhat it printed since its call returned (all of it is in ${job.log}):\n${job.result}` : "";
     // One that ended while no daemon watched it is told now, at this start: it says when it really ended.
@@ -1056,11 +1144,11 @@ function* scanJobs(spillRoot: string, refused?: AdoptionRefusal): Generator<void
 function baseOf(m: Meta, dir: string) {
   return { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
     pty: !!m.pty, log: join(dir, `${m.id}.log`), started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-    callId: m.call_id, by: m.by, handle: m.handle, released: m.released, killAt: typeof m.kill_at === "number" ? m.kill_at : undefined, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken, kind: m.kind };
+    callId: m.call_id, by: m.by, handle: m.handle, released: m.released, killAt: typeof m.kill_at === "number" ? m.kill_at : undefined, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken, kind: m.kind, oomCap: m.oom_cap };
 }
 const historyOf = (m: Meta, dir: string): Job => {
   const base = baseOf(m, dir);
-  return { ...base, wake: m.wake, readOff: m.read_off ?? size(base.log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() };
+  return { ...base, wake: m.wake, readOff: m.read_off ?? size(base.log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, oom: m.oom, exited: Promise.resolve() };
 };
 
 // Job scopes that run now and that no job of this daemon holds, taken back when this daemon's own record
