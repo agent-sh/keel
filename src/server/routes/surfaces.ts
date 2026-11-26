@@ -8,7 +8,8 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { definitions } from "../../automation/agents.ts";
-import { expandImports, instructionLimit, instructionPaths } from "../../engine/turn.ts";
+import { instructionPaths, instructionsMade } from "../../engine/turn.ts";
+import { chainReport } from "../../engine/instruction-report.ts";
 import { agnix } from "../../integrations/agnix.ts";
 import { ownerHooksPath, parseHooks } from "../../integrations/hooks.ts";
 import { configDir, inConfigDir } from "../../providers/config.ts";
@@ -112,16 +113,32 @@ export const surfaceRoutes: RouteModule = (deps) => {
   };
 
   // --- instruction files
-  const instructionView = (cwd: string) => {
-    const files = instructionPaths(cwd).map(({ path, scope }) => {
+  // Each file as the prompt carries it (engine/instruction-report.ts): rendered as one chain for a
+  // model's window, with the trust pins, what repeats and the bounds applied. For a session
+  // (`session`), its model's window; for a folder alone, a prediction on the model a new session
+  // starts on, named in `loads`.
+  const instructionView = async (cwd: string, sid?: string | null) => {
+    const s = sid ? store.session(sid) : undefined;
+    const model = s ? (await deps.providers.models().catch(() => [])).find((m) => m.id === s.model) : undefined;
+    const shown = s ? undefined : await refreshShownFor();
+    const named = shown ? (await deps.providers.models().catch(() => [])).find((m) => m.id === shown.model) : undefined;
+    const target = s ? { model: model?.name ?? s.model, window: model && !model.context_assumed ? model.context : undefined } : { model: named?.name ?? shown?.model ?? null, window: shown?.window };
+    const where = s?.workspace ?? cwd;
+    const report = chainReport(instructionsMade(where, target.window), { model: target.model, prediction: !s });
+    const byPath = new Map(report.files.map((f) => [f.path, f]));
+    const files = instructionPaths(where).map(({ path, scope }) => {
       const t = read(path) ?? "";
-      // What the prompt carries of it: its @path lines brought in (outside a repository), cut where a 200K window cuts it (instructionLimit).
-      const loaded = rootOf(dirname(path)) ? t : expandImports(t, path);
+      const f = byPath.get(path);
       return {
-        path, scope, text: t, sha256: sha(t), bytes: Buffer.byteLength(t), loaded: loaded.slice(0, instructionLimit()), loaded_tokens: Math.ceil(Math.min(loaded.length, instructionLimit()) / 4),
-        imports: loaded !== t, truncated: loaded.length > instructionLimit(), trust: scope === "owner" ? null : trustOf(cwd, path),
+        path, scope, text: t, sha256: sha(t), bytes: Buffer.byteLength(t), loaded: f?.loaded ?? "", loaded_tokens: f?.loaded_tokens ?? 0,
+        imports: !!f?.imports, truncated: f?.state === "cut" || f?.state === "out", state: f?.state ?? null, cut_at: f?.at ?? null, chars: f?.chars ?? 0, note: f?.note ?? null,
+        trust: scope === "owner" ? null : trustOf(where, path),
       };
     });
+    // The files the chain names without carrying them again (one the same as another, or only importing it).
+    const same = report.files.filter((f) => f.state === "same").map((f) => ({ path: f.path, of: f.same_of ?? "", note: f.note }));
+    const loads = { model: report.model, window: report.window, prediction: report.prediction, session: s?.id ?? null, limit: report.limit, room: report.room, carried: report.carried, warnings: report.warnings };
+    cwd = where;
     const create: { path: string; scope: string }[] = [];
     const own = join(configDir(), "AGENTS.md");
     if (!files.some((f) => f.path === own)) create.push({ path: own, scope: "owner" });
@@ -130,7 +147,7 @@ export const surfaceRoutes: RouteModule = (deps) => {
     const a = agnix();
     const l = a?.of(cwd);
     const lint = !a ? null : !a.installed() ? { installed: false } : l ? { installed: true, at: l.at, errors: l.errors, warnings: l.warnings, failed: l.failed ?? null, findings: l.findings.slice(0, 5) } : { installed: true, at: null };
-    return { cwd, files, create, lint };
+    return { cwd, files, same, loads, create, lint };
   };
 
   // --- plugins.toml
@@ -248,20 +265,20 @@ export const surfaceRoutes: RouteModule = (deps) => {
     },
 
     "/api/instructions": {
-      GET: (req: Request) => json(instructionView(cwdOf(req))),
+      GET: async (req: Request) => json(await instructionView(cwdOf(req), new URL(req.url).searchParams.get("session"))),
       // { cwd, path, text }: a file the session loads, or the one place a new one goes.
       PUT: (req: Request) => attempt(async () => {
         const guard = needs(req);
         if (guard) return guard;
         const b = await body(req);
         const cwd = cwdOf(req, b);
-        const v = instructionView(cwd);
+        const v = await instructionView(cwd);
         const path = String(b.path ?? "");
         const hit = v.files.find((f) => f.path === path) ?? v.create.find((f) => f.path === path);
         if (!hit) return bad("that file is not one this folder's sessions load", 404);
         write(path, text(b));
         if (hit.scope !== "owner") pin(cwd, path);
-        return json(instructionView(cwd));
+        return json(await instructionView(cwd));
       }),
     },
 

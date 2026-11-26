@@ -6,10 +6,13 @@ import { navigate } from "../../lib/ui.ts";
 import { fmtSize } from "../../lib/utils.ts";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, Seg, tilde, tok, useFolder, type Mark } from "./kit.tsx";
 
-type File = { path: string; scope: "owner" | "parent" | "folder"; text: string; bytes: number; loaded: string; loaded_tokens: number; imports: boolean; truncated: boolean; trust: string | null };
+type State = "whole" | "cut" | "out" | "same" | "repeats" | "unread" | "held" | "had";
+type File = { path: string; scope: "owner" | "parent" | "folder"; text: string; bytes: number; loaded: string; loaded_tokens: number; imports: boolean; truncated: boolean; state: State | null; cut_at: number | null; chars: number; note: string | null; trust: string | null };
+// The chain as the prompt renders it, and for which model and window (a prediction for a folder with no session).
+type Loads = { model: string | null; window: number | null; prediction: boolean; session: string | null; limit: number; room: number; carried: number; warnings: string[] };
 type Finding = { level: string; rule: string; file: string; line: number; message: string };
 type Lint = { installed: false } | { installed: true; at: null } | { installed: true; at: number; errors: number; warnings: number; failed: string | null; findings: Finding[] };
-type View = { cwd: string; files: File[]; create: { path: string; scope: "owner" | "folder" }[]; lint: Lint | null };
+type View = { cwd: string; files: File[]; same: { path: string; of: string; note: string | null }[]; loads: Loads; create: { path: string; scope: "owner" | "folder" }[]; lint: Lint | null };
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 // agnix's last run on the folder's agent configs: one quiet line, its findings on a hover.
@@ -28,6 +31,14 @@ function LintLine({ lint }: { lint: Lint | null }) {
       {lint.installed && lint.at !== null && <button type="button" className="k-link underline underline-offset-2 hover:text-fg" onClick={() => navigate({ name: "settings", section: "health" })}>Health</button>}
     </p>
   );
+}
+// Which render the view shows: the model and window it is for, and what repeats.
+function LoadsLine({ v }: { v: View }) {
+  const l = v.loads;
+  const win = l.window ? `${tok(l.window)} tokens` : "a window of unstated size, counted as 200k tokens";
+  const said = `${l.prediction ? "As a new session here would load them" : "As this session's prompt renders them"}, on ${l.model ?? "the default model"} (${win}): up to ${l.limit.toLocaleString("en-US")} characters a file, ${l.room.toLocaleString("en-US")} for all.`;
+  const same = v.same.length ? ` ${plural(v.same.length, "file")} the same as another, carried once.` : "";
+  return <p className="mt-2 text-caption text-muted" data-testid="instructions-loads" data-prediction={l.prediction ? "true" : "false"}>{said}{same}</p>;
 }
 const SCOPE = { owner: "Yours, in every folder", parent: "A folder above", folder: "This folder" };
 const WHERE = { owner: "yours", parent: "above", folder: "this folder" };
@@ -51,6 +62,7 @@ export default function Instructions() {
   return (
     <div data-testid="instructions-settings">
       <FolderLine tally={[{ n: v?.files.length ?? 0, label: "files loaded" }, { n: total, label: "tokens a session" }]} />
+      {v && <LoadsLine v={v} />}
       <LintLine lint={v?.lint ?? null} />
       <Ledger
         testid="instructions-ledger"
@@ -66,12 +78,13 @@ export default function Instructions() {
             <ReaderHead
               title={SCOPE[file.scope]}
               path={file.path}
-              right={file.imports || file.truncated ? <Seg label="Show" value={as} onChange={setAs} options={[["file", "The file"], ["loaded", "As loaded"]]} /> : undefined}
+              right={file.imports || file.truncated || file.note ? <Seg label="Show" value={as} onChange={setAs} options={[["file", "The file"], ["loaded", "As loaded"]]} /> : undefined}
               facts={[
                 ["Size", fmtSize(file.bytes)],
                 ["In the prompt", `~${tok(file.loaded_tokens)} tokens`],
                 ...(file.imports ? [["Imports", "@ lines brought in"] as [string, string]] : []),
-                ...(file.truncated ? [["Cut", "at 40,000 characters"] as [string, string]] : []),
+                ...(file.state === "cut" && file.cut_at !== null ? [["Cut", `at ${file.cut_at.toLocaleString("en-US")} of ${file.chars.toLocaleString("en-US")} characters`] as [string, string]] : []),
+                ...(file.note && file.state !== "cut" ? [["Loaded", file.note] as [string, string]] : []),
                 ...(file.trust ? [["Trust", file.trust] as [string, string]] : []),
               ]}
             >

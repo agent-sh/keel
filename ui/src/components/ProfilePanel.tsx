@@ -12,7 +12,11 @@ type Profile = {
   speed: { choice: string; options: { speed: string; label: string; note?: string }[] };
   tool_profile: { label: string; family: string; edit_grammar: string } | null;
   eager_tools: string[];
-  instructions: { files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean }[]; warnings: string[] };
+  instructions: {
+    files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean; state?: string; note?: string | null }[]; warnings: string[];
+    // The window the chain is rendered for, and whether the prompt the session holds is that render.
+    model: string | null; window: number | null; limit: number; stored: "same" | "earlier" | "none";
+  };
 };
 
 function Row({ label, children, testid }: { label: string; children: React.ReactNode; testid?: string }) {
@@ -71,14 +75,20 @@ export function ProfilePanel({ session }: { session: Session }) {
           {p.instructions.files.length ? (
             <ul className="flex flex-col gap-1">
               {p.instructions.files.map((f) => (
-                <li key={f.path} className="flex items-baseline gap-2" data-scope={f.scope}>
+                <li key={f.path} className="flex items-baseline gap-2" data-scope={f.scope} data-state={f.state} title={f.note ?? undefined}>
                   <PathText path={f.path} className="font-mono text-caption" />
                   {f.scope === "nested" && <span className="shrink-0 text-micro text-faint" title="Loaded when the work reached its folder">on reach</span>}
-                  <span className={cn("shrink-0 text-micro tabular-nums", f.truncated ? "text-warn" : "text-faint")}>{fmtSize(f.bytes)}{f.truncated ? ", cut" : ""}</span>
+                  <span className={cn("shrink-0 text-micro tabular-nums", f.truncated ? "text-warn" : "text-faint")}>{fmtSize(f.bytes)}{f.state === "out" ? ", not loaded" : f.truncated ? ", cut" : f.state === "same" ? ", the same as another" : f.state === "repeats" ? ", said above" : f.state === "held" ? ", held until trusted" : ""}</span>
                 </li>
               ))}
             </ul>
           ) : <span className="text-faint">no AGENTS.md or CLAUDE.md above the folder</span>}
+          {p.instructions.files.length > 0 && (
+            <p className="mt-1 text-caption text-faint" data-testid="profile-instructions-window" data-stored={p.instructions.stored}>
+              On {p.instructions.window ? `a ${fmtTokens(p.instructions.window)}-token window` : "a window of unstated size (200k counted)"}, up to {p.instructions.limit.toLocaleString("en-US")} characters a file.
+              {p.instructions.stored === "earlier" ? " The session's prompt holds an earlier render: what changed reached it as a note, and it is made again at its next cold point." : ""}
+            </p>
+          )}
         </Row>
       </section>
     </div>

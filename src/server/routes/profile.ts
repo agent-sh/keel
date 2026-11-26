@@ -4,7 +4,13 @@
 // reasoning and speed in one step (applied from the next request, also mid-turn).
 import { commitSwitch } from "../switch.ts";
 import { readFileSync, statSync } from "node:fs";
-import { instructionLimit, instructionPaths } from "../../engine/turn.ts";
+import { instructionLimit, instructionsMade } from "../../engine/turn.ts";
+import { chainReport } from "../../engine/instruction-report.ts";
+import { blockTexts } from "../../engine/prompt-note.ts";
+import { promptOf } from "../../engine/prompt-store.ts";
+import { conceal } from "../../core/conceal.ts";
+import type { Store } from "../../core/store.ts";
+import type { Session } from "../../core/types.ts";
 import { loadedPaths } from "../../engine/nested.ts";
 import type { RouteModule } from "../app.ts";
 import { speedOffer } from "../../providers/registry.ts";
@@ -13,25 +19,37 @@ import { toolsFor } from "../../tools/registry.ts";
 import { loadsNatively } from "../../tools/defer.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
-// What the system prompt includes of one file on a 200K window (a larger window carries more: engine/turn.ts instructionLimit).
-const INSTRUCTION_LIMIT = instructionLimit();
-
-// The instruction files the prompt reads (engine/turn.ts), with their sizes,
-// then the nested ones the work has loaded since (engine/nested.ts).
-function instructions(cwd: string, nested: Iterable<string> = []) {
-  const files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean }[] = [];
-  const warnings: string[] = [];
-  for (const { path, scope } of [...instructionPaths(cwd), ...[...nested].map((path) => ({ path, scope: "nested" }))]) {
+// The instruction chain the session's prompt carries, rendered for its model's window as the prompt is
+// (engine/instruction-report.ts): each file's fate, the trust pins' decisions, what repeats and is
+// carried once, the window's bounds. `stored`: whether the prompt the session holds is this render
+// ("same"), an earlier one whose changes reached it as notes at the tail ("earlier": it is made again
+// at its next cold point), or none yet. Then the nested files the work has loaded since
+// (engine/nested.ts), each bounded by the same window.
+function instructions(store: Store, s: Session, info: ModelInfo | undefined, nested: Iterable<string> = []) {
+  const window = info && !info.context_assumed ? info.context : undefined;
+  const made = instructionsMade(s.workspace, window);
+  const report = chainReport(made, { model: info?.name ?? s.model, prediction: false });
+  const size = (p: string) => { try { return statSync(p).size; } catch { return 0; } };
+  const files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean; state?: string; trust?: string | null; note?: string | null }[] =
+    report.files.map((f) => ({ path: f.path, scope: f.scope, bytes: size(f.path), included_bytes: Buffer.byteLength(f.loaded), truncated: f.state === "cut" || f.state === "out", state: f.state, trust: f.trust, note: f.note }));
+  const warnings = [...report.warnings];
+  const limit = instructionLimit(window);
+  for (const path of nested) {
     try {
       const bytes = statSync(path).size;
-      const included = Buffer.byteLength(readFileSync(path, "utf8").slice(0, INSTRUCTION_LIMIT));
-      files.push({ path, scope, bytes, included_bytes: included, truncated: included < bytes });
-      if (included < bytes) warnings.push(`${path} is cut at ${INSTRUCTION_LIMIT} characters on a 200K window`);
+      const text = readFileSync(path, "utf8");
+      const included = Buffer.byteLength(text.slice(0, limit));
+      files.push({ path, scope: "nested", bytes, included_bytes: included, truncated: included < bytes });
+      if (included < bytes) warnings.push(`${path} is cut at ${limit.toLocaleString("en-US")} characters on this window; the call that loaded it says where the rest starts`);
     } catch (e) {
       warnings.push(`${path}: ${(e as Error).message}`);
     }
   }
-  return { files, warnings };
+  const kept = promptOf(store, s.id);
+  const held = kept ? blockTexts(kept)?.get("instruction files") : undefined;
+  const now = made.text ? `\nInstructions from the owner's files:\n\n${made.text}` : "";
+  const stored = !kept ? "none" : held !== undefined && held === conceal(now, s.id, "own") ? "same" : "earlier";
+  return { files, warnings, model: report.model, window: report.window, limit: report.limit, room: report.room, carried: report.carried, stored };
 }
 
 // How a family's tools edit files, read off its tool set.
@@ -57,7 +75,7 @@ export const profileRoutes: RouteModule = ({ store, bus, providers, engine }) =>
       reasoning: { choice: s.settings.effort && info?.efforts.includes(s.settings.effort) ? s.settings.effort : undefined, options: info?.efforts.length ? { kind: "levels", levels: info.efforts } : { kind: info ? "none" : "unknown" } },
       speed: { choice: offer?.id ?? "standard", options: [{ speed: "standard", label: "Standard", available: true }, ...(info?.speeds ?? []).map((o) => ({ speed: o.id, label: o.label, available: true, note: o.note, price: o.price }))] },
       ...(info ? toolProfile(info, ((p) => p?.wireOf?.(info.model) ?? p?.wire)(providers.get(info.provider))) : { tool_profile: null, eager_tools: [] }),
-      instructions: instructions(s.workspace, s.machine ? [] : loadedPaths(store, s.id)),
+      instructions: instructions(store, s, info, s.machine ? [] : loadedPaths(store, s.id)),
     };
   };
 
