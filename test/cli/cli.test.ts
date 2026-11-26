@@ -979,37 +979,34 @@ describe("a session a script holds open", () => {
     }
   }, 120_000);
 
-  // A restart that parks a turn stops the command the turn waits on. The drain waits for such a command
-  // (src/admin/drain-commands.ts), so a command of 30 s runs to its end, its result is kept, and the turn
-  // stops at its next step boundary: the next daemon goes on from there.
-  test("a restart waits for the command a turn runs in front: it finishes, and the turn goes on from its result", async () => {
+  // A restart that parks a turn lets the command the turn waits on run on (releaseFronts in src/tools/jobs.ts):
+  // the drain does not wait for it, the call is told it still runs, the next daemon continues the turn, and the
+  // command's end, under the next daemon, wakes the session with its result. It was stopped, its work lost.
+  test("a restart lets the command a turn runs in front run on: the turn goes on, and the command's end wakes it", async () => {
     const state = join(SCRATCH, "state-drain-commands");
     const d = await restartable(state);
     try {
       const sid = (await d.api("/api/sessions", { title: "A long command" })).session.id as string;
       await d.api(`/api/sessions/${sid}/messages`, { text: "script:long-tool" });
-      const events = async () => (await d.api(`/api/sessions/${sid}?page=40`)).events as { kind: string; data: any }[];
+      const events = async () => (await d.api(`/api/sessions/${sid}?page=60`)).events as { kind: string; data: any }[];
       for (let i = 0; i < 600 && !(await events()).some((e) => e.kind === "assistant"); i++) await Bun.sleep(50);
+      const asked = Date.now();
       await d.graceful();
-      const replied = (ev: { kind: string; data: any }[]) => ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data).includes("Continued after the restart."));
-      for (let i = 0; i < 1800 && !replied(await events()); i++) await Bun.sleep(50);
+      // The drain did not hold the turns for the command's 30 s.
+      expect(Date.now() - asked).toBeLessThan(25_000);
+      const says = (ev: { kind: string; data: any }[], words: string) => ev.some((e) => e.kind === "assistant" && JSON.stringify(e.data).includes(words));
+      for (let i = 0; i < 1800 && !says(await events(), "Took the command's end."); i++) await Bun.sleep(50);
       const ev = await events();
-      const end = ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason);
       const results = ev.filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data));
-      expect(results.some((r) => r.includes("slept"))).toBe(true);
-      expect(results.some((r) => r.includes("The daemon restarted while this command ran"))).toBe(false);
-      // Parked at the step after the command, and continued by the next daemon.
-      expect(end[0]).toBe("restart");
-      expect(replied(ev)).toBe(true);
-      // The old daemon said what it waited for, and that nothing was cut.
+      expect(results.some((r) => r.includes("The command was not interrupted: it still runs in the background"))).toBe(true);
+      expect(results.some((r) => r.includes("The restart stopped the command"))).toBe(false);
+      expect(says(ev, "Continued after the restart.")).toBe(true);
+      expect(says(ev, "Took the command's end.")).toBe(true);
+      expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)[0]).toBe("restart");
+      // The old daemon waited for no command and cut none.
       const said = readFileSync(join(`${state}-logs`, "start-1.log"), "utf8");
-      expect(said).toMatch(/1 command runs in front of a turn: the restart waits up to 60 s more for it before it parks the turns\./);
+      expect(said).not.toMatch(/runs? in front of a turn: the restart waits/);
       expect(said).not.toMatch(/in front of them cut/);
-      const logs = join(state, "logs");
-      const lines = readdirSync(logs).filter((name) => /^keel-.*\.log$/.test(name)).map((name) => readFileSync(join(logs, name), "utf8")).join("\n");
-      expect(lines.match(/^.*1 command runs in front of a turn: the restart waits up to 60 s more.*$/gm)).toEqual([
-        expect.stringMatching(/ INFO  \[daemon\] 1 command runs in front of a turn:/),
-      ]);
     } finally {
       await d.stop();
     }

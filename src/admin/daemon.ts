@@ -25,7 +25,7 @@ import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
 import { StallProfiler } from "./stall-profile.ts";
 import { join } from "node:path";
-import { liveJobs } from "../tools/jobs.ts";
+import { liveJobs, releaseFronts, restartStops } from "../tools/jobs.ts";
 import { COMMAND_WAIT_MS, commandsBegin, commandsEnd, type Front, waitForCommands } from "./drain-commands.ts";
 import { ownerHere } from "./away.ts";
 import { dueNow, join as joinRestart, joinedReason, LOOK_MS, type RestartWaiting } from "./restart-wait.ts";
@@ -173,8 +173,9 @@ export class Daemon {
   private frontCalls(): Set<string> {
     return new Set(liveJobs().filter((j) => j.stops && !j.background && j.ended === undefined && j.callId).map((j) => `${j.sessionId}\0${j.callId}`));
   }
-  fronts(): Front[] {
-    return liveJobs().filter((j) => j.stops && !j.background && j.ended === undefined && this.deps.engine.isRunning(j.sessionId)).map((j) => ({ id: j.id, session: j.sessionId }));
+  // The ones parking would stop. A restart lets every one run on but a terminal's (releaseFronts), so it waits for those alone.
+  fronts(restart = false): Front[] {
+    return liveJobs().filter((j) => j.stops && !j.background && j.ended === undefined && this.deps.engine.isRunning(j.sessionId) && !(restart && restartStops(j))).map((j) => ({ id: j.id, session: j.sessionId }));
   }
 
   // The daemon's own unresponsiveness (src/admin/stall.ts): each stall is one
@@ -407,7 +408,7 @@ export class Daemon {
     };
     noBackup();
     this.emit();
-    say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason, commands: this.fronts().length, commandsMs: COMMAND_WAIT_MS }));
+    say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason, commands: this.fronts(opts.restart).length, commandsMs: COMMAND_WAIT_MS }));
     this.finished = (async () => {
       // The turns' wait and the backup go side by side: the backup is a copy of the changes since the last
       // full one, and what a turn writes after it began is not in it either way (its turn is found open
@@ -419,13 +420,14 @@ export class Daemon {
         await this.deps.engine.settle(opts.timeoutMs, { inFront: (session, call) => this.frontCalls().has(`${session}\0${call}`) });
         if (this.draining !== mine) return; // called off meanwhile (the backup failed)
         // The turns are at their step boundaries or in their tools. A command in front of one is waited for a minute
-        // more (drain-commands.ts): parking the turn stops it. The notes say how many it waits for and how many it cut.
-        const waiting = this.fronts().length;
+        // more (drain-commands.ts) where parking the turn stops it: at a stop, and at a restart a terminal's only (the
+        // rest run on, releaseFronts). The notes say how many it waits for and how many it cut.
+        const waiting = this.fronts(mine.restart).length;
         if (waiting) {
           this.say(commandsBegin(waiting, COMMAND_WAIT_MS), "info", false);
           mine.deadline_ms = Date.now() + COMMAND_WAIT_MS;
           this.emit();
-          const ended = await waitForCommands({ list: () => this.fronts(), boundMs: COMMAND_WAIT_MS });
+          const ended = await waitForCommands({ list: () => this.fronts(mine.restart), boundMs: COMMAND_WAIT_MS });
           if (ended.cut && this.draining === mine) this.say(commandsEnd(ended.cut, COMMAND_WAIT_MS), "warn", false);
         }
       })();
@@ -461,7 +463,9 @@ export class Daemon {
         return;
       }
       let parked = 0;
-      const cut = this.fronts().length;
+      // A restart's commands in front of its turns run on: the next daemon takes them back (releaseFronts).
+      if (this.draining!.restart) releaseFronts();
+      const cut = this.fronts(this.draining!.restart).length;
       const off = this.deps.bus.on((f) => { if (f.t === "event" && f.event.kind === "turn_end" && f.event.data?.reason === "restart") parked++; });
       await this.deps.engine.park();
       off();

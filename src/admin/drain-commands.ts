@@ -2,7 +2,9 @@
 // The call stops its command when the turn is parked, so a restart that parks a turn mid-command
 // loses the command's work. The drain therefore waits for the commands that run when its time for
 // the turns is over, up to a bound, and parks the turns only then. The wait ends as soon as the
-// commands it began with have ended.
+// commands it began with have ended. A restart waits only for the commands in a terminal the daemon
+// holds: every other one runs on past it and the next daemon takes it back (releaseFronts in
+// src/tools/jobs.ts), so its work is not lost and the turns are not held for it.
 //
 // The bound is one minute. Measured over the last restarts of a busy daemon, the foreground commands
 // a restart cut had run 0 s to 5 min, and about 58 percent of the commands that had run as long

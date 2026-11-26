@@ -332,6 +332,38 @@ test("a call a restart cut is told what became of its command: it runs on, it en
 
 // A command that ended while no daemon ran is told at the next start with when it really ended. It read
 // "exited with code 4 after 0 s" at the restart's time, as if it had just ended.
+// A restart parks a turn whose call waits on a command: the command runs on past the restart and the next
+// daemon takes it back as what that turn waits on. It was stopped, and minutes of a build or a test run were lost.
+test("a restart lets the command in front of a call run on, and the next daemon wakes its turn at its end", async () => {
+  const root = mkdtempSync(join(RUN, "jobs-"));
+  const dir = join(root, "spill/s40/jobs");
+  // The daemon before: a command in front of a call, a restart, and the call's result as the park writes it.
+  const code = `
+    import { cutCommand, releaseFronts, startJob } from ${JSON.stringify(join(import.meta.dir, "jobs.ts"))};
+    startJob({ sessionId: "s40", command: "sleep 2; exit 5", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(dir)}, callId: "build", stops: true });
+    console.log(JSON.stringify({ released: releaseFronts(), said: cutCommand("s40", "build") }));
+    process.exit(0);`;
+  const p = Bun.spawn(["bun", "-e", code], { stdout: "pipe", stderr: "inherit" });
+  expect(await p.exited).toBe(0);
+  const told = JSON.parse(await new Response(p.stdout).text()) as { released: number; said: string };
+  expect(told.released).toBe(1);
+  expect(told.said).toContain("The command was not interrupted: it still runs in the background");
+  const ends: string[] = [];
+  jobEnded.tell = (_job, text) => void ends.push(text);
+  adoptJobs(join(root, "spill"));
+  const j = jobsOf("s40").find((x) => x.callId === "build")!;
+  try {
+    expect(running(j)).toBe(true);
+    expect(awaited("s40").map((x) => x.id)).toEqual([j.id]);
+    expect(await waitJob(j, 8000)).toBe(true);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toContain("The command you were running when the daemon restarted has ended");
+  } finally {
+    jobEnded.tell = undefined;
+    for (const x of jobsOf("s40")) await stopJob(x);
+  }
+});
+
 test("a command that ended while the daemon was down says it ended then, while the daemon was down", async () => {
   const root = mkdtempSync(join(RUN, "jobs-"));
   const dir = join(root, "spill/s30/jobs");

@@ -63,6 +63,9 @@ export type Job = {
   // the call waits on this signal as well as on the command and its timeout. `movedBy` says who did.
   mover?: AbortController;
   movedBy?: "owner";
+  // A restart let it run on from in front of its call (releaseFronts): the call does not stop it when the
+  // restart parks its turn, and the next daemon takes it back as the command that turn waits on.
+  released?: boolean;
   owes?: boolean;        // it ended and the input that says so is not stored yet
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
@@ -1185,6 +1188,29 @@ function setLeft(j: Job, rest: Member[]) {
 export const jobPids = () => [...jobs.values()].filter(running).map((j) => j.pid);
 // The jobs that still have processes alive (see jobLive), for what they cost.
 export const liveJobs = () => [...jobs.values()].filter(jobLive);
+
+// A command in front of a call that a restart would stop when it parks the turn: one the call stops, not in a
+// terminal the daemon holds (that ends with the daemon whatever is done here), still running.
+export const restartStops = (j: Job) => !!j.stops && !j.background && !j.pty && !!j.proc && j.ended === undefined;
+
+// A restart parks its turns: the commands in front of their calls run on instead of being stopped. Its
+// processes are not the daemon's (a scope of their own, else a group the service's stop leaves alone),
+// so they outlive it as a background command does, and the next daemon takes each back as the command its
+// cut call waited on (`wake`): the call is told it still runs, and its end starts the session's next turn.
+// A command stopped here would lose its work, minutes of it for a build or a test run. Answers how many.
+export function releaseFronts(): number {
+  let n = 0;
+  for (const j of jobs.values()) {
+    if (!restartStops(j)) continue;
+    j.stops = false;
+    j.released = true;
+    backgrounded(j);
+    j.wake = true;
+    try { patchMeta(j.log, { wake: true }); } catch {}
+    n++;
+  }
+  return n;
+}
 
 // Resolves true when the job ended within ms, false when it is still running.
 export async function waitJob(j: Job, ms: number, signal?: AbortSignal): Promise<boolean> {

@@ -903,7 +903,8 @@ export class ScriptedProvider implements Provider {
         await Bun.sleep(3_000);
         return reply("Answered after a quiet start.");
       case "long-tool":
-        // A tool that runs long enough for a restart to cut it.
+        // A tool that runs long enough for a restart to cut it. It runs on past the restart, and its end wakes the session.
+        if (lastText.includes("you were running when the daemon restarted has ended")) return reply("Took the command's end.");
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");
         if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
         return reply("Running a long command.", "tool_use", [{ type: "tool_use", id: `long-${msgs.length}`, name: "Bash", input: { command: "sleep 30; echo slept" } }]);
