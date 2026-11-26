@@ -1033,9 +1033,16 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   const d = written === null ? decideLine(command, f, cwd, interpreter) : decideBoth(command, written, f, cwd, interpreter);
   // (It raises a verdict and lowers none: its answer stands only where it is stricter than the one above.)
   const sev = SEVERITY(d);
-  if (!shell || sev >= 3 || ("ask" in d && d.ask.ownerOnly) || !command.includes("$")) return d;
+  // (An answer that is already the owner's is his as it stands. An agent's line is still read for a credential the
+  // line's words show whole: that read is refused, and his yes to the rest would run it.)
+  const owners = sev >= 3 || ("ask" in d && !!d.ask.ownerOnly);
+  if (!shell || "deny" in d || (owners && !f.agent) || !command.includes("$")) return d;
   const u = unspelt(command, f, cwd);
   if (!u) return d;
+  if (owners) {
+    const as = u !== "over" && u.shown && u.reads ? credentialRead(`${u.shown.why} (the line names it as ${u.word})`, f, u.shown.by, u.shown.api) : d;
+    return "deny" in as ? as : d;
+  }
   // (A standing rule of the owner's that names a command of the line does not cover what is asked here: the card says so.)
   const noticed = (as: Decision, why: string): Decision => { const parts = writesNothing(f.mode) ? null : splitCommand(command); return parts ? uncoveredBy(as, why, parts, f.rules.filter((r) => r.kind === "shell")) : as; };
   // A path the line's words show whole is the one the written-out line names, and is answered as it is: a
@@ -1203,17 +1210,23 @@ function unspelt(command: string, f: Facts, cwd: string, all?: string[]): Unspel
   const pre = laid(parts, cwd, home);
   const cost: Cost = { paths: PATHS, tries: 10 * PATHS, over: false, wrote: new Map(), read: new Map() };
   const top = scopeOf(parts, pre, home, cost);
-  let hit = top.sets.size ? unspeltIn(top, f, cwd, home, all) : null;
   // (A script the line hands a shell: its own names, and the line's where its text holds them.)
-  if (!hit?.shown && !cost.over) for (const s of innerLines(parts, pre, home)) {
-    const inner = scopeOf(s.parts, s.pre, home, cost, { scope: top, at: s.at });
-    const found = top.sets.size || inner.sets.size ? unspeltIn(inner, f, pre.dirs[s.at] ?? cwd, home, all) : null;
-    if (found && (found.shown || !hit)) hit = found;
-    if (hit?.shown || cost.over) break;
+  let inner: { s: Line; cwd: string }[] | undefined;
+  const scope = (k: number) => (k === 0 ? { s: top, cwd } : (inner ??= innerLines(parts, pre, home).map((x) => ({ s: scopeOf(x.parts, x.pre, home, cost, { scope: top, at: x.at }), cwd: pre.dirs[x.at] ?? cwd })))[k - 1]);
+  let hit: Unspelt | null = null;
+  // (An agent's line is read for its reads first, in the line and in every script of it: a credential its words
+  // show whole is refused, whatever the line writes.)
+  for (const pass of f.agent && !all ? (["reads", "writes"] as const) : [undefined]) {
+    for (let k = 0; !hit?.shown && !cost.over; k++) {
+      const x = scope(k);
+      if (!x) break;
+      const found = top.sets.size || x.s.sets.size ? unspeltIn(x.s, f, x.cwd, home, all, pass) : null;
+      if (found && (found.shown || !hit)) hit = found;
+    }
   }
   return hit ?? (cost.over ? "over" : null);
 }
-function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[]): Unspelt | null {
+function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[], pass?: "reads" | "writes"): Unspelt | null {
   const { parts, pre } = s;
   // The folders a part may run in: the one the rules follow it to, else the ones a `cd` spelled with such a name may
   // lead to, else the ones a line usually means. (`shown`: the line's words show the folder, it is no guess.)
@@ -1334,7 +1347,7 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
   // A word in a protected path's place: one that holds a name the line sets, or a relative one in a folder a `cd` spelled so leads to.
   const held = (w: string, i: number) => namesSet(w, s) || (!/[$`]/.test(w) && !/^(["']?)(\/|~)/.test(w) && !!entered(i));
   let sure: Unspelt | null = null;
-  for (let i = 0; i < parts.length && !all && !sure && !s.cost.over; i++) {
+  for (let i = 0; pass !== "reads" && i < parts.length && !all && !sure && !s.cost.over; i++) {
     const part = parts[i]!;
     if (part.heredoc) continue;
     const run = pre.runs[i]!;
@@ -1345,7 +1358,7 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
     if (baseName(run.words[0]) === "git") named.push(...gitConfigured(run.words));
     for (const w of named) if (!sure && !s.cost.over && held(w, i)) sure = writes(w, i);
   }
-  if (!sure && !s.cost.over) shellCredentialReads(parts, cwd, home, () => null, pre, {}, false, false, (w, i, by) => { if (!sure && !s.cost.over && held(w, i)) sure = reads(w, i, by); });
+  if (pass !== "writes" && !sure && !s.cost.over) shellCredentialReads(parts, cwd, home, () => null, pre, {}, false, false, (w, i, by) => { if (!sure && !s.cost.over && held(w, i)) sure = reads(w, i, by); });
   return sure ?? found;
 }
 // The credentials a line may read through the names it sets (the candidate paths above), for the gate to keep what
@@ -1431,8 +1444,21 @@ function unparsed(f: Facts, previous?: Decision, textRisk?: string | null): Deci
     suggest: [], ownerOnly: true, unparsed: true, settles: undefined } };
 }
 
-function decideParts({ command, parts }: { command: string; parts: Simple[] }, f: Facts, cwd: string, interpreter: string | undefined, resolved: boolean, home: string, worst: string | null,
+// An agent reads none of the owner's credentials, whatever else its line does: a line that also does what is the
+// owner's call (a write of a file that is his alone to change, a command that never runs without him, a risk class)
+// is refused for the read, not asked about for the rest. His yes to that card, or Full auto's run of a flagged
+// line, would run the read with it.
+function decideParts(line: { command: string; parts: Simple[] }, f: Facts, cwd: string, interpreter: string | undefined, resolved: boolean, home: string, worst: string | null,
   shellRules: Rule[], uncovered: (d: Decision, why: string) => Decision, unread: Unread[]): Decision {
+  const kept: { credential?: () => Decision | null } = {};
+  const d = partsDecided(line, f, cwd, interpreter, resolved, home, worst, shellRules, uncovered, unread, kept);
+  if (!f.agent || "deny" in d) return d;
+  const refused = kept.credential?.();
+  return refused && "deny" in refused ? refused : d;
+}
+// (`kept`: the line's read of credentials, worked out once, for the caller to ask after another answer.)
+function partsDecided({ command, parts }: { command: string; parts: Simple[] }, f: Facts, cwd: string, interpreter: string | undefined, resolved: boolean, home: string, worst: string | null,
+  shellRules: Rule[], uncovered: (d: Decision, why: string) => Decision, unread: Unread[], kept: { credential?: () => Decision | null }): Decision {
   // A line of more commands than the rules read through is not read at all: high risk, said at once.
   if (parts.length > PARTS_MAX) {
     let n = 0;
@@ -1454,6 +1480,27 @@ function decideParts({ command, parts }: { command: string; parts: Simple[] }, f
   // Read document feeders before returning the visible parts' verdict. An unreadable document
   // still asks the owner in Full auto if a different part already drew a high-risk label.
   const scripts = f.mode === "read-only" ? [] : innerLines(parts, pre, home, 0, unread);
+  // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
+  // same class as a file tool's read of it.
+  // (In Read only a line that starts a shell is refused below as no read: its script adds no card to that.)
+  let read: Decision | null | undefined;
+  const credential = (kept.credential = (): Decision | null => {
+    if (read !== undefined) return read;
+    const cred = shellCredentialReads(parts, cwd, home, (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only" && scripts, f.harness);
+    if (!cred) return (read = null);
+    // In the sandbox the command reads what the sandbox shows and nothing else: a credential it hides is not read,
+    // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a
+    // card: what it prints is given to the secrets vault first (the gate does, with the paths), so it reaches no
+    // model. An agent's command that shows one outside its own folder is refused.
+    // (A folder the look did not finish is not known to hold none: it asks, in the sandbox too.)
+    const unread = cred.hits.find((h) => h.unread);
+    if (unread) return (read = credentialRead(unread.what, f, unread.by, unread.api));
+    const shown = f.confinedShown ? cred.hits.filter((h) => f.confinedShown!(h.path).shown) : null;
+    // (A link to one of the owner's files is not the folder's own, whatever it is called or where it stands.)
+    const outside = shown?.find((h) => h.foreign || !contains(f.workspace, h.path));
+    if (!shown) return (read = credentialRead(cred.what, f, cred.by, cred.api));
+    return (read = outside && f.agent ? credentialRead(outside.what, f, outside.by, outside.api) : null);
+  });
   if (worst) return uncovered(never(worst, f), worst);
   if (f.mode !== "read-only" && f.accounts && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) {
     const writes = accountWrites(parts, pre, f);
@@ -1598,24 +1645,8 @@ function decideParts({ command, parts }: { command: string; parts: Simple[] }, f
     return { deny: `This session is read-only: only read-only commands run, and \`${p.text}\` is not one.${why}` };
   };
   if (f.mode === "read-only") { const not = resolveVariables(parts).find((p) => !(interpreter === undefined && reads(p))); if (not) return refuseWrite(not); }
-  // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
-  // same class as a file tool's read of it.
-  // (In Read only a line that starts a shell is refused above as no read: its script adds no card to that.)
-  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only" && scripts, f.harness);
-  if (cred) {
-    // In the sandbox the command reads what the sandbox shows and nothing else: a credential it hides is not read,
-    // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a
-    // card: what it prints is given to the secrets vault first (the gate does, with the paths), so it reaches no
-    // model. An agent's command that shows one outside its own folder is refused.
-    // (A folder the look did not finish is not known to hold none: it asks, in the sandbox too.)
-    const unread = cred.hits.find((h) => h.unread);
-    if (unread) return credentialRead(unread.what, f, unread.by, unread.api);
-    const shown = f.confinedShown ? cred.hits.filter((h) => f.confinedShown!(h.path).shown) : null;
-    // (A link to one of the owner's files is not the folder's own, whatever it is called or where it stands.)
-    const outside = shown?.find((h) => h.foreign || !contains(f.workspace, h.path));
-    if (!shown) return credentialRead(cred.what, f, cred.by, cred.api);
-    if (outside && f.agent) return credentialRead(outside.what, f, outside.by, outside.api);
-  }
+  const reading = credential();
+  if (reading) return reading;
   if (f.mode === "full-auto") return { allow: true };
   // A rule that stops at a launcher (`pnpm dlx *`) covers no package where a model decides: the line goes to it.
   const judged = f.mode === "auto" || f.mode === "reviewer";
