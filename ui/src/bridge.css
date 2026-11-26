@@ -2038,7 +2038,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    while typing (Composer.tsx); what else the box holds (attachments, notices) spans the line above or below. */
 .k-composer-box[data-line] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
 .k-composer-box[data-line] > * { grid-column: 1 / -1; }
-.k-composer-box[data-line] > textarea { grid-column: 1; padding-bottom: 0.625rem; }
+.k-composer-box[data-line] > textarea { grid-column: 1; padding-top: 0.5rem; padding-bottom: 0.5rem; }
 .k-composer-box[data-line] > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; padding: 0 0.375rem 0.375rem 0; }
 /* The calm agents line of the dock (every desk view, and Focus on a phone): one item in muted ink, the word and
    how many are live, with one dot when an agent needs the owner (AgentsDock.tsx). */

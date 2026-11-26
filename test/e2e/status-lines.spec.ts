@@ -109,16 +109,17 @@ test.describe("at a desk", () => {
       await expect(page.getByTestId("dock-changes-count")).toHaveText(/^2 files\s*\+\d+\s*-\d+$/, { timeout: 30_000 });
       await expect(page.getByTestId("dock-action-path")).toHaveText("src/a.ts", { timeout: 30_000 });
 
-      // 1. The heights. The block was three lines of 1.75rem and the box held 1.5rem of air over its text and 0.5rem
-      // under its tools; now two lines, and the text sits close to the top, its row of tools close under it.
+      // 1. The heights. The block is two lines, and a session's box on a desk is one: the text with its tools beside
+      // it on its line, and little air around the text.
       for (const [width, height] of [[1920, 1040], [1366, 768]] as const) {
         await page.setViewportSize({ width, height });
         await expect.poll(async () => (await measure(page)).dock!.height, { message: `the block at ${width}` }).toBeLessThanOrEqual(4.4 * 16);
         const m = await measure(page);
         expect(m.dock!.height / m.rem, `the block at ${width} is two lines of 1.75rem and no more`).toBeLessThanOrEqual(4.1);
-        expect(m.box!.height / m.rem, `the box at ${width} holds one line of text and its tools`).toBeLessThanOrEqual(5.4);
-        // No band between the text and the tools, and the text's own air is small.
-        expect(Math.abs(m.tools!.top - m.ta!.bottom), "the tools start where the text ends").toBeLessThanOrEqual(1);
+        expect(m.box!.height / m.rem, `the box at ${width} is one line: its text and its tools beside it`).toBeLessThanOrEqual(3.25);
+        // The tools stand on the text's own line, and the text's own air is small.
+        expect(m.tools!.top, "the tools are on the text's line").toBeLessThan(m.ta!.bottom);
+        expect(Math.abs(m.tools!.bottom - m.ta!.bottom), "the tools end where the text ends").toBeLessThanOrEqual(0.5 * m.rem);
         expect((m.ta!.height - m.lh) / m.rem, "air in the text field").toBeLessThanOrEqual(1);
         expect(m.kids, "the block is two lines").toEqual(["dock-top", "dock-now"]);
         expect(Math.abs((m.plan!.top + m.plan!.bottom) - (m.agents!.top + m.agents!.bottom)), "the plan and the agents share a line").toBeLessThanOrEqual(2);
