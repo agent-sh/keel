@@ -62,6 +62,8 @@ const Pickers = {
 // mounted while it is closed (a picker that mounted with the ask would take it as its first value and open nothing),
 // and an ask reaches its picker once the popup is in place: a menu placed against a trigger that is still hidden
 // measures nothing, and its observer is told of the size twice in one frame.
+// A popup the key opened is there for that one menu: it goes when the menu does (a choice or Escape), and the
+// keyboard is back in the box, as it was when the pickers stood in the box's row. One a press on the + opened stays.
 type Asks = { mode: number; model: number; effort: number };
 function BoxMore({ asks, children }: { asks: Asks; children: (asks: Asks) => ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -69,23 +71,50 @@ function BoxMore({ asks, children }: { asks: Asks; children: (asks: Asks) => Rea
   const latest = useRef(asks);
   latest.current = asks;
   const shown = useRef(false);
+  const byKey = useRef(false);
+  const plus = useRef<HTMLButtonElement>(null), popup = useRef<HTMLDivElement>(null);
   const key = `${asks.mode}|${asks.model}|${asks.effort}`, was = useRef(key);
   useEffect(() => {
     if (key === was.current) return;
     was.current = key;
     if (shown.current) setGiven(latest.current);
-    else setOpen(true);
+    else { byKey.current = true; setOpen(true); }
   }, [key]);
-  const change = (o: boolean) => { if (!o) shown.current = false; setOpen(o); };
+  const change = (o: boolean) => { if (!o) shown.current = byKey.current = false; setOpen(o); };
   const settled = (o: boolean) => { shown.current = o; if (o) setGiven(latest.current); };
+  // The menu a key asked for is known by its trigger's own words (aria-expanded, aria-controls): once it was open
+  // and is gone from the page, the popup the key opened closes. Not while the menu is still leaving: it is placed
+  // against its trigger, and a trigger hidden under it changes the size its observer was just told.
+  useEffect(() => {
+    const el = popup.current;
+    if (!open || !el) return;
+    let menu = "", frame = 0, tries = 0;
+    const close = () => {
+      if (!byKey.current) return;
+      if (menu && document.getElementById(menu) && tries++ < 90) { frame = requestAnimationFrame(close); return; }
+      byKey.current = shown.current = false;
+      setOpen(false);
+      plus.current?.closest(".k-composer-box")?.querySelector<HTMLElement>("textarea")?.focus();
+    };
+    const look = () => {
+      if (!byKey.current) return;
+      const on = el.querySelector('[aria-expanded="true"]');
+      cancelAnimationFrame(frame);
+      if (on) { menu = on.getAttribute("aria-controls") || menu || "-"; tries = 0; }
+      else if (menu) frame = requestAnimationFrame(close);
+    };
+    const mo = new MutationObserver(look);
+    mo.observe(el, { subtree: true, attributes: true, attributeFilter: ["aria-expanded", "aria-controls"] });
+    return () => { mo.disconnect(); cancelAnimationFrame(frame); };
+  }, [open]);
   return (
     <Popover.Root open={open} onOpenChange={change} onOpenChangeComplete={settled}>
-      <Popover.Trigger className="k-box-more grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg data-popup-open:bg-hover" data-testid="box-more" aria-label="Mode, model and context" title="Mode, model and context">
+      <Popover.Trigger ref={plus} className="k-box-more grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg data-popup-open:bg-hover" data-testid="box-more" aria-label="Mode, model and context" title="Mode, model and context">
         <Plus className="size-4" />
       </Popover.Trigger>
       <Popover.Portal keepMounted>
         <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50">
-          <Popover.Popup className="k-box-more-pop flex flex-col items-start gap-1 rounded-lg border border-line bg-raised p-1.5 shadow-3 outline-none" data-testid="box-more-popup">{children(given)}</Popover.Popup>
+          <Popover.Popup ref={popup} className="k-box-more-pop flex flex-col items-start gap-1 rounded-lg border border-line bg-raised p-1.5 shadow-3 outline-none" data-testid="box-more-popup">{children(given)}</Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
     </Popover.Root>

@@ -198,13 +198,25 @@ test("a session's box on a desk is one quiet line in the workbench: the pickers 
     await expect(more).toHaveAttribute("data-popup-open", "");
     await page.keyboard.press("Escape");
     await expect(models).toBeHidden();
-    await closeBoxTools(page);
+    // The + was opened for that one menu: it goes with it, on the one Escape, and the keyboard is back in the box.
+    await expect(more).not.toHaveAttribute("data-popup-open");
+    await expect(page.getByTestId("composer")).toBeFocused();
   }
   await page.getByTestId("composer").click();
   await page.keyboard.press("Alt+e");
   await expect(menus).toContainText("Effort, from the next turn");
-  await page.keyboard.press("Escape");
+  // A choice closes both too.
+  await menus.getByRole("menuitem").first().click();
   await expect(menus).toHaveCount(0);
+  await expect(more).not.toHaveAttribute("data-popup-open");
+  await expect(page.getByTestId("composer")).toBeFocused();
+  // One a press on the + opened stays when a menu in it closes.
+  await more.click();
+  await page.keyboard.press("Alt+m");
+  await expect(models).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(models).toBeHidden();
+  await expect(more).toHaveAttribute("data-popup-open", "");
   await closeBoxTools(page);
   await more.click();
   await expect(page.getByTestId("box-more-popup").filter({ visible: true }).getByTestId("effort-picker")).toBeVisible();
