@@ -164,23 +164,41 @@ export function callBreaks(ban: string, call: StoreCall): boolean {
 // a row (at least two of them not common ones)? `acted`: the text of the
 // turn's tool calls; a fact also counts when one of them holds a path, a
 // file, a flag or a quoted command the fact names.
-export function usedBy(f: Fact, output: string, acted = ""): boolean {
-  const out = ` ${wordsOf(output).join(" ")} `;
+// What later steps said and did, folded once for every fact judged against them: the output's words,
+// its runs of up to GRAM_MAX words as sets (built when first asked), and the calls' words in lower case.
+// A long session's output is read once, not once a fact and again for each of its three-word runs.
+const GRAM_MAX = 4;
+export type Said = { words: string[]; out: string; low: string; grams: Map<number, Set<string>> };
+export const saidOf = (output: string, acted = ""): Said => {
+  const words = wordsOf(output);
+  return { words, out: ` ${words.join(" ")} `, low: acted.toLowerCase(), grams: new Map() };
+};
+function says(s: Said, run: string[]): boolean {
+  if (run.length > GRAM_MAX) return s.out.includes(` ${run.join(" ")} `);
+  let set = s.grams.get(run.length);
+  if (!set) {
+    set = new Set();
+    for (let i = 0; i + run.length <= s.words.length; i++) set.add(s.words.slice(i, i + run.length).join(" "));
+    s.grams.set(run.length, set);
+  }
+  return set.has(run.join(" "));
+}
+
+export function usedIn(f: Fact, s: Said): boolean {
   for (const n of f.names) {
-    const name = wordsOf(n).join(" ");
-    if (name.length >= 3 && out.includes(` ${name} `)) return true;
+    const name = wordsOf(n);
+    if (name.length && name.join(" ").length >= 3 && says(s, name)) return true;
   }
   const w = wordsOf(f.text);
   for (let i = 0; i + 3 <= w.length; i++) {
     const three = w.slice(i, i + 3);
-    if (three.filter((x) => !plain(x)).length >= 2 && out.includes(` ${three.join(" ")} `)) return true;
+    if (three.filter((x) => !plain(x)).length >= 2 && says(s, three)) return true;
   }
-  if (acted) {
-    const low = acted.toLowerCase();
-    for (const h of handlesOf(f.text)) if (low.includes(h)) return true;
-  }
+  if (s.low) for (const h of handlesOf(f.text)) if (s.low.includes(h)) return true;
   return false;
 }
+
+export const usedBy = (f: Fact, output: string, acted = ""): boolean => usedIn(f, saidOf(output, acted));
 
 // The words of a tool call's input, as they were given: every string in it, a
 // line each (its JSON would glue an "n" onto the first word of a later line).
@@ -409,15 +427,16 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const keep: Waiting[] = [];
     // One commit for the whole turn's recalls.
     this.store.db.transaction(() => {
-      const turn = said.map((a) => a.text).join("\n"), turnActed = said.map((a) => a.calls).join("\n");
+      const turnSaid = saidOf(said.map((a) => a.text).join("\n"), said.map((a) => a.calls).join("\n"));
       for (const w of waiting ?? []) {
-        if (usedBy(w.fact, turn, turnActed)) { one.run(1, w.id); later.run(w.recall); } else keep.push(w);
+        if (usedIn(w.fact, turnSaid)) { one.run(1, w.id); later.run(w.recall); } else keep.push(w);
       }
       for (const o of list ?? []) {
         // A reply is stored when it ends: one stored at or after the recall could read it.
         const after = said.filter((a) => a.ts >= o.ts);
         const output = after.map((a) => a.text).join("\n"), acted = after.map((a) => a.calls).join("\n");
-        const used = o.facts.map((f) => usedBy(f, output, acted));
+        const folded = saidOf(output, acted);
+        const used = o.facts.map((f) => usedIn(f, folded));
         // `used` of a recall counts its notes: a rule works by what the model leaves undone, and is judged below.
         q.run(used.filter((u, i) => u && !o.facts[i]!.rule).length, o.row);
         used.forEach((u, i) => {

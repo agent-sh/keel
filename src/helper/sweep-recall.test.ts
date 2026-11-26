@@ -93,3 +93,11 @@ test("a nudge is credited to the turn it was delivered into: a held queue earns 
   // No acts: nothing judged.
   expect(nudgeOutcomes([], users, ends)).toEqual({ ended: 0, interrupted: 0, failed: 0, stops: 0, pending: 0, turns: [] });
 });
+
+test("a supervisor stop is one outcome: two interrupts it answered count it once, and neither waits as unseen", () => {
+  const acts = [{ id: 1, ts: 100, action: "interrupt" }, { id: 2, ts: 110, action: "interrupt" }];
+  const ends = [{ id: "A", seq: 5, ts: 120, reason: "interrupted", stopped_by: "supervisor" }];
+  expect(nudgeOutcomes(acts, [], ends)).toEqual({ ended: 0, interrupted: 0, failed: 0, stops: 1, pending: 0, turns: [] });
+  // A later interrupt with no stop after it is still unseen.
+  expect(nudgeOutcomes([...acts, { id: 3, ts: 200, action: "interrupt" }], [], ends).pending).toBe(1);
+});

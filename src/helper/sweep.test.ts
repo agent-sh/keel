@@ -8,7 +8,7 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { memoryMeter } from "../integrations/memory-meter.ts";
 import { nativeLog } from "../integrations/native-log.ts";
-import { dropNote, offersFrom, sweep, sweepLine, Sweeps, tidyIndex, DAY, type FactRow, type RecordRow } from "./sweep.ts";
+import { dropNote, offersFrom, sweep, sweepLine, Sweeps, tidyIndex, unstampedOffer, DAY, type FactRow, type RecordRow } from "./sweep.ts";
 
 const hooksAtStart = allHooks().length;
 afterAll(() => { allHooks().length = hooksAtStart; });
@@ -206,4 +206,26 @@ test("an offer is checked again before it changes a file: an edited note or inde
   put(join(dir, "MEMORY.md"), "- [a](a.md): kept\n- [gone](gone.md): back again\n");
   expect(() => tidyIndex(dir, tidy.target.add ?? [], tidy.target.remove ?? [], tidy.target.stamp)).toThrow(/changed since/);
   expect(readFileSync(join(dir, "MEMORY.md"), "utf8")).toContain("back again");
+});
+
+test("an offer's writes keep what the index held, and a dropped note never replaces an earlier one of its name", () => {
+  const dir = tempTree("sweep-own-");
+  put(join(dir, "MEMORY.md"), "- [a](a.md): kept\n- [gone](gone.md): dead\n");
+  put(join(dir, "a.md"), "---\nname: a\n---\nfirst a");
+  tidyIndex(dir, [], ["gone.md"]);
+  expect(readFileSync(join(dir, "MEMORY.md.prev"), "utf8")).toContain("gone.md");
+  expect(dropNote(dir, "a.md")).toContain(join(".dropped", "a.md"));
+  put(join(dir, "a.md"), "---\nname: a\n---\nsecond a");
+  expect(dropNote(dir, "a.md")).toContain(join(".dropped", "a.2.md"));
+  expect(readFileSync(join(dir, ".dropped", "a.md"), "utf8")).toContain("first a");
+  expect(readFileSync(join(dir, ".dropped", "a.2.md"), "utf8")).toContain("second a");
+});
+
+test("an offer from a card that kept no stamp is refused: it cannot be checked against what it changes", () => {
+  expect(unstampedOffer({ kind: "drop_note", target: { dir: "/x", file: "a.md" } })).toMatch(/older sweep/);
+  expect(unstampedOffer({ kind: "tidy_index", target: { dir: "/x" } })).toMatch(/older sweep/);
+  expect(unstampedOffer({ kind: "drop_record", target: { key: "k" } })).toMatch(/older sweep/);
+  expect(unstampedOffer({ kind: "drop_note", target: { dir: "/x", file: "a.md", stamp: "1:2" } })).toBeNull();
+  expect(unstampedOffer({ kind: "drop_record", target: { key: "k", updated: 5 } })).toBeNull();
+  expect(unstampedOffer({ kind: "tacit_note", target: { name: "n", text: "t" } })).toBeNull();
 });

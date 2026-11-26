@@ -8,7 +8,7 @@
 // words in a row, or a later call holds a path, file, flag or quoted command it names. A mistake is a
 // call that a note's own prohibition names (`bansOf`, `callBreaks`): the same rule the meter applies
 // to the memory store's rules.
-import { bansOf, callBreaks, factLines, factOf, usedBy, type Fact } from "../integrations/memory-meter.ts";
+import { bansOf, callBreaks, factLines, factOf, saidOf, usedIn, type Fact } from "../integrations/memory-meter.ts";
 import { tacitToolCall, type StoreCall } from "../integrations/tacit-tools.ts";
 
 // The steps after a load that are read for it: the turns that follow carry the block too, but a fact
@@ -75,7 +75,8 @@ export type Judged = { given: number; used: boolean[]; broken: string[] };
 export function judge(facts: readonly Fact[], bans: readonly string[], steps: readonly Step[], touched: readonly string[] = []): Judged {
   const take = [...steps.slice(0, STEPS_MAX), { text: "", acted: touched.join("\n"), calls: [] }];
   const text = take.map((s) => s.text).join("\n"), acted = take.map((s) => s.acted).join("\n");
-  const used = facts.map((f) => usedBy(f, text, acted));
+  const said = saidOf(text, acted);
+  const used = facts.map((f) => usedIn(f, said));
   const broken = bans.filter((b) => take.some((s) => s.calls.some((c) => callBreaks(b, c))));
   return { given: facts.length, used, broken };
 }
@@ -174,17 +175,20 @@ export type Nudges = { ended: number; interrupted: number; failed: number; stops
 // The outcome of one session's nudges, each credited to the turn it was delivered into: a queue or a
 // steer to the first of momentum's messages stored at or after it that no earlier nudge took, then
 // to the end of the turn that read it; an interrupt to the turn end after it that says the supervisor
-// stopped it. Two nudges read by one turn are one outcome. A nudge with no delivery, or a delivery
+// stopped it, each stop once. Two nudges read by one turn, or answered by one stop, are one outcome. A nudge with no delivery, or a delivery
 // no turn has ended yet, is pending: unobserved, never a success. Observed outcomes, not their cause.
 export function nudgeOutcomes(acts: readonly Act[], delivered: readonly Delivered[], ends: readonly TurnEnd[]): Nudges {
   const out: Nudges = { ended: 0, interrupted: 0, failed: 0, stops: 0, pending: 0, turns: [] };
-  const taken = new Set<number>(), turns = new Map<string, TurnEnd>();
+  const taken = new Set<number>(), stopped = new Set<number>(), turns = new Map<string, TurnEnd>();
   const byTs = [...acts].sort((a, b) => a.ts - b.ts || a.id - b.id);
   const msgs = [...delivered].sort((a, b) => a.seq - b.seq), fin = [...ends].sort((a, b) => a.seq - b.seq);
   for (const a of byTs) {
     if (a.action === "interrupt") {
-      const e = fin.find((x) => x.ts >= a.ts && x.stopped_by === "supervisor");
-      if (e) out.stops++; else out.pending++;
+      // Each stop is one outcome: a second interrupt the same stop answered adds nothing.
+      const stop = (x: TurnEnd) => x.ts >= a.ts && x.stopped_by === "supervisor";
+      const e = fin.find((x) => stop(x) && !stopped.has(x.seq));
+      if (e) { stopped.add(e.seq); out.stops++; }
+      else if (!fin.some(stop)) out.pending++;
       continue;
     }
     const m = msgs.find((x) => x.ts >= a.ts && !taken.has(x.seq));

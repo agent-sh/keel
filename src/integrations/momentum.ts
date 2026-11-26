@@ -85,8 +85,9 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     const s = typeof session_id === "string" ? c.store.session(session_id) : null;
     if (!s || isOutside(s)) return { ok: false, code: "not_found", error: "unknown session" };
     if (action === "interrupt") {
-      void c.engine.interrupt(s.id, "supervisor");
+      // The act is stored before what it does, so the turn end or message it makes is never dated before it.
       noteAct(c.store, s.id, action);
+      void c.engine.interrupt(s.id, "supervisor");
       return { ok: true, accepted: action };
     }
     if (!text.trim()) return { ok: false, code: "empty_text", error: "queue and steer need text" };
@@ -99,9 +100,9 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     // queue: waits for the running turn and what is queued before it. In an idle
     // session it starts a turn, unless the queue is held (a turn was stopped and
     // nothing resumed it): then it waits there for the owner.
+    noteAct(c.store, s.id, action);
     if (action === "steer" && c.deliver && !c.engine.isRunning(s.id)) c.deliver(s.id, tagged, { origin: "momentum" });
     else c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });
-    noteAct(c.store, s.id, action);
     return { ok: true, accepted: action };
   }
   return { ok: false, error: "invalid command json" };

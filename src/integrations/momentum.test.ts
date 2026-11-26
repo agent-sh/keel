@@ -24,3 +24,21 @@ test("momentum's list leaves out an outside session and its acts do not reach on
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The sweep credits a nudge to the message and turn end dated at or after it: the act is stored before it is carried out.
+test("a supervisor's act is stored before the message or stop it makes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "momentum-order-"));
+  try {
+    const store = new Store(dir);
+    const s = store.createSession({ title: "Mine", model: "p:m", workspace: dir });
+    const seen: number[] = [];
+    const acts = () => (store.db.query("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'momentum_acts'").get() as any).n ? (store.db.query("SELECT COUNT(*) AS n FROM momentum_acts").get() as any).n : 0;
+    const engine = { isRunning: () => true, send: () => seen.push(acts()), interrupt: async () => { seen.push(acts()); } } as any;
+    const c = { store, engine, transcript: () => "t" };
+    expect(handleLine(JSON.stringify({ cmd: "supervise_act", session_id: s.id, action: "queue", text: "go on" }), c)).toMatchObject({ ok: true });
+    expect(handleLine(JSON.stringify({ cmd: "supervise_act", session_id: s.id, action: "interrupt" }), c)).toMatchObject({ ok: true });
+    expect(seen).toEqual([1, 2]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

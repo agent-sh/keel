@@ -8,7 +8,7 @@
 //   POST /api/memory/sweep/offers/:id/dismiss   leave it
 import { join } from "node:path";
 import * as activity from "../../automation/activity.ts";
-import { dropNote, sweep, sweepLine, Sweeps, tidyIndex, DAY, type Card, type Offer } from "../../helper/sweep.ts";
+import { dropNote, sweep, unstampedOffer, sweepLine, Sweeps, tidyIndex, DAY, type Card, type Offer } from "../../helper/sweep.ts";
 import { nativeLog } from "../../integrations/native-log.ts";
 import { MemoryStore } from "../../integrations/memory-store.ts";
 import { readsOf } from "../reads.ts";
@@ -86,12 +86,16 @@ export function sweepRoutes({ store, errors }: Deps, mem: MemoryStore, tacit: { 
         if ("error" in f) return f.error;
         const o = f.o;
         if (o.state !== "open") return bad(`the offer is ${o.state}`, 409);
+        const unstamped = unstampedOffer(o);
+        if (unstamped) return bad(unstamped, 409);
         try {
           if (o.kind === "drop_record") {
             // The record as the sweep saw it: one the owner or a turn changed or used since is left alone.
-            const now = helperNow?.().records.index.byKey.get(o.target.key!);
-            if (now && o.target.updated !== undefined && (now.updated !== o.target.updated || now.source === "owner" || now.used > 0)) return bad(`${o.target.key} changed since the sweep offered this; the next sweep looks at it again`, 409);
-            const r = helperNow?.().records.forget(o.target.key!);
+            const h = helperNow?.();
+            if (!h) return bad("the helper is not running, so its records cannot be checked; the next sweep looks again", 409);
+            const now = h.records.index.byKey.get(o.target.key!);
+            if (now && (now.updated !== o.target.updated || now.source === "owner" || now.used > 0)) return bad(`${o.target.key} changed since the sweep offered this; the next sweep looks at it again`, 409);
+            const r = h.records.forget(o.target.key!);
             return json({ offer: done(o, r ? `forgot ${o.target.key}` : `${o.target.key} was gone already`) });
           }
           if (o.kind === "tidy_index" || o.kind === "drop_note") {

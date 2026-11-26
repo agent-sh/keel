@@ -13,9 +13,11 @@
 // - momentum: the turns its nudges were delivered into that ended on their own, of those that ended
 //   (a nudge not delivered or not ended yet is pending: unobserved; observed outcomes, not their cause).
 // A system with nothing in the window says so (`helped: null`), never a zero.
-import { existsSync, readFileSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { writeOwnFile } from "../core/ownfile.ts";
 import { basename, join } from "node:path";
 import type { Store } from "../core/store.ts";
+import { timed } from "../admin/stall.ts";
 import { notesOf, type NoteFile } from "../engine/native-memory.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { bansIn, indexFacts, judge, lineOf, moved, nextOf, nudgeOutcomes, recallOf, stepOf, summaryFacts, SESSIONS_MAX, STEPS_MAX, type Act, type Delivered, type Measure, type Next, type Nudges, type Recall, type TurnEnd } from "./sweep-recall.ts";
@@ -108,6 +110,13 @@ const stamp = (bytes: number, mtime: number) => `${bytes}:${Math.floor(mtime)}`;
 export function stampOf(path: string): string {
   try { const st = statSync(path); return stamp(st.size, st.mtimeMs); } catch { return "none"; }
 }
+// An offer that cannot be checked against what it changes (a card from before offers kept a stamp) is
+// refused, with why: the next sweep offers it again with one.
+export function unstampedOffer(o: Pick<Offer, "kind" | "target">): string | null {
+  if (o.kind === "drop_record" && o.target.updated === undefined) return "this offer is from an older sweep that did not keep the record's time; the next sweep offers it again";
+  if ((o.kind === "tidy_index" || o.kind === "drop_note") && o.target.stamp === undefined) return "this offer is from an older sweep that did not keep the file's size and time; the next sweep offers it again";
+  return null;
+}
 const unchanged = (path: string, want: string | undefined) => {
   if (want !== undefined && stampOf(path) !== want) throw new Error(`${basename(path)} changed since the sweep offered this; the next sweep looks at it again`);
 };
@@ -171,8 +180,19 @@ export function tidyIndex(dir: string, add: string[], remove: string[], want?: s
     lines.push(`- [${f.replace(/\.md$/, "")}](${f}): ${d.slice(0, 150)}`);
   }
   text = `${lines.join("\n").replace(/\n+$/, "")}\n`;
-  writeFileSync(file, text);
+  writeOwnFile(file, text);
   return `Updated ${file}: ${add.length} added, ${remove.length} removed.`;
+}
+
+// The place in .dropped/ for a note: its own name, else its name with the first free number.
+export function droppedName(dir: string, name: string): string {
+  const into = join(dir, ".dropped");
+  mkdirSync(into, { recursive: true });
+  const stem = name.replace(/\.md$/, "");
+  for (let n = 1; ; n++) {
+    const to = join(into, n === 1 ? name : `${stem}.${n}.md`);
+    if (!existsSync(to)) return to;
+  }
 }
 
 export function dropNote(dir: string, name: string, want?: string): string {
@@ -180,11 +200,13 @@ export function dropNote(dir: string, name: string, want?: string): string {
   const from = join(dir, name);
   if (!existsSync(from)) throw new Error(`${name} is gone already`);
   unchanged(from, want);
-  mkdirSync(join(dir, ".dropped"), { recursive: true });
-  renameSync(from, join(dir, ".dropped", name));
+  const to = droppedName(dir, name);
+  // A hard link refuses a name that is taken, so an earlier dropped note of the same name is never replaced.
+  linkSync(from, to);
+  unlinkSync(from);
   const file = join(dir, "MEMORY.md");
-  if (existsSync(file)) writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes(`](${name})`)).join("\n"));
-  return `Moved ${name} to ${join(dir, ".dropped")} and took its line out of MEMORY.md.`;
+  if (existsSync(file)) writeOwnFile(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes(`](${name})`)).join("\n"));
+  return `Moved ${name} to ${to} and took its line out of MEMORY.md.`;
 }
 
 // --- the stored cards ----------------------------------------------------------------
@@ -287,8 +309,14 @@ export async function nativeRecall(d: Pick<SweepDeps, "sql">, system: "claude" |
     if (!f) byDir.set(l.dir, (f = nativeFacts(system, l.dir)));
     if (i >= SESSIONS_MAX || !f.facts.length) { out.push({ facts: f.facts, judged: null, tokens }); continue; }
     const [rows, touched] = await Promise.all([d.sql<{ data: string }>(STEPS, [l.session_id, l.ts, until, STEPS_MAX]), d.sql<{ file: string }>(TOUCHED, [l.session_id, system, l.ts, until])]);
-    const steps = rows.map((r) => { try { return stepOf(JSON.parse(r.data)); } catch { return null; } }).filter((x) => !!x);
-    out.push({ facts: f.facts, judged: steps.length || touched.length ? judge(f.facts, f.bans, steps, touched.map((t) => t.file)) : null, tokens });
+    // Up to STEPS_MAX bodies parsed and every fact judged on them: one section of the loop a session,
+    // named together with the day's others if they hold it.
+    const facts = f.facts, bans = f.bans;
+    const judged = timed(() => `memory sweep: ${system} recall judged on ${rows.length} steps`, () => {
+      const steps = rows.map((r) => { try { return stepOf(JSON.parse(r.data)); } catch { return null; } }).filter((x) => !!x);
+      return steps.length || touched.length ? judge(facts, bans, steps, touched.map((t) => t.file)) : null;
+    }, true, "memory-sweep-judge");
+    out.push({ facts, judged, tokens });
   }
   return recallOf(out);
 }
