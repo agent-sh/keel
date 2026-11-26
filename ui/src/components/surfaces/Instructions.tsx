@@ -42,8 +42,11 @@ function LoadsLine({ v }: { v: View }) {
 }
 const SCOPE = { owner: "Yours, in every folder", parent: "A folder above", folder: "This folder" };
 const WHERE = { owner: "yours", parent: "above", folder: "this folder" };
-const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const parent = (p: string) => tilde(p.slice(0, p.lastIndexOf("/")) || "/");
+const base = (p: string) => p.endsWith("/.claude/CLAUDE.md") ? ".claude/CLAUDE.md" : p.slice(p.lastIndexOf("/") + 1);
+const parent = (p: string, cwd: string) => {
+  const dir = p.slice(0, p.lastIndexOf("/")) || "/";
+  return cwd && (dir === cwd || dir.startsWith(`${cwd}/`)) ? `${base(cwd) || cwd}${dir.slice(cwd.length)}` : tilde(dir);
+};
 
 export default function Instructions() {
   const [cwd] = useFolder();
@@ -63,7 +66,7 @@ export default function Instructions() {
   const mark = (f: File): Mark => (f.trust === "new" || f.trust === "changed" ? "need" : "on");
 
   return (
-    <div data-testid="instructions-settings">
+    <div className="k-instructions" data-testid="instructions-settings">
       <FolderLine tally={[{ n: v?.files.length ?? 0, label: "files loaded" }, { n: total, label: "tokens a session" }]} />
       {v && <LoadsLine v={v} />}
       <LintLine lint={v?.lint ?? null} />
@@ -72,8 +75,8 @@ export default function Instructions() {
         selected={sel}
         onSelect={(id) => { setSel(id); setAs("file"); }}
         groups={[
-          { id: "order", title: "Read in this order", entries: (v?.files ?? []).map((f, i) => ({ id: f.path, name: `${i + 1}  ${base(f.path)}`, desc: `${WHERE[f.scope]} · ${parent(f.path)}`, mark: mark(f), aside: `${tok(f.loaded_tokens)} tok`, testid: "instruction-entry" })) },
-          { id: "create", title: "Not written yet", entries: (v?.create ?? []).map((f) => ({ id: f.path, name: base(f.path), desc: `${SCOPE[f.scope]}: ${parent(f.path)}`, mark: "off" as const, aside: "new", testid: "instruction-create" })) },
+          { id: "order", title: "Read in this order", entries: (v?.files ?? []).map((f, i) => ({ id: f.path, name: `${i + 1}  ${base(f.path)}`, desc: `${WHERE[f.scope]} · ${parent(f.path, cwd)}`, mark: mark(f), aside: `${tok(f.loaded_tokens)} tok`, testid: "instruction-entry" })) },
+          { id: "create", title: "Not written yet", entries: (v?.create ?? []).map((f) => ({ id: f.path, name: base(f.path), desc: `${SCOPE[f.scope]}: ${parent(f.path, cwd)}`, mark: "off" as const, aside: "new", testid: "instruction-create" })) },
         ]}
       >
         {file ? (

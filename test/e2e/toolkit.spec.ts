@@ -160,6 +160,26 @@ test("toolkit: instructions", async ({ page, request }) => {
   rmSync(v.files.find((f: any) => f.scope === "owner").path, { force: true });
 });
 
+test("toolkit: a nested instructions file is named in full on a phone", async ({ page }) => {
+  const path = join(ws, ".claude/CLAUDE.md");
+  put(path, "# Claude rules\n\nKeep tests narrow.\n");
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open(page, "instructions");
+    const entry = page.getByTestId("instruction-entry").filter({ hasText: ".claude" }).last();
+    await entry.scrollIntoViewIfNeeded();
+    await shoot(page, "instructions-nested-file");
+    const name = entry.locator(".k-entry-name");
+    await expect(name).toHaveText(/\.claude\/CLAUDE\.md$/);
+    expect(await name.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+    const desc = entry.locator(".k-entry-desc");
+    await expect(desc).toHaveText(`this folder · ${ws.split("/").pop()}/.claude`);
+    expect(await desc.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
 test("toolkit: hooks", async ({ page, request }) => {
   const owner = await (await request.get("/api/hooks/owner")).json();
   test.skip(!String(owner.path).includes("keel-work"), "needs a scratch owner hooks file");
