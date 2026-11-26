@@ -78,7 +78,8 @@ function BoxMore({ asks, children }: { asks: Asks; children: (asks: Asks) => Rea
     if (key === was.current) return;
     was.current = key;
     if (shown.current) setGiven(latest.current);
-    else { byKey.current = true; setOpen(true); }
+    // One a press opened that is still arriving stays the press's: it is given the ask when it is in place (settled).
+    else if (!open) { byKey.current = true; setOpen(true); }
   }, [key]);
   const change = (o: boolean) => { if (!o) shown.current = byKey.current = false; setOpen(o); };
   const settled = (o: boolean) => { shown.current = o; if (o) setGiven(latest.current); };

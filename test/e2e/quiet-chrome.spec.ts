@@ -218,6 +218,17 @@ test("a session's box on a desk is one quiet line in the workbench: the pickers 
   await expect(models).toBeHidden();
   await expect(more).toHaveAttribute("data-popup-open", "");
   await closeBoxTools(page);
+  // It is the press's too when the key comes before the popup has arrived (a slow frame): here the popup is made to
+  // take its time, so the key always lands while it is on its way.
+  const slow = await page.addStyleTag({ content: ".k-box-more-pop { transition: opacity 400ms linear; } .k-box-more-pop[data-starting-style] { opacity: 0; }" });
+  await more.click();
+  await page.keyboard.press("Alt+m");
+  await expect(models).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(models).toBeHidden();
+  await expect(more).toHaveAttribute("data-popup-open", "");
+  await slow.evaluate((el) => (el as Element).remove());
+  await closeBoxTools(page);
   await more.click();
   await expect(page.getByTestId("box-more-popup").filter({ visible: true }).getByTestId("effort-picker")).toBeVisible();
   await expect(menus).toHaveCount(0);
