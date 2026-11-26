@@ -202,5 +202,8 @@ test("the savings ledger books a reading, and takes it back when all its lines a
   // The whole file raw after it, and the page in two raw halves: the session carries the page after all.
   expect(booked((await r.run({}, undefined, undefined, [{}, { raw: true }])).id)).toHaveLength(0);
   expect(booked((await r.run({}, undefined, undefined, [{}, { raw: true, offset: 1, limit: 260 }, { raw: true, offset: 250, limit: 300 }])).id)).toHaveLength(0);
+  // Taking a row back finds it by its session and call, not by a walk over every saving ever booked.
+  const plan = r.store.db.query<{ detail: string }, []>("EXPLAIN QUERY PLAN DELETE FROM telemetry_savings WHERE session_id = 's' AND feature = 'readers' AND call_id = 'c'").all().map((x) => x.detail).join("; ");
+  expect(plan).toContain("USING INDEX telemetry_savings_call (session_id=? AND call_id=?)");
   r.store.db.close();
 });

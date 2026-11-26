@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS telemetry_savings (
   cost REAL, cf_cost REAL, tokens INTEGER, cf_tokens INTEGER, model TEXT, exp_id TEXT, arm TEXT
 );
 CREATE INDEX IF NOT EXISTS telemetry_savings_ts ON telemetry_savings(ts);
+CREATE INDEX IF NOT EXISTS telemetry_savings_call ON telemetry_savings(session_id, call_id);
 `;
 
 const READER_TOOLS = new Set(["AskReaders", "ask_readers"]);
