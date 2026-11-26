@@ -7,14 +7,14 @@ import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
 import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
 import type { Looked } from "./looked.ts";
-import { innerLines } from "./nested-shell.ts";
+import { innerLines, type Unread } from "./nested-shell.ts";
 import { RULE_WORDS, codeGiven, laid, risksAt, type Laid } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
 import type { AskedPart } from "./summary.ts";
 import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
-import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, name as baseName, namesCdpath, shellGiven, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
+import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, evalGiven, name as baseName, namesCdpath, shellGiven, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { follow } from "./line-makes.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
@@ -950,7 +950,7 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
     // sh -c 'git push ...', bash -lc "...", eval '...'
     let script: string | undefined, shell = -1;
     if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { const given = shellGiven(run.words.slice(1)); if (given.script !== undefined) { shell = given.at; script = given.script; } }
-    else if (first === "eval") script = run.words.slice(1).join(" ");
+    else if (first === "eval") script = evalGiven(run.words.slice(1));
     if (script !== undefined) {
       // (A script of more commands than a whole line may hold is not read, as a line of that many is not.)
       const split = depth < 2 ? splitCommand(script) : null;
@@ -1082,7 +1082,8 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // The scripts the line hands a shell it starts (`bash -c '...'`, a here-document into sh, eval), each read as a line
   // of its own where its shell starts (nested-shell.ts): what is never allowed, a write of a file that is the owner's
   // alone to change and a read of a credential are judged in a script as they are in a plain line.
-  const scripts = f.mode === "read-only" ? [] : innerLines(parts, pre, home);
+  const unread: Unread[] = [];
+  const scripts = f.mode === "read-only" ? [] : innerLines(parts, pre, home, 0, unread);
   for (const s of scripts) {
     const inner = neverAllowed(s.parts, pre.dirs[s.at] ?? cwd, home);
     if (inner) return uncovered(never(inner, f), inner);
@@ -1190,6 +1191,8 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     const d = ownerWrites(parts, pre, cwd);
     if (d) return d;
     for (const s of scripts) { const inner = ownerWrites(s.parts, s.pre, pre.dirs[s.at] ?? null, s.at); if (inner) return inner; }
+    // (A script the reading above left out: high risk, said at once, as one the risk classes do not read through.)
+    if (unread.length) return naming({ ask: { risk: "high", why: `the command ${unread[0]!.why}`, rule: RULE_WORDS.hidden, suggest: [] } }, parts, unread[0]!.at);
   }
   const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)), ...(resolved ? { beside: true as const } : {}) }, pre);
   if (risks.length) {
@@ -1200,10 +1203,24 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     return naming(uncovered({ ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
       ...(risks.every((r) => r.git) ? { settles: true as const } : {}), risks: risks.map((r) => ({ at: r.at, rule: r.rule, why: r.why })) } }, risks[0]!.why), parts, risks.find((r) => r.at !== null)?.at);
   }
+  // A variable the line's first words give a value is read as that value.
+  const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };
+  // Read only runs reads and nothing else: a line that is not one is refused before any card is drawn for what it
+  // reads (the owner's yes on a credential card would run the rest of the line with it).
+  const refuseWrite = (p: Simple): Decision => {
+    const form = interpreter === undefined ? readForm(p) : null;
+    // Say what would make it a read, when that is all it lacks.
+    const why = reads(p) ? ` It runs in ${interpreter}, and only a command bash runs is read as a read: run it with bash.`
+      : form ? ` One of its arguments comes from an expansion ($(...), a variable, {a,b}, a glob), which could add an option that writes: ${form}.`
+      : p.unknown && isReadOnly({ ...p, unknown: undefined }) ? " The rules cannot follow what the shell evaluates in it (arithmetic, a subscript, a sliced or indirect variable, a case inside a substitution): write it plainly."
+      : "";
+    return { deny: `This session is read-only: only read-only commands run, and \`${p.text}\` is not one.${why}` };
+  };
+  if (f.mode === "read-only") { const not = resolveVariables(parts).find((p) => !(interpreter === undefined && reads(p))); if (not) return refuseWrite(not); }
   // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
   // same class as a file tool's read of it.
-  // (In Read only a line that starts a shell is refused below as no read: its script adds no card to that.)
-  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only", f.harness);
+  // (In Read only a line that starts a shell is refused above as no read: its script adds no card to that.)
+  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only" && scripts, f.harness);
   if (cred) {
     // In the sandbox the command reads what the sandbox shows and nothing else: a credential it hides is not read,
     // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a
@@ -1219,8 +1236,6 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     if (outside && f.agent) return credentialRead(outside.what, f, outside.by, outside.api);
   }
   if (f.mode === "full-auto") return { allow: true };
-  // A variable the line's first words give a value is read as that value.
-  const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };
   // A rule that stops at a launcher (`pnpm dlx *`) covers no package where a model decides: the line goes to it.
   const judged = f.mode === "auto" || f.mode === "reviewer";
   const anyPackage: { rule: string; part: Simple }[] = [];
@@ -1242,15 +1257,6 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   if (!open.length) return { allow: true };
   // The form that would be read as a read, when an expansion among the arguments is all that keeps it from being one.
   const form = interpreter === undefined ? readForm(open[0]!) : null;
-  if (f.mode === "read-only") {
-    const p = open[0]!;
-    // Say what would make it a read, when that is all it lacks.
-    const why = reads(p) ? ` It runs in ${interpreter}, and only a command bash runs is read as a read: run it with bash.`
-      : form ? ` One of its arguments comes from an expansion ($(...), a variable, {a,b}, a glob), which could add an option that writes: ${form}.`
-      : p.unknown && isReadOnly({ ...p, unknown: undefined }) ? " The rules cannot follow what the shell evaluates in it (arithmetic, a subscript, a sliced or indirect variable, a case inside a substitution): write it plainly."
-      : "";
-    return { deny: `This session is read-only: only read-only commands run, and \`${p.text}\` is not one.${why}` };
-  }
   if ((f.mode === "auto-edits" || f.mode === "auto") && f.sandboxed) return { allow: true, why: "sandboxed" };
   // A part with no command word (a redirect after a group, a loop or nothing) has no rule to suggest.
   // (The first five different ones: a line of thousands of parts is not read past them.)

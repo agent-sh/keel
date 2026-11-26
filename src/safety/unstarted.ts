@@ -10,7 +10,7 @@
 // an agent's own branch, because nobody who started the turn is there to answer for a rewritten or removed ref.
 // Pure: the policy gives it the line's parts.
 import { docsRun, splitCommand, type Simple } from "./shell.ts";
-import { SHELLS, name, shellGiven, unwrap } from "./risk-words.ts";
+import { SHELLS, evalGiven, name, shellGiven, unwrap } from "./risk-words.ts";
 
 const DEPTH = 4;
 
@@ -150,7 +150,7 @@ export function unstartedAct(parts: Simple[] | null, depth = 0): string | null {
     if (found) return found;
     // A shell given the program (bash -c '...', eval '...'): its text is a line of its own.
     const prog = name(run.words[0]);
-    const code = prog === "eval" ? run.words.slice(1).join(" ") : SHELLS.test(prog) ? shellGiven(run.words.slice(1)).script : undefined;
+    const code = prog === "eval" ? evalGiven(run.words.slice(1)) : SHELLS.test(prog) ? shellGiven(run.words.slice(1)).script : undefined;
     if (code) {
       const inner = unstartedAct(splitCommand(code), depth + 1);
       if (inner) return inner;

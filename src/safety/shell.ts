@@ -60,6 +60,28 @@ const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/
 const SINK = /^\/dev\/null$/;
 type Redirect = ">" | ">&" | "<" | "<&" | "<<<" | "<<" | "<<-";
 
+// The text of $'...' as bash hands it on: its escapes read (\n, \t, \\, \', \", \NNN, \xHH, \uHHHH, \UHHHHHHHH,
+// \cX), an escape bash does not know left as written, and the text cut at a NUL as bash cuts it.
+const ANSI_NAMED: Record<string, string> = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
+export function ansiC(body: string): string {
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!;
+    if (c !== "\\" || i + 1 >= body.length) { out += c; continue; }
+    const rest = body.slice(i + 1, i + 10);
+    const named = ANSI_NAMED[rest[0]!];
+    const m = named !== undefined ? null : /^(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/.exec(rest);
+    let ch: string;
+    if (named !== undefined) { ch = named; i++; }
+    else if (m) { const code = m[1] !== undefined ? parseInt(m[1], 8) & 0xff : parseInt(m[2] ?? m[3] ?? m[4]!, 16); ch = code > 0x10ffff ? "" : String.fromCodePoint(code); i += m[0].length; }
+    else if (rest[0] === "c" && rest.length > 1) { ch = String.fromCharCode(rest.charCodeAt(1) & 0x1f); i += 2; }
+    else { out += c; continue; }
+    if (ch === "\0") return out;
+    out += ch;
+  }
+  return out;
+}
+
 // Split on shell operators outside quotes. Command and process substitutions
 // ($(...), `...`, <(...), >(...)) are analysed as commands of their own. Null:
 // not a command line a shell would run (an open quote or substitution, a
@@ -384,13 +406,15 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
       const ansi = c === "$";
       let j = i + (ansi ? 2 : 1);
       let lit = "";
+      let escaped = false;
       for (; j < cmd.length && cmd[j] !== "'"; j++) {
-        // An escape there can spell any character (\x2d is a dash): the word is not known.
-        if (ansi && cmd[j] === "\\" && j + 1 < cmd.length) { j++; expands(word.length + lit.length, false); cur.rest = true; }
+        // An escape there can spell any character (\x2d is a dash): the word is marked as one the line makes, and
+        // holds the characters the shell hands on (a script it carries is read as that text).
+        if (ansi && cmd[j] === "\\" && j + 1 < cmd.length) { lit += cmd[j++]; if (!escaped) { escaped = true; expands(word.length + lit.length - 1, false); cur.rest = true; } }
         lit += cmd[j];
       }
       if (j >= cmd.length) return null;
-      put(lit); inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
+      put(escaped ? ansiC(lit) : lit); inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
       continue;
     }
     if (c === '"') {

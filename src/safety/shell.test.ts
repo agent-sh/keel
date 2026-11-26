@@ -101,7 +101,8 @@ test("a word an expansion makes is marked, and what evaluates a value is unknown
   expect(made('[ -n "$x" ]')).toEqual([["[ -n $x ]", [2], false, false]]);
   expect(made("grep 'a$' f; echo $? $#")).toEqual([["grep a$ f", [], false, false], ["echo $? $#", [], false, false]]);
   expect(made("ls src/{a,b} stash@{0} {}")).toEqual([["ls src/{a,b} stash@{0} {}", [1], true, false]]);
-  expect(made("echo $'\\x2d'")).toEqual([["echo x2d", [1], false, false]]);
+  // ($'...' is the text bash hands on, and stays a word the line makes.)
+  expect(made("echo $'\\x2d'")).toEqual([["echo -", [1], false, false]]);
   for (const c of ["echo ${a[i]}", "echo ${x:i:1}", "echo ${!x}", "echo ${x@P}", "echo $((i))", "((i))", "echo $[i]", 'echo "${x:-"y"}"'])
     expect([c, split(c).some((s) => s.unknown)]).toEqual([c, true]);
   for (const c of ["echo ${x}", "echo ${#x}", "echo ${x:-y}", "echo ${x%/*}", 'echo "${x//a/b}"'])

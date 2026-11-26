@@ -40,12 +40,14 @@ export const WORDS_MAX = 1_024; // paths one command writes or deletes
 // in, and the line is read once.
 export const SCRIPT_MAX = 4_000;
 
-export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash)$/;
+// (With the restricted and the other Bourne-like shells, and csh: each runs the script it is given with -c.)
+export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash|rbash|rzsh|rksh|mksh|ksh93|yash|csh|tcsh)$/;
 // A client told to print the credential it holds, as the store under the home it keeps it in, else null: gh auth
 // token, gcloud auth print-access-token, aws configure export-credentials, git credential fill, secret-tool lookup.
-// Its output is the credential, as a read of the store's file is.
+// Its output is the credential, as a read of the store's file is. (Asked for its help it prints none.)
 export function printsHeld(words: string[]): string | null {
   const p = name(words[0]);
+  if (words.includes("--help") || ((p === "aws" || p === "gcloud") && words.includes("help"))) return null;
   if (p === "gh") return words[1] === "auth" && (words[2] === "token" || (words[2] === "status" && words.some((a) => a === "--show-token" || /^-[a-zA-Z]*t/.test(a)))) ? ".config/gh" : null;
   if (p === "gcloud") return words.includes("auth") && words.some((a) => /^print-(access|identity)-token$/.test(a)) ? ".config/gcloud" : null;
   if (p === "aws") return words.includes("export-credentials") ? ".aws" : null;
@@ -57,27 +59,66 @@ export function printsHeld(words: string[]): string | null {
   return (sub === "credential" && words[k + 1] === "fill") || (sub.startsWith("credential-") && words.includes("get")) ? ".git-credentials" : null;
 }
 // What a shell is started with, from the words after its name, read as the shell reads them: its options first (a
-// cluster of letters such as -lc or -xec, `-o NAME` and `-O NAME` with their value, a long option, `--rcfile FILE`),
-// up to the first word that is none or to `--`. With -c anywhere among them that word is the script, whatever
-// stands between (`bash -c -x 'script'`, `sh -euc 'script'`), and the words after it are its $0 and arguments.
-// `at`: where the script stands in `args`, -1 with none. `input`: no -c and no script file (or -s): it reads its
-// commands from its input. A script file it names is `rest[0]`, and is not read. Every rule that reads the script
-// a shell is given finds it here.
+// cluster of letters such as -lc or -xec, with - or + in front; `-o NAME` and `-O NAME`, one value for each o and O
+// of a cluster; a long option, `--rcfile FILE`), up to the first word that is none or to `--`. With -c anywhere
+// among them that word is the script, whatever stands between (`bash -c -x 'script'`, `sh -euc 'script'`), and the
+// words after it are its $0 and arguments.
+// Options that cannot be read so (a variable that may hold some, `bash $OPTS -c`; another shell's option with a
+// value, `zsh --emulate sh -c`, `zsh -oerrexit -c`, `fish -d 3 -c`) end the reading with no -c found. Then the
+// first word before a `--` that is a cluster with c names the script, read on from there: a script too many is
+// read (`sh run.sh -c x`), never one too few.
+// `at`: where the script stands in `args`, -1 with none. `input`: no -c and no script file, -s, or its own input
+// named as the file (/dev/stdin): it reads its commands from its input. A script file it names is `rest[0]`, and
+// is not read. Every rule that reads the script a shell is given finds it here.
 export type Given = { c: boolean; script?: string; at: number; rest: string[]; input: boolean };
+const CLUSTER = /^[-+][a-zA-Z0-9]+$/, VALUED_LONG = /^--(rcfile|init-file|emulate)$/;
+export const STDIN_FILE = /^\/(dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/;
 export function shellGiven(args: string[]): Given {
   let c = false, s = false, i = 0;
   for (; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--" || a === "-") { i++; break; }
-    if (a.startsWith("--")) { if (a === "--rcfile" || a === "--init-file") i++; continue; }
-    if (a.length < 2 || (a[0] !== "-" && a[0] !== "+") || !/^[a-zA-Z]+$/.test(a.slice(1))) break;
-    if (a[0] === "-") { c ||= a.includes("c"); s ||= a.includes("s"); }
-    if (a.includes("o") || a.includes("O")) i++;
+    // (fish: --command and --init-command take a script as -c does.)
+    if (a.startsWith("--")) { if (a === "--command" || a === "--init-command") c = true; else if (VALUED_LONG.test(a)) i++; continue; }
+    if (!CLUSTER.test(a)) break;
+    c ||= a.includes("c"); s ||= a.includes("s");
+    for (let k = 1; k < a.length; k++) if (a[k] === "o" || a[k] === "O") i++;
+  }
+  if (!c) {
+    const end = args.findIndex((a) => a === "--" || a === "-");
+    const k = args.findIndex((a, j) => (end < 0 || j < end) && CLUSTER.test(a) && a.includes("c"));
+    if (k >= 0) { const later = shellGiven(args.slice(k)); if (later.c) return { ...later, at: later.at < 0 ? -1 : later.at + k }; }
   }
   const rest = args.slice(i);
   if (c) return { c, ...(rest[0] !== undefined ? { script: rest[0], at: i } : { at: -1 }), rest: rest.slice(1), input: false };
-  return { c, at: -1, rest, input: s || !rest.length };
+  return { c, at: -1, rest, input: s || !rest.length || STDIN_FILE.test(rest[0]!) };
 }
+// The words a plain echo or printf prints, as the script they are for a shell that is handed them.
+export const PRINTS = /^(echo|printf)$/;
+export const printed = (words: string[]) => words.slice(1).filter((w) => !/^-[neE]+$/.test(w)).join(" ").replace(/\\n/g, "\n");
+// What the substitution right before a shell's part prints, when the shell is handed it as its script file or as
+// its input (`bash <(echo 'script')`, `bash < <(echo 'script')`) and a plain echo or printf prints it: the script.
+export function substituted(parts: Simple[], runs: Run[], i: number, given: Given): string | undefined {
+  const s = parts[i]!, before = i > 0 ? parts[i - 1]! : undefined;
+  if (!before?.nested || before.heredoc || before.dyn?.length || !s.text.includes("<(")) return undefined;
+  if (!(given.input ? s.inputs?.includes("$(...)") : !given.c && given.rest[0] === "$(...)")) return undefined;
+  const w = runs[i - 1]!.words;
+  return PRINTS.test(name(w[0])) ? printed(w) : undefined;
+}
+// The command line a wrapper is handed as one word, else undefined: `watch 'cmd'`, `env -S 'cmd args'` (env splits
+// the string into the command's words itself) and `flock LOCK -c 'cmd'`. unwrap leaves such a part as that word,
+// or as the word -c and the command.
+export function lineHanded(words: string[], run: Run): string | undefined {
+  if (!run.wrapped || run.at < 1) return undefined;
+  let j = run.at - 1;
+  while (j >= 0 && !WRAPPERS.has(name(words[j]))) j--;
+  const by = name(words[j]);
+  if (by === "flock") return run.words[0] === "-c" || run.words[0] === "--command" ? run.words[1] : undefined;
+  if (!/\s/.test(run.words[0] ?? "")) return undefined;
+  return by === "watch" || (by === "env" && words.slice(j + 1, run.at).some((a) => a === "--split-string" || /^-[a-zA-Z]*S$/.test(a))) ? run.words.join(" ") : undefined;
+}
+// What eval evaluates: its words joined, without the `--` that may end its options (`eval -- 'script'`).
+export const evalGiven = (args: string[]) => (args[0] === "--" ? args.slice(1) : args).join(" ");
 export const INTERPRETERS = /^(python[0-9.]*|node|nodejs|bun|deno|perl|ruby|php)$/;
 export const GLOB = /[*?[]/;
 // Whether the session's sandbox is what stops a write to this path: the session is confined, the path is surely

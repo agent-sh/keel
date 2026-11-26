@@ -10,11 +10,13 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { timed } from "../admin/stall.ts";
 import { contains } from "../core/paths.ts";
 import { credentialAt, credentialName, foreignAt, homeOf, placesOf, realPlaces, storesSaid, storesUnder, STORES, type Credential } from "./credentials.ts";
-import { innerLines } from "./nested-shell.ts";
+import { innerLines, type Inner } from "./nested-shell.ts";
 import { codeGiven, laid, type Laid } from "./risk.ts";
 import { INTERPRETERS, name as baseName, printsHeld } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
 
+// A part whose output is sent to nothing: > /dev/null, &> /dev/null, 1> /dev/null (in its text with the quoted strings out).
+const SUNK = /(?:^|\s)(?:1|&)?>>?\s*\/dev\/null(?=[\s;&|)]|$)/;
 // Programs whose file operands are read for their content (a command of the shell's allow-list prints them, or
 // what they hold). A program that names files only (ls, stat, test, find, wc, a checksum) reads no credential.
 const CONTENT_READERS = new Set(["cat", "tac", "head", "tail", "less", "more", "most", "nl", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "sed", "awk", "gawk", "mawk", "nawk",
@@ -140,7 +142,7 @@ function substituted(how: Made | undefined, depth = 0): string[] {
 // a `.` in it; a relative one with no pattern characters, since a regular expression is no wildcard) and, outside
 // the home's stores, when the disk has it (a route '/oauth/token' is no file). Not read: a path the code puts
 // together (os.path.join, Path.home() / '.ssh'), a string in backticks, code piped in from an echo.
-export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts = true, code = false): Reads | null {
+export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts: boolean | Inner[] = true, code = false): Reads | null {
   let first: { what: string; by: string; api?: string } | null = null;
   const paths: string[] = [];
   const hits: Hit[] = [];
@@ -269,7 +271,8 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
   // The here-documents an interpreter with no script of its own reads as its code, by the part that starts it: a
   // run of them feeds the first such command since the run before (as a shell's: nested-shell.ts).
   const fed = new Map<number, string[]>();
-  const takesInput = (i: number) => { const w = pre.runs[i]!.words; return INTERPRETERS.test(baseName(w[0])) && codeGiven(pre.runs[i]!) === null && (w.slice(1).find((a) => a === "-" || !a.startsWith("-")) ?? "-") === "-"; };
+  // (A lone dash anywhere among its words, or no word that is not an option: `python3 -W ignore -`, `deno run -`.)
+  const takesInput = (i: number) => { const w = pre.runs[i]!.words; return INTERPRETERS.test(baseName(w[0])) && codeGiven(pre.runs[i]!) === null && (w.includes("-") || !w.slice(1).some((a) => !a.startsWith("-"))); };
   if (code) for (let i = 0, since = 0; i < parts.length; i++) {
     if (!parts[i]!.heredoc) continue;
     let end = i;
@@ -306,8 +309,9 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     let argAt = run.at + 1;
     let folder = dir;
     // A client told to print the credential it holds (gh auth token, git credential fill): a read of its store.
+    // (One whose output goes nowhere, `secret-tool lookup ... >/dev/null`, only says whether there is one.)
     const held = printsHeld(run.words);
-    if (held) note(join(home, held), "the command prints a credential kept in");
+    if (held && !SUNK.test(part.text.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''"))) note(join(home, held), "the command prints a credential kept in");
     if (code && INTERPRETERS.test(prog)) {
       const by = `the command gives ${prog} code that names`;
       const given = codeGiven(run);
@@ -416,7 +420,8 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       if (to && !entered.includes(to)) entered.push(to);
     }
   }
-  if (scripts) for (const inner of innerLines(parts, pre, home)) {
+  // (`scripts`: the line's scripts when the caller has read them already, false to read none.)
+  if (scripts) for (const inner of scripts === true ? innerLines(parts, pre, home) : scripts) {
     if (paths.length >= 64) break;
     const r = shellCredentialReads(inner.parts, cwd, home, credential, inner.pre, look, false, code);
     if (!r) continue;

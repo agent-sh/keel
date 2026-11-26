@@ -260,6 +260,14 @@ describe("a Codex session answered in place", () => {
       for (const c of [`python3 -c "d = {'token': 1}; print(d['token'])"`, `bash -lc "python3 -c \\"routes = ['/oauth/token', '/v1/secrets']; print(routes)\\""`, `python3 -c "print(open('README.md').read())"`])
         expect([c, (await command(c)).risk]).toEqual([c, "low"]);
       rmSync(join(homeDir(), ".ssh/id_rsa"), { force: true });
+      // The script of its shell is all that runs: it is judged as the plain line it is, its variables written out,
+      // and whatever its length (a script past what the rules read through inside a line is no risk by that alone).
+      for (const c of [`/bin/bash -lc 'V=push; git $V --force'`, `/bin/bash -lc 'o=-delete; find . $o'`, `/bin/bash -lc 'f=~/.bashrc; echo x >> $f'`, `/bin/bash -lc 'echo "unterminated'`,
+        `/bin/bash -lc '${"echo a line of the build\n".repeat(250)}rm -rf ~/projects'`, `/bin/bash $OPTS -c 'rm -rf ~/projects'`, `/bin/bash -lc $'echo hi\\nrm -rf ~/projects'`])
+        expect([c.slice(0, 80), (await command(c)).risk]).toEqual([c.slice(0, 80), "high"]);
+      for (const c of [`/bin/bash -lc '${"echo a line of the build\n".repeat(250)}make test'`, `/bin/bash -lc "cat > notes.md <<'EOF'\n${"a line of notes\n".repeat(300)}EOF"`, `/bin/bash -lc "python3 - <<'PY'\n${"print(1)\n".repeat(500)}PY"`,
+        "/bin/bash -lc 'V=status; git $V --short'"])
+        expect([c.slice(0, 80), (await command(c)).risk]).toEqual([c.slice(0, 80), "low"]);
       expect((await command("/bin/bash -lc 'make test'")).risk).toBe("low");
       expect((await command(`bash -lc "bash -lc 'make test'"`)).risk).toBe("low");
       expect((await command("make test")).risk).toBe("low");

@@ -38,7 +38,8 @@ import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart, type AskedPart } from "./summary.ts";
 import { agoSaid, answerSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { localPlace, ownerClass, type CardFacts, type Held as HeldBy } from "./delegate.ts";
-import { target, type RiskRule } from "./risk-words.ts";
+import { SCRIPT_MAX, target, type RiskRule } from "./risk-words.ts";
+import { onlyScript } from "./nested-shell.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
@@ -2240,11 +2241,17 @@ export class Gate {
     const listed = named.kind === "edit" && Array.isArray(call.input?.paths) ? (call.input.paths as unknown[]).filter((x): x is string => typeof x === "string" && !!x) : [];
     const c: CallClass = named.kind === "edit" && listed.length ? { ...named, paths: [...new Set([...named.paths, ...listed])] } : named;
     if (c.kind === "shell" ? !c.command.trim() : c.kind !== "edit") return { risk: "high" };
-    // (A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`: the rules read the script a
-    // line hands a shell as a line of its own, for Keel's own calls and these alike: nested-shell.ts.)
-    const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, unconfined: true } : c, undefined, undefined, undefined, "ask", true);
-    if ("deny" in d) return { risk: "high", why: d.deny };
-    if ("ask" in d && d.ask.risk === "high") return { risk: "high", why: d.ask.why };
+    // A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`. The script is all that runs, so
+    // it is judged as the plain line it is (its variables written out, whatever its length), and the line as it is
+    // too, by the rules that read a script a line hands a shell for Keel's own calls (nested-shell.ts): the worse
+    // of the two. (A script past what those rules read through is only the first: the second would say its length.)
+    const script = c.kind === "shell" ? onlyScript(c.command) : undefined;
+    const lines = script === undefined ? [undefined] : script.length > SCRIPT_MAX ? [script] : [script, undefined];
+    for (const command of lines) {
+      const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, ...(command === undefined ? {} : { command }), unconfined: true } : c, undefined, undefined, undefined, "ask", true);
+      if ("deny" in d) return { risk: "high", why: d.deny };
+      if ("ask" in d && d.ask.risk === "high") return { risk: "high", why: d.ask.why };
+    }
     // A file change outside the session's folder, its scratch and the temporary folders (another project, /etc/hosts):
     // Keel's own edit there asks in the asking modes and its sandbox refuses it. A harness's request has neither.
     if (c.kind === "edit") {

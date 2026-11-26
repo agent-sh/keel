@@ -32,7 +32,7 @@ import { SHELL_GIT_SETTINGS } from "../core/git.ts";
 import { guardEnv, PAD } from "./ref-guard.ts";
 import { outputsOf } from "./outputs.ts";
 import { laid } from "./risk.ts";
-import { name, redirected, shellGiven, SHELLS, type Run } from "./risk-words.ts";
+import { evalGiven, name, redirected, shellGiven, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
 
 // One stash entry: its place in the list (stash@{n}), the branch it was made on (null: its subject names none), whether
@@ -623,7 +623,7 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
       if (prev && /^(echo|printf)$/.test(name(prev.words[0])) && !prev.words.slice(1).some(unread)) { const why = inner(prev.words.slice(1).filter((w) => !/^-[neE]+$/.test(w)).join(" ").replace(/\\n/g, "\n"), dir); if (why) return why; }
       continue;
     }
-    if (prog === "eval") { const why = inner(words.slice(1).join(" "), dir); if (why) return why; continue; }
+    if (prog === "eval") { const why = inner(evalGiven(words.slice(1)), dir); if (why) return why; continue; }
     // A wrapper given the command as one word (watch 'git ...').
     if (words.length === 1 && /\s/.test(words[0]!)) { const why = inner(words[0]!, dir); if (why) return why; continue; }
     if (RUNS_TEXT[prog]) {

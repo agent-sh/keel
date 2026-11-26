@@ -39,7 +39,7 @@ export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
 import { awkReads, harmless, runsProgram, sedReads } from "./closed-code.ts";
-import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, printsHeld, redirected, rootOf, shellGiven, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
+import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, evalGiven, lineHanded, untrailed, literal, madeName, name, printsHeld, redirected, rootOf, shellGiven, substituted, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
 import { outputsOf } from "./outputs.ts";
 import { docOf, docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
@@ -641,7 +641,12 @@ function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts
   return codeRuns(q, code, hit, module) ? { how: "code", by: q } : null;
 }
 // Whether a shell or an interpreter reads its program from its input: it is given no script and no code.
-const fromInput = (p: string, args: string[]) => inline(p, args) === null && (!args.some((a) => !a.startsWith("-")) || args.includes("-s") || args.includes("-")) && !(SHELLS.test(p) && shellGiven(args).c);
+// (A shell as shellGiven reads its words: `bash -o pipefail`, `bash /dev/stdin`.)
+const fromInput = (p: string, args: string[]) => {
+  const given = SHELLS.test(p) ? shellGiven(args) : null;
+  if (given?.c) return false;
+  return !!given?.input || (inline(p, args) === null && (!args.some((a) => !a.startsWith("-")) || args.includes("-s") || args.includes("-")));
+};
 const STDIN = /^(\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
 
 // An install or a run whose source is an address the command names (a URL, a
@@ -838,7 +843,7 @@ const KNOWN = new Set([...REACHES, ...DELETES, ...ADMIN, "service", "tar", "zip"
   "alias", "trap", "su", "script", "nix-shell", "mv", "cp", "install", "tee", "dd", "sed", "perl", "sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "ruby", "php", "pip", "pip3", "pipx", "uvx", "pdm", "npx",
   "bunx", "go", "ngrok", "cloudflared", "lt", "localtunnel", "serve", "http-server", "parallel", "nc", "ncat", "netcat", "socat", "scp", "sftp", "ftp", "tftp", "rclone", "mail", "mailx", "mutt", "sendmail", "telnet", "websocat", "croc", "wormhole", "kubectl", "oc", "export", "declare", "typeset", "readonly",
   "aria2c", "bsdtar"]);
-const known = (p: string) => KNOWN.has(p) || p.startsWith("python");
+const known = (p: string) => KNOWN.has(p) || p.startsWith("python") || SHELLS.test(p);
 
 // What the lines of a here-document are to the command they feed: a shell
 // runs them here, another machine's shell runs them there, an interpreter
@@ -1135,6 +1140,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     const judge = (path: string) => deletes({ ...x, run: { words: ["rm", "-r", path], at: 0, set: [] }, p: "rm", args: ["-r", path], plain: [path], made: () => undefined }, cx, null);
     // A script given to a shell, to eval, or to a program that runs one, is read as the commands it holds.
     if (s.here !== undefined && SHELLS.test(x.p) && fromInput(x.p, args)) sub(s.here, dir, out);
+    if (SHELLS.test(x.p) && s.text.includes("<(")) { const given = substituted(parts, runs, i, shellGiven(args)); if (given !== undefined) sub(given, dir, out); }
     // macOS: a script handed to the shell through AppleScript.
     if (x.p === "osascript") { const told = /do shell script\s+"((?:[^"\\]|\\.)*)"/.exec(args.join(" ")); if (told) sub(told[1]!.replace(/\\(.)/g, "$1"), dir, out); }
     // An editor told to run a shell command (vim -c ':!cmd'), and a makefile another command or the line's own text hands it.
@@ -1144,7 +1150,10 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     if (x.p === "tmux" && /^(new|new-session|neww|new-window|splitw|split-window|respawn-pane|run-shell|run)$/.test(x.plain[0] ?? "")) { const given = x.plain.slice(1).at(-1); if (given && /\s/.test(given)) sub(given, dir, out); }
     if ((x.p === "docker" || x.p === "podman") && /^(rm|kill|stop)$/.test(x.plain[0] ?? "") && (s.how ?? []).some((m) => m.subs.some((sub) => sub.some((q) => /^(docker|podman)$/.test(name(q.words[0])) && q.words[1] === "ps"))))
       out.push({ rule: "destroys", why: `stops or removes every container ${x.p} lists` });
-    if (SHELLS.test(x.p) || x.p === "su" || x.p === "script" || x.p === "nix-shell") {
+    // (A wrapper handed its command as one word: watch 'cmd', env -S 'cmd', flock LOCK -c 'cmd'.)
+    const handed = run.wrapped ? lineHanded(s.words, run) : undefined;
+    if (handed !== undefined) sub(handed, dir, out);
+    else if (SHELLS.test(x.p) || x.p === "su" || x.p === "script" || x.p === "nix-shell") {
       // (A shell's own script is found as every rule finds it, shellGiven; su and script take it after their -c.)
       const started = SHELLS.test(x.p) ? shellGiven(args) : null;
       const k = started ? -1 : args.findIndex((a) => (x.p === "nix-shell" ? a === "--run" || a === "--command" : /^-[a-zA-Z]*c$/.test(a)));
@@ -1170,7 +1179,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       // The output of one program is that program's to answer for (eval "$(ssh-agent -s)"); text a decoder, a fetcher, echo or a variable carries is not in the command.
       const built = dynamic.flatMap((m) => m.subs).find((sub) => sub.length !== 1 || CARRIES.test(name(unwrap(sub[0]!.words).words[0])));
       if (built || dynamic.some((m) => m.vars.length || m.rest)) out.push({ rule: "hidden", why: `evaluates text the line builds as it runs${built ? ` (${built.map((b) => b.text).join(" | ").slice(0, 80)})` : ""}: what runs is not in the command` });
-      else if (!dynamic.length && args.length) sub(args.join(" "), dir, out);
+      else if (!dynamic.length && args.length) sub(evalGiven(args), dir, out);
     } else if (x.p === "source" || x.p === ".") {
       // Its input, or a file a substitution makes (source <(curl ...)): not text in the command.
       const fetcher = args.some((a) => a.includes("$(...)")) ? parts.slice(Math.max(0, i - 8), i).reverse().find((q) => q.nested && FETCHES.test(name(unwrap(q.words).words[0]))) : undefined;

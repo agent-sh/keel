@@ -97,6 +97,10 @@ test("a client told to print the credential it holds and a loop over a store are
     "aws configure export-credentials --format env", "git credential fill", "git -C repo credential-store get", "secret-tool lookup service x"])
     expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
   for (const c of ["gh auth status", "gh pr view 12", "git credential-cache exit", "git config credential.helper", "secret-tool search service x", "aws s3 ls", "gcloud auth list"]) expect([c, shell(c)]).toEqual([c, null]);
+  // Asked for its help it prints none, and one whose output goes nowhere only says whether there is one.
+  for (const c of ["aws configure export-credentials --help", "gcloud auth print-access-token --help", "aws configure export-credentials help", "secret-tool lookup service x >/dev/null 2>&1; echo $?", "gh auth token > /dev/null && echo signed-in", "gh auth token &>/dev/null"])
+    expect([c, shell(c)]).toEqual([c, null]);
+  for (const c of ["gh auth token -h github.com", "gh auth token 2>/dev/null", "gh auth token > t.txt", "secret-tool lookup service '>/dev/null'"]) expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
   for (const c of ["for f in ~/.ssh/*; do cat $f; done", "for f in ~/.aws/credentials notes.txt; do head -3 \"$f\"; done", "for k in $HOME/.ssh/id_*; do base64 ${k}; done"])
     expect([c, shell(c)]).toEqual([c, "the command reads in a loop"]);
   for (const c of ["for f in src/*.ts; do cat $f; done", "for f in ~/.ssh/*; do ls -l $f; done", "for h in a b; do ssh $h uptime; done"]) expect([c, shell(c)]).toEqual([c, null]);
@@ -110,13 +114,14 @@ test("code a harness's command hands an interpreter is read for the credentials 
   const reads = [
     `python3 -c "print(open('/home/u/.ssh/id_rsa').read())"`, `python3 -c 'import os; print(open(os.path.expanduser("~/.netrc")).read())'`, `node -e "console.log(require('fs').readFileSync('/home/u/.npmrc','utf8'))"`,
     "python3 - <<'PY'\nimport json\nprint(json.load(open('/home/u/.claude/.credentials.json')))\nPY", "python3 - <<PY | head -3\nprint(open('/home/u/.aws/credentials').read())\nPY", `node <<< "console.log(require('fs').readFileSync('/home/u/.npmrc','utf8'))"`,
+    "python3 -W ignore - <<'PY'\nprint(open('/home/u/.netrc').read())\nPY", "deno run - <<'JS'\nconsole.log(Deno.readTextFileSync('/home/u/.npmrc'))\nJS",
     `python3 -c "print(open('.env').read())"`, `ruby -e 'puts File.read("config/prod.env")'`, `python3 -c "import glob; print(glob.glob('/home/u/.ssh/*'))"`,
     `python3 -c "import sqlite3; sqlite3.connect('/home/u/.local/share/keel/state/keel.db')"`,
     // As a harness sends it, inside its shell's -c, and one wrapper deeper.
     `/bin/bash -lc "python3 -c \\"print(open('/home/u/.ssh/id_rsa').read())\\""`, "bash -lc 'python3 - <<PY\nprint(open(\"/home/u/.netrc\").read())\nPY'", `bash -lc "sh -c 'node -e \\"require(\\\\\\"fs\\\\\\").readFileSync(\\\\\\"/home/u/.npmrc\\\\\\")\\"'"`,
   ];
   for (const c of reads) {
-    expect([c, code(c)?.replace(/ (python3|node|ruby) /, " X ")]).toEqual([c, "the command gives X code that names"]);
+    expect([c, code(c)?.replace(/ (python3|node|ruby|deno) /, " X ")]).toEqual([c, "the command gives X code that names"]);
     // Keel's own call: the same words are no read (the vault masks what its commands print).
     expect([c, shell(c)]).toEqual([c, null]);
   }

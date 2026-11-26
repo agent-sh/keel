@@ -1,12 +1,12 @@
 // A script the line hands a shell it starts is judged as the plain line it is: each form of handing one over
 // gives the plain line's verdict, in every mode, and the script is found the same way by every rule.
 import { expect, test } from "bun:test";
-import { innerLines } from "./nested-shell.ts";
+import { innerLines, onlyScript } from "./nested-shell.ts";
 import { decide, type Mode } from "./policy.ts";
 import { shellReaches } from "./provenance.ts";
 import { laid } from "./risk.ts";
 import { shellGiven } from "./risk-words.ts";
-import { splitCommand } from "./shell.ts";
+import { ansiC, splitCommand } from "./shell.ts";
 import { unstartedAct } from "./unstarted.ts";
 
 const home = "/home/u", ws = `${home}/projects/app`, state = `${home}/.local/share/keel-bun/state`;
@@ -40,6 +40,36 @@ const FORMS: [string, (script: string) => string][] = [
   ["eval", (s) => `eval '${s}'`],
   ["a script inside a script", (s) => `bash -c "sh -c '${s}'"`],
   ["after a cd, with more commands around it", (s) => `cd /tmp && bash -c 'ls; ${s}; echo done' && echo ok`],
+  // Options the reading cannot place stand before -c: the first cluster with c after them names the script.
+  ["a variable that may hold options", (s) => `bash $OPTS -c '${s}'`],
+  ["an expansion that may add an option", (s) => `bash \${DEBUG:+-x} -c '${s}'`],
+  ["the line's own arguments as options", (s) => `bash "$@" -c '${s}'`],
+  ["another shell's option with a value", (s) => `zsh --emulate sh -c '${s}'`],
+  ["zsh's option name attached to -o", (s) => `zsh -oerrexit -c '${s}'`],
+  ["a digit option", (s) => `zsh -0c '${s}'`],
+  ["fish's option with a value", (s) => `fish -d 3 -c '${s}'`],
+  ["two options with values in one cluster", (s) => `bash -oO pipefail extglob -c '${s}'`],
+  ["two values and -c in one cluster", (s) => `bash -ooc pipefail errexit '${s}'`],
+  ["+c", (s) => `bash +c '${s}'`],
+  ["a restricted shell", (s) => `rbash -c '${s}'`],
+  ["eval after --", (s) => `eval -- '${s}'`],
+  ["builtin eval after --", (s) => `builtin eval -- '${s}'`],
+  ["$'...' with an escaped line break", (s) => `bash -c $'echo hi\\n${s}'`],
+  ["a here-string of $'...'", (s) => `bash <<< $'echo hi\\n${s}'`],
+  ["its own input named as the script file", (s) => `bash /dev/stdin <<< '${s}'`],
+  ["echo piped into a shell that names its input", (s) => `echo '${s}' | sh /dev/fd/0`],
+  ["a substitution handed as the script file", (s) => `bash <(echo '${s}')`],
+  ["a substitution as the input", (s) => `bash < <(echo '${s}')`],
+  ["a here-document after a line that runs a container program", (s) => `docker ps\nbash <<EOF\n${s}\nEOF`],
+  ["a here-document after a line for another machine", (s) => `ssh host uptime\necho ok\nbash <<'EOF'\n${s}\nEOF`],
+  ["a here-document longer than a nested script may be", (s) => `bash <<'EOF'\n${"# a line of notes\n".repeat(300)}${s}\nEOF`],
+  ["a here-document read by the shell a -c script starts", (s) => `bash -c 'sh -s' <<EOF\n${s}\nEOF`],
+  ["two here-documents on one shell", (s) => `bash <<A <<B\necho one\nA\n${s}\nB`],
+  ["a here-document on a group around the shell", (s) => `(bash) <<EOF\n${s}\nEOF`],
+  ["env -S", (s) => `env -S "bash -c '${s}'"`],
+  ["flock -c", (s) => `flock /tmp/l -c '${s}'`],
+  ["a wait's --until", (s) => `waitfor --until '${s}' --timeout 1m`],
+  ["script -c", (s) => `script -qc '${s}' /dev/null`],
 ];
 
 test("each form of handing a shell a script gives the plain line's verdict: credentials, files that run later, Keel's own, what never runs", () => {
@@ -58,6 +88,8 @@ test("each form of handing a shell a script gives the plain line's verdict: cred
     expect([form, verdict(line("echo x >> ~/.bashrc"), "full-auto")]).toEqual([form, "asks high"]);
     expect([form, verdict(line("cat ~/.ssh/id_ed25519"), "auto", { agent: true })]).toEqual([form, "refused"]);
   }
+  // (A here-document that reaches the shell through a longer pipe is high risk by that alone; a write it holds is still the owner's.)
+  expect(verdict("cat <<EOF | tee /dev/null | bash\necho x >> ~/.bashrc\nEOF")).toBe("owner");
   // A standing rule that covers the shell does not cover what its script reads or writes.
   const rule = [{ id: "r", kind: "shell", pattern: "bash *", scope: ws, lifetime: "always", created: 0 }];
   expect(verdict("bash -c 'cat ~/.ssh/id_ed25519'", "ask", { rules: rule })).toBe("owner");
@@ -76,9 +108,50 @@ test("a script is read where its shell starts, with the variables it sets writte
   for (const mode of ["read-only", "plan"] as Mode[]) expect([mode, verdict("bash -c 'cat ~/.ssh/id_ed25519'", mode)]).toEqual([mode, "refused"]);
 });
 
-test("what is not read: a script file, the words after a script, a script for another machine", () => {
-  for (const c of ["bash run.sh", "bash run.sh -c 'cat ~/.ssh/id_ed25519'", "bash -c 'cat \"$1\"' _ ~/.ssh/id_ed25519", "ssh host 'cat ~/.ssh/id_ed25519'", "docker exec c sh -c 'cat ~/.ssh/id_ed25519'"])
+test("what is not read: a script file, what xargs or find hands a script, a script for another machine", () => {
+  for (const c of ["bash run.sh", "bash -- -c 'cat ~/.ssh/id_ed25519'", "echo ~/.ssh/id_ed25519 | xargs -I{} sh -c 'cat {}'", "ssh host 'cat ~/.ssh/id_ed25519'", "docker exec c sh -c 'cat ~/.ssh/id_ed25519'",
+    "docker exec -i c bash <<'EOF'\ncat /root/.ssh/id_rsa\nEOF", "cat > f.sh <<'EOF'\ncat ~/.ssh/id_ed25519\nEOF", "sh -c 'echo \"$1\"' _ hello"])
     expect([c, verdict(c)]).toEqual([c, "asks low"]);
+});
+
+test("the words after a script are written into it where it names them, and a script too many is read, never one too few", () => {
+  for (const c of ["bash -c 'cat \"$1\"' _ ~/.ssh/id_ed25519", "sh -c 'cat $0' ~/.ssh/id_ed25519", "bash -c 'cat \"$@\"' _ README.md ~/.ssh/id_ed25519", "bash -c 'echo x >> \"$1\"' _ ~/.bashrc",
+    // (A script file's own arguments are read as a script when one of them is -c: what `-c` means there is the file's to say.)
+    "bash run.sh -c 'cat ~/.ssh/id_ed25519'",
+    // (An unquoted here-document: the line's shell takes the backslash off before the text is the script.)
+    "bash <<EOF\nf=~/.ssh/id_ed25519\ncat \\$f\nEOF"])
+    expect([c, verdict(c)]).toEqual([c, "owner"]);
+});
+
+test("a here-document inside a script that is longer than the rules read through is said, not passed", () => {
+  const pad = "# a line of notes\n".repeat(300);
+  const inner = `bash <<'IN'\n${pad}cat ~/.ssh/id_ed25519\nIN`;
+  expect(verdict(`bash <<'EOF'\n${inner}\nEOF`)).toBe("asks high");
+  expect(verdict(`bash <<'EOF'\n${inner}\nEOF`, "full-auto")).toBe("asks high");
+  // The line's own here-document is read whatever its length.
+  expect(verdict(`bash <<'EOF'\n${pad}cat ~/.ssh/id_ed25519\nEOF`)).toBe("owner");
+  expect(verdict(`bash <<'EOF'\n${pad}npm test\nEOF`)).toBe("asks low");
+});
+
+test("in Read only a line that is not a read is refused before any card for what it reads", () => {
+  for (const c of ["cat ~/.ssh/id_ed25519; touch x", "gh auth token > t.txt; touch x", "for f in ~/.ssh/*; do cat $f; rm -f build/x; done"]) {
+    expect([c, verdict(c, "read-only")]).toEqual([c, "refused"]);
+    expect([c, verdict(c)]).toEqual([c, "owner"]);
+  }
+  // A read of a credential that is nothing else is the owner's card there too.
+  expect(verdict("cat ~/.ssh/id_ed25519", "read-only")).toBe("owner");
+  expect(verdict("cat README.md", "read-only")).toBe("runs");
+});
+
+test("$'...' is the text bash hands on", () => {
+  expect(ansiC("a\\nb\\tc")).toBe("a\nb\tc");
+  expect(ansiC("rm\\x20-rf\\040\\u007e")).toBe("rm -rf ~");
+  expect(ansiC("it\\'s \\q \\\\")).toBe("it's \\q \\");
+  expect(ansiC("a\\x00b")).toBe("a");
+  expect(splitCommand("bash -c $'echo hi\\ncat x'")![0]!.words[2]).toBe("echo hi\ncat x");
+  for (const c of ["bash -c $'rm\\x20-rf\\x20~'", "bash -c $'cat \\x7e/.ssh/id_ed25519'", "bash -c $'echo \\'hi\\'; cat ~/.ssh/id_ed25519'"]) expect([c, verdict(c)]).toEqual([c, "owner"]);
+  // A word with an escape stays one the line makes: a program named so is still not read as written out.
+  expect(verdict("$'\\x63at' README.md")).toBe("asks high");
 });
 
 test("the script a shell is given is found by its options as the shell reads them", () => {
@@ -95,8 +168,28 @@ test("the script a shell is given is found by its options as the shell reads the
   expect(given("bash")).toBe("<input>");
   expect(given("bash -s a")).toBe("<input>");
   expect(given("bash -x")).toBe("<input>");
-  expect(given("bash run.sh -c S")).toBe("<file run.sh>");
   expect(given("bash -x run.sh")).toBe("<file run.sh>");
+  expect(given("bash -- -c S")).toBe("<file -c>");
+  expect(given("bash - run.sh -c S")).toBe("<file run.sh>");
+  expect(given("bash /dev/stdin")).toBe("<input>");
+  expect(given("sh /dev/fd/0 a")).toBe("<input>");
+  expect(given("bash -o pipefail")).toBe("<input>");
+  // + clusters, a value for each o and O of a cluster, digits.
+  expect(given("bash +c S")).toBe("S");
+  expect(given("bash +xc S")).toBe("S");
+  expect(given("bash -c -oO pipefail extglob S")).toBe("S");
+  expect(given("bash -ooc pipefail errexit S")).toBe("S");
+  expect(given("bash -oO pipefail extglob -c S")).toBe("S");
+  expect(given("zsh -o errexit -0c S")).toBe("S");
+  expect(given("fish --command S")).toBe("S");
+  // Options that cannot be read: the first cluster with c after them, read on from there.
+  expect(given("bash $OPTS -c S")).toBe("S");
+  expect(given("bash $OPTS -c -x S a")).toBe("S");
+  expect(given("zsh --emulate sh -c S")).toBe("S");
+  expect(given("zsh -oerrexit -c S")).toBe("S");
+  expect(given("fish -d 3 -c S")).toBe("S");
+  expect(given("bash run.sh -c S")).toBe("S");
+  expect(shellGiven(["$OPTS", "-xc", "S", "zero"])).toEqual({ c: true, script: "S", at: 2, rest: ["zero"], input: false });
   expect(shellGiven(["-lc", "S", "zero", "one"])).toEqual({ c: true, script: "S", at: 1, rest: ["zero", "one"], input: false });
 });
 
@@ -118,14 +211,45 @@ test("the scripts of a line, as text: quotes taken off, escapes read, one line f
   expect([one!.at, one!.pre.dirs]).toEqual([1, ["/tmp", "/tmp/sub"]]);
 });
 
+test("a script and its written-out form are each read once however deep they nest, and a line built to be read more is said", () => {
+  // Eight here-documents inside each other, each level setting and using a variable: two lines a level, not two to the eighth.
+  let x = "f=~/x; echo $f";
+  for (let i = 1; i <= 8; i++) x = `v${i}=~/y; echo $v${i}\nbash <<'E${i}'\n${x}\nE${i}`;
+  const parts = splitCommand(x)!;
+  expect(innerLines(parts, laid(parts, ws, home), home).length).toBeLessThanOrEqual(16);
+  expect(verdict(x)).toBe("asks low");
+  // Many such chains in one line: more nested text than a few times the line's length is not read through, and asks.
+  const chain = (tag: number) => { let c = "f=~/x; echo $f\n".repeat(240); for (let i = 1; i <= 8; i++) c = `v${i}=~/y${tag}; echo $v${i}\nbash <<'E${i}'\n${c}\nE${i}`; return c; };
+  const many = Array.from({ length: 25 }, (_, i) => chain(i)).join("\n");
+  const unread: { at: number; why: string }[] = [];
+  const all = splitCommand(many)!;
+  innerLines(all, laid(all, ws, home), home, 0, unread);
+  expect(unread.map((u) => u.why)).toEqual(["nests more script text than the rules read through: put it in a file"]);
+  expect(verdict(many)).toBe("asks high");
+});
+
 test("the rules that read a script themselves find it the same way: -c in a cluster, options after it", () => {
   // The risk classes.
   for (const c of ["bash -cx 'git push --force origin main'", "bash -c -x 'git push --force origin main'", "sh -xc 'git push --force origin main'", "bash <<< \"git push --force origin main\""])
     expect([c, verdict(c)]).toEqual([c, "asks high"]);
   // A turn nobody started.
   for (const c of ["bash -cx 'gh pr merge 12'", "bash -c -x 'gh pr merge 12'", "bash -lc 'gh pr merge 12'"]) expect([c, unstartedAct(splitCommand(c)) !== null]).toEqual([c, true]);
-  expect(unstartedAct(splitCommand("bash run.sh -c 'gh pr merge 12'"))).toBeNull();
+  for (const c of ["bash $OPTS -c 'gh pr merge 12'", "zsh --emulate sh -c 'gh pr merge 12'", "bash +c 'gh pr merge 12'", "eval -- 'gh pr merge 12'", "bash run.sh -c 'gh pr merge 12'"]) expect([c, unstartedAct(splitCommand(c)) !== null]).toEqual([c, true]);
+  expect(unstartedAct(splitCommand("bash run.sh 'gh pr merge 12'"))).toBeNull();
+  for (const c of ["bash $OPTS -c 'git push --force origin main'", "bash \"$@\" -c 'git push --force origin main'", "zsh -oerrexit -c 'git push --force origin main'", "bash -oO pipefail extglob -c 'git push --force origin main'", "bash +c 'git push --force origin main'",
+    "eval -- 'git push --force origin main'", "rbash -c 'git push --force origin main'", "bash /dev/stdin <<< 'git push --force origin main'", "echo 'git push --force origin main' | bash /dev/stdin", "bash <(echo 'git push --force origin main')",
+    "flock /tmp/l -c 'git push --force origin main'", "watch 'git push --force origin main'", "env -S 'bash -c \"git push --force origin main\"'", "bash -c $'echo hi\\ngit push --force origin main'"])
+    expect([c, verdict(c)]).toEqual([c, "asks high"]);
+  // A wrapper's own option value with a space in it is no command line, and a wait on a script in a variable asks nothing more.
+  for (const c of ["/usr/bin/time -f '%e s' sqlite3 x.db 'select count(*) from t'", "S=~/scratch; waitfor --until \"$S/check.sh done\" --timeout 30s", "timeout -s 'TERM ' 5 make"])
+    expect([c, verdict(c)]).toEqual([c, "asks low"]);
   // The targets a line reaches.
   const reach = (c: string) => shellReaches(c, { cwd: "/w", remoteUrl: () => undefined }).map((r) => `${r.how}:${r.target.key}`);
-  for (const c of ["bash -c 'curl https://in.example'", "bash -lc 'curl https://in.example'", "sh -c -e 'curl https://in.example'"]) expect([c, reach(c)]).toEqual([c, ["fetch:host:in.example"]]);
+  for (const c of ["bash -c 'curl https://in.example'", "bash -lc 'curl https://in.example'", "sh -c -e 'curl https://in.example'", "bash $OPTS -c 'curl https://in.example'", "bash -oO pipefail extglob -c 'curl https://in.example'"]) expect([c, reach(c)]).toEqual([c, ["fetch:host:in.example"]]);
+});
+
+test("a line that is one shell and its script, as another harness sends it, gives up the script; any other line none", () => {
+  expect(onlyScript("/bin/bash -lc 'make test'")).toBe("make test");
+  expect(onlyScript("bash -o pipefail -c \"V=push; git \\$V --force\"")).toBe("V=push; git $V --force");
+  for (const c of ["make test", "bash run.sh", "bash -lc 'make' && ls", "bash -lc 'make' extra", "FOO=1 bash -lc make", "bash -lc \"$SCRIPT\"", "bash -lc 'cat' <<< x", "bash -s <<'EOF'\nmake\nEOF"]) expect([c, onlyScript(c)]).toEqual([c, undefined]);
 });
