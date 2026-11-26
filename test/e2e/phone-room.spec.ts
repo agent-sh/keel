@@ -440,6 +440,7 @@ test.describe("on a phone", () => {
       await page.getByRole("button", { name: "All sessions" }).first().tap();
       const row = page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${target}"]`);
       await expect(row).toBeInViewport();
+      await expect(row).toBeFocused();
       const at = () => page.evaluate((id) => {
         const nav = document.querySelector<HTMLElement>('[data-testid="session-list"]')!;
         const r = nav.querySelector<HTMLElement>(`[data-testid="session-row"][data-session="${id}"]`);

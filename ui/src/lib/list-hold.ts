@@ -12,7 +12,7 @@
 // row the keyboard was last on) stays where it is on the screen while the
 // rows around it take their places, when the list lets go and for as long as
 // the pointer lies in it (useAnchor).
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FocusEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent } from "react";
 import { after } from "./list-order.ts";
 import { getState } from "./store.ts";
 import { navigate, phone } from "./ui.ts";
@@ -198,7 +198,7 @@ export const usePhoneWidth = () => useSyncExternalStore(
 // scroll to stays on the list.
 export function useAnchor(list: { current: HTMLElement | null }) {
   const narrow = usePhoneWidth();
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nav = list.current;
     const sc = scrollerOf(nav);
     if (!nav || !sc) return;
@@ -247,6 +247,9 @@ export function useAnchor(list: { current: HTMLElement | null }) {
     nav.addEventListener("pointerenter", aim, { passive: true });
     nav.addEventListener("pointerleave", leave);
     nav.addEventListener("focusin", focus);
+    // The drawer can put focus on the open row as soon as the lazy list appears. Observe it
+    // before paint and pick up focus that was already in the list when the listener attached.
+    if (nav.contains(document.activeElement)) take(document.activeElement?.closest<HTMLElement>(ROW));
     sc.addEventListener("scroll", again, { passive: true });
     addEventListener("resize", again);
     return () => {
