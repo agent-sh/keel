@@ -98,6 +98,9 @@ export class WorkBoard {
       if (this.merges.size >= MERGES) this.merges.delete(this.merges.keys().next().value!);
       p = ov.mergeTips(repo, ta, tb).catch((e) => ({ error: String(e?.message ?? e) }));
       this.merges.set(key, p);
+      // A merge that failed (a time limit, a full disk, git not starting) is asked again at the next read.
+      const kept = p;
+      void kept.then((r) => { if ("error" in r && this.merges.get(key) === kept) this.merges.delete(key); });
       return p;
     };
     const late = () => by - performance.now() < 250;

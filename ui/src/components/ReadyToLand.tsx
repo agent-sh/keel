@@ -57,7 +57,7 @@ export function ReadyToLand({ inbox }: { inbox?: boolean }) {
   const got = useReadyToLand();
   const cards = useSteady(got.cards);
   if (!cards.length && !got.not_shown.length) return null;
-  const head = <h2 className={inbox ? "k-label" : "k-pane-empty-word"} data-testid="ready-head">{READY_WORD}<span className="ml-2 tabular-nums font-normal text-faint">{cards.length}</span></h2>;
+  const head = <h2 className={inbox ? "k-label" : "k-pane-empty-word"} data-testid="ready-head">{READY_WORD}{cards.length ? <span className="ml-2 tabular-nums font-normal text-faint">{cards.length}</span> : null}</h2>;
   const n = got.not_shown.length;
   const rows = [...cards.map((c) => <Row key={c.key} c={c} />),
     ...(n ? [<p key="not-shown" className="py-1 text-caption text-muted" data-testid="ready-not-shown" title={got.not_shown.map((x) => x.branch).join("\n")}>
