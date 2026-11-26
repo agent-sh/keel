@@ -9,8 +9,6 @@ import { ensureVerdicts } from "../../../src/board/verdicts.ts";
 const [file, parent] = process.argv.slice(2);
 const db = new Database(file!);
 db.run("PRAGMA busy_timeout = 20000");
-// (The verdicts table is made when the first verdict is written.)
-ensureVerdicts(db);
 const now = Date.now();
 const agent = (id: string, model: string, o: { branch?: string; reviews?: string; ended?: number } = {}) =>
   db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, ended, branch, reviews) VALUES (?, ?, ?, ?, 'general-purpose', ?, 1, 'completed', ?, ?, ?, ?)")
@@ -21,6 +19,8 @@ const run = (session: string, head: string, result: string, ended: number, tree:
   db.query("INSERT INTO check_runs (key, name, command, dir, repo, tree, head, session_id, by, result, started, ended) VALUES ('unit', 'unit', 'bun test', '/x', '/x', ?, ?, ?, 'agent', ?, ?, ?)").run(tree, head, session, result, ended - 1000, ended);
 
 db.transaction(() => {
+  // Reserve the write lock before the schema read, as the daemon does on its connection.
+  ensureVerdicts(db);
   for (const [id, model] of [["a1", "scripted:build-a"], ["a2", "scripted:build-a"], ["a3", "scripted:build-a"], ["a4", "scripted:build-a"], ["b1", "scripted:build-b"], ["b2", "scripted:build-b"]] as const) agent(id, model, { branch: `keel/${id}` });
   agent("rev", "scripted:review-x", { reviews: JSON.stringify([{ branch: "keel/a1", how: "task" }]) });
   const t = now - 2_000_000;
@@ -32,5 +32,5 @@ db.transaction(() => {
   run("s-other", "h3", "fail", t, "other-tree");
   // The review session's spend: one request at $2.50.
   db.query("INSERT INTO telemetry_calls (session_id, ts, model, input, output, cost, unpriced, outcome, purpose) VALUES ('s-rev', ?, 'scripted:review-x', 1000, 100, 2.5, 0, 'ok', 'turn')").run(t);
-})();
+}).immediate();
 db.close();
