@@ -19,12 +19,14 @@ const row = (page: Page, id: string) => page.locator(`[data-testid="session-row"
 const dark = (page: Page, on: boolean) => page.evaluate((d) => document.documentElement.classList.toggle("dark", d), on);
 
 // The hue and the chroma (OKLCH) of what the browser paints for a color, from the pixel it draws.
-async function look(page: Page, el: Locator, prop: "color" | "backgroundColor" | "borderTopColor" = "color") {
+// (A card's edge is the bar its shadow draws inside its left side: the shadow's color, the first thing the computed value names.)
+async function look(page: Page, el: Locator, prop: "color" | "backgroundColor" | "boxShadow" = "color") {
   return el.evaluate((node, prop) => {
     const cv = document.createElement("canvas");
     cv.width = cv.height = 1;
     const ctx = cv.getContext("2d", { willReadFrequently: true })!;
-    ctx.fillStyle = getComputedStyle(node)[prop];
+    const value = getComputedStyle(node)[prop];
+    ctx.fillStyle = prop === "boxShadow" ? value.replace(/\s-?[\d.]+px\b.*$/, "") : value;
     ctx.fillRect(0, 0, 1, 1);
     const [r, g, b] = [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map((v) => { const x = v / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }) as [number, number, number];
     const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b), m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b), s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
@@ -35,7 +37,7 @@ async function look(page: Page, el: Locator, prop: "color" | "backgroundColor" |
 // How far two hues are from each other on the wheel.
 const apart = (a: number, b: number) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
 // A color that sits at the dot's hue: a hue within 15 degrees and a color, not a grey.
-async function sameHue(page: Page, what: string, el: Locator, dot: { hue: number }, prop: "color" | "backgroundColor" | "borderTopColor" = "color") {
+async function sameHue(page: Page, what: string, el: Locator, dot: { hue: number }, prop: "color" | "backgroundColor" | "boxShadow" = "color") {
   const got = await look(page, el, prop);
   expect(got.chroma, `${what} is a color`).toBeGreaterThan(0.04);
   expect(apart(got.hue, dot.hue), `${what}: hue ${Math.round(got.hue)} against the dot's ${Math.round(dot.hue)}`).toBeLessThan(15);
@@ -113,7 +115,7 @@ test("every surface that shows a state wears the hue of its dot, in both themes"
         // (A list row's word is quiet: only what needs the owner keeps its ink.)
         if (watch === "need") await sameHue(page, `${where}: the row's word`, row(page, id).getByTestId("row-state"), dots.need!);
         if (watch === "need") {
-          await sameHue(page, `${where}: the approval card's edge`, page.getByTestId("approval"), dots.need!, "borderTopColor");
+          await sameHue(page, `${where}: the approval card's edge`, page.getByTestId("approval"), dots.need!, "boxShadow");
           // (The pane's band says no state since UX-S113: the glyph and the word say it once.)
         }
       }
@@ -121,7 +123,7 @@ test("every surface that shows a state wears the hue of its dot, in both themes"
       await page.goto(`/s/${questioning}`);
       await expect(page.getByTestId("question")).toBeVisible({ timeout: 30_000 });
       await dark(page, theme);
-      await sameHue(page, `${theme ? "dark" : "light"} the question card's edge`, page.getByTestId("question"), dots.need!, "borderTopColor");
+      await sameHue(page, `${theme ? "dark" : "light"} the question card's edge`, page.getByTestId("question"), dots.need!, "boxShadow");
     }
     await dark(page, false);
 
