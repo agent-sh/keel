@@ -10,6 +10,7 @@ import { registerHooks, type SystemBlock } from "../engine/hooks.ts";
 import { enabledUnits, unitOf } from "../plugins/registry.ts";
 import { fillContent } from "../plugins/options.ts";
 import { foreignSkill, frontmatter, skillDescription } from "./skill-text.ts";
+import { codexPluginDir } from "../integrations/codex-plugins.ts";
 export { foreignSkill, frontmatter };
 import { valuesOf } from "../plugins/settings.ts";
 import { claudeAllow } from "../integrations/port-permissions.ts";
@@ -66,11 +67,12 @@ export function listField(v: unknown): string[] {
 
 // <config>/skills.json: the skills the owner turned off, by name ("off"), the
 // other folders Keel reads skills from ("roots", e.g. Codex's), and the Claude
-// Code plugins whose skills, commands and agents Keel carries ("plugins": the
-// id and Claude Code's folder; the install path is looked up on each read, so
-// a plugin update is followed). `keel port` writes the last two.
+// Code and Codex plugins whose skills, commands and agents Keel carries ("plugins":
+// the id and Claude Code's folder, or Codex's home for a Codex plugin; the install
+// path is looked up on each read, so a plugin update is followed). `keel port`
+// writes the last two.
 export type SkillRoot = { dir: string; label?: string; nested?: boolean; exclude?: string[] };
-export type PluginRef = { id: string; claude: string };
+export type PluginRef = { id: string; claude?: string; codex?: string };
 export type SkillsConfig = { off?: string[]; roots?: SkillRoot[]; plugins?: PluginRef[] };
 const offFile = () => join(configDir(), "skills.json");
 export function skillsConfig(): SkillsConfig {
@@ -110,6 +112,9 @@ function installedList(claude: string): any {
 }
 export function pluginDir(p: PluginRef): { name: string; dir: string } | null {
   try {
+    // A Codex plugin: the newest version in Codex's plugin cache.
+    if (p.codex) { const dir = codexPluginDir(p.codex, p.id); return dir ? { name: p.id.split("@")[0]!, dir } : null; }
+    if (!p.claude) return null;
     const all = installedList(p.claude)?.plugins?.[p.id];
     const hit = (Array.isArray(all) ? all : []).sort((a: any, b: any) => (a.scope === "user" ? -1 : 0) - (b.scope === "user" ? -1 : 0))[0];
     if (!hit?.installPath || !existsSync(hit.installPath)) return null;

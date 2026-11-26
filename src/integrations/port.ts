@@ -413,6 +413,47 @@ function planSkills(items: Planned[], hookPlan: HookCandidate[]) {
       },
     });
   }
+  // Codex plugins: the ones turned on in Codex's config.toml ([plugins."<plugin>@<marketplace>"] enabled = true), from
+  // Codex's plugin cache. Keel carries a plugin's skills, named <plugin>:<skill> as Codex names them; its MCP servers and
+  // app connectors are Codex's own. One the owner turned off in Claude Code under the same name is not picked.
+  const codexHome = codexDir();
+  const codexToml = join(codexHome, "config.toml");
+  let codexOn: string[] = [];
+  try {
+    if (existsSync(codexToml)) {
+      const table = (Bun.TOML.parse(readFileSync(codexToml, "utf8")) as Record<string, any>).plugins ?? {};
+      codexOn = Object.entries<any>(table).filter(([, v]) => v && typeof v === "object" && v.enabled === true).map(([k]) => k).sort();
+    }
+  } catch (e) { items.push({ id: "plugins:codex-config", area: "plugins", source: "Codex", title: "config.toml", state: "error", reason: (e as Error).message, pick: false }); }
+  const offInClaude = new Set(off.map((id) => id.split("@")[0]!));
+  // (A plugin of the same name that Claude Code has turned on is carried from there, once.)
+  const inClaude = new Set([...Object.keys(enabled).filter((k) => enabled[k]), ...(cfg.plugins ?? []).filter((p) => !p.codex).map((p) => p.id)].map((id) => id.split("@")[0]!));
+  for (const id of codexOn) {
+    const ref = { id, codex: codexHome };
+    const at = pluginDir(ref);
+    const item = { id: `plugins:codex:${id}`, area: "plugins" as const, source: "Codex", title: id };
+    if (!at) { items.push({ ...item, state: "skip", reason: "turned on but not in Codex's plugin cache", pick: false }); continue; }
+    const name = id.split("@")[0]!;
+    if (inClaude.has(name)) { items.push({ ...item, path: at.dir, state: "skip", reason: "Claude Code has it turned on too: Keel carries that one", pick: false }); continue; }
+    const why = native(name);
+    if (why) { items.push({ ...item, path: at.dir, state: "skip", reason: why, pick: false }); continue; }
+    const skills = skillDirs(join(at.dir, "skills")).length;
+    const codexOwn = [existsSync(join(at.dir, ".mcp.json")) ? "MCP servers" : "", existsSync(join(at.dir, ".app.json")) ? "app connectors" : ""].filter(Boolean);
+    if (!skills) { items.push({ ...item, path: at.dir, state: "skip", reason: codexOwn.length ? `nothing Keel can run: its ${codexOwn.join(" and ")} are Codex's own` : "nothing Keel can run: it has no skills", pick: false }); continue; }
+    const done = (cfg.plugins ?? []).some((p) => p.id === id && p.codex);
+    const turnedOff = offInClaude.has(name);
+    items.push({
+      ...item, path: at.dir,
+      detail: [plural(skills, "skill"), codexOwn.length ? `leaves out its ${codexOwn.join(" and ")} (Codex's own)` : ""].filter(Boolean).join("; "),
+      state: done ? "done" : "new", pick: !done && !turnedOff,
+      ...(!done && turnedOff ? { reason: "turned off in Claude Code under the same name" } : {}),
+      run: async () => {
+        const c = skillsConfig();
+        if (!(c.plugins ?? []).some((p) => p.id === id && p.codex)) writeSkillsConfig({ ...c, plugins: [...(c.plugins ?? []), ref] });
+        return `Keel carries ${plural(skills, "skill")} from ${tilde(at.dir)}`;
+      },
+    });
+  }
   // Plugin folders Claude Code loads by path (CLAUDE_CODE_PLUGIN_DIRS).
   let dirsVar = "";
   try { dirsVar = readJson(join(claude, "settings.json")).env?.CLAUDE_CODE_PLUGIN_DIRS ?? ""; } catch {}

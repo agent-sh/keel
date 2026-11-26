@@ -6,7 +6,8 @@
 //   servers and app connectors are Codex's own and are told as not carried.
 // - `apps`: ChatGPT app connectors (Gmail, Calendar, Drive...), which Codex reaches through its ChatGPT sign-in.
 //   Keel has none, so an agent that turns one on cannot do its work here: it is unavailable, with why.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { codexPluginDir } from "../integrations/codex-plugins.ts";
 import { join } from "node:path";
 import { frontmatter } from "../tools/skill-text.ts";
 
@@ -15,20 +16,6 @@ export type CodexIntegrations = { mcpServers?: string[]; pluginSkills?: PluginSk
 
 const on = (v: unknown) => !(v && typeof v === "object" && (v as { enabled?: unknown }).enabled === false);
 const turnedOn = (table: unknown): string[] => (table && typeof table === "object" && !Array.isArray(table) ? Object.entries(table as Record<string, unknown>).filter(([, v]) => on(v)).map(([k]) => k) : []);
-
-// A plugin's folder in Codex's cache: the newest version folder (by its time) of <marketplace>/<plugin>.
-export function codexPluginDir(codexHome: string, id: string): string | null {
-  const at = id.lastIndexOf("@");
-  if (at <= 0) return null;
-  const base = join(codexHome, "plugins", "cache", id.slice(at + 1), id.slice(0, at));
-  try {
-    const versions = readdirSync(base).map((v) => join(base, v)).filter((p) => statSync(p).isDirectory());
-    versions.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-    return versions[0] ?? null;
-  } catch {
-    return null;
-  }
-}
 
 function skillsOf(dir: string, plugin: string): PluginSkill[] {
   const root = join(dir, "skills");
