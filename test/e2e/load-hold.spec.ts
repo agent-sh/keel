@@ -36,7 +36,10 @@ test("a loop run waits while the machine is over its line, the rail and Health s
 
     await page.goto(`/s/${looped}`);
     await expect(page.getByTestId("dock-action-text")).toContainText("Waits for the machine: load", { timeout: 30_000 });
-    await expect(page.getByTestId("load-hold")).toContainText("1 agent tree waits for the machine");
+    // The rail's line is read whole (its words are not cut), and its tooltip has the sentence.
+    await expect(page.getByTestId("load-hold").locator(".k-load-line-what")).toHaveText("1 agent tree waits");
+    await expect(page.getByTestId("load-hold")).toHaveAttribute("title", /^1 agent tree waits for the machine: load \d+ on [\d.]+ threads\. Your own turns go on\./);
+    expect(await page.getByTestId("load-hold").locator(".k-load-line-what").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     await shoot(page, "load-hold-00-held");
     await page.getByTestId("load-hold").click();
     await expect(page.getByTestId("health-panel")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
