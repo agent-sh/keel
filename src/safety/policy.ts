@@ -13,7 +13,7 @@ import type { AskedPart } from "./summary.ts";
 import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
-import { PARTS_MAX, WORDS_MAX, elseOf, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
+import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, name as baseName, namesCdpath, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
@@ -775,11 +775,15 @@ const never = (why: string, f: Facts): Decision =>
 // Why a line's writes by a remote's name, or by default, cannot be placed: the line itself changes where remotes point
 // (git config remote.*.url, -c url.*.insteadOf, GIT_CONFIG_*, GIT_DIR, git remote set-url, gh repo set-default), which
 // remote a push by default goes to (remote.pushDefault, branch.*.remote and .pushRemote), or has git read another config
-// file or take a key from the environment (include.path, includeIf.*.path, --config-env), which can say any of those.
+// file or take a key from the environment (include.path, includeIf.*.path, --config-env, a HOME or XDG_CONFIG_HOME of the
+// line's own), which can say any of those.
 const REBOUND = /^(remote\.[^=\s]*\.(url|pushurl|gh-resolved)|url\..*\.(push)?insteadof)(=|$)/i;
 const REBOUND_DEFAULT = /^(remote\.pushdefault|branch\..*\.(remote|pushremote))(=|$)/i;
 const REBOUND_FILE = /^(include\.path|includeif\..*\.path)(=|$)/i;
 const REBOUND_ENV = /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
+// (git reads the owner's own settings from $HOME/.gitconfig and $XDG_CONFIG_HOME/git/config: another folder there is another
+// set of url rewrites.)
+const REBOUND_HOME = /^(HOME|XDG_CONFIG_HOME)=/;
 function reboundBy(parts: Simple[]): string | undefined {
   for (const part of parts) {
     if (part.heredoc) continue;
@@ -791,6 +795,7 @@ function reboundBy(parts: Simple[]): string | undefined {
       if (REBOUND_FILE.test(x)) return "the same line has git read another config file, which can say where a remote points";
       if (/^--config-env(=|$)/.test(x)) return "the same line gives git a setting from the environment, which can say where a remote points";
       if (REBOUND_ENV.test(x)) return "the same line sets git's configuration or its folder through the environment";
+      if (REBOUND_HOME.test(x)) return "the same line sets HOME or XDG_CONFIG_HOME, where git reads your own settings from, which can say where a remote points";
       if (x === "remote" && /^(rename|remove|rm|set-head)$/.test(w[i + 1] ?? "") && w.slice(0, i).some((y) => baseName(y) === "git")) return "the same line changes a remote";
       if (x === "set-default" && w[i - 1] === "repo" && baseName(w[i - 2]) === "gh") return "the same line changes the repository gh acts on";
     }
@@ -800,7 +805,9 @@ function reboundBy(parts: Simple[]): string | undefined {
 
 // What a line has set so far for the commands after it: the variables it gave a value, and the ones it exported.
 // `moved`: the script starts in a folder the line went to. `unsure`: or in another one, which the rules cannot name.
-type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean };
+// `homeKept`: whether HOME still names the owner's home for the script (asked only when a `cd` of it reads HOME). `real`,
+// `cdpath`: what started the script's shell asked it for real folders, or the line names CDPATH (risk-words.ts Else).
+type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean; homeKept?: () => boolean; real?: boolean; cdpath?: boolean };
 const ELSE_WHY = "a cd before it may not land where it says (it can fail, the line names CDPATH, or it is not one the rules follow), so the folder it runs in is not known to the rules";
 
 // `git -C ~/folder`: a `~/` that begins the word, unquoted, is the home folder by the time git reads it (the shell writes
@@ -809,16 +816,20 @@ const ELSE_WHY = "a cd before it may not land where it says (it can fail, the li
 // variable, a glob, `~user`), or stands in a line that may give HOME another value: one that names HOME other than to
 // read it, an eval or a sourced file. A script another shell is given (`bash -c`, behind `sudo -u`) is not read so: whose
 // home that shell has is not in the line's words. Such a word stays one the rules do not place.
+// The same holds for a `cd` with no folder, to `~` or under it: in a line that may give HOME another value the folder it
+// leaves the shell in is not known (in a script another shell is given too, where the line and the script both keep HOME
+// and no other account starts that shell).
 const MADE_COMPUTES = /\$\{(?![A-Za-z_][A-Za-z0-9_]*\})|\$\(\(|\$\[/;
 const HOME_READ = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
 // (git's own options that take the next word, as the account rules read them: accounts.ts gitWrites.)
 const GIT_VALUED = new Set(["-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
-function homeWritten(parts: Simple[], pre: ReturnType<typeof laid>, home: string): ReturnType<typeof laid> {
-  let runs: Run[] | undefined, kept: boolean | undefined;
-  const homeKept = () => (kept ??= !parts.some((s, i) => {
-    const first = baseName(pre.runs[i]?.words[0]);
+type Runs = { runs: Run[]; dirs: (string | null)[] };
+// Whether no part of a line can give HOME another value.
+function keepsHome(parts: Simple[], runs: Run[]): boolean {
+  return !parts.some((s, i) => {
+    const first = baseName(runs[i]?.words[0]);
     if (s.heredoc) return false;
-    const run = pre.runs[i]!;
+    const run = runs[i]!;
     // A part the parser does not read (a for or select name, a descriptor variable, arithmetic), code it is handed.
     if (s.unknown || first === "eval" || first === "source" || first === ".") return true;
     if (/\bHOME\b/.test(s.text.replace(HOME_READ, "")) || s.words.some((w) => /\bHOME\b/.test(w.replace(HOME_READ, "")))) return true;
@@ -830,7 +841,16 @@ function homeWritten(parts: Simple[], pre: ReturnType<typeof laid>, home: string
     if (s.dyn.some((n) => MADE_COMPUTES.test(s.words[n] ?? ""))) return true;
     if (!run.words.length) return s.words.some((w) => /^[A-Za-z_][A-Za-z0-9_]*\[/.test(w));
     return first !== "git" && first !== "cd" && !isReadOnly(s);
-  }));
+  });
+}
+// A `cd` or `pushd` whose folder is read from HOME: none given, `~`, or under it.
+const readsHome = (r: Run) => {
+  if (r.words[0] !== "cd" && r.words[0] !== "pushd") return false;
+  const arg = r.words.slice(1).find((a) => !a.startsWith("-") || a === "-");
+  return arg === undefined ? r.words[0] === "cd" : arg === "~" || arg.startsWith("~/");
+};
+function homeWritten<P extends Runs>(parts: Simple[], pre: P, home: string, homeKept: () => boolean): P {
+  let runs: Run[] | undefined;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!, run = pre.runs[i]!;
     if (part.heredoc || baseName(run.words[0]) !== "git") continue;
@@ -848,17 +868,22 @@ function homeWritten(parts: Simple[], pre: ReturnType<typeof laid>, home: string
       words[k] = home + w.slice(1);
     }
   }
-  return runs ? { ...pre, runs } : pre;
+  const dirs = pre.runs.some(readsHome) && !homeKept() ? dirsOf(parts, pre.runs, pre.dirs[0] ?? null, null) : undefined;
+  return runs || dirs ? { ...pre, ...(runs ? { runs } : {}), ...(dirs ? { dirs } : {}) } : pre;
 }
 
 // Every write with an account the parts of a line make, found through what wraps them and in the folder each runs in.
 // A script a shell is given with -c (or eval) is read as a line of its own. Exports before a command count for it.
-export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: Pick<Facts, "looked" | "home">, depth = 0, from?: Scope): Write[] {
+export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked" | "home">, depth = 0, from?: Scope): Write[] {
   const out: Write[] = [];
-  if (depth === 0) pre = homeWritten(parts, pre, f.home ?? homeDir());
+  const home = f.home ?? homeDir();
+  let kept: boolean | undefined;
+  const homeKept = from?.homeKept ?? (() => (kept ??= keepsHome(parts, pre.runs)));
+  if (depth === 0) pre = homeWritten(parts, pre, home, homeKept);
   const scope: Scope = { vars: new Map(from?.vars), exported: new Set(from?.exported), rebinds: from?.rebinds ?? reboundBy(parts), added: new Map(from?.added) };
+  const cdpath = !!from?.cdpath || namesCdpath(parts), real = !!from?.real || asksReal(parts, pre.runs);
   // The folder the line starts in, and for each part the other folders it may run in (a cd before it that failed).
-  const start = pre.dirs[0] ?? null, or = elseOf(parts, pre.runs, pre.dirs);
+  const start = pre.dirs[0] ?? null, or = elseOf(parts, pre.runs, pre.dirs, { cdpath, real });
   const key = (w: Write) => `${w.does}\0${w.account ? say(w.account) : ""}`;
   parts.forEach((part, i) => {
     if (part.heredoc) return;
@@ -887,13 +912,20 @@ export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: 
     }
     const first = baseName(run.words[0]);
     // sh -c 'git push ...', bash -lc "...", eval '...'
-    let script: string | undefined;
-    if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { const c = run.words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x)); if (c > 0) script = run.words[c + 1]; }
+    let script: string | undefined, shell = -1;
+    if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { shell = run.words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x)); if (shell > 0) script = run.words[shell + 1]; }
     else if (first === "eval") script = run.words.slice(1).join(" ");
     if (script !== undefined) {
       const inner = depth < 2 ? splitCommand(script) : null;
-      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homeDir()), f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added, moved: !!env.moved, unsure: others.length > 0 }));
-      else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: "the script it runs is nested deeper than the rules read, or not one they can read" });
+      if (inner) {
+        const runs = inner.map((x) => unwrap(x.words));
+        // The script's own HOME: the line's, unless the script or the line can change it, or another account starts its shell.
+        let keeps: boolean | undefined;
+        const innerKept = () => (keeps ??= homeKept() && !part.words.slice(0, run.at).some((x) => LEAVES.test(baseName(x))) && keepsHome(inner, runs));
+        const dirs = dirsOf(inner, runs, pre.dirs[i] ?? null, runs.some(readsHome) && !innerKept() ? null : home);
+        out.push(...accountWrites(inner, { runs, dirs }, f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added, moved: !!env.moved, unsure: others.length > 0,
+          homeKept: innerKept, cdpath, real: real || (shell > 0 && startsReal(run.words, shell)) }));
+      } else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
     // What this part gives the parts after it.
     const w0 = baseName(run.words[0]);

@@ -452,6 +452,11 @@ test("a folder with a .. in it is asked of the disk as written, and not followed
   for (const c of ["cd -P link/.. && git push", "set -P; cd link/.. && git push", "set -o physical; cd link/.. && git push", "cd -P link && cd .. && git push", "cd link && cd -P .. && git push", "cd -LP link/.. && git push"]) expect([c, where(c)]).toEqual([c, "unplaced"]);
   // (Real folders asked for, and no `..`: the folder the words name.)
   expect(where("cd -P /w/clone && git push")).toBe("github.com/them/lib");
+  // Asked of the shell that runs a script by what starts it, and a CDPATH given to it: the script's own words show neither.
+  for (const c of ["bash -P -c 'cd link/.. && git push'", "bash -o physical -c 'cd link/.. && git push'", "bash -eP -c 'cd link/.. && git push'", "SHELLOPTS=physical bash -c 'cd link/.. && git push'",
+    "env SHELLOPTS=physical bash -c 'cd link/.. && git push'", "CDPATH=/w/clone bash -c 'cd inner && git push'", "env CDPATH=/w/clone bash -c 'cd inner && git push'", "export CDPATH=/w/clone; bash -c 'cd inner && git push'"]) expect([c, where(c)]).toEqual([c, "unplaced"]);
+  expect(where("bash -c 'cd link/.. && git push'")).toBeNull();
+  expect(where("bash -c 'cd /w/own && git push'", "/w/clone")).toBeNull();
 });
 
 // A config file the line has git read, a setting it takes from the environment, and the keys that pick the remote of a
@@ -476,6 +481,13 @@ test("a line that has git read another config file, or sets which remote a push 
     "git config branch.main.pushRemote backup && git push",
     "git config branch.main.remote backup; git push",
     "git config include.path /w/other.config && gh pr create --fill",
+    // Another HOME or XDG_CONFIG_HOME is another file of the owner's own settings, with its own url rewrites.
+    "HOME=/w/other git push",
+    "export HOME=/w/other; git push origin main",
+    "XDG_CONFIG_HOME=/w/xdg git push",
+    "export XDG_CONFIG_HOME=/w/xdg && git push",
+    "env XDG_CONFIG_HOME=/w/xdg git push",
+    "bash -c 'HOME=/w/other git push'",
   ]) expect([c, where(c)]).toEqual([c, "unplaced"]);
   // An address the push spells out is not placed either: the file can rewrite it (url.*.insteadOf).
   expect(where("git -c include.path=/w/other.config push https://github.com/me/repo.git main")).toBe("unplaced");

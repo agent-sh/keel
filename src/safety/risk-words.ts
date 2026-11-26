@@ -174,7 +174,9 @@ export function unwrap(words: string[]): Run {
 // folder of what is nested is unknown until the next command outside.
 // `through`: inside a subshell the commands after a `cd` joined by `;` or a newline run in its folder too
 // (where the subshell ends is still not known): for a reader that takes more commands as in a folder, never fewer.
-export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: string, through = false): (string | null)[] {
+// `home`: null when the line may have given HOME another value (the account rules say when): a `cd` with no folder, to
+// `~` or under it then leaves the folder unknown.
+export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: string | null, through = false): (string | null)[] {
   // No part changes folder: every one runs where the line does.
   if (!runs.some((r) => r.words[0] === "cd" || r.words[0] === "pushd" || r.words[0] === "popd")) return new Array<string | null>(parts.length).fill(cwd);
   // A function the line gives the name: what `cd` does after it is not known, and no folder is followed.
@@ -194,7 +196,10 @@ export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: s
     const made = s && arg !== undefined && /^\$\(\.\.\.\)(\/[^$`*?[\]{}]*)?$/.test(arg) ? s.how?.[s.dyn?.indexOf(w.indexOf(arg) + (s.words.length - w.length)) ?? -1] : undefined;
     if (pwdOwn && made && !made.vars.length && !made.rest && made.subs.length === 1 && made.subs[0]!.length === 1 && made.subs[0]![0]!.words.join(" ") === "pwd") arg = "." + arg!.slice(6);
     if (w[0] === "popd" || arg === "-" || (arg !== undefined && (/[$`*?[\]{}]/.test(arg) || (arg.startsWith("~") && arg !== "~" && !arg.startsWith("~/"))))) return null;
-    const path = arg === undefined || arg === "~" ? home : arg.startsWith("~/") ? home + arg.slice(1) : arg;
+    // (A `~` the line quotes or escapes is a folder of that name where the shell is, not the home.)
+    const tilde = arg !== undefined && arg.startsWith("~") && !(s?.quotes?.includes(w.indexOf(arg) + (s.words.length - w.length)));
+    if (home === null && (arg === undefined || tilde)) return null;
+    const path = arg === undefined || (tilde && arg === "~") ? home! : tilde && arg.startsWith("~/") ? home! + arg.slice(1) : arg;
     const next = isAbsolute(path) ? resolve(path) : from === null ? null : resolve(from, path);
     // (A folder longer than a path can be is none: a chain of relative cds is not followed past it, so no later
     // reader resolves against a longer and longer one.)
@@ -250,17 +255,28 @@ export function firmOf(parts: Simple[], runs: Run[], start = true): boolean[] {
 // `cd X || exit` leaves nothing to run where it failed. A `cd` that may not run in the shell at all (after `||`, in a pipe,
 // negated) leaves what its `&&` joins where the shell was.
 // For a reader that must know every folder a write can happen in (the account rules): more folders, never fewer.
+// `real`, `cdpath`: the shell that runs these parts was asked for real folders, or given a CDPATH, by what started it
+// (`bash -P -c`, `SHELLOPTS=physical`, a `CDPATH=` in front of it), which its own parts do not show.
+export type Else = { real?: boolean; cdpath?: boolean };
 const NO_DIRS: readonly (string | null)[] = [];
 const MOVES = /^(cd|pushd|popd)$/;
+// Whether a line names CDPATH, and whether it asks for real folders somewhere (`set -P`, `set -o physical`, `cd -P`, a
+// SHELLOPTS it sets): from there the shell's folder is not the one its words spell when a link is on the way, and a `..`
+// leaves the link's target, not the link.
+export const namesCdpath = (parts: Simple[]) => parts.some((s) => !s.heredoc && /\bCDPATH\b/.test(s.text));
+export const asksReal = (parts: Simple[], runs: Run[]) => parts.some((s, i) => {
+  const w = runs[i]!.words;
+  return !s.heredoc && (/\bSHELLOPTS\b/.test(s.text) || (w[0] === "set" && w.some((x, k) => /^-[a-zA-Z]*P/.test(x) || (x === "physical" && w[k - 1] === "-o"))) || (MOVES.test(w[0] ?? "") && w.some((x) => /^-[A-Za-z@]*P/.test(x))));
+});
+// The same asked of a shell by the words that start it, before its script: `bash -P -c`, `bash -o physical -c`.
+export const startsReal = (words: string[], script: number) => words.slice(1, script + 1).some((x, k, all) => /^-[a-zA-Z]*P/.test(x) || (x === "physical" && all[k - 1] === "-o"));
 const NEGATED = /^(?:(?:if|while|until|elif|then|else|do|time|\{)\s+)*!\s/;
-export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[]): (readonly (string | null)[])[] {
+export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[], o: Else = {}): (readonly (string | null)[])[] {
   const out = new Array<readonly (string | null)[]>(parts.length).fill(NO_DIRS);
   const evals = (w: string[]) => w[0] === "eval" && w.some((x, k) => k > 0 && /(^|[\s;&|({])(cd|pushd|popd)(\s|$)/.test(x));
   if (!runs.some((r) => MOVES.test(r.words[0] ?? "") || evals(r.words))) return out;
-  const cdpath = parts.some((s) => !s.heredoc && /\bCDPATH\b/.test(s.text));
-  // The line asks for real folders somewhere (`set -P`, `set -o physical`, `cd -P`): from there the shell's folder is not
-  // the one its words spell when a link is on the way, and a `..` leaves the link's target, not the link.
-  const real = parts.some((s, i) => { const w = runs[i]!.words; return !s.heredoc && ((w[0] === "set" && w.some((x, k) => /^-[a-zA-Z]*P/.test(x) || (x === "physical" && w[k - 1] === "-o"))) || (MOVES.test(w[0] ?? "") && w.some((x) => /^-[A-Za-z@]*P/.test(x)))); });
+  const cdpath = o.cdpath || namesCdpath(parts);
+  const real = o.real || asksReal(parts, runs);
   // What a cd is given: its operands, past its options.
   const read = (w: string[]) => {
     let k = 1;

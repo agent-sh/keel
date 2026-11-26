@@ -63,3 +63,26 @@ test("a ~ the shell does not write out as the home folder is not placed", () => 
   ];
   for (const command of rows) expect([command, where(command)]).toEqual([command, "unplaced"]);
 });
+
+// A cd with no folder, to ~ or under it goes where HOME says when it runs: followed only where no part of the line, or of
+// the script another shell is given, can give HOME another value.
+test("a cd under ~ is followed only where HOME is still the owner's home", () => {
+  expect(where("cd ~/own && git push")).toBeNull();
+  expect(where("cd && cd own && git push")).toBeNull();
+  expect(where("cd ~/clone && git push")).toBe("github.com/them/lib");
+  expect(where("bash -c 'cd ~/own && git push'")).toBeNull();
+  for (const line of [
+    "export HOME=/elsewhere && cd ~/own && git push",
+    "x=HO; export ${x}ME=/elsewhere; cd ~/own && git push",
+    "for HOME in /elsewhere; do cd ~/own && git push; done",
+    ". ./env.sh; cd ~/own && git push",
+    "x=HO; declare -x ${x}ME=/elsewhere; cd ~/own && git push",
+    "x=HO; export ${x}ME=/elsewhere; cd; cd own && git push",
+    "x=HO; export ${x}ME=/elsewhere; pushd ~/own && git push",
+    "bash -c 'x=HO; export ${x}ME=/elsewhere; cd ~/own && git push'",
+    "x=HO; export ${x}ME=/elsewhere; bash -c 'cd ~/own && git push'",
+    "sudo -u other bash -c 'cd ~/own && git push'",
+  ]) expect([line, where(line)]).toEqual([line, "unplaced"]);
+  // A ~ the line quotes is a folder of that name where the shell is.
+  expect(where('cd "~/own" && git push')).toBe("github.com/them/lib");
+});
