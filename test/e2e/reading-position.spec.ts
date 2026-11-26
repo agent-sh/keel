@@ -84,6 +84,10 @@ test("the owner comes back to the line they were at: another session, an agent, 
   try {
     await page.setViewportSize({ width: 1920, height: 1040 });
     await open(page, [reader]);
+    // This session has an agent, so it opens on Conversation. Read a place
+    // in the full stream, whose scroll position this test follows on return.
+    await pane(page, reader).getByTestId("lens-to-stream").click({ timeout: 30_000 });
+    await expect(pane(page, reader).getByTestId("transcript")).toBeVisible();
     const before = await readAt(page, reader, "T2 line 7 of");
     expect(before.end).toBe(false);
 
