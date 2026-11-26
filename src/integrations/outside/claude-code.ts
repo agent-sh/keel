@@ -3,12 +3,17 @@
 // `claude` in print mode: `claude -p --resume ID` with stream-json in and out,
 // its permission prompts to Keel over the control channel (claude-wire.ts says
 // the wire and where each shape comes from). The child starts in the session's
-// folder with the model of its last reply and the mode of its last prompt (a
-// resumed print run restores neither), and an environment that keeps only the
-// route that model names. Keel is the writer only while nothing else holds the
-// session (writer.ts: a live Claude Code record of it, read right before the
-// child starts) and only for the turn and the sends that come while it runs:
-// Claude Code takes no lock, so the one-writer rule is Keel's.
+// project folder (where it was started, the folder its transcript is kept
+// under) once Claude Code's own trust record covers it, with the model of its
+// last reply (and its 1M window when it used it) and the mode of its last user
+// record (a resumed print run restores neither), and an environment that keeps
+// only the route that model names, which must be there. Keel is the writer
+// only while nothing else holds the session (writer.ts: a live Claude Code
+// record of it; and no write in the last seconds, nor an open turn written in
+// the last minutes, that no record explains), read right before the child
+// starts, and only for the turn and the sends that come while it runs: Claude
+// Code takes no lock, so the one-writer rule is Keel's. A record of another
+// process that appears while Keel's child runs stops the sends that follow.
 //
 // What Claude Code asks becomes a Keel card, answered once: a call to allow
 // (the gate's one-call card), AskUserQuestion (a question card), ExitPlanMode
@@ -20,7 +25,8 @@
 // before its sender is answered, started (the transcript's size kept) before
 // it goes, delivered when the transcript holds it. A restart that cut a started
 // send looks for it in the transcript and never sends it again by itself.
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { Bus } from "../../core/bus.ts";
 import type { Store } from "../../core/store.ts";
 import type { Holder } from "../../core/types.ts";
@@ -31,12 +37,11 @@ import { begin as activity } from "../../admin/activity.ts";
 import type { ToolCall } from "../../engine/hooks.ts";
 import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools/interact.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
-import { headTail, scanBack } from "../import/files.ts";
-import { splitGrown } from "./facts.ts";
-import { alive, claudeRecordOf, holderChain, procOf, type Proc } from "./writer.ts";
+import { headTail } from "../import/files.ts";
+import { alive, claudeRecordsOf, foreignRecord, holderChain, procOf, recordHolder, type ClaudeRecord, type Proc } from "./writer.ts";
 import { merged, reap, SCHEMA, type Answered, type CardGate, type Send, type SendState } from "./codex-app.ts";
 import type { Answer as PlanAnswer, PlanCard } from "../../server/routes/plan.ts";
-import { answerLine, answersOf, argsOf, cardOf, childEnv, holdsMessage, modelOf, modeFor, planMode, questionsOf, readOut, refusalLine, requestLine, sessionFacts, turnEnded, userLine } from "./claude-wire.ts";
+import { answerLine, answersOf, argsOf, Back, cardOf, childEnv, holdsMessage, modeFor, planMode, projectOf, questionsOf, readOut, refusalLine, requestLine, routeMissing, routeOf, trusted, turnEnded, userLine } from "./claude-wire.ts";
 
 type Json = any;
 
@@ -49,6 +54,15 @@ const RPC_MS = 5000;
 const END_MS = 2000;
 // The longest line Keel reads from the child: a reply's record is far smaller; a longer one is dropped.
 const LINE_MAX = 8 * 1024 * 1024;
+// A write to the transcript that no record of a running session explains: within FRESH_MS some process is in it (Claude
+// Code writes its record a few seconds after it starts: up to 4 s seen), and within OPEN_MS of an open turn's last
+// write a call of it may still run (Bash's longest timeout is 10 minutes, D: Claude Code's tools docs).
+const FRESH_MS = 10_000;
+const OPEN_MS = 10 * 60_000;
+// A send the owner's Stop left in Claude Code's queue: the child ends after the stopped turn, so it never ran.
+const STOPPED = "Not run: you stopped the turn before Claude Code took it";
+// How much of the transcript is read at a time, off the loop between the parts.
+const PART = 1024 * 1024;
 
 export type ClaudeCodeDeps = {
   store: Store;
@@ -164,7 +178,10 @@ type Run = {
   cards: Map<string, AbortController>;
   stopped: AbortController;
   nonce: string;
-  interrupting?: boolean;
+  // The mode the child works in (the session's, or the one an approved plan set): the bar says it.
+  mode: string;
+  // The owner stopped the turn: the child ends after it, and takes no send.
+  stopping?: boolean;
   ending?: Promise<void>;
   killing?: Promise<void>;
   // What holds the session under the child, learned once it is ready and again when it is ended: the process
@@ -176,17 +193,78 @@ type Run = {
   isOver: () => void;
 };
 
-// The records of the transcript from a byte offset on (the bytes a send started at): what the session gained since.
-function records(path: string, offset: number): Json[] {
-  let fd: number | undefined;
+// The transcript's records from a byte offset on, a part at a time with the loop free between (a long session's tool
+// output is most of its bytes); `take` true stops the read. A last line still being written is left out.
+async function forth(path: string, offset: number, take: (r: Json) => boolean | void): Promise<void> {
   try {
-    fd = openSync(path, "r");
-    const size = fstatSync(fd).size;
-    const from = Math.max(0, Math.min(offset, size));
-    const buf = Buffer.alloc(size - from);
-    readSync(fd, buf, 0, buf.length, from);
-    return splitGrown("", buf.toString("utf8") + "\n").records;
-  } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
+    const file = Bun.file(path);
+    const size = statSync(path).size;
+    let at = Math.max(0, Math.min(offset, size));
+    let rest = Buffer.alloc(0);
+    while (at < size) {
+      const end = Math.min(size, at + PART);
+      const got = Buffer.from(await file.slice(at, end).arrayBuffer());
+      at = end;
+      const buf = rest.length ? Buffer.concat([rest, got]) : got;
+      const whole = buf.lastIndexOf(10) + 1;
+      for (const l of buf.subarray(0, whole).toString("utf8").split("\n")) {
+        if (!l.trim()) continue;
+        let r: Json;
+        try { r = JSON.parse(l); } catch { continue; }
+        if (take(r)) return;
+      }
+      rest = Buffer.from(buf.subarray(whole));
+    }
+  } catch {}
+}
+// What the session gained since a send started: its prompts and replies.
+async function recordsFrom(path: string, offset: number): Promise<Json[]> {
+  const out: Json[] = [];
+  await forth(path, offset, (r) => { if (r?.type === "user" || r?.type === "assistant") out.push(r); });
+  return out;
+}
+// The records from the transcript's end back, a part at a time off the loop, until `take` says it has what it needs.
+async function back(path: string, take: (r: Json) => boolean): Promise<void> {
+  try {
+    const file = Bun.file(path);
+    let end = statSync(path).size;
+    let rest = Buffer.alloc(0);
+    while (end > 0) {
+      const from = Math.max(0, end - PART);
+      const got = Buffer.from(await file.slice(from, end).arrayBuffer());
+      end = from;
+      // The part's first line may be cut: its bytes are read with the part before it.
+      const buf = rest.length ? Buffer.concat([got, rest]) : got;
+      const cut = from > 0 ? buf.indexOf(10) : -1;
+      if (from > 0 && cut < 0) { rest = buf; continue; }
+      const lines = buf.subarray(cut + 1).toString("utf8").split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i]!.trim()) continue;
+        let r: Json;
+        try { r = JSON.parse(lines[i]!); } catch { continue; }
+        if (take(r)) return;
+      }
+      rest = from > 0 ? Buffer.from(buf.subarray(0, cut)) : Buffer.alloc(0);
+    }
+  } catch {}
+}
+
+// Whether the transcript's last turn is open, from its tail (a turn whose end the tail does not show counts as open).
+function openTail(path: string): boolean {
+  const { tail } = headTail(path, 64 * 1024);
+  const b = new Back();
+  for (let i = tail.length - 1; i >= 0 && b.open === undefined; i--) b.take(tail[i]);
+  return b.open !== false;
+}
+
+// The git repository a folder is in (the nearest folder above it with .git): Claude Code's trust is not looked for above it.
+function repoOf(cwd: string): string | undefined {
+  for (let p = cwd; ; ) {
+    if (existsSync(join(p, ".git"))) return p;
+    const up = dirname(p);
+    if (up === p) return undefined;
+    p = up;
+  }
 }
 
 // Whether a kept process is still claude in print mode answering over the control channel, by its arguments: a
@@ -201,6 +279,10 @@ type ProcRow = { session_id: string; pid: number; start: string };
 
 export class ClaudeCode {
   private runs = new Map<string, Run>();
+  // A child being started (its facts read, the session checked): a send that comes meanwhile waits for it.
+  private starting = new Map<string, Promise<Run | string>>();
+  // The transcript's size when Keel's last child in the session ended: a write that left it there was Keel's.
+  private left = new Map<string, number>();
   private said = new Map<string, string[]>();
   private closed = false;
   private off: () => void;
@@ -211,17 +293,30 @@ export class ClaudeCode {
     this.off = d.bus.on((f) => {
       if (f.t !== "session" || !f.deleted) return;
       this.said.delete(f.session.id);
+      this.left.delete(f.session.id);
       if (this.runs.has(f.session.id)) void this.interrupt(f.session.id).catch((e) => d.trouble(e, "stopping a deleted session's Claude Code turn"));
     });
   }
 
-  ours(sessionId: string): boolean { return this.runs.has(sessionId); }
+  ours(sessionId: string): boolean { return this.runs.has(sessionId) || this.starting.has(sessionId); }
   running(sessionId: string): boolean { return (this.runs.get(sessionId)?.open.size ?? 0) > 0; }
+
+  // Who holds the session as a send decides: Keel while its child runs; else the record Claude Code keeps, else a
+  // process no record names when the transcript was written by one in the last seconds, or its open turn in the
+  // last minutes.
+  holder(sessionId: string, base = this.d.outside.holderNow(sessionId)): Holder | undefined {
+    if (!base) return base;
+    if (this.ours(sessionId)) return { kind: "keel" };
+    if (base.kind !== "free") return base;
+    return this.unrecorded(sessionId) ? { kind: "process" } : base;
+  }
 
   // What a send does now: resume the session (free), add to the turn Keel runs, nothing (another process
   // holds it, or there is no claude program here).
-  route(sessionId: string, holder = this.d.outside.holderNow(sessionId)): "resume" | "steer" | "held" | "missing" {
-    if (this.ours(sessionId)) return "steer";
+  route(sessionId: string, holder = this.holder(sessionId)): "resume" | "steer" | "held" | "missing" {
+    const run = this.runs.get(sessionId);
+    if (run) return this.others(run).length ? "held" : "steer";
+    if (this.starting.has(sessionId)) return "steer";
     if (!this.d.bin()) return "missing";
     return !holder || holder.kind === "free" ? "resume" : "held";
   }
@@ -235,7 +330,11 @@ export class ClaudeCode {
   private byId(id: string): Send | undefined {
     return this.d.store.db.query<Send, [string]>("SELECT * FROM outside_sends WHERE id = ?").get(id) ?? undefined;
   }
-  notes(sessionId: string): string[] { return this.said.get(sessionId) ?? []; }
+  // What the bar says besides the sends: what Keel noted, and the mode Keel's child works in now.
+  notes(sessionId: string): string[] {
+    const run = this.runs.get(sessionId);
+    return [...(this.said.get(sessionId) ?? []), ...(run ? [`Claude Code works here in its ${run.mode} mode`] : [])];
+  }
   // What the owner answered on the cards of Claude Code's calls, by the call's tool_use id in the transcript: the
   // call's line in the mirror says it (the transcript holds only what the call returned, or Keel's deny message).
   answers(sessionId: string): Record<string, Answered> {
@@ -248,7 +347,7 @@ export class ClaudeCode {
     this.d.bus.emit({ t: "feature", name: "outside_sends", session_id: sessionId, data: { sends: this.sends(sessionId), notes: this.notes(sessionId), answers: this.answers(sessionId) } });
   }
   private note(sessionId: string, text: string) {
-    const had = this.notes(sessionId);
+    const had = this.said.get(sessionId) ?? [];
     if (had.includes(text)) return;
     this.said.set(sessionId, [...had, text].slice(-5));
     this.told(sessionId);
@@ -260,6 +359,33 @@ export class ClaudeCode {
     this.told(s.session_id);
   }
 
+  // A write to the transcript no record explains, and why it holds a send: written in the last seconds, or its turn
+  // open and written in the last minutes. Not a write Keel's own child left.
+  private unrecorded(sessionId: string): string | undefined {
+    const row = this.d.outside.row(sessionId);
+    if (!row) return undefined;
+    let st;
+    try { st = statSync(row.path); } catch { return undefined; }
+    if (this.left.get(sessionId) === st.size) return undefined;
+    const ago = Date.now() - st.mtimeMs;
+    if (ago < FRESH_MS) return `Claude Code wrote to this session ${Math.max(0, Math.round(ago / 1000))} s ago and no record says which process runs it`;
+    if (ago < OPEN_MS && openTail(row.path)) return `its last turn is open, written ${Math.max(1, Math.round(ago / 60_000))} min ago, and no record says which process runs it`;
+    return undefined;
+  }
+  // What holds the session outside Keel now, read at this moment: a record of Claude Code's, or a write none explains.
+  private stranger(sessionId: string, claudeId: string): { holder: Holder; said: string } | undefined {
+    const r = claudeRecordsOf(this.d.runningDir(), claudeId)[0];
+    if (r) { const h = recordHolder(r); return { holder: h, said: holderSaid(h, "Claude Code") }; }
+    const why = this.unrecorded(sessionId);
+    return why ? { holder: { kind: "process" }, said: why } : undefined;
+  }
+  // The records of the session that are not Keel's child or what runs it (a terminal that opened it meanwhile, a
+  // record of another pid domain).
+  private others(run: Run): ClaudeRecord[] {
+    return claudeRecordsOf(this.d.runningDir(), run.claudeId).filter((r) =>
+      foreignRecord(r) || (r.pid !== run.child.pid && !run.under.some((p) => p.pid === r.pid) && !holderChain(run.child.pid, r.pid).length));
+  }
+
   // A send by the owner. Answered once the send is stored (or refused before it is): `key` stores it once.
   send(sessionId: string, text: string, key: string, again?: string): { send: Send } | { error: string; status: number; holder?: Holder } {
     const s = this.d.store.session(sessionId);
@@ -269,10 +395,16 @@ export class ClaudeCode {
     if (!text.trim()) return { error: "nothing to send", status: 400 };
     const had = this.one(sessionId, key);
     if (had) return { send: had };
-    const holder = this.d.outside.holderNow(sessionId) ?? { kind: "free" as const };
-    const mine = holder.kind === "keel";
-    if (!mine && holder.kind !== "free") return { error: `${holderSaid(holder, "Claude Code")}: answer it there. Keel sends nothing to a session another process holds.`, status: 409, holder };
-    if (!mine && !this.d.bin()) return { error: "no claude program here: Keel answers a Claude Code session with the claude on your PATH (or KEEL_CLAUDE_BIN)", status: 409 };
+    const mine = this.ours(sessionId);
+    if (!mine) {
+      const held = this.stranger(sessionId, row.source_id);
+      if (held) return { error: `${held.said}: answer it there. Keel sends nothing to a session another process holds.`, status: 409, holder: held.holder };
+      if (!this.d.bin()) return { error: "no claude program here: Keel answers a Claude Code session with the claude on your PATH (or KEEL_CLAUDE_BIN)", status: 409 };
+    } else {
+      const run = this.runs.get(sessionId);
+      const other = run ? this.others(run)[0] : undefined;
+      if (other) { const h = recordHolder(other); return { error: `${holderSaid(h, "Claude Code")} too: Keel sends nothing more to a session another process has open`, status: 409, holder: h }; }
+    }
     const send: Send = { id: Bun.randomUUIDv7(), session_id: sessionId, key, text, state: "stored", offset: null, said: null, created: Date.now() };
     if (!mine) this.said.delete(sessionId);
     this.d.store.db.query("DELETE FROM outside_sends WHERE state = 'delivered' AND created < ?").run(Date.now() - KEEP_MS);
@@ -291,42 +423,64 @@ export class ClaudeCode {
     return n > 0;
   }
 
-  // The owner's Stop: Claude Code's turn is interrupted over the control channel (its open cards withdrawn).
+  // The owner's Stop: Claude Code's turn is interrupted over the control channel (its open cards withdrawn), and the
+  // child ends after the stopped turn: what it queued behind it does not run. A second Stop asks again; a child that
+  // does not end its turn in a few seconds is ended.
   async interrupt(sessionId: string): Promise<boolean> {
     const r = this.runs.get(sessionId);
     if (!r) return false;
     for (const c of r.cards.values()) c.abort();
-    if (r.interrupting) { void this.kill(r); return true; }
     if (!r.open.size) { void this.end(r); return true; }
-    r.interrupting = true;
-    const ok = await bounded(r.child.request({ subtype: "interrupt" }), "Stop").then(() => true, () => false);
-    if (!ok) { void this.kill(r); return true; }
-    // Taken, the turn ends with its result soon: a child still in it a few seconds later is ended.
-    const t = setTimeout(() => { if (this.runs.get(sessionId) === r && r.interrupting && r.open.size) void this.kill(r); }, RPC_MS);
-    (t as any).unref?.();
+    const first = !r.stopping;
+    r.stopping = true;
+    this.d.outside.retell(sessionId);
+    // Claude Code cancels what it queued behind the turn with it (cancel_queued); one that does not know the field lists
+    // what survives (still_queued), each withdrawn by itself (cancel_async_message). D: SDK types of both requests.
+    const res: Json = await bounded(r.child.request({ subtype: "interrupt", cancel_queued: true }), "Stop").then((v) => v ?? {}, () => undefined);
+    if (!res) { void this.kill(r); return true; }
+    const uuids = (v: unknown) => (Array.isArray(v) ? v.filter((u): u is string => typeof u === "string") : []);
+    const cancelled = uuids(res.cancelled);
+    const survive = uuids(res.still_queued).filter((u) => !cancelled.includes(u) && r.given.has(u));
+    const off = await Promise.all(survive.map((u) => bounded(r.child.request({ subtype: "cancel_async_message", message_uuid: u }), "a cancel").then((x: Json) => (x?.cancelled === true ? u : undefined), () => undefined)));
+    for (const u of [...cancelled, ...off]) {
+      if (!u || !r.given.has(u)) continue;
+      r.given.delete(u);
+      r.open.delete(u);
+      if (this.byId(u)?.state === "started") this.set(u, "failed", { said: STOPPED });
+    }
+    if (first) {
+      const t = setTimeout(() => { if (this.runs.get(sessionId) === r && r.open.size) void this.kill(r); }, RPC_MS);
+      (t as any).unref?.();
+    }
     return true;
   }
 
-  private async deliver(sessionId: string, id: string) {
+  private async deliver(sessionId: string, id: string): Promise<void> {
     let r = this.runs.get(sessionId);
-    // A child that is ending is waited out, and so is what held the session under it; then the one child in runs
-    // is taken (a send that came meanwhile may have started it), never a second one beside it.
-    while (r?.ending || r?.killing) {
+    // A child that is ending (or was stopped) is waited out, and so is what held the session under it; then the one
+    // child in runs is taken (a send that came meanwhile may have started it), never a second one beside it.
+    while (r?.ending || r?.killing || r?.stopping) {
       await r.over;
       if (this.closed) return;
       r = this.runs.get(sessionId);
     }
     if (!r) {
-      // Read again right before the child starts: another process may have taken the session since.
-      const holder = this.d.outside.holderNow(sessionId);
-      if (holder && holder.kind !== "free" && holder.kind !== "keel") return this.set(id, "failed", { said: `${holderSaid(holder, "Claude Code")}: it did not go` });
-      const begun = this.begin(sessionId);
-      if (typeof begun === "string") return this.set(id, "failed", { said: begun });
+      let p = this.starting.get(sessionId);
+      if (!p) {
+        p = this.begin(sessionId).finally(() => this.starting.delete(sessionId));
+        this.starting.set(sessionId, p);
+      }
+      const begun = await p;
+      // A daemon that stopped meanwhile marks nothing: the send stays stored, and the next one sends it.
+      if (this.closed) return;
+      if (typeof begun === "string") {
+        if (this.byId(id)?.state === "stored") this.set(id, "failed", { said: begun });
+        return;
+      }
       r = begun;
     }
     const run = r;
     const ready = await run.ready;
-    // A daemon that stopped meanwhile marks nothing: the send stays stored, and the next one sends it.
     if (this.closed) return;
     if (!ready) {
       if (this.byId(id)?.state === "stored") this.set(id, "failed", { said: "Claude Code did not resume the session" });
@@ -334,13 +488,17 @@ export class ClaudeCode {
     }
     const send = this.byId(id);
     if (!send || send.state !== "stored") return;
+    // Stopped or ending since: the send goes with the next child.
+    if (run.stopping || run.ending || run.killing) return this.deliver(sessionId, id);
+    // A terminal that opened the session while Keel's child runs: nothing more goes to it.
+    const other = this.others(run)[0];
+    if (other) return this.set(id, "failed", { said: `${holderSaid(recordHolder(other), "Claude Code")} too: it did not go` });
     let size = 0;
     try { size = statSync(run.path).size; } catch {}
     // Started before it goes: a restart from here on looks for it in the transcript, never sends it again.
     this.set(id, "started", { offset: size });
     run.given.add(id);
     run.open.add(id);
-    run.interrupting = false;
     if (!run.child.write(userLine(send.text, send.id))) {
       run.given.delete(id);
       run.open.delete(id);
@@ -350,25 +508,59 @@ export class ClaudeCode {
     this.d.outside.retell(sessionId);
   }
 
-  // The child for a turn: started and initialized (ready says whether it is); else why not.
-  private begin(sessionId: string): Run | string {
+  // Claude Code's global config (its trust records), as Claude Code finds it: <CLAUDE_CONFIG_DIR or home>/.claude.json,
+  // else the older <config>/.config.json (C: 2.1.332).
+  private async trusts(cwd: string): Promise<boolean> {
+    const dir = this.d.configDir();
+    const home = homeDir();
+    for (const file of [join(dir ?? home, ".claude.json"), join(dir ?? join(home, ".claude"), ".config.json")]) {
+      let config: Json;
+      try { config = JSON.parse(await Bun.file(file).text()); } catch { continue; }
+      return trusted(config, cwd, repoOf(cwd));
+    }
+    return false;
+  }
+  // The `env` of Claude Code's user settings: Claude Code applies it over the environment it starts with.
+  private async settingsEnv(): Promise<Record<string, string>> {
+    const file = join(this.d.configDir() ?? join(homeDir(), ".claude"), "settings.json");
+    try {
+      const e = JSON.parse(await Bun.file(file).text())?.env;
+      return e && typeof e === "object" ? Object.fromEntries(Object.entries(e).filter((x): x is [string, string] => typeof x[1] === "string")) : {};
+    } catch { return {}; }
+  }
+
+  // The child for a turn: its facts read off the loop, the session checked, started and initialized (ready says
+  // whether it is); else why not.
+  private async begin(sessionId: string): Promise<Run | string> {
     const row = this.d.outside.row(sessionId);
     const bin = this.d.bin();
     if (!row || !bin || !existsSync(row.path)) return "its transcript is no longer where it was";
-    const { head, tail } = headTail(row.path, 64 * 1024);
-    const f = sessionFacts([...head, ...tail]);
-    f.model = sessionFacts(tail).model ?? scanBack(row.path, modelOf) ?? f.model;
+    // Where it was started: the folder its transcript is kept under names it.
+    const folder = basename(dirname(row.path));
+    let cwd: string | undefined;
+    await forth(row.path, 0, (r) => !!(cwd = projectOf([r], folder)));
     const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
+    if (!cwd) return "Keel cannot tell the folder this session was started in (no record names the folder its transcript is kept under): it did not go";
     // The session's folder is gone (a worktree cleaned up): Claude Code would look for it in another one.
-    if (f.cwd && !isDir(f.cwd)) return `its folder ${f.cwd} is gone: Claude Code would work somewhere else. It did not go`;
-    const cwd = f.cwd ?? homeDir();
-    const m = modeFor(f.mode);
+    if (!isDir(cwd)) return `its folder ${cwd} is gone: Claude Code would work somewhere else. It did not go`;
+    // A print run shows no trust dialog: a folder Claude Code was never told to trust would load its settings, hooks
+    // and MCP servers unasked.
+    if (!(await this.trusts(cwd))) return `Claude Code's trust record does not cover ${cwd}: a print run would load its settings, hooks and MCP servers without asking. Open Claude Code there once and trust the folder, then send again`;
+    const b = new Back();
+    await back(row.path, (r) => b.take(r));
+    const env = this.d.env?.() ?? process.env;
+    const missing = routeMissing(routeOf(b.model), { ...env, ...(await this.settingsEnv()) });
+    if (missing) return `Keel cannot answer it on the route it ran on: ${missing}. It did not go`;
+    if (this.closed) return "Keel stopped before Claude Code started";
+    // Read again right before the child starts: another process may have taken the session since.
+    const held = this.stranger(sessionId, row.source_id);
+    if (held) return `${held.said}: it did not go`;
+    const m = modeFor(b.mode);
     if (m.note) this.note(sessionId, m.note);
-    const env = childEnv(this.d.env?.() ?? process.env, f.model, this.d.configDir());
-    const child = new Child(argsOf(bin, row.source_id, { model: f.model, mode: m.mode }), cwd, env, (msg) => this.d.trouble(new Error(msg), "claude in print mode"));
+    const child = new Child(argsOf(bin, row.source_id, { model: b.modelArg(), mode: m.mode }), cwd, childEnv(env, b.model, this.d.configDir()), (msg) => this.d.trouble(new Error(msg), "claude in print mode"));
     let isOver = () => {};
     const over = new Promise<void>((r) => { isOver = r; });
-    const run: Run = { sessionId, claudeId: row.source_id, path: row.path, cwd, child, ready: Promise.resolve(false), open: new Set(), given: new Set(), blocks: new Map(), cards: new Map(), stopped: new AbortController(), nonce: Bun.randomUUIDv7().slice(-12), under: [], over, isOver };
+    const run: Run = { sessionId, claudeId: row.source_id, path: row.path, cwd, child, ready: Promise.resolve(false), open: new Set(), given: new Set(), blocks: new Map(), cards: new Map(), stopped: new AbortController(), nonce: Bun.randomUUIDv7().slice(-12), mode: m.mode, under: [], over, isOver };
     this.runs.set(sessionId, run);
     const self = procOf(child.pid);
     if (self) this.keep(sessionId, [self]);
@@ -382,6 +574,7 @@ export class ClaudeCode {
         // too when this one could not.
         run.under = this.writers(run);
         if (run.under.length) this.keep(sessionId, run.under);
+        this.told(sessionId);
         this.d.outside.retell(sessionId);
         return true;
       } catch (e) {
@@ -421,24 +614,31 @@ export class ClaudeCode {
         // The sends this turn answered (every open one, from a Claude Code that does not name them).
         for (const u of o.uuids ?? [...run.open]) run.open.delete(u);
         if (!o.uuids) run.open.clear();
-        run.interrupting = false;
         run.blocks.clear();
         run.message = undefined;
+        // The turn the owner stopped is over: the child ends now, before it takes what it queued behind it.
+        if (run.stopping) { void this.kill(run); return; }
         if (o.error && o.said) this.note(run.sessionId, `Claude Code ended the turn with an error: ${o.said}`);
-        this.check(run);
-        if (!run.open.size && !this.sends(run.sessionId).some((s) => s.state === "stored")) void this.end(run);
-        else this.d.outside.retell(run.sessionId);
+        void this.check(run).then(() => {
+          if (this.closed || this.runs.get(run.sessionId) !== run) return;
+          if (!run.open.size && !this.sends(run.sessionId).some((s) => s.state === "stored")) void this.end(run);
+          else this.d.outside.retell(run.sessionId);
+        }).catch((e) => this.d.trouble(e, "a Claude Code turn that ended"));
         return;
       }
     }
   }
 
-  private check(run: Run, last = false) {
+  // The sends given to the child that the transcript holds now are delivered; at the child's end the others are not
+  // (a Stop's queue never ran; else they were lost on the way).
+  private async check(run: Run, last = false) {
     for (const id of [...run.given]) {
       const s = this.byId(id);
       if (!s || s.state !== "started") { run.given.delete(id); continue; }
-      if (holdsMessage(records(run.path, s.offset ?? 0), s.text, s.id)) { this.set(id, "delivered"); run.given.delete(id); }
-      else if (last) { this.set(id, "lost", { said: "Claude Code ended before the session held it: send it again" }); run.given.delete(id); }
+      const held = holdsMessage(await recordsFrom(run.path, s.offset ?? 0), s.text, s.id);
+      if (!run.given.has(id) || this.closed) continue;
+      if (held) { this.set(id, "delivered"); run.given.delete(id); }
+      else if (last) { this.set(id, run.stopping ? "failed" : "lost", { said: run.stopping ? STOPPED : "Claude Code ended before the session held it: send it again" }); run.given.delete(id); }
     }
   }
 
@@ -473,8 +673,10 @@ export class ClaudeCode {
     try {
       if (name === "AskUserQuestion") {
         const qs = questionsOf(input);
+        // Questions Keel cannot show whole are not shown in part.
+        if (!qs) return deny("Keel cannot show these questions: each needs its words and options with labels. Ask them again in that form");
         const askId = crypto.randomUUID();
-        const text = qs.map((q) => q.question).join("\n") || "Claude Code asks a question";
+        const text = qs.map((q) => q.question).join("\n");
         this.d.asked?.(run.sessionId, callId, text, askId);
         let got: Answers | typeof DECLINED | null = null;
         try {
@@ -496,6 +698,8 @@ export class ClaudeCode {
         if (!a.approved) return deny(`The owner did not approve the plan${a.feedback ? `: ${a.feedback}` : "."} Stay in plan mode, change the plan, and present it again.`);
         const m = planMode(a.mode);
         if (m.note) this.note(run.sessionId, m.note);
+        run.mode = m.mode;
+        this.told(run.sessionId);
         // The mode the work goes on in is this child's alone (the session's destination, never the owner's settings).
         return { behavior: "allow", updatedInput: { ...input, plan: a.plan }, updatedPermissions: [{ type: "setMode", mode: m.mode, destination: "session" }], toolUseID: toolUse };
       }
@@ -546,12 +750,17 @@ export class ClaudeCode {
     return run.killing;
   }
 
-  // The process whose record says it runs the session (sessions/<pid>.json, its start time compared) and its
-  // ancestors under the child: a launcher's native claude. Nothing when the child itself holds it, or the holder
-  // is not under the child. Never a process found by its arguments.
-  private writers(run: Run): Proc[] {
-    const r = claudeRecordOf(this.d.runningDir(), run.claudeId);
-    return holderChain(run.child.pid, r?.pid);
+  // The process whose record says it runs the session (sessions/<pid>.json of this pid domain, its start time
+  // compared) and its ancestors under the child: a launcher's native claude. Nothing when the child itself holds it,
+  // or no holder is under the child. Never a process found by its arguments.
+  private writers(run: Run): Proc[] { return this.chainOf(run.child.pid, run.claudeId); }
+  private chainOf(top: number, claudeId: string): Proc[] {
+    for (const r of claudeRecordsOf(this.d.runningDir(), claudeId)) {
+      if (foreignRecord(r)) continue;
+      const c = holderChain(top, r.pid);
+      if (c.length) return c;
+    }
+    return [];
   }
 
   // Processes kept with the session, until they ended.
@@ -574,8 +783,7 @@ export class ClaudeCode {
     for (const c of rows) {
       if (!alive(c.pid, c.start) || !printChild(c.pid)) continue;
       const id = this.d.store.session(c.session_id)?.outside?.source_id;
-      const r = id ? claudeRecordOf(this.d.runningDir(), id) : undefined;
-      left = merged(left, [{ pid: c.pid, start: c.start }, ...holderChain(c.pid, r?.pid)]);
+      left = merged(left, [{ pid: c.pid, start: c.start }, ...(id ? this.chainOf(c.pid, id) : [])]);
     }
     await reap(left, END_MS);
     if (this.closed) return;
@@ -590,9 +798,13 @@ export class ClaudeCode {
       await reap(run.under, END_MS);
       if (this.closed) return;
       this.forget(this.d.store.db.query<ProcRow, [string]>("SELECT session_id, pid, start FROM outside_procs WHERE session_id = ?").all(run.sessionId));
+      // What the child wrote is Keel's: the next send does not take it for another process's write.
+      try { this.left.set(run.sessionId, statSync(run.path).size); } catch {}
       if (this.runs.get(run.sessionId) === run) this.runs.delete(run.sessionId);
-      if (!run.ending && run.open.size) this.note(run.sessionId, `Claude Code ended in the middle of the turn${run.child.why() ? `: ${run.child.why()}` : ""}`);
-      this.check(run, true);
+      if (!run.ending && !run.stopping && run.open.size) this.note(run.sessionId, `Claude Code ended in the middle of the turn${run.child.why() ? `: ${run.child.why()}` : ""}`);
+      await this.check(run, true);
+      if (this.closed) return;
+      this.told(run.sessionId);
       this.d.outside.retell(run.sessionId);
       // A send stored while this child ended goes with a new one (one child: the others wait on `over` and take it).
       for (const s of this.sends(run.sessionId)) if (s.state === "stored") void this.deliver(run.sessionId, s.id).catch((e) => this.d.trouble(e, "answering a Claude Code session in place"));
@@ -611,25 +823,34 @@ export class ClaudeCode {
     }
     // And so does a question it asked: its alert says it was not answered, and waits no more.
     try { this.d.cutAsks?.(); } catch (e) { this.d.trouble(e, "closing the questions a Claude Code child asked before the restart"); }
-    const owed: Send[] = [];
     const rows = this.d.store.db.query<Send, []>("SELECT s.* FROM outside_sends s JOIN outside_sessions o ON o.session_id = s.session_id WHERE o.harness = 'claude' AND s.state IN ('stored', 'started') ORDER BY s.created").all();
+    // Read now: a child this daemon starts from here on is not one an earlier daemon left.
+    const left = this.d.store.db.query<ProcRow, []>("SELECT p.session_id, p.pid, p.start FROM outside_procs p JOIN outside_sessions o ON o.session_id = p.session_id WHERE o.harness = 'claude'").all();
+    void this.restart(rows, left).catch((e) => this.d.trouble(e, "taking up the Claude Code sends an earlier daemon left"));
+  }
+
+  private async restart(rows: Send[], left: ProcRow[]) {
+    const owed: Send[] = [];
     for (const s of rows) {
       const row = this.d.outside.row(s.session_id);
       if (!row) { this.set(s.id, "lost", { said: "its session is no longer followed" }); continue; }
       if (s.state === "started") {
-        const after = records(row.path, s.offset ?? 0);
+        const after = await recordsFrom(row.path, s.offset ?? 0);
+        if (this.closed) return;
         if (holdsMessage(after, s.text, s.id)) this.set(s.id, turnEnded(after, s.text, s.id) ? "delivered" : "cut", turnEnded(after, s.text, s.id) ? {} : { said: CUT });
         else this.set(s.id, "lost", { said: "Keel restarted while it went, and the session does not hold it: send it again" });
         continue;
       }
       owed.push(s);
     }
-    // Read now: a child this daemon starts from here on is not one an earlier daemon left.
-    const left = this.d.store.db.query<ProcRow, []>("SELECT p.session_id, p.pid, p.start FROM outside_procs p JOIN outside_sessions o ON o.session_id = p.session_id WHERE o.harness = 'claude'").all();
-    void this.orphans(left).catch((e) => this.d.trouble(e, "ending a Claude Code child an earlier daemon left")).then(() => {
-      if (this.closed) return;
-      for (const s of owed) void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Claude Code session in place"));
-    });
+    await this.orphans(left).catch((e) => this.d.trouble(e, "ending a Claude Code child an earlier daemon left"));
+    if (this.closed) return;
+    // What an earlier daemon's child wrote is Keel's too.
+    for (const sid of new Set(left.map((r) => r.session_id))) {
+      const row = this.d.outside.row(sid);
+      if (row) try { this.left.set(sid, statSync(row.path).size); } catch {}
+    }
+    for (const s of owed) void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Claude Code session in place"));
   }
 
   stop() {

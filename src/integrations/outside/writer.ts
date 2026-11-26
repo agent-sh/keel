@@ -136,8 +136,9 @@ export function descendants(pid: number, depth = 4): Proc[] {
   return out;
 }
 
-// A Claude Code record of a running session, as its kind and entrypoint say who runs it.
-export type ClaudeRecord = { pid: number; sessionId?: string; procStart?: string; kind?: string; entrypoint?: string; status?: string; waitingFor?: string };
+// A Claude Code record of a running session, as its kind and entrypoint say who runs it. `pidDomain`: where its pid
+// means a process (a container or another machine that shares the folder writes another).
+export type ClaudeRecord = { pid: number; sessionId?: string; procStart?: string; kind?: string; entrypoint?: string; status?: string; waitingFor?: string; pidDomain?: string };
 export function claudeKind(r: Pick<ClaudeRecord, "kind" | "entrypoint">): HolderKind {
   if (r.entrypoint === "claude-desktop") return "desktop";
   if (r.entrypoint === "claude-vscode") return "editor";
@@ -153,26 +154,49 @@ export function readClaudeRecord(path: string): ClaudeRecord | undefined {
   try { r = JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; }
   if (!r || typeof r !== "object") return undefined;
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
-  return { pid, sessionId: str(r.sessionId), procStart: str(r.procStart), kind: str(r.kind), entrypoint: str(r.entrypoint), status: str(r.status), waitingFor: str(r.waitingFor) };
+  return { pid, sessionId: str(r.sessionId), procStart: str(r.procStart), kind: str(r.kind), entrypoint: str(r.entrypoint), status: str(r.status), waitingFor: str(r.waitingFor), pidDomain: str(r.pidDomain) };
 }
 
-// The live record Claude Code keeps for the session in its folder of running sessions now: its pid, with the
-// start time it wrote compared (a pid taken again by another program is not it).
-export function claudeRecordOf(sessionsDir: string, sessionId: string): ClaudeRecord | undefined {
+// This machine's pid domain as Claude Code writes it in a record: on Linux the machine id and the pid namespace
+// (`linux:<machine-id>:pid:[<inode>]`), elsewhere "linux" (read from Claude Code 2.1.332's own code).
+let domain: string | undefined;
+export function pidDomain(): string {
+  if (domain !== undefined) return domain;
+  if (process.platform !== "linux") return (domain = "linux");
+  let id = "", ns = "";
+  try { id = readFileSync("/etc/machine-id", "utf8").trim(); } catch {}
+  try { ns = readlinkSync("/proc/self/ns/pid"); } catch {}
+  return (domain = `linux:${id}:${ns}`);
+}
+// A record another pid domain wrote: its pid is no process here, and Claude Code itself counts it as running.
+export const foreignRecord = (r: Pick<ClaudeRecord, "pidDomain">) => r.pidDomain !== undefined && r.pidDomain !== pidDomain();
+// Whether a record is of a running session: another domain's always (nothing here can tell), else its pid alive
+// and started when the record says.
+export const claudeLive = (r: Pick<ClaudeRecord, "pid" | "procStart" | "pidDomain">) => foreignRecord(r) || alive(r.pid, r.procStart);
+
+// Every live record Claude Code keeps for the session in its folder of running sessions now (a terminal and a print
+// run can both have it open).
+export function claudeRecordsOf(sessionsDir: string, sessionId: string): ClaudeRecord[] {
   let names: string[] = [];
-  try { names = readdirSync(sessionsDir); } catch { return undefined; }
+  try { names = readdirSync(sessionsDir); } catch { return []; }
+  const out: ClaudeRecord[] = [];
   for (const n of names) {
     if (!/^\d+\.json$/.test(n)) continue;
     const r = readClaudeRecord(join(sessionsDir, n));
-    if (r?.sessionId === sessionId && alive(r.pid, r.procStart)) return r;
+    if (r?.sessionId === sessionId && claudeLive(r)) out.push(r);
   }
-  return undefined;
+  return out;
 }
+// The first of them.
+export const claudeRecordOf = (sessionsDir: string, sessionId: string): ClaudeRecord | undefined => claudeRecordsOf(sessionsDir, sessionId)[0];
+
+// Who a live record says holds the session (another domain's pid names no process here).
+export const recordHolder = (r: ClaudeRecord): Holder => ({ kind: claudeKind(r), ...(foreignRecord(r) ? {} : { pid: r.pid }) });
 
 // The live process Claude Code records for the session, read from its folder of running sessions now.
 export function claudeHolder(sessionsDir: string, sessionId: string): Holder {
   const r = claudeRecordOf(sessionsDir, sessionId);
-  return r ? { kind: claudeKind(r), pid: r.pid } : FREE;
+  return r ? recordHolder(r) : FREE;
 }
 
 // What a lock's holder is, from its command line and its input: a server another app speaks to, a

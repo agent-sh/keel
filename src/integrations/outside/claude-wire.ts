@@ -31,6 +31,8 @@ type Json = any;
 // Bedrock model id), Google Vertex (a "@date" version), or a gateway (any other id: a base URL's own names).
 export type ClaudeRoute = "first-party" | "bedrock" | "vertex" | "gateway";
 export function routeOf(model?: string): ClaudeRoute | undefined {
+  // (A context suffix, `[1m]`, is Claude Code's own and names no route.)
+  model = model?.replace(/\[[^\]]*\]$/, "");
   if (!model) return undefined;
   if (/^arn:aws(-[a-z]+)?:bedrock:/.test(model) || /^([a-z]{2,6}\.)?anthropic\./.test(model)) return "bedrock";
   if (/^claude-[\w.-]+@\d{8}$/.test(model)) return "vertex";
@@ -49,9 +51,15 @@ const ROUTE_VARS: Record<Exclude<ClaudeRoute, "first-party">, RegExp> = {
 const OTHER_ROUTES = /^(CLAUDE_CODE_USE_FOUNDRY|ANTHROPIC_FOUNDRY_\w+|CLAUDE_CODE_USE_\w+)$/;
 // Model defaults name a model of one route: kept only when they name the session's.
 const MODEL_VARS = /^(ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_\w+_MODEL|ANTHROPIC_SMALL_FAST_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)$/;
-// What the daemon's own environment carries that is no part of the owner's terminal: Keel's model default, a
-// Claude Code that started the daemon (its nesting marks), and Node options the SDK clears too.
-const NOT_THE_TERMINALS = /^(ANTHROPIC_DEFAULT_MODEL|CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_SSE_PORT|NODE_OPTIONS)$/;
+// What the daemon's own environment carries that is no part of the owner's terminal: Keel's model default, the
+// marks of a Claude Code that started the daemon (which session, job, host, bridge or remote it runs as: a child
+// would take that session's place), Claude Code's folder (set only as the mirror reads it), and Node options the
+// SDK clears too. (C: the names Claude Code 2.1.332 reads for these.)
+const NOT_THE_TERMINALS = new RegExp("^(" + [
+  "ANTHROPIC_DEFAULT_MODEL", "NODE_OPTIONS", "CLAUDECODE", "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_(ENTRYPOINT|SSE_PORT|AGENT|FORCE_SESSION_PERSISTENCE|TMUX_SESSION|CHILD_SESSION|CHILD_\\w+|SESSION_\\w+|SESSIONS_\\w+|REMOTE\\w*|BRIDGE_\\w+|HOST_\\w+|WORKER_\\w+|MESSAGING_\\w+)",
+  "CLAUDE_(JOB_DIR|BG_\\w+|BRIDGE_\\w+|SESSION_\\w+|AGENT_SDK_\\w+)",
+].join("|") + ")$");
 
 // The child's environment: the daemon's, less the variables of every route but the one the session's last
 // model names. `configDir`: Claude Code's folder, when it is not its default (CLAUDE_CONFIG_DIR).
@@ -79,18 +87,81 @@ export function modeFor(m?: string): { mode: string; note?: string } {
   return { mode: m && MODES.has(m) ? m : "default" };
 }
 
-// What the transcript's records say: the folder, the model of the last reply, the mode of the last prompt.
-export type SessionFacts = { cwd?: string; model?: string; mode?: string };
-export const modelOf = (r: Json): string | undefined => (r?.type === "assistant" && typeof r.message?.model === "string" && r.message.model && r.message.model !== "<synthetic>" ? r.message.model : undefined);
-export function sessionFacts(records: Json[]): SessionFacts {
-  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
-  let cwd: string | undefined, model: string | undefined, mode: string | undefined;
-  for (const r of records) {
-    cwd = str(r?.cwd) ?? cwd;
-    model = modelOf(r) ?? model;
-    if (r?.type === "user") mode = str(r.permissionMode) ?? mode;
+// A record of the session's own thread: a subagent's (a sidechain) has its own folder, model and mode.
+const main = (r: Json) => !!r && typeof r === "object" && !r.isSidechain;
+export const modelOf = (r: Json): string | undefined => (main(r) && r.type === "assistant" && typeof r.message?.model === "string" && r.message.model && r.message.model !== "<synthetic>" ? r.message.model : undefined);
+
+// The folder name Claude Code keeps a project's transcripts under: the path with every character but a letter or a
+// digit as "-", a long one cut at 200 and a hash of the path added (C: 2.1.332's project folder name).
+const SLUG_MAX = 200;
+export function namesFolder(cwd: string, folder: string): boolean {
+  const s = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  return s.length <= SLUG_MAX ? s === folder : folder.startsWith(`${s.slice(0, SLUG_MAX)}-`);
+}
+// The session's project folder: the first folder its records name that its transcript's folder is named after (where
+// it was started; a shell that moved writes another cwd later). Never the folder it last stood in.
+export function projectOf(records: Json[], folder: string): string | undefined {
+  for (const r of records) if (main(r) && typeof r.cwd === "string" && r.cwd && namesFolder(r.cwd, folder)) return r.cwd;
+  return undefined;
+}
+
+// Claude Code's window for a model with no context suffix: a request over it ran with `[1m]` (D: model
+// configuration docs, the `[1m]` suffix for the 1M window).
+export const BASE_WINDOW = 200_000;
+// What the transcript's records say from its end back: the model of the last reply and the context it was sent, the
+// mode of the last user record that names one (none: default), and whether its last turn is open (a prompt or a tool
+// result with no reply after it, or a reply that called a tool).
+export class Back {
+  model?: string;
+  context?: number;
+  mode?: string;
+  open?: boolean;
+  private seen = { model: false, mode: false, last: false };
+  // Takes the next record back; true once it knows all three.
+  take(r: Json): boolean {
+    if (!main(r)) return this.done();
+    if (!this.seen.model && modelOf(r)) {
+      this.seen.model = true;
+      this.model = modelOf(r);
+      const u = r.message?.usage;
+      const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+      if (u && typeof u === "object") this.context = n(u.input_tokens) + n(u.cache_creation_input_tokens) + n(u.cache_read_input_tokens);
+    }
+    if (!this.seen.mode && r.type === "user" && typeof r.permissionMode === "string" && r.permissionMode) { this.seen.mode = true; this.mode = r.permissionMode; }
+    if (!this.seen.last && (r.type === "assistant" || (r.type === "user" && !r.isMeta && !r.isCompactSummary))) {
+      this.seen.last = true;
+      this.open = r.type === "assistant" ? r.message?.stop_reason === "tool_use" : !INTERRUPTED.test(promptText(r)?.trim() ?? "");
+    }
+    return this.done();
   }
-  return { cwd, model, mode };
+  private done() { return this.seen.model && this.seen.mode && this.seen.last; }
+  // The model the child is started with: the session's, with the 1M window when its last request was over the base.
+  modelArg(): string | undefined { return this.model && (this.context ?? 0) > BASE_WINDOW && !/\[[^\]]*\]$/.test(this.model) ? `${this.model}[1m]` : this.model; }
+}
+
+// The route's own switch or address in the environment Claude Code will have (the daemon's, and the `env` of
+// Claude Code's user settings, which it applies itself): a Bedrock, Vertex or gateway session goes on only there.
+const truthy = (v?: string) => !!v && /^(1|true|yes|on)$/i.test(v.trim());
+export function routeMissing(route: ClaudeRoute | undefined, env: Record<string, string | undefined>): string | undefined {
+  if (route === "bedrock" && !truthy(env.CLAUDE_CODE_USE_BEDROCK)) return "it ran on Amazon Bedrock, and CLAUDE_CODE_USE_BEDROCK is not set here";
+  if (route === "vertex" && !truthy(env.CLAUDE_CODE_USE_VERTEX)) return "it ran on Google Vertex, and CLAUDE_CODE_USE_VERTEX is not set here";
+  if (route === "gateway" && !env.ANTHROPIC_BASE_URL?.trim()) return "it ran through a gateway, and ANTHROPIC_BASE_URL is not set here";
+  return undefined;
+}
+
+// Whether Claude Code's own trust record covers a folder: `projects[<path>].hasTrustDialogAccepted` in its global
+// config for the folder or a folder above it, not above the git repository it is in (C: 2.1.332's trust check). A
+// print run asks nothing: an untrusted folder's settings, hooks and MCP servers would load unasked.
+export function trusted(config: Json, cwd: string, repoRoot?: string): boolean {
+  const projects = config && typeof config === "object" ? config.projects : undefined;
+  if (!projects || typeof projects !== "object") return false;
+  for (let p = cwd.replace(/\/+$/, "") || "/"; ; ) {
+    if (projects[p]?.hasTrustDialogAccepted === true) return true;
+    if (p === repoRoot || p === "/") return false;
+    const up = p.slice(0, p.lastIndexOf("/")) || "/";
+    if (up === p) return false;
+    p = up;
+  }
 }
 
 // The command line: the session resumed by its id, stream-json both ways with the partial messages,
@@ -177,38 +248,51 @@ export function turnEnded(records: Json[], text: string, uuid?: string): boolean
   });
 }
 
-// What a call Claude Code asks about is, for the gate's one-call card: a command, a file change, or another tool.
+// What a call Claude Code asks about is, for the gate's one-call card: a command, a file change, or another tool. The
+// card holds the whole input the allow answers (the gate cuts what it shows and says it did).
 export type CardOf = { tool: { name: string; kind?: "shell" | "edit"; input_schema?: Json }; input: Json; name: string; why: string; shown?: string };
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const COMMAND_KEYS = new Set(["command", "description", "timeout"]);
 export function cardOf(toolName: string, input: Json, cwd: string): CardOf {
   const i = input && typeof input === "object" ? input : {};
   if (toolName === "Bash" || toolName === "PowerShell") {
     const command = typeof i.command === "string" ? i.command : "";
-    return { tool: { name: "Claude Code command", kind: "shell", input_schema: { properties: { command: {} } } }, input: { command, cwd }, name: "Claude Code command", why: "Claude Code runs this command in the session if you allow it", ...(command ? {} : { shown: "Claude Code asks to run a command it does not name" }) };
+    // What else the call asks for (to run in the background, outside Claude Code's sandbox) is said with it.
+    const more = Object.keys(i).filter((k) => !COMMAND_KEYS.has(k)).map((k) => `${k}: ${JSON.stringify(i[k])}`);
+    const shown = !command.trim() ? "Claude Code asks to run a command it does not name" : more.length ? `${command}\nClaude Code also asks for ${more.join(", ")}` : undefined;
+    return { tool: { name: "Claude Code command", kind: "shell", input_schema: { properties: { command: {} } } }, input: { command, cwd }, name: "Claude Code command", why: "Claude Code runs this command in the session if you allow it", ...(shown ? { shown } : {}) };
   }
-  if (["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(toolName)) {
-    const file = String(i.file_path ?? i.notebook_path ?? "");
-    const edits: Json[] = toolName === "MultiEdit" && Array.isArray(i.edits) ? i.edits : toolName === "Edit" ? [i] : [];
-    const body = edits.length
-      ? edits.map((e) => `- ${String(e?.old_string ?? "").split("\n").join("\n- ")}\n+ ${String(e?.new_string ?? "").split("\n").join("\n+ ")}`).join("\n\n")
-      : typeof i.content === "string" ? i.content : typeof i.new_source === "string" ? i.new_source : "";
-    return { tool: { name: "Claude Code file change", kind: "edit" }, input: { file_path: file }, name: "Claude Code file change", why: "Claude Code writes this change if you allow it", shown: clip(`${file}\n${body}`.trim(), 8000) };
+  const file = typeof i.file_path === "string" ? i.file_path : typeof i.notebook_path === "string" ? i.notebook_path : "";
+  if (["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(toolName) && file.trim()) {
+    // A MultiEdit's replacements as one text of what goes and what comes (the card reads the others' own fields).
+    const edits: Json[] = toolName === "MultiEdit" && Array.isArray(i.edits) ? i.edits : [];
+    const patch = edits.length ? edits.map((e) => `- ${String(e?.old_string ?? "").split("\n").join("\n- ")}\n+ ${String(e?.new_string ?? "").split("\n").join("\n+ ")}`).join("\n\n") : undefined;
+    return { tool: { name: "Claude Code file change", kind: "edit" }, input: { ...i, file_path: file, ...(patch !== undefined ? { patch } : {}) }, name: "Claude Code file change", why: "Claude Code writes this change if you allow it" };
   }
-  return { tool: { name: `Claude Code ${toolName}` }, input: i, name: `Claude Code ${toolName}`, why: `Claude Code runs its ${toolName} tool if you allow it`, shown: clip(`${toolName} ${JSON.stringify(i)}`, 4000) };
+  // Another tool, and a file change that names no file: its input as it is.
+  return { tool: { name: `Claude Code ${toolName}` }, input: i, name: `Claude Code ${toolName}`, why: `Claude Code runs its ${toolName} tool if you allow it` };
 }
 
 // AskUserQuestion's questions as Keel's question card, each by its place; and the owner's answers as the
 // tool's input wants them: the question's text to the label picked (several joined with ", "), or the words
 // typed for Other (D: user-input docs; SDK types AskUserQuestionInput.answers).
 export type ClaudeQuestion = { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean };
-export function questionsOf(input: Json): ClaudeQuestion[] {
+// Undefined when the input is not questions Keel can show whole: none, one with no words, or an option with no label
+// (Claude Code is told so, never shown part of what it asked).
+export function questionsOf(input: Json): ClaudeQuestion[] | undefined {
   const qs = Array.isArray(input?.questions) ? input.questions : [];
-  return qs.map((q: Json) => ({
-    question: String(q?.question ?? ""),
-    header: typeof q?.header === "string" && q.header ? q.header : undefined,
-    options: (Array.isArray(q?.options) ? q.options : []).map((o: Json) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" && o.description ? o.description : undefined })),
-    multiSelect: q?.multiSelect === true || undefined,
-  })).filter((q: ClaudeQuestion) => q.question);
+  if (!qs.length) return undefined;
+  const out: ClaudeQuestion[] = [];
+  for (const q of qs) {
+    const options = Array.isArray(q?.options) ? q.options : undefined;
+    if (typeof q?.question !== "string" || !q.question.trim() || !options || options.some((o: Json) => typeof o?.label !== "string" || !o.label.trim())) return undefined;
+    out.push({
+      question: q.question,
+      header: typeof q.header === "string" && q.header ? q.header : undefined,
+      options: options.map((o: Json) => ({ label: o.label, description: typeof o.description === "string" && o.description ? o.description : undefined })),
+      multiSelect: q.multiSelect === true || undefined,
+    });
+  }
+  return out;
 }
 export function answersOf(qs: ClaudeQuestion[], reply: Record<string, { picked: string[]; other?: string; skipped?: true }>): Record<string, string> {
   const out: Record<string, string> = {};

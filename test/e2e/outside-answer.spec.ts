@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
-import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { choose, shoot } from "./shots.ts";
 
 // Feature: a Codex session the owner runs elsewhere is answered in its own row. Its bar says who holds it
@@ -205,6 +205,12 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     parent = uuid;
   };
   const sessionOf = async () => ((await (await request.get("/api/sessions")).json()).sessions as any[]).find((s) => s.outside?.source_id === id);
+  const config = join(dirname(root!), ".claude.json");
+  const trust = (folder: string) => {
+    let c: any = {};
+    try { c = JSON.parse(readFileSync(config, "utf8")); } catch {}
+    writeFileSync(config, JSON.stringify({ ...c, projects: { ...c.projects, [folder]: { hasTrustDialogAccepted: true } } }));
+  };
   let sid: string | undefined;
   try {
     const before = await watches();
@@ -212,6 +218,11 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     await expect.poll(watches, { timeout: 10_000 }).toBeGreaterThan(before);
     write({ type: "user", message: { role: "user", content: `Set up the release script ${tag}` }, permissionMode: "acceptEdits" });
     write({ type: "assistant", message: { id: "m0", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "The script is in place." }], stop_reason: "end_turn" } });
+    // Written a minute ago (a write of the last seconds that no record explains holds a send), in a folder Claude Code
+    // trusts (its own record, in the scratch store's config: a print run asks nothing).
+    const t = new Date(Date.now() - 60_000);
+    utimesSync(path, t, t);
+    trust(cwd);
     await expect.poll(async () => (await sessionOf())?.outside?.state, { timeout: 15_000 }).toBe("done");
     sid = (await sessionOf()).id as string;
 

@@ -5,7 +5,7 @@
 // card; the transcript holds the message and the reply and the child is gone after the turn. A session another
 // process holds takes nothing. After a restart a send is looked for in the transcript.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
@@ -23,7 +23,7 @@ import { statFields } from "./writer.ts";
 import type { CardGate } from "./codex-app.ts";
 import { ClaudeCode } from "./claude-code.ts";
 import type { Answer, PlanCard } from "../../server/routes/plan.ts";
-import { answersOf, argsOf, cardOf, childEnv, holdsMessage, modeFor, planMode, questionsOf, readOut, routeOf, sessionFacts, turnEnded, userLine } from "./claude-wire.ts";
+import { answersOf, argsOf, Back, cardOf, childEnv, holdsMessage, modeFor, namesFolder, planMode, projectOf, questionsOf, readOut, routeMissing, routeOf, trusted, turnEnded, userLine } from "./claude-wire.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-claude-code-"));
 ownEnv({ KEEL_IMPORT_CODEX_DIR: undefined, KEEL_IMPORT_CLAUDE_DIR: undefined });
@@ -45,7 +45,7 @@ const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> =
 };
 
 let k = 0;
-function rig(opts: { realGate?: boolean; model?: string; mode?: string; bin?: string; env?: Record<string, string> } = {}) {
+function rig(opts: { realGate?: boolean; model?: string; mode?: string | null; bin?: string; env?: Record<string, string>; trust?: false; noBedrock?: true } = {}) {
   const dir = join(top, String(k++));
   const config = join(dir, "claude");
   const projects = join(config, "projects");
@@ -56,6 +56,8 @@ function rig(opts: { realGate?: boolean; model?: string; mode?: string; bin?: st
   process.env.KEEL_IMPORT_CLAUDE_DIR = projects;
   const project = join(projects, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(project, { recursive: true });
+  // Claude Code's own trust record for the session's folder (a print run asks nothing: Keel needs it).
+  if (opts.trust !== false) writeFileSync(join(config, ".claude.json"), JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true } } }));
   const store = new Store(join(dir, "state"));
   const bus = new Bus();
   const frames: Frame[] = [];
@@ -73,7 +75,7 @@ function rig(opts: { realGate?: boolean; model?: string; mode?: string; bin?: st
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => o.holderNow(id), retell: (id: string) => o.retell(id) };
   // The daemon's environment as the child's is made from: a first-party session must not get these keys.
   // (KEEL_STANDIN_RECORD: the stand-in keeps a record of itself as a running Claude Code, which must not make it a holder.)
-  const env = () => ({ ...process.env, ...opts.env, KEEL_STANDIN_RECORD: "1", ANTHROPIC_API_KEY: "sk-test", AWS_BEARER_TOKEN_BEDROCK: "b-test", CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_DEFAULT_MODEL: "global.anthropic.claude-x" });
+  const env = () => ({ ...process.env, KEEL_STANDIN_RECORD: "1", ANTHROPIC_API_KEY: "sk-test", AWS_BEARER_TOKEN_BEDROCK: "b-test", ...(opts.noBedrock ? {} : { CLAUDE_CODE_USE_BEDROCK: "1" }), ANTHROPIC_DEFAULT_MODEL: "global.anthropic.claude-x", ...opts.env });
   const make = () => (app = new ClaudeCode({ store, bus, outside, gate: () => gate, bin: () => opts.bin ?? STANDIN, configDir: () => config, runningDir: () => join(config, "sessions"), env, trouble: (e) => { throw e; }, plan: async (c) => { plans.push(c); return planned(c); } }));
   make();
   const id = `0c1a0000-0000-4000-8000-${String(k).padStart(12, "0")}`;
@@ -84,17 +86,21 @@ function rig(opts: { realGate?: boolean; model?: string; mode?: string; bin?: st
     appendFileSync(path, JSON.stringify({ parentUuid: parent, isSidechain: false, userType: "external", cwd, sessionId: id, version: "2.1.332", entrypoint: "cli", timestamp: new Date().toISOString(), uuid, ...r }) + "\n");
     parent = uuid;
   };
+  // The transcript as last written a minute ago: no process is in it now (a write of the last seconds holds a send).
+  const quiet = () => { const t = new Date(Date.now() - 60_000); utimesSync(path, t, t); };
   const done = () => { app?.stop(); o.stop(); store.db.close(); };
   // Written once the project's folder is watched: the mirror follows a transcript that grows while it watches.
   const session = async () => {
     await until(() => (o as any).watchers.has(project));
-    write({ type: "user", message: { role: "user", content: "Start the work" }, permissionMode: opts.mode ?? "acceptEdits" });
+    write({ type: "user", message: { role: "user", content: "Start the work" }, ...(opts.mode === null ? {} : { permissionMode: opts.mode ?? "acceptEdits" }) });
     write({ type: "assistant", message: { id: "m0", role: "assistant", model: opts.model ?? "claude-opus-5-5", content: [{ type: "text", text: "Started." }], stop_reason: "end_turn" } });
-    return until(() => store.sessions({ outside: true }).find((s) => s.outside?.source_id === id), 15_000);
+    const s = await until(() => store.sessions({ outside: true }).find((s) => s.outside?.source_id === id), 15_000);
+    quiet();
+    return s;
   };
   const nextGate = () => (gate = real = new Gate(store, bus));
-  const log = () => readFileSync(`${path}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  return { dir, config, cwd, store, bus, frames, o, gate: () => real, nextGate, app: () => app!, make, cards, setDecide: (f: typeof decide) => { decide = f; }, plans, setPlanned: (f: typeof planned) => { planned = f; }, id, path, write, session, done, log };
+  const log = () => { try { return readFileSync(`${path}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+  return { dir, config, cwd, store, bus, frames, o, gate: () => real, nextGate, app: () => app!, make, cards, setDecide: (f: typeof decide) => { decide = f; }, plans, setPlanned: (f: typeof planned) => { planned = f; }, id, path, write, quiet, session, done, log };
 }
 
 describe("the wire, pure", () => {
@@ -113,16 +119,48 @@ describe("the wire, pure", () => {
     expect(Object.keys(childEnv(daemon, "global.anthropic.claude-opus-5-5")).sort()).toEqual(["ANTHROPIC_DEFAULT_SONNET_MODEL", "AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "HOME", "PATH"]);
     expect(Object.keys(childEnv(daemon, "acme/claude-large")).sort()).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AWS_REGION", "CLAUDE_CODE_OAUTH_TOKEN", "HOME", "PATH"]);
     expect(childEnv(daemon, "claude-opus-5-5", "/c").CLAUDE_CONFIG_DIR).toBe("/c");
+    // A context suffix names no route.
+    expect(routeOf("claude-opus-5-5[1m]")).toBe("first-party");
+    // The marks of a Claude Code that started the daemon (which session, job or host it runs as) never reach the child,
+    // nor a Claude Code folder other than the one the mirror reads.
+    const marks = { CLAUDE_CODE_CHILD_SESSION: "1", CLAUDE_CODE_SESSION_KIND: "bg", CLAUDE_JOB_DIR: "/j", CLAUDE_BG_SOURCE: "spare", CLAUDE_CODE_SESSION_NAME: "n", CLAUDE_CODE_AGENT: "a", CLAUDE_CODE_SESSION_LOG: "/l", CLAUDE_CODE_MESSAGING_SOCKET: "/s", CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1", CLAUDE_CODE_REMOTE_SESSION_ID: "r", CLAUDE_CODE_HOST_WORKTREE: "w", CLAUDE_CONFIG_DIR: "/elsewhere", CLAUDE_CODE_AGENT_PROGRESS_SUMMARIES: "1" };
+    expect(Object.keys(childEnv({ PATH: "/bin", ...marks }, "claude-opus-5-5")).sort()).toEqual(["CLAUDE_CODE_AGENT_PROGRESS_SUMMARIES", "PATH"]);
+    expect(childEnv({ ...marks }, "claude-opus-5-5", "/c").CLAUDE_CONFIG_DIR).toBe("/c");
+    // A route the session ran on that this environment does not have is said, never taken for another.
+    expect(routeMissing("bedrock", {})).toContain("CLAUDE_CODE_USE_BEDROCK");
+    expect(routeMissing("bedrock", { CLAUDE_CODE_USE_BEDROCK: "true" })).toBeUndefined();
+    expect(routeMissing("gateway", { ANTHROPIC_API_KEY: "k" })).toContain("ANTHROPIC_BASE_URL");
+    expect(routeMissing("first-party", {})).toBeUndefined();
   });
 
-  test("the transcript's last model and mode; never a bypass; the text never on the command line", () => {
+  test("the session's project folder, its last model, context and mode, its trust; never a bypass; the text never on the command line", () => {
     const recs = [
-      { type: "user", cwd: "/a", permissionMode: "plan", message: { content: "x" } },
-      { type: "assistant", cwd: "/b", message: { model: "claude-a" } },
+      { type: "user", cwd: "/w/a", permissionMode: "plan", message: { content: "x" } },
+      { type: "assistant", cwd: "/w/a/vendor/clone", message: { model: "claude-a", usage: { input_tokens: 10, cache_read_input_tokens: 230_000 } }, stop_reason: "end_turn" },
+      { type: "assistant", isSidechain: true, cwd: "/elsewhere", message: { model: "claude-haiku" } },
       { type: "assistant", message: { model: "<synthetic>" } },
       { type: "user", permissionMode: "acceptEdits", message: { content: "y" } },
+      { type: "user", isSidechain: true, permissionMode: "bypassPermissions", message: { content: "z" } },
     ];
-    expect(sessionFacts(recs)).toEqual({ cwd: "/b", model: "claude-a", mode: "acceptEdits" });
+    // Where it was started, the folder its transcript is kept under: not where its shell went, nor a subagent's.
+    expect(projectOf(recs, "-w-a")).toBe("/w/a");
+    expect(projectOf(recs, "-w-b")).toBeUndefined();
+    expect(namesFolder(`/${"d".repeat(250)}`, `-${"d".repeat(199)}-x1y2`)).toBe(true);
+    const b = new Back();
+    for (const r of [...recs].reverse()) if (b.take(r)) break;
+    expect([b.model, b.context, b.mode, b.open]).toEqual(["claude-a", 230_010, "acceptEdits", true]);
+    // Over the base window it ran with the 1M one.
+    expect(b.modelArg()).toBe("claude-a[1m]");
+    // No user record names a mode: default, never what a first record or a subagent said.
+    const none = new Back();
+    for (const r of [{ type: "assistant", message: { model: "claude-a", stop_reason: "end_turn", usage: { input_tokens: 5 } } }, { type: "user", isSidechain: true, permissionMode: "plan" }]) none.take(r);
+    expect([none.mode, modeFor(none.mode).mode, none.modelArg(), none.open]).toEqual([undefined, "default", "claude-a", false]);
+    // Claude Code's own trust record: the folder or one above it, not above its repository.
+    const cfg = { projects: { "/w": { hasTrustDialogAccepted: true }, "/r/repo/x": { hasTrustDialogAccepted: false } } };
+    expect(trusted(cfg, "/w/a")).toBe(true);
+    expect(trusted(cfg, "/w/a", "/w/a")).toBe(false);
+    expect(trusted(cfg, "/r/repo/x")).toBe(false);
+    expect(trusted({}, "/w")).toBe(false);
     expect(modeFor("bypassPermissions").mode).toBe("default");
     expect(modeFor("bypassPermissions").note).toBeTruthy();
     expect(modeFor("plan")).toEqual({ mode: "plan" });
@@ -160,12 +198,21 @@ describe("the wire, pure", () => {
   });
 
   test("AskUserQuestion's answers by question text; a call's card by its tool", () => {
-    const qs = questionsOf({ questions: [{ question: "Which?", header: "H", options: [{ label: "A", description: "" }, { label: "B" }], multiSelect: true }, { question: "Name?", options: [] }] });
+    const qs = questionsOf({ questions: [{ question: "Which?", header: "H", options: [{ label: "A", description: "" }, { label: "B" }], multiSelect: true }, { question: "Name?", options: [] }] })!;
     expect(answersOf(qs, { "0": { picked: ["A", "B"] }, "1": { picked: [], other: "Keel" } })).toEqual({ "Which?": "A, B", "Name?": "Keel" });
     expect(answersOf(qs, { "0": { picked: [], skipped: true } })).toEqual({});
+    // Questions Keel cannot show whole are not shown in part.
+    for (const bad of [{}, { questions: [] }, { questions: [{ question: "Which?", options: [{ label: "A" }] }, { question: "", options: [] }] }, { questions: [{ question: "Which?", options: [{ label: 1 }] }] }, { questions: [{ question: "Which?" }] }]) expect(questionsOf(bad)).toBeUndefined();
     expect(cardOf("Bash", { command: "ls" }, "/w")).toMatchObject({ tool: { kind: "shell" }, input: { command: "ls", cwd: "/w" }, name: "Claude Code command" });
-    expect(cardOf("Edit", { file_path: "/w/a.ts", old_string: "1", new_string: "2" }, "/w")).toMatchObject({ tool: { kind: "edit" }, input: { file_path: "/w/a.ts" }, shown: "/w/a.ts\n- 1\n+ 2" });
-    expect(cardOf("mcp__x__y", { q: 1 }, "/w")).toMatchObject({ name: "Claude Code mcp__x__y", input: { q: 1 } });
+    expect(cardOf("Bash", { command: "  " }, "/w").shown).toBe("Claude Code asks to run a command it does not name");
+    expect(cardOf("Bash", { command: "ls", run_in_background: true, dangerouslyDisableSandbox: true }, "/w").shown).toBe("ls\nClaude Code also asks for run_in_background: true, dangerouslyDisableSandbox: true");
+    // The card holds the whole input the allow answers: the gate cuts what it shows, and says it did.
+    const long = "y".repeat(30_000);
+    expect(cardOf("Edit", { file_path: "/w/a.ts", old_string: "1", new_string: long }, "/w")).toEqual({ tool: { name: "Claude Code file change", kind: "edit" }, input: { file_path: "/w/a.ts", old_string: "1", new_string: long }, name: "Claude Code file change", why: "Claude Code writes this change if you allow it" });
+    expect(cardOf("MultiEdit", { file_path: "/w/a.ts", edits: [{ old_string: "1", new_string: "2" }] }, "/w").input.patch).toBe("- 1\n+ 2");
+    // A file change that names no file is no file change's card: its input as it is.
+    expect(cardOf("Write", { content: "x" }, "/w")).toMatchObject({ tool: { name: "Claude Code Write" }, input: { content: "x" } });
+    expect(cardOf("mcp__x__y", { q: long }, "/w")).toEqual({ tool: { name: "Claude Code mcp__x__y" }, input: { q: long }, name: "Claude Code mcp__x__y", why: "Claude Code runs its mcp__x__y tool if you allow it" });
   });
 });
 
@@ -250,7 +297,7 @@ describe("a Claude Code session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
-  test("Stop interrupts the turn over the control channel; a send while it runs goes into the same child", async () => {
+  test("Stop interrupts the turn over the control channel and the child ends after it: what Claude Code queued behind it does not run", async () => {
     const r = rig();
     try {
       const s = await r.session();
@@ -258,14 +305,50 @@ describe("a Claude Code session answered in place", () => {
       await until(() => r.app().running(s.id), 15_000);
       const pid = (r.store.db.query<{ pid: number }, []>("SELECT pid FROM outside_procs").get())!.pid;
       expect(r.app().route(s.id)).toBe("steer");
+      // A send while the turn runs goes into the same child (Claude Code queues it behind the turn).
       r.app().send(s.id, "and then this", "k2");
+      await until(() => r.log().filter((l) => l.in === "user").length === 2, 15_000);
       expect(await r.app().interrupt(s.id)).toBe(true);
-      await until(() => readFileSync(r.path, "utf8").includes("The command was allowed: and then this"), 15_000);
       await until(() => !r.app().ours(s.id), 15_000);
       expect(r.log().filter((l) => l.argv).length).toBe(1);
-      expect(r.log().some((l) => l.in === "control_request" && l.subtype === "interrupt")).toBe(true);
-      expect(readFileSync(r.path, "utf8")).toContain("[Request interrupted by user]");
+      expect(r.log().filter((l) => l.in === "control_request" && l.subtype === "interrupt").length).toBe(1);
+      const text = readFileSync(r.path, "utf8");
+      expect(text).toContain("[Request interrupted by user]");
+      expect(text).not.toContain("and then this");
+      expect(r.app().sends(s.id).map((x) => [x.key, x.state, x.said])).toEqual([["k2", "failed", "Not run: you stopped the turn before Claude Code took it"]]);
+      expect(r.log().find((l) => l.in === "control_request" && l.subtype === "interrupt")?.cancel_queued).toBe(true);
+      // Not a failure of Claude Code's: the owner stopped it.
+      expect(r.app().notes(s.id)).toEqual([]);
       expect(pid).toBeGreaterThan(1);
+    } finally { r.done(); }
+    // A Claude Code that does not know cancel_queued lists what survives: each is withdrawn by itself.
+    const o = rig({ env: { KEEL_STANDIN_OLD_INTERRUPT: "1" } });
+    try {
+      const s = await o.session();
+      o.app().send(s.id, "wait for me", "k1");
+      await until(() => o.app().running(s.id), 15_000);
+      o.app().send(s.id, "and then this", "k2");
+      await until(() => o.log().filter((l) => l.in === "user").length === 2, 15_000);
+      await o.app().interrupt(s.id);
+      await until(() => !o.app().ours(s.id), 15_000);
+      expect(o.log().some((l) => l.in === "control_request" && l.subtype === "cancel_async_message")).toBe(true);
+      expect(readFileSync(o.path, "utf8")).not.toContain("and then this");
+      expect(o.app().sends(s.id).map((x) => [x.key, x.state])).toEqual([["k2", "failed"]]);
+    } finally { o.done(); }
+  }, 40_000);
+
+  test("a send after a Stop goes with a new child once the stopped one ended", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "wait for me", "k1");
+      await until(() => r.app().running(s.id), 15_000);
+      void r.app().interrupt(s.id);
+      r.app().send(s.id, "fix the build", "k2");
+      await until(() => readFileSync(r.path, "utf8").includes("The command was allowed: fix the build"), 15_000);
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(r.log().filter((l) => l.argv).length).toBe(2);
+      expect(r.app().sends(s.id)).toEqual([]);
     } finally { r.done(); }
   }, 30_000);
 
@@ -318,7 +401,9 @@ describe("a Claude Code session answered in place", () => {
       r.nextGate();
       r.make().start();
       expect(r.gate()!.approval(card.id)).toMatchObject({ state: "cancelled", reason: "Keel restarted while Claude Code worked: the turn stopped there" });
-      expect(r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }, { id: "c", state: "cut" }]);
+      const states = () => r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all();
+      await until(() => !states().some((x) => x.state === "started"));
+      expect(states()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }, { id: "c", state: "cut" }]);
       expect(readFileSync(r.path, "utf8").match(/it did not/g)).toBeNull();
       await until(() => left!.exitCode !== null || left!.signalCode !== null, 8000);
       // The rows of what is gone go; the row of a process that still lives (not Keel's to end) stays.
@@ -434,9 +519,14 @@ describe("a Claude Code session answered in place", () => {
       const native = (await until(() => r.o.holderNow(s.id) && readdirSync(join(r.config, "sessions")).map((n) => Number(n.split(".")[0])).find((p) => p !== launcher && lives(p))))!;
       left.push(native, ...readFileSync(helpers, "utf8").split("\n").filter(Boolean).map((l) => Number(l.split(" ")[1])));
       expect(left.length).toBe(3);
-      // A Stop asks Claude Code, which does not answer; a second ends the child.
+      // A Stop asks Claude Code, which does not answer; a second asks again, and ends nothing by itself.
       const first = r.app().interrupt(s.id);
-      expect(await r.app().interrupt(s.id)).toBe(true);
+      const second = r.app().interrupt(s.id);
+      await until(() => r.log().filter((l) => l.in === "control_request" && l.subtype === "interrupt").length === 2);
+      await Bun.sleep(300);
+      expect([lives(launcher), lives(native)]).toEqual([true, true]);
+      // Unanswered in a few seconds, the child is ended.
+      expect(await second).toBe(true);
       await first;
       await until(() => !r.app().ours(s.id), 15_000);
       expect([lives(launcher), lives(native)]).toEqual([false, false]);
@@ -445,4 +535,136 @@ describe("a Claude Code session answered in place", () => {
       expect(r.store.db.query("SELECT * FROM outside_procs").all()).toEqual([]);
     } finally { for (const p of left) try { process.kill(p, "SIGKILL"); } catch {} r.done(); }
   }, 40_000);
+
+  test("the child starts in the session's project folder, never where its shell went; a folder Claude Code does not trust takes nothing", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      // The session's shell went into a clone under it, with project settings of its own a print run would load.
+      const cloned = join(r.cwd, "vendor", "clone");
+      mkdirSync(join(cloned, ".claude"), { recursive: true });
+      r.write({ type: "user", message: { role: "user", content: "clone it and look inside" }, permissionMode: "acceptEdits" });
+      r.write({ type: "assistant", cwd: cloned, message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "I am in it now." }], stop_reason: "end_turn" } });
+      r.quiet();
+      r.app().send(s.id, "fix the build", "k1");
+      await until(() => r.log().length > 0 && !r.app().ours(s.id), 15_000);
+      expect(r.log()[0].cwd).toBe(r.cwd);
+    } finally { r.done(); }
+    const u = rig({ trust: false });
+    try {
+      const s = await u.session();
+      u.app().send(s.id, "fix the build", "k1");
+      const failed = await until(() => u.app().sends(s.id).find((x) => x.state === "failed"), 15_000);
+      expect(failed.said).toContain(`Claude Code's trust record does not cover ${u.cwd}`);
+      expect(u.log()).toEqual([]);
+    } finally { u.done(); }
+  }, 30_000);
+
+  test("the mode is the last user record's, however far back, else default; a session over the base window goes on with the 1M one", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.write({ type: "user", message: { role: "user", content: "only plan from here on" }, permissionMode: "plan" });
+      // A long turn after it: its last prompt is far before the transcript's last 64 KB.
+      for (let i = 0; i < 30; i++) {
+        r.write({ type: "assistant", message: { id: `t${i}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: `toolu_${i}`, name: "Read", input: { file_path: "/w/a.ts" } }], stop_reason: "tool_use" } });
+        r.write({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${i}`, content: "y".repeat(4000) }] } });
+      }
+      // Its last request was sent 240,000 tokens: over the base window.
+      r.write({ type: "assistant", message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "Here is the plan." }], stop_reason: "end_turn", usage: { input_tokens: 12, cache_read_input_tokens: 240_000 } } });
+      r.quiet();
+      r.app().send(s.id, "fix the build", "k1");
+      await until(() => r.log().length > 0 && !r.app().ours(s.id), 15_000);
+      expect(r.log()[0].argv.slice(-4)).toEqual(["--model", "claude-opus-5-5[1m]", "--permission-mode", "plan"]);
+    } finally { r.done(); }
+    const n = rig({ mode: null });
+    try {
+      const s = await n.session();
+      n.app().send(s.id, "fix the build", "k1");
+      await until(() => n.log().length > 0 && !n.app().ours(s.id), 15_000);
+      expect(n.log()[0].argv.slice(-4)).toEqual(["--model", "claude-opus-5-5", "--permission-mode", "default"]);
+    } finally { n.done(); }
+  }, 40_000);
+
+  test("a Bedrock session goes on only where Bedrock is set up: here, or in Claude Code's own settings", async () => {
+    const r = rig({ model: "global.anthropic.claude-opus-5-5", noBedrock: true });
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "fix it", "k1");
+      const failed = await until(() => r.app().sends(s.id).find((x) => x.state === "failed"), 15_000);
+      expect(failed.said).toContain("it ran on Amazon Bedrock, and CLAUDE_CODE_USE_BEDROCK is not set here");
+      expect(r.log()).toEqual([]);
+      writeFileSync(join(r.config, "settings.json"), JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "1" } }));
+      r.app().send(s.id, "fix it", "k2");
+      await until(() => r.log().length > 0 && !r.app().ours(s.id), 15_000);
+      expect(r.log()[0].argv).toContain("global.anthropic.claude-opus-5-5");
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a long call's card holds its whole input, the part the allow sends", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.setDecide(() => ({ deny: "no" }));
+      r.app().send(s.id, "write big", "k1");
+      await until(() => r.cards.length > 0, 15_000);
+      const c = r.cards[0]!;
+      expect(c.name).toBe("Claude Code file change");
+      expect(c.shown).toBeUndefined();
+      expect(String(c.input.content).length).toBeGreaterThan(30_000);
+      expect(String(c.input.content).endsWith("| sh\n")).toBe(true);
+      await until(() => !r.app().ours(s.id), 15_000);
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a record of another pid domain holds the session", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      mkdirSync(join(r.config, "sessions"), { recursive: true });
+      writeFileSync(join(r.config, "sessions", "4000123.json"), JSON.stringify({ pid: 4000123, sessionId: r.id, procStart: "777", kind: "interactive", entrypoint: "cli", pidDomain: "linux:0000aaaa:pid:[4026539999]", status: "busy" }));
+      expect(r.o.holderNow(s.id)).toEqual({ kind: "terminal" });
+      expect(r.app().route(s.id)).toBe("held");
+      expect(r.app().send(s.id, "hello", "k1")).toMatchObject({ status: 409, holder: { kind: "terminal" } });
+    } finally { r.done(); }
+  });
+
+  test("a transcript another process writes with no record of it holds a send: written seconds ago, or an open turn minutes ago", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.write({ type: "user", message: { role: "user", content: "go on" }, permissionMode: "default" });
+      r.write({ type: "assistant", message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "sleep 600" } }], stop_reason: "tool_use" } });
+      expect(r.app().holder(s.id)).toEqual({ kind: "process" });
+      expect(r.app().route(s.id)).toBe("held");
+      const got = r.app().send(s.id, "edit the file", "k1");
+      expect(got).toMatchObject({ status: 409, holder: { kind: "process" } });
+      expect("error" in got && got.error).toContain("s ago and no record says which process runs it");
+      const at = (ms: number) => { const t = new Date(Date.now() - ms); utimesSync(r.path, t, t); };
+      at(2 * 60_000);
+      expect("error" in r.app().send(s.id, "edit the file", "k2") && r.app().holder(s.id)).toEqual({ kind: "process" });
+      at(11 * 60_000);
+      expect(r.app().holder(s.id)).toEqual({ kind: "free" });
+      expect(r.store.db.query("SELECT * FROM outside_sends").all()).toEqual([]);
+    } finally { r.done(); }
+  });
+
+  test.skipIf(!PROC)("a terminal that opens the session while Keel's child runs a turn stops the sends that follow", async () => {
+    const r = rig();
+    const sleeper = Bun.spawn(["sleep", "60"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "wait here", "k1");
+      await until(() => r.app().running(s.id), 15_000);
+      expect(r.app().route(s.id)).toBe("steer");
+      const start = statFields(readFileSync(`/proc/${sleeper.pid}/stat`, "utf8"))!.start;
+      writeFileSync(join(r.config, "sessions", `${sleeper.pid}.json`), JSON.stringify({ pid: sleeper.pid, sessionId: r.id, procStart: start, kind: "interactive", entrypoint: "cli", status: "idle" }));
+      expect(r.app().route(s.id)).toBe("held");
+      expect(r.app().send(s.id, "and also this", "k2")).toMatchObject({ status: 409, holder: { kind: "terminal", pid: sleeper.pid } });
+      await r.app().interrupt(s.id);
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(r.log().filter((l) => l.in === "user").length).toBe(1);
+      expect(r.app().holder(s.id)).toEqual({ kind: "terminal", pid: sleeper.pid });
+    } finally { sleeper.kill(); r.done(); }
+  }, 30_000);
 });

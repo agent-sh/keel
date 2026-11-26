@@ -36,7 +36,7 @@ import { itemsOf, storedData, type Found } from "../import/types.ts";
 import { filesStored } from "../import/service.ts";
 import { aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader } from "./facts.ts";
 import { excluded, outsideSettings, type OutsideSettings } from "./settings.ts";
-import { alive as running, claudeHolder, claudeKind, codexHolder, codexKeepsLocks, FREE, readClaudeRecord, readLocks, type Holder, type Lock } from "./writer.ts";
+import { claudeHolder, claudeLive, codexHolder, recordHolder, codexKeepsLocks, FREE, readClaudeRecord, readLocks, type Holder, type Lock } from "./writer.ts";
 
 export const LABEL: Record<OutsideHarness, string> = { claude: "Claude Code", codex: "Codex" };
 
@@ -121,7 +121,7 @@ type Live = {
 };
 
 type Row = { session_id: string; harness: OutsideHarness; source_id: string; path: string; files: string; usage: string; failures: number };
-type OwnWord = { pid: number; status?: string; waitingFor?: string; procStart?: string; kind?: string; entrypoint?: string };
+type OwnWord = { pid: number; status?: string; waitingFor?: string; procStart?: string; kind?: string; entrypoint?: string; pidDomain?: string };
 
 export type OutsideDeps = {
   store: Store;
@@ -179,7 +179,7 @@ function withOwn(t: Tracked, own: Map<string, OwnWord>, keeps: boolean, holder: 
     return { facts: keeps ? ended(facts) : facts, vouched: false };
   }
   const w = own.get(t.found.id);
-  if (w && running(w.pid, w.procStart)) return { facts: withOwnWord(facts, w), vouched: true };
+  if (w && claudeLive(w)) return { facts: withOwnWord(facts, w), vouched: true };
   return { facts: keeps ? ended(facts) : facts, vouched: false };
 }
 
@@ -599,11 +599,11 @@ export class Outside {
       if (!r.sessionId) return;
       this.keeps = true;
       const had = this.own.has(r.sessionId);
-      this.own.set(r.sessionId, { pid, status: r.status, waitingFor: r.waitingFor, procStart: r.procStart, kind: r.kind, entrypoint: r.entrypoint });
+      this.own.set(r.sessionId, { pid, status: r.status, waitingFor: r.waitingFor, procStart: r.procStart, kind: r.kind, entrypoint: r.entrypoint, pidDomain: r.pidDomain });
       this.ownChanged(r.sessionId);
       let cwd: unknown;
       try { cwd = JSON.parse(readFileSync(join(dir, name), "utf8"))?.cwd; } catch {}
-      if (!had && running(pid, r.procStart)) this.named("claude", r.sessionId, typeof cwd === "string" ? cwd : undefined, false);
+      if (!had && claudeLive(r)) this.named("claude", r.sessionId, typeof cwd === "string" ? cwd : undefined, false);
     };
     this.watchDir(dir, (_e, name) => read(name));
     let names: string[] = [];
@@ -692,7 +692,7 @@ export class Outside {
     if (t.session && this.d.ours?.(t.session)) return { kind: "keel" };
     if (t.harness === "codex") return codexHolder(this.roots().codexHome, t.found.id, locks ?? this.locks());
     const w = this.own.get(t.found.id);
-    return w && running(w.pid, w.procStart) ? { kind: claudeKind(w), pid: w.pid } : FREE;
+    return w && claudeLive(w) ? recordHolder(w) : FREE;
   }
 
   // Who holds a session now, read from its harness's records at this moment (never an earlier read):

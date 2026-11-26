@@ -96,8 +96,10 @@ export const outsideRoutes: RouteModule = (deps) => {
   // The driver that answers a session in place: its harness's.
   const driver = (id: string) => (o.row(id)?.harness === "claude" ? claude : app);
   // What the bar shows besides the transcript's facts: who holds it, what a send does now, the sends not yet delivered.
-  const inPlace = (id: string, holder = o.holderNow(id)) => {
+  const inPlace = (id: string, base = o.holderNow(id)) => {
     const d = driver(id);
+    // (Claude Code takes no lock: its driver says who holds it as a send decides, a write no record explains too.)
+    const holder = d instanceof ClaudeCode ? d.holder(id, base) : base;
     return { holder, route: o.row(id) ? d.route(id, holder) : "none", turn: d.running(id), sends: d.sends(id), notes: d.notes(id), answers: d.answers(id) };
   };
   return {
