@@ -120,6 +120,7 @@ test.describe("on a touch screen", () => {
     await page.getByTestId("list-arrange").tap();
     await page.getByTestId("arrange-group-mine").tap();
     await page.keyboard.press("Escape");
+    await expect(page.getByTestId("arrange-menu")).toBeHidden();
     const head = page.locator(`[data-testid="folder-head"][data-folder="${folder.id}"]`);
     await expect(head).toBeVisible();
     await shown(head.getByRole("button", { name: `New folder in Field notes ${word}` }));
@@ -132,6 +133,7 @@ test.describe("on a touch screen", () => {
     await page.getByTestId("list-arrange").tap();
     await page.getByTestId("arrange-group-project").tap();
     await page.keyboard.press("Escape");
+    await expect(page.getByTestId("arrange-menu")).toBeHidden();
     const phead = page.locator(`[data-testid="project-head"][data-project="${project.id}"]`);
     await expect(phead).toBeVisible();
     await shown(phead.getByRole("button", { name: `New session in Atlas ${word}` }));
