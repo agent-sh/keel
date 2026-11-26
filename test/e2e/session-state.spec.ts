@@ -478,9 +478,10 @@ test("a row says why once: what is asked of the owner, the step with its time, t
     await expect(card.getByTestId("rail-card-why")).toContainText("credit balance is too low");
     await expect(card).toContainText("billing");
     await tick(question).hover();
-    await expect(card.getByTestId("rail-card-why")).toHaveText("Question: Which database should hold the queue?");
+    // (The card says the reason with how long it has stood: src/core/stand.ts.)
+    await expect(card.getByTestId("rail-card-why")).toHaveText(/^Question: Which database should hold the queue\?(, for \d+[smh])?$/);
     await tick(working).hover();
-    await expect(card.getByTestId("rail-card-why")).toHaveText("bun test --slow");
+    await expect(card.getByTestId("rail-card-why")).toHaveText(/^bun test --slow(, for \d+[smh])?$/);
     await shoot(page, "session-state-07-rail-card-reason");
     await page.getByTestId("rail-toggle").click();
   } finally {
@@ -670,7 +671,8 @@ test("the card beside a list row of one line is the whole card", async ({ page, 
     await expect(card).not.toHaveAttribute("data-kind", "row");
     await expect(card).toContainText(/needs you/i);
     await expect(card).toContainText("Clean the build output before the release");
-    await expect(card.getByTestId("rail-card-why")).toHaveText(`Approve Bash: ${command}`);
+    await expect(card.getByTestId("rail-card-why")).toContainText(`Approve Bash: ${command}`);
+    await expect(card.getByTestId("rail-card-why")).toHaveText(/v0\.9\.0 --follow-tags(, for \d+[smh])?$/);
     await expect(card).toContainText("Model");
     expect(await r.locator(".k-row-title").getAttribute("title")).toBeNull();
     await shoot(page, "session-state-11-row-card");
