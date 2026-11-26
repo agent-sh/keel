@@ -49,7 +49,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
         const folder = kid.worktree || sessions[id]?.workspace;
         const where = folder && folder !== sessions[parentId]?.workspace ? { folder, branch: kid.branch } : undefined;
         return (
-          <div key={id} data-testid="child-asks" data-agent={id} data-depth={path.length}>
+          <div key={id} className="k-child-asks" data-testid="child-asks" data-agent={id} data-depth={path.length}>
             <button
               type="button"
               onClick={() => openSession(id)}

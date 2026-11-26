@@ -1823,7 +1823,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-child-approvals > * { border-radius: var(--radius-md); }
 /* An agent whose request is a question ends with the room a list of requests ends with: its card does not stand
    on the message box. */
-.k-child-approvals > [data-testid="child-asks"]:not(:has(.k-ask-list)) { margin-bottom: 0.5rem; }
+.k-child-approvals > .k-child-asks:not(:has(.k-ask-list)) { margin-bottom: 0.5rem; }
 /* An agent's report row: after the title and the state word, what is left of the line. It is cut at its
    end while its first words have room, and goes whole where they have not (an empty first item lets it wrap out of sight). */
 .k-report-rest { display: flex; flex-wrap: wrap; flex: 1 1 0; min-width: 0; height: 1.25rem; overflow: hidden; }
