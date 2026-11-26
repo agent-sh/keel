@@ -9,6 +9,8 @@
 // A call that waits in the heavy line under QUIET_MS is left out: most slots free in seconds, and a line that
 // came and went with each command would be noise. A held tree is always in: the hold is a minute's decision.
 export const QUIET_MS = 15_000;
+// A session's step waits for the machine when its oldest call in the heavy line asked QUIET_MS ago or more.
+export const waitsLong = (since: number | undefined, now: number, quietMs = QUIET_MS) => since !== undefined && now - since >= quietMs;
 
 export type Cause = "load" | "heavy";
 // `tree`: the tree's key (load-hold's treeOf); `since`: when it began to wait; `why`: the heavy line's cause.

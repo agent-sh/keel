@@ -17,10 +17,13 @@ const tools = await import("./tools.ts");
 
 const hooksAtStart = allHooks().length;
 const readAtStart = machine.read;
-afterAll(() => { allHooks().length = hooksAtStart; machine.read = readAtStart; loadHold.reset(); rmSync(dir, { recursive: true, force: true }); });
+const pressureAtStart = machine.pressure;
+afterAll(() => { allHooks().length = hooksAtStart; machine.read = readAtStart; machine.pressure = pressureAtStart; loadHold.reset(); rmSync(dir, { recursive: true, force: true }); });
 
 let load = 36;
 machine.read = () => ({ cores: 24, load1: load, mem_available_mb: 32_000 });
+// The load alone decides here: this machine's own pressure is not read.
+machine.pressure = () => ({ host: {}, unattended: {} });
 // A minute of the pulse's readings, from `from` on.
 const minute = (from: number) => { for (let t = from; t <= from + SETTLE_MS; t += SAMPLE_MS) loadHold.tick(t); return from + SETTLE_MS; };
 
@@ -62,6 +65,14 @@ test("an unattended turn waits for the machine with the load in its status, and 
   expect(loadHold.state(clock).held).toEqual([]);
   expect(loadHold.state(clock).waited).toHaveLength(1);
   expect(loadHold.healthRows(clock)[0]).toMatchObject({ id: "machine:load", level: "ok", title: "the machine has room: load 4 on 24 threads" });
+  // With the machine's pressure read and no unattended slice, the row says only the machine's pressure decides.
+  machine.pressure = () => ({ host: { cpu: 1 }, unattended: {} });
+  clock += SAMPLE_MS;
+  loadHold.tick(clock);
+  const row = loadHold.healthRows(clock)[0]!;
+  expect(row.title).toContain("no unattended jobs' slice: the machine's pressure alone");
+  expect(row.how).toContain("only the machine's pressure decides");
+  machine.pressure = () => ({ host: {}, unattended: {} });
   store.db.close();
 });
 

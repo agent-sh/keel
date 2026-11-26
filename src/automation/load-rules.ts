@@ -51,7 +51,8 @@ export type Reading = { at: number; load1: number; threads: number; psi?: Psi };
 // the weights already keep the owner's work ahead of them.
 //
 // Room: the pressure says the machine is calm when tasks waited for a processor under CPU_ROOM of the last ten
-// seconds. The 1-minute load still counts the minute that went: after a burst it stays over the line for a
+// seconds, in the last two readings (one dip between two busy readings is not calm: it would let every held tree
+// go at once). The 1-minute load still counts the minute that went: after a burst it stays over the line for a
 // minute or more while nothing waits. Calm lets every held tree go at the next change (still one a minute);
 // what they add shows in the next ten seconds of pressure, and holding again needs a whole minute over.
 // The numbers are measured on a 32-thread machine, the unattended slice at its weight of 50 and a probe in a
@@ -136,7 +137,7 @@ export function decide(st: LoadState, readings: Reading[], trees: Tree[], now: n
   }
   const free = trees.filter((t) => !held.includes(t.key));
   const each = free.length ? share(last.load1, free.length) : st.each || share(last.load1, trees.length);
-  const quiet = calm(last);
+  const quiet = calm(last) && calm(readings.at(-2));
   const room = quiet || last.load1 + each <= last.threads;
   const settled = now - changed >= SETTLE_MS;
   const since = held.length ? (st.since ?? now) : null;

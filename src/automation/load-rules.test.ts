@@ -125,6 +125,10 @@ test("calm by the pressure lets every held tree go while the minute's load still
   const calm = decide(held, pressed(30, now, { cpu: CPU_ROOM - 1, slice_cpu: 0 }), trees, now);
   expect(calm.held).toEqual([]);
   expect(calm.changed_at).toBe(now);
+  // One calm reading after a busy one is a dip, not calm: the load decides (no room), nothing goes.
+  const dip = pressed(30, now, { cpu: 30, slice_cpu: 10 });
+  dip[dip.length - 1] = { ...dip.at(-1)!, psi: { cpu: CPU_ROOM - 1, slice_cpu: 0 } };
+  expect(decide(held, dip, trees, now).held).toEqual(held.held);
   // At the room line it is not calm, and the load alone decides: 30 over 13 working trees leaves no room.
   expect(decide(held, pressed(30, now, { cpu: CPU_ROOM, slice_cpu: 0 }), trees, now).held).toEqual(held.held);
   // Calm still waits a minute after the last change.

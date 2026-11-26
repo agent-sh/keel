@@ -96,14 +96,15 @@ const allowedCpus = () => {
 const unattendedDir = () => { const app = jobScope().slice; return app ? `/sys/fs/cgroup${sliceDir(app, "unattended")}` : undefined; };
 
 // What the machine is read as, and a job's processor time in ms (a test sets its own). `pressure`: the
-// machine's and the unattended slice's (src/tools/pressure.ts), empty where the kernel has none.
+// machine's and the unattended slice's (src/tools/pressure.ts), empty where the kernel has none; only the load
+// hold reads it (the pool decides on the scheduler's run and wait time), so the pool's samples do not read it.
 export const machine = {
   cpu: (job: Job): Promise<number> => cpuMs(job),
-  read: (): { cores: number; load1: number; runnable?: number; sched_ns?: number; mem_available_mb: number; mem_total_mb?: number; pressure?: Pressures } => ({
+  read: (): { cores: number; load1: number; runnable?: number; sched_ns?: number; mem_available_mb: number; mem_total_mb?: number } => ({
     cores: allowedCpus()?.size || availableParallelism(), load1: loadavg()[0]!, runnable: runnableNow(),
     sched_ns: platform() === "linux" ? schedTime(read("/proc/schedstat"), allowedCpus()) : undefined, mem_available_mb: memAvailableMb(), mem_total_mb: memTotalMb(),
-    pressure: readPressures(unattendedDir()),
   }),
+  pressure: (): Pressures => readPressures(unattendedDir()),
 };
 
 class Pool {
@@ -295,7 +296,7 @@ class Pool {
     const rd = this.reading();
     return {
       config: config(),
-      machine: { cores: rd.cores, load1: Math.round(rd.load1 * 100) / 100, runnable: rd.runnable === undefined ? null : Math.round(rd.runnable * 10) / 10, mem_available_mb: rd.mem_available_mb, pressure: machine.read().pressure ?? null },
+      machine: { cores: rd.cores, load1: Math.round(rd.load1 * 100) / 100, runnable: rd.runnable === undefined ? null : Math.round(rd.runnable * 10) / 10, mem_available_mb: rd.mem_available_mb },
       room: { slots: r.slots, free: r.free, limit: Math.round(r.limit * 10) / 10, busy: Math.round(r.busy * 10) / 10, cause: r.cause, why: r.why },
       held: [...this.held.values()].map((h) => ({ session_id: h.session, who: h.who, command: h.command, pattern: h.pattern, cores: h.cost.cores, since: h.since, ms: now - h.since })),
       line: order(this.line).map((e, i) => ({ place: i + 1, session_id: e.session, who: e.who, command: e.command, pattern: e.pattern, cores: e.cost.cores, since: e.at, ms: now - e.at })),

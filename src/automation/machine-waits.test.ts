@@ -1,6 +1,6 @@
 // The machine's account of what waits for it: a tree once, a short heavy wait silent, a question kept apart.
 import { expect, test } from "bun:test";
-import { account, QUIET_MS, RELEASES } from "./machine-waits.ts";
+import { account, QUIET_MS, RELEASES, waitsLong } from "./machine-waits.ts";
 
 const now = 1_000_000;
 
@@ -26,4 +26,10 @@ test("a tree held by the load and waiting in the heavy line twice is one tree; t
 test("a tree that also asks a question counts for its wait and is said to ask, never folded into the wait", () => {
   const waits = [{ tree: "t1", title: "A", since: now - 60_000, cause: "load" as const }, { tree: "t2", title: "B", since: now - 20_000, cause: "load" as const }];
   expect(account(waits, new Set(["t2", "t9"]), now)).toMatchObject({ trees: 2, held: 2, asking: 1 });
+});
+
+test("a call in the heavy line marks its step a wait for the machine only past the quiet time", () => {
+  expect(waitsLong(undefined, 100_000)).toBe(false);
+  expect(waitsLong(100_000 - QUIET_MS + 1, 100_000)).toBe(false);
+  expect(waitsLong(100_000 - QUIET_MS, 100_000)).toBe(true);
 });

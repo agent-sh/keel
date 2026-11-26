@@ -24,6 +24,7 @@ import { secretsWaiting } from "../server/routes/secrets.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { jobsOf, liveJobs, running } from "../tools/jobs.ts";
 import { pool } from "../tools/heavy.ts";
+import { waitsLong } from "./machine-waits.ts";
 import { errorClass } from "../admin/classes.ts";
 import { toolLine } from "../../ui/src/lib/tools.ts";
 import { D, slotGate } from "./core.ts";
@@ -185,6 +186,14 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
 // holds the calls can be tens of KB: its line is kept by the reply's id and read again only for a new
 // reply (or other tools named), never the reply's body at every read.
 const steps = new Map<string, { id: string; names: string; line: string | undefined }>();
+// A call in the heavy-command line waits for the machine once it has waited QUIET_MS (the rail's line counts it
+// from then too): most slots free in seconds, and a step that turned grey and back for each short wait (and left
+// the tray's working count) would say the machine where the owner sees only work. The state board's sweep reads a
+// working session every few seconds, so the change is told within that of the mark.
+export function machineWait(id: string, now = Date.now()): boolean {
+  return waitsLong(pool.waitingSince(id), now);
+}
+
 function stepOf(store: Store, s: Session, names: string[]): string | undefined {
   const head = store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'assistant' ORDER BY seq DESC LIMIT 1").get(s.id);
   if (!head) return undefined;
@@ -242,7 +251,7 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   const down = pending.filter((p) => p.kind === "unreachable");
   const blocked = !own && status?.kind === "tool" && status.names.every((n) => WAITING_TOOLS.has(n)) && down.length > 0 && down.length === (l.kids.get(s.id)?.length ?? 0);
   const outage = own ? { since: own.since, message: own.message } : blocked ? { since: Math.min(...down.map((p) => p.since ?? Date.now())), agents: down.length } : undefined;
-  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: pool.lineOf(s.id) ?? stepOf(l.d.store, s, status.names), ...(pool.waits(s.id) ? { machine: true } : {}) } : {}), ...(outage ? { outage } : {}) } : {};
+  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: pool.lineOf(s.id) ?? stepOf(l.d.store, s, status.names), ...(machineWait(s.id) ? { machine: true } : {}) } : {}), ...(outage ? { outage } : {}) } : {};
   // Its agents that run, when one of them says more than a count: a goal's check.
   const runs = (l.kids.get(s.id) ?? []).filter((k) => k.status === "running");
   const running = runs.length && runs.every((k) => k.type === "verifier") ? { running: "Checking that the goal is met" } : {};

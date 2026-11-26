@@ -49,7 +49,7 @@ import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 import { attemptWords, CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
-import { agentLive, hhmm, LIMIT_WAIT, limitText } from "../../../src/core/watch.ts";
+import { agentLive, hhmm, LIMIT_WAIT, limitText, LOAD_WAIT } from "../../../src/core/watch.ts";
 import { probeWords } from "../../../src/engine/trail.ts";
 import { appSaysNow } from "./Stale.tsx";
 import { afterSize } from "../lib/after-size.ts";
@@ -635,6 +635,8 @@ function Draft({ draft }: { draft: Record<number, DraftBlock> }) {
 function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const st = useStore((x) => x.status[sessionId]);
   const approving = useSafety((x) => (x.approvals[sessionId]?.length ?? 0) > 0);
+  // A call waiting in the heavy-command line waits for the machine too, once the daemon says so (past its quiet time).
+  const told = useToldState(sessionId);
   const [, tick] = useState(0);
   useEffect(() => every(1000, () => tick((n) => n + 1)), []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
@@ -648,8 +650,9 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const needs = st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
   // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
   // A request held in its account's line says so, with how long the account said the wait lasts.
-  const machine = !needs && st?.kind === "model" && st.limit?.spend === "load";
-  const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" && st.limit ? limitText(st.limit.until, liveNow(), st.limit.spend, st.limit.why) : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
+  const line = !needs && st?.kind === "tool" && told?.why === "machine";
+  const machine = !needs && ((st?.kind === "model" && st.limit?.spend === "load") || line);
+  const what = needs ? `${STATE_WORD.need}: ${needs}` : line ? (told?.brief || told?.text || LOAD_WAIT) : st?.kind === "model" && st.limit ? limitText(st.limit.until, liveNow(), st.limit.spend, st.limit.why) : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (
     <div className="flex min-h-[1.875rem] items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
@@ -657,7 +660,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
         {/* Waiting for the machine is quiet grey and still: it goes on by itself, nothing of the owner's is asked. */}
         {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : machine ? "bg-st-idle" : "bg-st-work animate-pulse-dot")} style={needs || machine ? undefined : { animationDelay: `${i * 160}ms` }} />)}
       </span>
-      <span data-testid="working-what" title={st?.kind === "model" ? st.limit?.why : undefined}>{what}</span>
+      <span data-testid="working-what" title={line ? told?.text : st?.kind === "model" ? st.limit?.why : undefined}>{what}</span>
       {s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}
     </div>
   );

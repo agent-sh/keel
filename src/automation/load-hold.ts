@@ -198,7 +198,7 @@ export function tick(now = Date.now()) {
     const m = machine.read();
     // The pressure's lines are measured against the machine's own thread count: a line the owner set
     // (load_hold.threads) is his, and the load alone is read against it.
-    const r: Reading = { at: now, load1: m.load1, threads: c.threads ?? m.cores, ...(c.threads === null ? psiOf(m.pressure) : {}) };
+    const r: Reading = { at: now, load1: m.load1, threads: c.threads ?? m.cores, ...(c.threads === null ? psiOf(machine.pressure()) : {}) };
     loadKept(now);
     const had = waited.length ? waited[0] : undefined;
     // Readings older than the minute (and a sample) are no longer read. A hole in them (the pulse paused while
@@ -295,7 +295,7 @@ const min = (ms: number) => `${Math.max(1, Math.round(ms / 60_000))} min`;
 // Settings > Health: whether trees wait for the machine now, and the day's account.
 export function healthRows(now = Date.now()): Row[] {
   const v = state(now);
-  const how = conf().threads !== null ? "read the 1-minute load average every five seconds against the thread count set in load_hold.threads (the pressure's lines are for the machine's own count)" : v.pressure ? "read every five seconds: the 1-minute load against the thread count, and beside it the share of the last ten seconds tasks waited for a processor, the machine's and the unattended jobs'" : "read the 1-minute load average every five seconds against the thread count (this kernel reports no pressure)";
+  const how = conf().threads !== null ? "read the 1-minute load average every five seconds against the thread count set in load_hold.threads (the pressure's lines are for the machine's own count)" : v.pressure?.unattended_cpu === null ? "read every five seconds: the 1-minute load against the thread count, and beside it the share of the last ten seconds tasks waited for a processor on the machine; the unattended jobs' slice is not found (jobs run without scopes here, or its cgroup has no pressure file), so only the machine's pressure decides" : v.pressure ? "read every five seconds: the 1-minute load against the thread count, and beside it the share of the last ten seconds tasks waited for a processor, the machine's and the unattended jobs'" : "read the 1-minute load average every five seconds against the thread count (this kernel reports no pressure)";
   const m = v.machine;
   const oldest = m.oldest ? `the oldest: ${m.oldest.title}, ${min(now - m.oldest.since)} for ${m.oldest.cause === "load" ? "the load" : "a heavy-command slot"}, ${m.oldest.releases}` : "";
   const asks = m.asking ? `; ${m.asking} of them also ${m.asking === 1 ? "asks" : "ask"} you something, in Inbox` : "";
@@ -307,7 +307,7 @@ export function healthRows(now = Date.now()): Row[] {
     return [{ id: "machine:load", group: "machine", level: "ok", title: "agent trees do not wait for the machine", detail: "the load hold is off (load_hold.on)" }];
   }
   const day = `over the line ${v.over_min_day} min in the last day${v.waited.length ? `; ${v.waited.length} ${v.waited.length === 1 ? "tree" : "trees"} waited, the longest ${min(Math.max(...v.waited.map((w) => w.ms)))}` : ""}`;
-  const psi = v.pressure ? `, processors waited ${Math.round(v.pressure.cpu)}% of the last 10 s${v.pressure.unattended_cpu !== null ? ` (unattended jobs ${Math.round(v.pressure.unattended_cpu)}%)` : ""}${v.pressure.memory !== null && v.pressure.memory >= 1 ? `, memory ${Math.round(v.pressure.memory)}%` : ""}` : "";
+  const psi = v.pressure ? `, processors waited ${Math.round(v.pressure.cpu)}% of the last 10 s${v.pressure.unattended_cpu !== null ? ` (unattended jobs ${Math.round(v.pressure.unattended_cpu)}%)` : " (no unattended jobs' slice: the machine's pressure alone)"}${v.pressure.memory !== null && v.pressure.memory >= 1 ? `, memory ${Math.round(v.pressure.memory)}%` : ""}` : "";
   const load = v.load1 === null ? "no reading yet" : `load ${v.load1} on ${v.threads} threads${psi}`;
   if (m.trees) {
     const names = v.held.slice(0, 5).map((h) => `${h.title} (${min(now - h.since)})`).join(", ");
