@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, ListTodo, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Shrink, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, ListTodo, Smartphone, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Search, Shrink, Square, Trash2, X } from "lucide-react";
 import { setLensView, useLensView } from "../lib/lens-view.ts";
 import { askFind } from "../lib/find-ask.ts";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
@@ -16,7 +16,8 @@ import { later, useAway } from "../lib/later.ts";
 import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive, isPinned } from "../lib/sessops.ts";
-import { auto } from "../lib/automation.ts";
+import { auto, useAuto } from "../lib/automation.ts";
+import { openOnPhone } from "../lib/open-on-phone.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton, usePanelRows } from "./SidePanel.tsx";
@@ -393,6 +394,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   // One switch for the whole fleet: every start the owner did not make (loops, wakes, agents, follow-ups) waits.
   const fleet = useFleetPause();
   const view = useLensView(session.id);
+  const phoneHere = useAuto((s) => !!s.channels.find((c) => c.id === "push")?.available);
   const acts: Act[] = [
     ...(alone ? [
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
@@ -416,6 +418,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
     ...(session.machine || session.outside ? [] : [view === "conversation"
       ? { id: "menu-stream", label: "Show the full stream", icon: <LayoutList />, run: () => setLensView(session.id, "stream") }
       : { id: "menu-lens", label: "Show the conversation", icon: <MessagesSquare />, run: () => setLensView(session.id, "conversation") }]),
+    // This session on the paired phone, by a push its notification opens (lib/open-on-phone.ts); shown while a phone can be reached.
+    ...(phoneHere && !phone() && !session.machine && !session.outside ? [{ id: "menu-open-phone", label: "Open on phone", icon: <Smartphone />, run: () => void openOnPhone(session.id, menuButton.current) }] : []),
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
     { id: "menu-path", label: "Copy folder path", icon: <Copy />, run: () => void copyOrSay(session.workspace, menuButton.current) },
     { id: "menu-new-here", label: "New session here", icon: <FolderPlus />, run: () => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); } },

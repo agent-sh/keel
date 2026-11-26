@@ -19,7 +19,8 @@ import wire from "./contract/wire.json";
 import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig.ts";
 import { MobileStore } from "./store.ts";
 import { bucketOf, heldOf, mobileApi } from "./v1.ts";
-import { pushData, testMessage } from "./push.ts";
+import { pushData, pushFor, testMessage } from "./push.ts";
+import { openPush } from "./open.ts";
 import { liveData, liveStatus } from "./live.ts";
 import { landMessage } from "./landings.ts";
 import { landCard } from "../../board/card.ts";
@@ -1485,6 +1486,8 @@ describe("the wire contract", () => {
     take("push", pushData(testMessage(), mobile.globalSeq(), "push_2"));
     take("push", pushData({ kind: "live", high: false, data: liveData(liveStatus([{ title: "Fix the build", running: true, since: 1000, needs: 0 }, { title: "Docs", running: true, since: 2000, needs: 1 }])) }, mobile.globalSeq(), "push_3"));
     take("push", pushData({ kind: "live", high: false, data: liveData(liveStatus([{ title: "Fix the build", running: true, since: 1000, needs: 0 }], 3)) }, mobile.globalSeq(), "push_4"));
+    // Open on phone: the session, and the device the push is for.
+    take("push", pushFor(openPush({ id: s.id, title: "Fix the build" }), mobile.globalSeq(), "push_open", "dev_1"));
     // A failure with no session to open: its notification opens the Errors view.
     const outage = pushData(alertPush({ id: "al2", ts: Date.now(), kind: "outage", session_id: null, title: "Provider outage", body: "HTTP 529", read: false, data: {}, channels: [] } as any), mobile.globalSeq(), "push_5");
     expect(outage.open).toBe("errors");

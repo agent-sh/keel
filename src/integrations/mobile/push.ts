@@ -119,12 +119,18 @@ async function accessToken(a: Account): Promise<string> {
 
 // What one push carries before it is addressed. `kind` is what the app's wake
 // handler knows: approval, finished, failed, test, ...
-export type PushMessage = { kind: string; session_id?: string | null; high: boolean; data: Record<string, string> };
+// `device`: the push names the device it goes to (`d`), so a phone whose registration is another
+// device's drops it (Open on phone, open.ts).
+export type PushMessage = { kind: string; session_id?: string | null; high: boolean; data: Record<string, string>; device?: boolean };
 
 // The data of one push as the app gets it: `t` the kind, `c` the session, `s`
 // the place in the event sequence, `n` the push's id (the app confirms it),
 // then what the message carries (title, body, aid, opts).
 export const pushData = (msg: PushMessage, seq: number, id: string): Record<string, string> => ({ t: msg.kind, c: msg.session_id ?? "", s: String(seq), n: id, ...msg.data });
+
+// The data as one device is sent it: a message that names its device (`device`) carries its id as `d`.
+export const pushFor = (msg: PushMessage, seq: number, id: string, device: string): Record<string, string> =>
+  ({ ...pushData(msg, seq, id), ...(msg.device ? { d: device } : {}) });
 
 // Sends to every paired device with a push token, or to one. Each attempt is
 // recorded and returned; a throw means nothing could be tried.
@@ -138,7 +144,7 @@ export async function send(mobile: MobileStore, seq: number, msg: PushMessage, d
   const out: PushRecord[] = [];
   for (const t of targets) {
     const id = `push_${crypto.getRandomValues(new Uint8Array(8)).toHex()}`;
-    const data = pushData(msg, seq, id);
+    const data = pushFor(msg, seq, id, t.device_id);
     // Fifteen minutes: an alert is stale after that and the app syncs when it
     // opens. Only the live status collapses; alerts are each their own news.
     // The live status keeps a day: a phone offline past fifteen minutes would

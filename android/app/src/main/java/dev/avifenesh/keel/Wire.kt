@@ -1004,6 +1004,8 @@ data class PushMsg(
     val ek: String = "", val pri: String = "",
     /** The helper, when the alert is of its conversation: the name the owner gave it and the mark of its picture. */
     val who: String = "", val face: String = "",
+    /** The device the push names (`d`, Open on phone); blank when it names none. */
+    val device: String = "",
 ) {
     companion object {
         fun of(d: Map<String, String>) = PushMsg(
@@ -1016,6 +1018,7 @@ data class PushMsg(
             working = d["w"]?.toIntOrNull() ?: 0, needs = d["q"]?.toIntOrNull() ?: 0, since = d["since"]?.toLongOrNull() ?: 0,
             failed = d["f"]?.toIntOrNull() ?: 0, to = d["to"].orEmpty(), open = d["open"].orEmpty(),
             ek = d["ek"].orEmpty(), pri = d["pri"].orEmpty(), who = d["who"].orEmpty(), face = d["face"].orEmpty(),
+            device = d["d"].orEmpty(),
         )
     }
 
@@ -1027,6 +1030,12 @@ data class PushMsg(
 
     /** Where a digest leads: the list of what needs the owner when it counts any, else the sessions. */
     val digestTo: String get() = if (digest && NEEDS_WORDS.containsMatchIn(body)) "needs" else open.ifBlank { to }
+
+    /**
+     * Whether this phone shows the push: one that names a device shows only on that device, so a registration left
+     * from an earlier pairing never opens another daemon's session (`me`: this phone's device id).
+     */
+    fun forMe(me: String?) = device.isBlank() || device == me
 
     /** Whether the notification is of the urgent channel: the kinds that ask something of the owner, or what the daemon marked high. */
     val urgent get() = kind in URGENT_KINDS || pri == "high"

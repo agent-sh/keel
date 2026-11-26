@@ -52,6 +52,13 @@ class FleetTest {
         assertEquals(false to false, Live.gate(idle, swiped = true))
     }
 
+    @Test fun aSessionSentFromTheComputerOpensOnlyOnTheDeviceItNames() {
+        val m = PushMsg.of(mapOf("t" to "open", "c" to "s1", "d" to "dev_a", "title" to "Fix the build", "pri" to "high"))
+        assertEquals(listOf("s1", true, true, false), listOf(m.chat, m.urgent, m.forMe("dev_a"), m.forMe("dev_b")))
+        // Another push names no device: every pairing shows it, as before.
+        assertEquals(true, PushMsg.of(mapOf("t" to "approval", "c" to "s1")).forMe("dev_b"))
+    }
+
     @Test fun aNotificationThatNamesNoSessionLeadsToItsList() {
         assertEquals("errors", PushMsg.of(mapOf("t" to "outage", "c" to "", "open" to "errors")).open)
         assertEquals("", PushMsg.of(mapOf("t" to "failed", "c" to "s1")).open)

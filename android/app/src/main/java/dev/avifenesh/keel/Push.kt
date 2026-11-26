@@ -184,6 +184,8 @@ class PushService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         if (!Prefs.paired) return
         val m = PushMsg.of(message.data)
+        // A push for another pairing's device (Open on phone names its device): not shown, not confirmed.
+        if (!m.forMe(Prefs.deviceId)) return
         when (m.kind) {
             "withdraw" -> when (val t = m.takesDown) {
                 is TakeDown.Card -> Notify.cancelCard(this, t.aid)

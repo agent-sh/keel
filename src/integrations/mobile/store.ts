@@ -254,6 +254,10 @@ export class MobileStore implements ReplayStore {
     // A month of records is plenty to say whether pushes arrive.
     this.db.query("DELETE FROM pushes WHERE sent_ms < ?").run(Date.now() - 30 * 86_400_000);
   }
+  // Whether the phone confirmed a push.
+  pushAcked(pushId: string): boolean {
+    return !!this.db.query("SELECT 1 FROM pushes WHERE id = ? AND acked_ms IS NOT NULL").get(pushId);
+  }
   // Only the device a push went to can confirm it.
   ackPush(deviceId: string, pushId: string): boolean {
     return this.db.query("UPDATE pushes SET acked_ms = COALESCE(acked_ms, ?) WHERE id = ? AND device_id = ?").run(Date.now(), pushId, deviceId).changes > 0;

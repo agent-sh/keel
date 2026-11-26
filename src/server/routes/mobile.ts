@@ -7,12 +7,13 @@ import { digestOf, needsOf, PushBudget, WINDOW_MS, type Held } from "../../integ
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
 import { PhoneShown } from "../../integrations/mobile/shown.ts";
-import { hostOf, MobileStore } from "../../integrations/mobile/store.ts";
+import { hostOf, MobileStore, type PushRecord } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import { typedShown } from "../../integrations/mobile/typed-code.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { addAllowedHosts } from "../admission.ts";
 import { allPendingQuestions, pendingQuestions } from "../../tools/interact.ts";
+import { openAnswer, openPush, openRefusal } from "../../integrations/mobile/open.ts";
 import { liveData, LiveTicker, readLive, type LiveStatus } from "../../integrations/mobile/live.ts";
 import { agentCounts } from "../../automation/state.ts";
 import { plansWaiting } from "./plan.ts";
@@ -278,5 +279,24 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
       },
     },
     "/api/mobile/devices/:id/test-push": { POST: (req: any) => testPush(req.params.id) },
+    // Open on phone (src/integrations/mobile/open.ts): one session sent to the paired phones, the answer said when
+    // each confirmed it or after a few seconds without.
+    "/api/sessions/:id/open-on-phone": {
+      POST: async (req: any) => {
+        const s = store.session(req.params.id);
+        const no = openRefusal(s);
+        if (no) return bad(no, s ? 409 : 404);
+        if (!mobile.devices().some((d) => !d.revoked)) return bad("No phone is paired. Pair one in Settings > Phone.", 409);
+        if (!push.configured()) return bad(`Push is not set up: put the service-account key of the app's Firebase project at ${push.accountPath()}.`, 409);
+        let recs: PushRecord[];
+        try { recs = await push.send(mobile, mobile.globalSeq(), openPush(s!)); } catch (e) { return bad((e as Error).message, 409); } finally { changed(); }
+        const sent = recs.filter((r) => r.ok);
+        for (let n = 0; n < 24 && sent.some((r) => !mobile.pushAcked(r.id)); n++) await Bun.sleep(250);
+        const names = new Map(mobile.devices().map((d) => [d.id, d.name]));
+        const told = recs.map((r) => ({ ...r, acked_ms: r.ok && mobile.pushAcked(r.id) ? Date.now() : null, name: names.get(r.device_id) }));
+        const a = openAnswer(told);
+        return a.ok ? json({ ...a, pushes: told }) : bad(a.words, 409);
+      },
+    },
   };
 };
