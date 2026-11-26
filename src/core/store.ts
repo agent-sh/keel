@@ -177,6 +177,19 @@ function deepFreeze<T>(v: T): T {
 }
 
 // Where the events after a cursor start in a list in seq order (a binary search).
+// The branch that ends at `head`, oldest first, walked back by parents (empty when `head` is not there).
+function walk(all: readonly StoredEvent[], head: string): StoredEvent[] {
+  const out: StoredEvent[] = [];
+  let want: string | null = head;
+  for (let at = all.length - 1; want; at--) {
+    while (at >= 0 && all[at]!.id !== want) at--;
+    if (at < 0) break;
+    out.push(all[at]!);
+    want = all[at]!.parent;
+  }
+  return out.reverse();
+}
+
 function firstAfter(events: readonly StoredEvent[], afterSeq: number): number {
   let lo = 0;
   let hi = events.length;
@@ -1695,16 +1708,17 @@ export class Store {
       if (k.line.more.length) k.line = { head, events: k.line.events.concat(k.line.more), more: [] };
       return k.line.events;
     }
-    const all = k.all;
-    const out: StoredEvent[] = [];
-    let want: string | null = head;
-    for (let at = all.length - 1; want; at--) {
-      while (at >= 0 && all[at]!.id !== want) at--;
-      if (at < 0) break;
-      out.push(all[at]!);
-      want = all[at]!.parent;
+    const out = walk(k.all, head);
+    // A head the kept events do not hold was written by another connection of this database (a dev hot
+    // reload has the replaced daemon's store for a moment): the copy is stale, and is read again. Walked
+    // over the stale copy, the branch was empty and a turn went with no messages.
+    if (!out.length) {
+      this.forget(session_id);
+      const fresh = this.held(session_id);
+      const again = walk(fresh.all, head);
+      fresh.line = { head, events: again, more: [] };
+      return again;
     }
-    out.reverse();
     k.line = { head, events: out, more: [] };
     return out;
   }

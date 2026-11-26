@@ -1995,6 +1995,12 @@ export class Engine {
     this.emitQueue(id);
   }
 
+  // Whether a dev hot reload put another engine in charge of this process while this one drains.
+  private replaced(): boolean {
+    const successor = (globalThis as { __keelEngine?: Engine }).__keelEngine;
+    return this.draining && !!successor && successor !== this;
+  }
+
   // A turn another engine handed over (see start).
   adopt(id: string) {
     if (!this.running.has(id) && !this.draining) this.start(id);
@@ -2088,8 +2094,7 @@ export class Engine {
   private startTurn(id: string) {
     // An engine a dev hot reload replaced runs no new turn (a child's task, a
     // queued prompt, a report that wakes a parent): the engine now in charge does.
-    const successor = (globalThis as { __keelEngine?: Engine }).__keelEngine;
-    if (this.draining && successor && successor !== this) return successor.adopt(id);
+    if (this.replaced()) return (globalThis as { __keelEngine?: Engine }).__keelEngine!.adopt(id);
     const starting = this.store.session(id);
     if (starting) for (const h of allHooks()) try { h.turnStart?.(starting); } catch (e) { this.errors.capture("server", e, { hook: "turnStart", session: id }); }
     const abort = new AbortController();
@@ -5470,6 +5475,9 @@ export class Engine {
         // One turn's first request is prepared at a time (src/engine/pace.ts); the checks above are read again after the wait.
         const release = await pace();
         try {
+            // An engine a dev hot reload replaced while it waited continues nothing: the engine now in
+          // charge finds the same cut turn in its own start and continues it there.
+          if (this.replaced()) return;
           const later = this.store.session(s.id);
           if (!later || later.archived || this.running.has(s.id) || later.head !== end.id) return this.tellCut(s, cut, "moved", !later ? "not continued: its session was deleted" : later.archived ? "not continued: its session was archived" : undefined);
           timed(() => "accepting a cut turn's continuation", () => this.acceptRestart(s.id, unanswered), false, "startup continuing turns");
