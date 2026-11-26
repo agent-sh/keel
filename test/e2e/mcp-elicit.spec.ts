@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sessionsFolder, specEnv } from "./own-daemon.ts";
-import { endsAre, shoot } from "./shots.ts";
+import { endsAre, openFolds, shoot } from "./shots.ts";
 
 // Feature: an MCP server that asks the owner a question while it works on a
 // call (elicitation, form mode), or sends the owner to a page (URL mode), and
@@ -294,7 +294,7 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
 // A server cannot hold the owner in an endless run of cards, and a question
 // never lands in another session.
 test("a server's questions are bounded, and none is shown in a session that did not ask", async ({ page }) => {
-  const k = await setup("bounds", { ASK_MCP_FOREVER: "30", ASK_MCP_MANY: "12", ASK_MCP_HOLD: "5000" });
+  const k = await setup("bounds", { ASK_MCP_FOREVER: "30", ASK_MCP_MANY: "12" });
   try {
     const id = await k.session("A server that keeps asking");
     await page.goto(`${k.at.d.url}/s/${id}`);
@@ -311,7 +311,6 @@ test("a server's questions are bounded, and none is shown in a session that did 
     await endsAre(page, 1, 30_000);
     expect((await k.results(id)).at(-1)).toBe("asker__forever was ended: asker went on asking after the owner declined 5 of its questions in this call. Its work may be half done: check before calling it again.");
     // The server went with its call: what it would have asked next reaches no later call (it is started again for the next one).
-    await page.waitForTimeout(500);
     expect(k.answers().filter((a) => a.tool === "forever")).toEqual([]);
 
     // Twelve at once: one card and five behind it; the rest are not kept waiting.
@@ -359,7 +358,7 @@ test("a server's questions are bounded, and none is shown in a session that did 
     // the call a question belongs to, so nobody is asked, and both calls say so.
     const asker = await k.session("Asks late"), other = await k.session("Only waits");
     await k.send(asker, "asker__later");
-    await page.waitForTimeout(500);
+    await expect.poll(k.side, { timeout: 30_000 }).toContain("later waiting for hold");
     await k.send(other, "asker__hold");
     await expect.poll(() => k.answers().find((a) => a.tool === "later")?.answer, { timeout: 30_000 }).toEqual({ action: "cancel" });
     expect([await k.pending(asker), await k.pending(other)]).toEqual([[], []]);
@@ -367,6 +366,8 @@ test("a server's questions are bounded, and none is shown in a session that did 
     await expect.poll(async () => (await k.results(asker)).at(-1), { timeout: 30_000 }).toContain(`[keel] asker ${why}`);
     await expect.poll(async () => (await k.results(other)).at(-1), { timeout: 30_000 }).toContain(`[keel] asker ${why}`);
     await page.goto(`${k.at.d.url}/s/${asker}`);
+    await expect(page.getByTestId("work-fold")).toBeVisible();
+    await openFolds(page);
     const call = page.getByTestId("tool-call").last();
     await call.click();
     await expect(call).toContainText("got no answer");

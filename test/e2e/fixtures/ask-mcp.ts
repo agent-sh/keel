@@ -21,7 +21,7 @@
 //   for fields named like an object's own parts;
 // - `forever` asks again after every answer (ASK_MCP_FOREVER times), `many`
 //   asks ASK_MCP_MANY questions at once;
-// - `later` asks after two seconds, `hold` only waits (ASK_MCP_HOLD ms);
+// - `later` asks while `hold` is also in flight on the server;
 // - `sample` asks for a reply of the client's model (sampling/createMessage);
 //   `sample_big` asks with a message no model's window of the stand-ins holds.
 // - `link` sends the owner to a page (URL mode) and says the step is done once
@@ -41,6 +41,7 @@ const modern = process.argv.includes("--modern");
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 const log = (row: unknown) => { if (process.env.ASK_MCP_LOG) appendFileSync(process.env.ASK_MCP_LOG, JSON.stringify(row) + "\n"); };
 const side = (line: string) => { if (process.env.ASK_MCP_SIDE) appendFileSync(process.env.ASK_MCP_SIDE, line + "\n"); };
+let overlap: { enter(): void; answered: Promise<void> } | undefined;
 const text = (t: string) => ({ content: [{ type: "text", text: t }] });
 const form = (message: string, properties: Record<string, unknown>, required: string[] = []) => ({ mode: "form", message, requestedSchema: { type: "object", properties, required } });
 
@@ -180,9 +181,19 @@ async function legacy(name: string): Promise<unknown> {
       for (let i = 0; i < 5; i++) { await sleep(400); got.push((await elicit(YESNO(`Slow question ${i + 1}: go on?`)))?.action); }
       return got;
     }
-    case "later":
-      await sleep(2000);
-      return elicit(YESNO("A question that came late: go on?"));
+    case "later": {
+      const second = Promise.withResolvers<void>();
+      const answered = Promise.withResolvers<void>();
+      overlap = { enter: second.resolve, answered: answered.promise };
+      side("later waiting for hold");
+      try {
+        await second.promise;
+        return await elicit(YESNO("A question that came late: go on?"));
+      } finally {
+        answered.resolve();
+        overlap = undefined;
+      }
+    }
     case "sample": {
       const r = await request("sampling/createMessage", {
         systemPrompt: "You answer geography questions in one sentence.",
@@ -196,9 +207,12 @@ async function legacy(name: string): Promise<unknown> {
       const r = await request("sampling/createMessage", { messages: [{ role: "user", content: { type: "text", text: "word ".repeat(300_000) } }], maxTokens: 100 });
       return r.result ?? r.error;
     }
-    case "hold":
-      await sleep(Number(process.env.ASK_MCP_HOLD ?? 6000));
+    case "hold": {
+      const pair = overlap;
+      pair?.enter();
+      await pair?.answered;
       return "held";
+    }
   }
   return undefined;
 }
