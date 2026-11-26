@@ -49,6 +49,8 @@ test("agents that wait hold no slot, and one asked for or woken over the limit w
     // the two over the limit wait in line and start as the first two park.
     await run([agent("Quick", [])]);
     await expect.poll(async () => (await byTitle("Quick"))?.status, { timeout: 30_000 }).toBe("completed");
+    // The conversation folds agent work; this test reads the call rows in the full stream.
+    await page.getByTestId("lens-to-stream").click();
     const four = await run([1, 2, 3, 4].map((n) => agent(`Parked ${n}`, parks)));
     expect(four.filter((r: any) => r.is_error)).toHaveLength(0);
     await expect.poll(async () => (await read()).agents.filter((a) => a.title.startsWith("Parked") && a.status === "waiting" && !a.slot_wait).length, { timeout: 30_000 }).toBe(4);
