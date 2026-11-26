@@ -346,6 +346,14 @@ test("a provider that is well or not set up asks nothing: its mark is grey, and 
   for (const m of marks) if (m.tone === "ok" || m.tone === "off") expect(m.chroma, `a ${m.tone} mark is grey`).toBeLessThan(0.03);
   // The wire a provider speaks is a word beside its name, not a chip.
   expect(await page.getByTestId("provider-wire").first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  // The providers are in two groups of the Settings kit: a head with its name and its count, and one right edge
+  // with the settings over them.
+  const idle = page.getByTestId("providers-idle");
+  await expect(idle.locator(".k-set-title h3")).toHaveText("Not set up");
+  await expect(idle.locator(".k-set-count")).toHaveText(String(marks.filter((m) => m.tone === "off").length));
+  const rights = await page.getByTestId("providers-panel").locator(".k-set-box").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().right)));
+  expect(rights.length).toBeGreaterThan(1);
+  expect(new Set(rights).size, `the boxes end at ${rights.join(", ")}`).toBe(1);
   await shoot(page, "quiet-15-providers");
 });
 

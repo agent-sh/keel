@@ -8,7 +8,7 @@ import { navigate } from "../lib/ui.ts";
 import { AddProviderHost, openAddProvider } from "./AddProvider.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ProviderModels } from "./ProviderModels.tsx";
-import { Card, SettingRow } from "./Settings.tsx";
+import { Empty, Group, Page, SettingRow } from "./settings/kit.tsx";
 import { ProblemNote, RouteProblemNote, WindowMeter } from "./Limits.tsx";
 
 type Row = ProvidersReport["providers"][number];
@@ -47,7 +47,7 @@ function GrokSignIn() {
   }, [s?.state]);
   if (s?.state === "pending") {
     return (
-      <div className="mt-2 flex flex-wrap items-center gap-3 rounded-md border border-line bg-sunken px-3 py-2 text-ui">
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-ui" data-testid="grok-sign-in-code">
         <span className="text-muted">Approve on xAI's page with the code</span>
         <code className="rounded-xs bg-code px-2 py-0.5 font-mono tracking-widest">{s.user_code}</code>
         <a className="inline-flex items-center gap-1 text-accent-ink hover:underline" href={s.verification_uri_complete ?? s.verification_uri} target="_blank" rel="noreferrer">
@@ -171,54 +171,50 @@ export function ProvidersSettings() {
   const rows = report?.providers ?? [];
   const ready = rows.filter((p) => p.available);
   const idle = rows.filter((p) => !p.available);
-  const heading = (t: string) => <h3 className="k-after-card mt-6 mb-2 k-label">{t}</h3>;
-
   return (
-    <div data-testid="providers-panel">
+    <>
       <AddProviderHost />
-      <Card>
-        <SettingRow label="New sessions start on" hint="Every model comes from its provider's own listing.">
-          <ModelPicker value={report?.choices.default ?? defaultModel} onChange={(id) => actions.setDefaultModel(id).catch(reportError)} />
-        </SettingRow>
-        <SettingRow label="Add a provider" hint="Any OpenAI, Anthropic or Gemini compatible endpoint, a server on this machine, an aggregator. The key stays in a variable or the keyring.">
-          <button
-            type="button"
-            data-testid="providers-add"
-            onClick={() => openAddProvider()}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover"
-          >
-            <Plus className="size-3.5" /> Add a provider
-          </button>
-        </SettingRow>
-        <SettingRow label="Listings" hint="A provider whose listing fails keeps its last good list.">
-          <button
-            type="button"
-            data-testid="providers-refresh"
-            onClick={refresh}
-            disabled={busy}
-            className="k-btn k-btn-lg"
-          >
-            <RefreshCw className={cn("size-3.5", busy && "animate-spin")} /> {busy ? "Reading" : "Read again"}
-          </button>
-        </SettingRow>
-      </Card>
-      {!report && <p className="k-after-card k-empty py-4">Reading the providers.</p>}
-      {unread && <p className="k-after-card k-empty py-4" role="status" data-testid="providers-keys-unread">Still reading the keys. A provider listed as set up may turn out to have none.</p>}
-      {ready.length > 0 && heading("Set up")}
-      {ready.length > 0 && <Card>{ready.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
-      {idle.length > 0 && heading("Not set up")}
-      {idle.length > 0 && <Card>{idle.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
-      {!!report?.plugins.length && (
-        // The plugins themselves (state, check, plugins.toml) are on their own page.
-        <button type="button" className="k-after-card mt-4 flex w-full items-center gap-3 rounded-md border border-line bg-raised px-4 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "customize", section: "plugins" })}>
-          <Puzzle className="size-4 shrink-0 text-faint" aria-hidden="true" />
-          <span className="min-w-0 flex-1 text-ui">
-            <span className="text-fg">{report.plugins.length} provider plugin{report.plugins.length === 1 ? "" : "s"}</span>
-            <span className="text-muted">, {report.plugins.filter((x) => x.state === "ready").length} ready. Their state, the conformance check and plugins.toml are in Plugins.</span>
-          </span>
-          <ChevronRight className="size-4 shrink-0 text-faint" aria-hidden="true" />
-        </button>
-      )}
-    </div>
+      <Page testid="providers-panel" className="k-set-column">
+        <Group>
+          <SettingRow label="New sessions start on" hint="Every model comes from its provider's own listing.">
+            <ModelPicker value={report?.choices.default ?? defaultModel} onChange={(id) => actions.setDefaultModel(id).catch(reportError)} />
+          </SettingRow>
+          <SettingRow label="Add a provider" hint="Any OpenAI, Anthropic or Gemini compatible endpoint, a server on this machine, an aggregator. The key stays in a variable or the keyring.">
+            <button type="button" data-testid="providers-add" data-ink onClick={() => openAddProvider()} className="k-btn k-btn-lg">
+              <Plus className="size-3.5" /> Add a provider
+            </button>
+          </SettingRow>
+          <SettingRow label="Listings" hint="A provider whose listing fails keeps its last good list.">
+            <button
+              type="button"
+              data-testid="providers-refresh"
+              onClick={refresh}
+              disabled={busy}
+              className="k-btn k-btn-lg"
+            >
+              <RefreshCw className={cn("size-3.5", busy && "animate-spin")} /> {busy ? "Reading" : "Read again"}
+            </button>
+          </SettingRow>
+        </Group>
+        {!report && <Empty>Reading the providers.</Empty>}
+        {unread && <p className="k-empty" role="status" data-testid="providers-keys-unread">Still reading the keys. A provider listed as set up may turn out to have none.</p>}
+        {/* The providers in two groups of the kit, each with its count: what answers now, and what would after a key or a sign-in. */}
+        {ready.length > 0 && <Group title="Set up" count={ready.length} testid="providers-ready">{ready.map((p) => <ProviderRow key={p.id} p={p} />)}</Group>}
+        {idle.length > 0 && <Group title="Not set up" count={idle.length} testid="providers-idle">{idle.map((p) => <ProviderRow key={p.id} p={p} />)}</Group>}
+        {!!report?.plugins.length && (
+          // The plugins themselves (state, check, plugins.toml) are on their own page.
+          <Group>
+            <button type="button" className="-mx-5 flex w-[calc(100%+2.5rem)] items-center gap-3 px-5 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "customize", section: "plugins" })}>
+              <Puzzle className="size-4 shrink-0 text-faint" aria-hidden="true" />
+              <span className="min-w-0 flex-1 text-ui">
+                <span className="text-fg">{report.plugins.length} provider plugin{report.plugins.length === 1 ? "" : "s"}</span>
+                <span className="text-muted">, {report.plugins.filter((x) => x.state === "ready").length} ready. Their state, the conformance check and plugins.toml are in Plugins.</span>
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-faint" aria-hidden="true" />
+            </button>
+          </Group>
+        )}
+      </Page>
+    </>
   );
 }

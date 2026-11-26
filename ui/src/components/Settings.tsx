@@ -18,7 +18,7 @@ import { AgentTiers } from "./AgentTiers.tsx";
 import { Seg } from "./Seg.tsx";
 
 // Settings building blocks other lanes reuse for their sections: the kit (components/settings/kit.tsx).
-import { Card, SettingRow } from "./settings/kit.tsx";
+import { Card, Group, Item, List, SettingRow, Status } from "./settings/kit.tsx";
 export { Card, SettingRow };
 
 // One choice of a few: a radio group with one Tab stop, on the option chosen;
@@ -160,19 +160,16 @@ function Models() {
       </Card>
       <AgentTiers />
       <RouteChange />
+      {/* What each provider lists: a group of the kit a provider, its count beside its name. */}
       {byProvider.map(([p, list]) => (
-        <Card key={p}>
-          <div className="flex items-center py-3 text-ui font-medium">{p}<span className="ml-2 font-normal text-faint">{list.length}</span></div>
-          <div className="-mx-5 border-t border-line">
+        <Group key={p} title={p} count={list.length} testid="models-of">
+          <List dense>
             {list.map((m) => (
-              <div key={m.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-5 text-ui last:border-0">
-                <span className="min-w-0 truncate">{m.name}</span>
-                {m.id === def && <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium text-accent-ink">default</span>}
-                <span className="ml-auto text-caption tabular-nums text-faint">{m.context ? `${fmtTokens(m.context)} context` : "context unknown"}</span>
-              </div>
+              // (The default is said beside its name: the figures keep one right edge down the list.)
+              <Item key={m.id} name={m.id === def ? <span className="inline-flex flex-wrap items-center gap-x-2">{m.name}<Status testid="models-default">default</Status></span> : m.name} meta={<span>{m.context ? `${fmtTokens(m.context)} context` : "context unknown"}</span>} />
             ))}
-          </div>
-        </Card>
+          </List>
+        </Group>
       ))}
     </div>
   );
