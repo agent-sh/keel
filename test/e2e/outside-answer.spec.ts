@@ -234,6 +234,17 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     const input = bar.getByTestId("outside-input");
     await expect(input).toHaveAttribute("placeholder", "Answer here: Keel resumes this session in Claude Code");
     await shoot(page, "outside-answer-claude-free");
+    // On a phone it is the session's one-line box: a few words said whole, a finger's height, Send a line's icon.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(input).toHaveAttribute("placeholder", "Answer in Claude Code");
+    await expect(input).toHaveAttribute("aria-label", "Answer here: Keel resumes this session in Claude Code");
+    const px = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+    expect((await input.boundingBox())!.height).toBeGreaterThanOrEqual(2.75 * px - 1);
+    expect(await input.evaluate((e) => e.scrollHeight <= e.clientHeight + 1), "the placeholder is one line").toBe(true);
+    const sendLook = await bar.getByTestId("outside-send").evaluate((e) => ({ shadow: getComputedStyle(e).boxShadow, label: getComputedStyle(e.querySelector(".k-outside-btn-label")!).display }));
+    expect(sendLook).toEqual({ shadow: "none", label: "none" });
+    await shoot(page, "outside-answer-claude-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
 
     // A send: Claude Code resumes the session and asks before it runs a command.
     await input.fill(`Run the tests ${tag}`);

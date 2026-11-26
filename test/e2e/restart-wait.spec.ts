@@ -37,3 +37,27 @@ test("a restart asked while you are at a page waits for you, joined into one, an
   await expect.poll(async () => { const d = await daemon(request).catch(() => null); return d && d.pid !== before ? d.pid : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
   expect((await daemon(request)).restart_waiting).toBeNull();
 });
+
+test.describe("on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("the band says its sentence whole and its two answers are quiet words in the band", async ({ page, request }) => {
+    await page.goto("/");
+    await request.post("/api/presence", { data: { session_id: null, focused: true, idle_ms: 0 } });
+    await restart(request, "a landing");
+    await restart(request, "another landing");
+    const band = page.getByTestId("restart-waiting");
+    await expect(band).toContainText("2 restarts joined into one");
+    const said = band.locator("span").first();
+    expect(await said.evaluate((e) => e.scrollWidth <= e.clientWidth + 1 && getComputedStyle(e).textOverflow !== "ellipsis"), "the sentence is not cut").toBe(true);
+    const box = (await band.boundingBox())!;
+    for (const id of ["restart-waiting-now", "restart-waiting-off"]) {
+      const b = band.getByTestId(id);
+      const r = (await b.boundingBox())!;
+      expect(r.y + r.height, `${id} stays inside the band`).toBeLessThanOrEqual(box.y + box.height + 0.5);
+      expect(await b.evaluate((e) => getComputedStyle(e).boxShadow), `${id} has no frame`).toBe("none");
+    }
+    await shoot(page, "restart-wait-02-phone");
+    await band.getByTestId("restart-waiting-off").tap();
+    await expect(band).toHaveCount(0);
+  });
+});

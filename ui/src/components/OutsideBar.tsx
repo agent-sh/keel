@@ -15,6 +15,7 @@ import { OUTSIDE_LABEL } from "../../../src/core/watch.ts";
 import { holderSaid } from "../../../src/core/holder-words.ts";
 import { api, failed, onFeature, reportUnlessGone } from "../lib/store.ts";
 import { composing } from "../lib/keys.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 import { navigate } from "../lib/ui.ts";
 import { clock, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { useSessionState } from "../lib/watch.ts";
@@ -110,6 +111,9 @@ export function OutsideBar({ session }: { session: Session }) {
   const answering = route === "resume" || route === "steer";
   const pending = (sends ?? []).filter((x) => x.state !== "delivered");
   const placeholder = route === "steer" ? `Add to the turn Keel runs in ${where}` : `Answer here: Keel resumes this session in ${where}`;
+  // A phone's line holds a few words: what the field does, said whole (the sentence stays its label).
+  const narrow = usePhoneWidth();
+  const shown = !narrow ? placeholder : route === "steer" ? "Add to the turn" : `Answer in ${where}`;
   const quiet = route === "held" ? `${holderSaid(holder, where)}: answer it there. Keel sends nothing while another process holds it.`
     : route === "missing" ? `No ${program} program here: Keel answers a ${where} session with the ${program} on your PATH.`
     : route === "unlocked" ? `This ${where} keeps no writer locks, so Keel cannot tell whether a terminal has it open: answer it there, or update ${where}.`
@@ -168,14 +172,14 @@ export function OutsideBar({ session }: { session: Session }) {
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !composing(e)) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }}
             rows={Math.min(6, Math.max(1, text.split("\n").length))}
-            placeholder={placeholder}
+            placeholder={shown}
             aria-label={placeholder}
             data-testid="outside-input"
           />
           {route === "steer" && (
-            <button type="button" className="k-btn" data-testid="outside-stop" disabled={stopping} aria-busy={stopping || undefined} onClick={() => void stop()} title={`Stop the turn Keel runs in ${where}`}><Square aria-hidden="true" />Stop</button>
+            <button type="button" className="k-btn" data-testid="outside-stop" aria-label="Stop" disabled={stopping} aria-busy={stopping || undefined} onClick={() => void stop()} title={`Stop the turn Keel runs in ${where}`}><Square aria-hidden="true" /><span className="k-outside-btn-label">Stop</span></button>
           )}
-          <button type="submit" className="k-btn" data-ink="" disabled={!text.trim()} data-testid="outside-send" aria-label={`Send to ${where}`}><ArrowUp aria-hidden="true" />Send</button>
+          <button type="submit" className="k-btn" data-ink="" disabled={!text.trim()} data-testid="outside-send" aria-label={`Send to ${where}`}><ArrowUp aria-hidden="true" /><span className="k-outside-btn-label">Send</span></button>
         </form>
       )}
       {notes.map((n) => <p key={n} className="k-outside-note k-outside-said" data-testid="outside-said">{n}</p>)}

@@ -57,3 +57,41 @@ test("a row says where its session stands from facts: its wait and when it gives
     await request.delete(`/api/sessions/${id}`);
   }
 });
+
+test.describe("on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("a row in the drawer says where its session stands under its title, whole", async ({ page, request }) => {
+    test.skip(!SCRIPTED, "drives exact commands through the scripted stand-in");
+    const repo = join(DEV, `stand-phone-${Date.now()}`);
+    mkdirSync(join(repo, ".keel"), { recursive: true });
+    writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { lint: "sh lint.sh" } }));
+    writeFileSync(join(repo, "lint.sh"), "echo 'Found 2 errors.'\nexit 1\n");
+    git(repo, "init", "-q", "-b", "main");
+    const gate = join(repo, "gate.txt");
+    // A title long enough to fill the row: the line would have no room beside it.
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Lint the parser before the release goes out to everyone", workspace: repo } })).json();
+    const id = session.id as string;
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    const whole = async () => {
+      const why = row(page, id).getByTestId("row-why");
+      await expect(why).toBeInViewport({ ratio: 1 });
+      expect(await why.evaluate((e) => e.scrollWidth <= e.clientWidth + 1), "the line is whole").toBe(true);
+    };
+    try {
+      await page.goto(`/s/${id}`);
+      await request.post(`/api/sessions/${id}/messages`, { data: { text: script([{ name: "wait_for", input: { kind: "file", path: gate, note: "the gate file", timeout_seconds: 600 } }]) } });
+      await page.locator(".k-station[data-helm]").getByTestId("show-sidebar").tap();
+      await expect(row(page, id).getByTestId("row-why")).toContainText("gate file", { timeout: 30_000 });
+      await whole();
+      await shoot(page, "stand-line-04-phone-waits");
+      writeFileSync(gate, "go\n");
+      await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+      await request.post(`/api/sessions/${id}/messages`, { data: { text: script([{ name: "Bash", input: { command: "sh lint.sh" } }]) } });
+      await expect(row(page, id).getByTestId("row-why")).toHaveText("lint failed", { timeout: 30_000 });
+      await whole();
+      await shoot(page, "stand-line-05-phone-result");
+    } finally {
+      await request.delete(`/api/sessions/${id}`);
+    }
+  });
+});

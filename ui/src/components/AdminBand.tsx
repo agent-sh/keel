@@ -147,7 +147,7 @@ export function AdminBand() {
   // A restart that waits for the owner: one quiet line, with the two things to do about it.
   if (waiting && !draining && !updated && connected) {
     return (
-      <div role="status" data-testid="restart-waiting" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in"
+      <div role="status" data-testid="restart-waiting" className="k-restart-band flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in"
         title={waiting.reasons.length ? `Asked: ${waiting.reasons.join("; ")}` : undefined}>
         <RotateCw className="size-3.5 shrink-0 text-faint" />
         <span className="truncate text-muted">{waitWords(waiting, (ms) => clock(ms))}</span>
