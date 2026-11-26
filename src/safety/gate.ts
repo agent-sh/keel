@@ -178,6 +178,7 @@ export type Approval = {
   bind?: string;        // the source a tool grant is for
   state: "pending" | "allowed" | "denied" | "cancelled";
   choice?: "once" | "session" | "always" | "deny";
+  grant_ids?: string[]; // only the rules created by answering this card
   reason?: string;
   by?: AnsweredBy;      // who answered it: the kind of client, its name, whether it said it showed the whole text
   created: number;
@@ -2526,16 +2527,18 @@ export class Gate {
     const form = this.form(a);
     const unread = refusal(form, c.choice, seen, by.client);
     if (unread) return { error: unread, status: 409, approval: a, hold: form.hold };
+    let grant_ids: string[] | undefined;
     if (c.choice === "session" || c.choice === "always") {
       // The rules the owner picked (a compound command's card offers one a part): a list given is the whole grant,
       // and an empty one keeps nothing. Only no list at all means the card's suggestions.
       const rules = (c.rules ?? a.suggest).filter((r) => r.pattern?.trim());
       if (!rules.length) return { error: "nothing to grant: pick a rule, or allow this once", status: 400 };
       // A tool grant is for the source the card judged (taken from the card, never the client).
-      for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
+      const lifetime = c.choice;
+      grant_ids = rules.map((r) => this.addRule(session, r.kind, r.pattern, lifetime, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined)).id);
     }
     if (c.choice === "once") said("once");
-    this.finish(a, { state: "allowed", choice: c.choice, by });
+    this.finish(a, { state: "allowed", choice: c.choice, by, ...(grant_ids && { grant_ids }) });
     // (An allow of a call the judge or the rules refused in this session before: the owner took that refusal back.)
     if (!helper) this.overridden("card", { session_id: a.session_id, shape: shapeOf(a.tool, a.summary) });
     w?.resolve({ allow: true });

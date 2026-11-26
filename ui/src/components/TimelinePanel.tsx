@@ -27,6 +27,7 @@ import {
 import { savePref, setUI } from "../lib/ui.ts";
 import { clock, cn, fmtCost, fmtSize, fmtTokens, when } from "../lib/utils.ts";
 import { Seg } from "./Seg.tsx";
+import { ApprovalGrant } from "./ApprovalGrant.tsx";
 
 const MARK: Record<Exclude<TimelineKind, "turn">, LucideIcon> = {
   agent: Bot, wait: Timer, loop: Repeat, approval: Hand, question: MessageCircleQuestionMark, compaction: FoldVertical, model: ArrowLeftRight,
@@ -530,6 +531,7 @@ function Detail({ row, sessionId }: { row: TimelineRow; sessionId: string }) {
           )}
         </div>
       )}
+      {row.kind === "approval" && row.sub === "allowed" && row.refs?.approval_id && <ApprovalGrant key={row.refs.approval_id} sessionId={child ?? sessionId} approvalId={row.refs.approval_id} />}
       {receipt && row.turn_event && <TurnReceipt turn={row.turn_event} sessionId={sessionId} />}
     </div>
   );

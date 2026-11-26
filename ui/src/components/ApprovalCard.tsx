@@ -15,6 +15,7 @@ import { placeOf, type Place } from "../lib/reply-calls.ts";
 import { NEEDS_APPROVAL } from "../lib/work.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { mineWords, safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
+import { ApprovalGrant } from "./ApprovalGrant.tsx";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
 import { useNudge, usePress, useStood } from "../lib/press-hooks.tsx";
@@ -821,6 +822,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   // The Allow has the keyboard by a key (focus-visible): only then does the card say what Enter does.
   const [keyOn, setKeyOn] = useState(false);
   const [closed, setClosed] = useState(false); // the daemon says it can no longer be answered
+  const [closedGrant, setClosedGrant] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const once = useRef<HTMLButtonElement>(null);
   const ids = `approval-${a.id}`;
@@ -1096,8 +1098,9 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
       const was = (e as { body?: { approval?: Approval } }).body?.approval;
       setErr(failed(e, { at: "approval answer" }));
       if (st === 409) {
-        // Answered elsewhere, cancelled, or nothing waits on it: say how it ended, offer no decision.
+        // Answered elsewhere, cancelled, or nothing waits on it: say how it ended, offer no new answer.
         setClosed(true);
+        setClosedGrant(!!was?.grant_ids?.length);
         if (was && was.state !== "pending") window.setTimeout(() => safety.loadSession(a.session_id).catch(reportError), 4000);
       } else if (!st) {
         // The answer may have landed before the reply was lost: read the card again before a retry.
@@ -1329,11 +1332,14 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
         </>
       )}
       {closed ? (
-        <div className={cn(FOOT, "flex items-center gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")} data-testid="approval-closed">
-          <span className="min-w-0 flex-1 text-caption text-muted">This request is no longer open: {err}</span>
-          <button type="button" data-stop="card" onClick={() => safety.loadSession(a.session_id).catch(reportError)} className="k-btn k-btn-lg shrink-0">
-            Refresh
-          </button>
+        <div className={cn(FOOT, "flex flex-col gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")} data-testid="approval-closed">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 text-caption text-muted">This request is no longer open: {err}</span>
+            <button type="button" data-stop="card" onClick={() => safety.loadSession(a.session_id).catch(reportError)} className="k-btn k-btn-lg shrink-0">
+              Refresh
+            </button>
+          </div>
+          {closedGrant && <ApprovalGrant sessionId={a.session_id} approvalId={a.id} />}
         </div>
       ) : denying ? (
         <form
