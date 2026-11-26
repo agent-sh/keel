@@ -53,16 +53,27 @@ function batchPosts(page: Page) {
   page.on("request", (r) => { if (r.method() === "POST" && /\/approvals$/.test(new URL(r.url()).pathname)) sent.push(r.postDataJSON().ids); });
   return sent;
 }
-// Keeps the frame of each new request whose text holds one of the words from the page until it is let through.
+// Keep a late request out of both the live feed and the page's approval snapshots until released.
 async function holdFrames(page: Page, words: string[]) {
   const held: Record<string, () => void> = {};
+  const waiting = new Set(words);
+  const wordOf = (card: Card) => card.state === "pending"
+    ? words.find((word) => waiting.has(word) && card.summary.includes(word))
+    : undefined;
+  await page.route(/\/api\/(?:sessions\/[^/]+\/)?approvals(?:\?.*)?$/, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const response = await route.fetch();
+    if (!response.ok()) return route.fulfill({ response });
+    const body = await response.json() as { approvals: Card[] };
+    await route.fulfill({ response, json: { ...body, approvals: body.approvals.filter((card) => !wordOf(card)) } });
+  });
   await page.routeWebSocket(/\/ws$/, (socket) => {
     const server = socket.connectToServer();
     server.onMessage((m) => {
-      const word = typeof m === "string" ? words.find((w) => m.includes(w)) : undefined;
-      const f = word ? JSON.parse(m as string) : null;
-      if (f?.name === "approval" && f.data?.state === "pending") held[word!] = () => socket.send(m);
-      else socket.send(m);
+      const f = typeof m === "string" && words.some((word) => m.includes(word)) ? JSON.parse(m) : null;
+      const word = f?.name === "approval" ? wordOf(f.data) : undefined;
+      if (!word) return socket.send(m);
+      held[word] = () => { waiting.delete(word); socket.send(m); };
     });
   });
   return held;
@@ -310,7 +321,7 @@ test("a request that arrives after the click is not answered by it", async ({ pa
     let go!: () => void;
     const held = new Promise<void>((r) => { go = r; });
     await page.route(/\/approvals$/, async (r) => {
-      if (r.request().method() !== "POST") return r.continue();
+      if (r.request().method() !== "POST") return r.fallback();
       sent.push(r.request().postDataJSON().ids);
       await held;
       const reply = await r.fetch();
