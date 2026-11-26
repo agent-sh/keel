@@ -15,6 +15,10 @@
 //   would otherwise be cut before it began. Most calls end in milliseconds.
 // - work between those parts of a step: preparing a request, processing its reply, or finishing the step.
 //
+// - not a reading job (AskReaders): it reads for minutes, past the bound, and each part it read is kept
+//   (src/engine/reader-kept.ts), so the call the next daemon's turn sends again reads only the rest. A restart
+//   waited its whole bound for one twice in a row, five turns parked behind it each time, and cut it anyway.
+//
 // It does not wait for a turn that is already stopped at its boundary, one that waits on the owner (its
 // card is put back by the next daemon), one that waits for a provider or a retry (nothing is on its way),
 // or one whose calls all block on agents none of which is waited for (they stopped at their own boundaries,
@@ -26,10 +30,11 @@ import type { TurnStatus } from "../core/types.ts";
 
 // `requestOut`: a model request of the turn is on its way (sent, or streaming its reply).
 // `callsOut`: how many tool calls the turn has out. `inFront`: every one of them is a command running in front
-// of the turn. `onAgents`: every call blocks on agents, and none of them is waited for.
+// of the turn. `onAgents`: every call blocks on agents, and none of them is waited for. `kept`: every call is a
+// reading job or a command in front of the turn.
 export type DrainTurn = {
   atBoundary: boolean; waitsOnOwner: boolean; providerWaiting: boolean; status: TurnStatus;
-  requestOut: boolean; betweenParts: boolean; callsOut: number; inFront: boolean; onAgents?: boolean;
+  requestOut: boolean; betweenParts: boolean; callsOut: number; inFront: boolean; onAgents?: boolean; kept?: boolean;
 };
 
 export function drainWaitsFor(t: DrainTurn): boolean {
@@ -39,6 +44,6 @@ export function drainWaitsFor(t: DrainTurn): boolean {
   // A request held in its account's line (or by the spend window), or between retries, has nothing on its way.
   const held = (s.kind === "model" && s.limit) || s.kind === "retry";
   if (t.requestOut) return !held;
-  if (t.callsOut > 0) return !t.inFront && !t.onAgents;
+  if (t.callsOut > 0) return !t.inFront && !t.onAgents && !t.kept;
   return t.betweenParts && !held;
 }

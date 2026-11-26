@@ -8,6 +8,7 @@
 // request are merged in groups first, and findings no reader could compile
 // come back as a preview within what a tool result holds.
 import { addUsage, emptyUsage, type Usage } from "../core/types.ts";
+import type { KeptAnswer } from "./reader-kept.ts";
 import type { ModelInfo, Price } from "../providers/types.ts";
 import { bytesPerToken } from "./compact.ts";
 import { during } from "../admin/activity.ts";
@@ -39,6 +40,9 @@ export type ReaderHost = {
   small?: string[];
   // Why a model's route takes no work now (out of credit, suspended, signed out: src/providers/account.ts), else nothing.
   shut?(m: ModelInfo): string | undefined;
+  // The answers of this session's earlier requests, by the request (src/engine/reader-kept.ts): a job a restart cut
+  // and the turn sent again reads only the parts no reader answered yet.
+  kept?: { get(prompt: string): KeptAnswer | undefined; put(prompt: string, a: KeptAnswer): void };
 };
 
 export type PartState = { k: number; covers: string; chars: number; model?: string; state: "waiting" | "reading" | "read" | "nothing" | "unread"; error?: string };
@@ -135,7 +139,11 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const tell = (compiling = false) => { try { host.progress?.({ parts: parts.map((p) => ({ ...p })), compiling }); } catch (e) { host.capture(e, { at: "reader progress" }); } };
 
   // One request, through the choices in order; the failure of each is captured once.
-  const ask = async (prompt: string, what: Record<string, unknown>, onModel?: (m: ModelInfo) => void): Promise<{ text: string; model: ModelInfo; input: number } | { error: string }> => {
+  const ask = async (prompt: string, what: Record<string, unknown>, onModel?: (m: ModelInfo) => void, onKept?: (model: string) => void): Promise<{ text: string; input: number } | { error: string }> => {
+    if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
+    // Answered before (the same request, a restart ago): nothing is sent.
+    const had = host.kept?.get(prompt);
+    if (had) { used.add(had.model); onKept?.(had.model); return { text: had.text, input: had.input }; }
     let last = "no reader model";
     let sent = false;
     for (const m of choices) {
@@ -153,7 +161,9 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
         if (r.stop === "refusal" || !text) throw new Error(`the reader (${m.name}) ${r.stop === "refusal" ? "refused" : "gave no answer"}`);
         used.add(m.name);
         billed.add(m.billing);
-        return { text, model: m, input: r.usage.input + r.usage.cache_read + r.usage.cache_write };
+        const input = r.usage.input + r.usage.cache_read + r.usage.cache_write;
+        try { host.kept?.put(prompt, { text, model: m.name, input }); } catch (e) { host.capture(e, { at: "keeping a reader's answer" }); }
+        return { text, input };
       } catch (e) {
         if (signal.aborted) throw e;
         last = `${m.name}: ${short(e)}`;
@@ -170,7 +180,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     const p = parts[i]!;
     p.state = "reading";
     tell();
-    const r = await ask(opts.prompt?.(c, i + 1, chunks.length) ?? partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); });
+    const r = await ask(opts.prompt?.(c, i + 1, chunks.length) ?? partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); }, (name) => { p.model = name; });
     if (!("error" in r)) partTokens += r.input;
     if ("error" in r) {
       p.state = "unread";

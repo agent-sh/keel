@@ -52,6 +52,8 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
 import { trialModel } from "./model-trial.ts";
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOpts, type ReadOutcome } from "./readers.ts";
+import { ReaderKept } from "./reader-kept.ts";
+import { READER_TOOLS } from "../tools/readers.ts";
 import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
 import { cleanTitle, derivedTitle, firstReply, modelTitles, overLong, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
@@ -4949,6 +4951,7 @@ export class Engine {
         atBoundary: !!r.atBoundary, waitsOnOwner: this.waitsOnOwner(id), providerWaiting: !!r.providerWaiting, status: this.statusOf(id),
         requestOut: this.wires.has(id), betweenParts: !!r.betweenParts, callsOut: calls?.size ?? 0,
         inFront: !!calls?.size && !!front && [...calls.keys()].every((c) => front(id, c)),
+        kept: !!calls?.size && [...calls.entries()].every(([c, u]) => READER_TOOLS.has(u.name) || !!front?.(id, c)),
       };
       return { id, t, on: blockedOn(id) };
     });
@@ -5003,6 +5006,8 @@ export class Engine {
       r.abort.abort();
       await r.done;
     }));
+    // The parts the cut readings read go in now: the next daemon's turn sends the call again and reads only the rest.
+    try { this.keptAnswers?.flush(); } catch (e) { this.errors.capture("server", e, { at: "keeping readers' answers at a stop" }); }
   }
 
   // A drain called off before any turn was parked: turns start again, first
@@ -5398,6 +5403,10 @@ export class Engine {
     return { text: res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"), model: info.model ?? info.id, stop: res.stop };
   }
 
+  // The answers of reader requests, kept across a restart (src/engine/reader-kept.ts).
+  private keptAnswers?: ReaderKept;
+  private get readerKept(): ReaderKept { return (this.keptAnswers ??= new ReaderKept(this.store.db)); }
+
   private readerHost(id: string, callId?: string): ReaderHost {
     const session = this.store.session(id)!;
     let told = false;
@@ -5408,6 +5417,7 @@ export class Engine {
       small: this.ownSmall(id, "reader"),
       shut: (m) => shutWords(this.providers.shut(m.id)),
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
+      kept: { get: (prompt) => this.readerKept.get(id, prompt), put: (prompt, a) => this.readerKept.put(id, prompt, a) },
       capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
       progress: callId ? (p) => this.bus.emit({ t: "feature", name: "readers", session_id: id, data: { call_id: callId, ...p } }) : undefined,
       ask: async (m, prompt, sig) => {
