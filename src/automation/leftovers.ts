@@ -227,25 +227,28 @@ async function landedRead(store: Store, top: string, common: string, tip: string
     // work after the base took it (a revert, a file removed again) merges to the base's tree too, yet its last word
     // is the undo; merged from each of its own commits, its later commits must change nothing of the base either.
     // Past SUFFIX_MAX commits it is not read, and not whole.
+    // `went`: the tip holds it, a suffix does not (the branch went on after the base took it).
+    let went = false;
     const whole = async () => {
       if (!(await holds(baseTip))) return false;
       const own = (await lowOut(top, ["rev-list", `${baseTip}..${tip}`, "--"]))?.split("\n").filter(Boolean);
       if (!own || own.length > SUFFIX_MAX) return false;
       const bt = (await lowOut(top, ["rev-parse", `${baseTip}^{tree}`]))?.trim();
-      for (const c of own.slice(1)) if (!bt || (await merged(baseTip, c)) !== bt) return false;
+      for (const c of own.slice(1)) if (!bt || (await merged(baseTip, c)) !== bt) { went = !!bt; return false; }
       return true;
     };
     if (changes && (await whole())) return { how: "whole", at: baseTip };
+    const also = went ? { went: true as const } : {};
     const mine = (await lowOut(top, ["log", "--format=%s", `${baseTip}..${tip}`, "--"]))?.split("\n").filter(Boolean);
     const theirs = (await lowOut(top, ["log", "--first-parent", `--max-count=${BASE_LOG}`, "--format=%H%x00%s", `${fork}..${baseTip}`, "--"]))?.split("\n").filter(Boolean).map((l) => { const [sha, subject] = l.split("\0"); return { sha: sha!, subject: subject ?? "" }; });
     if (!mine || !theirs) return undefined;
     const subjects = new Set(mine);
     // The commit the landing queue landed it as counts only while the base holds it (a base reset before it does not).
     const queued = row && /^[0-9a-f]{40,64}$/.test(row) && (await low(top, ["merge-base", "--is-ancestor", row, baseTip])).code === 0 ? row : undefined;
-    if (changes) for (const at of rules.candidatesOf(theirs, subjects, queued)) if (at !== baseTip && (await holds(at))) return { how: "earlier", at };
+    if (changes) for (const at of rules.candidatesOf(theirs, subjects, queued)) if (at !== baseTip && (await holds(at))) return { how: "earlier", at, ...also };
     const on = new Set(theirs.map((c) => c.subject));
     const rec = rules.recordOf({ commits: subjects.size, matched: [...subjects].filter((s) => on.has(s)).length, newest: theirs.find((c) => subjects.has(c.subject))?.sha, queued, reviewed });
-    return rec ? { how: "changed", ...rec } : undefined;
+    return rec ? { how: "changed", ...rec, ...also } : undefined;
   } finally {
     rmSync(objects, { recursive: true, force: true });
   }
@@ -424,16 +427,19 @@ async function hiddenEdits(dir: string): Promise<number | undefined> {
   return n;
 }
 
-// Commits only the worktree's own HEAD reflog reaches (made on a detached HEAD): removing the folder drops that
-// log, and with it the last name of their work. A commit the branch's own reflog names (one rebased or reset
-// away on the branch) is the branch's history, which the folder's removal leaves. Read as background work.
-const REFLOG_MAX = 2000;
-const reflogWords = (n: number) => `${n === 1 ? "a commit only its HEAD's reflog reaches" : `${n} commits only its HEAD's reflog reaches`} (made on a detached HEAD) would be lost`;
-async function reflogOnly(path: string, branch: string): Promise<number | undefined> {
+// Commits only the worktree's own HEAD reflog reaches (made on a detached HEAD, or the picks of a rebase that did
+// not finish): removing the folder drops that log, and with it the last name of their work. A commit the branch's
+// own reflog names (one rebased or reset away on the branch) is the branch's history, which the folder's removal
+// leaves. A log of REFLOG_MAX entries or more is not read to its end: unknown, kept. Read as background work.
+export const REFLOG_MAX = 2000;
+export const reflogWords = (n: number) => `${n === 1 ? "a commit only its HEAD's reflog reaches" : `${n} commits only its HEAD's reflog reaches`} (made on a detached HEAD or an unfinished rebase) would be lost`;
+export async function reflogOnly(path: string, branch: string, max = REFLOG_MAX): Promise<number | undefined> {
   const shas = async (ref: string) => {
-    const log = await low(path, ["reflog", "show", `--max-count=${REFLOG_MAX}`, "--format=%H", ref, "--"]);
+    const log = await low(path, ["reflog", "show", `--max-count=${max}`, "--format=%H", ref, "--"]);
     if (log.code !== 0) return /does not have any commits|unknown revision|bad revision|ambiguous argument/i.test(log.err) ? [] : undefined;
-    return [...new Set(log.out.split("\n").filter((l) => /^[0-9a-f]{40,64}$/.test(l)))];
+    const lines = log.out.split("\n").filter((l) => /^[0-9a-f]{40,64}$/.test(l));
+    if (lines.length >= max) return undefined;
+    return [...new Set(lines)];
   };
   const [head, own] = await Promise.all([shas("HEAD"), shas(`refs/heads/${branch}`)]);
   if (!head || !own) return undefined;
@@ -581,7 +587,9 @@ export type Survey = {
   // daemon's mark): what each holds. Keel never signals one by itself; the owner stops it here.
   foreign?: Awaited<ReturnType<typeof scopes.foreignScopes>>;
   // `landed`: the base holds its branch's work (leftover-rules.ts, Landed), with `bytes` it holds on disk.
-  worktrees: { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string; landed?: rules.Landed & { words: string }; bytes?: number }[];
+  worktrees: { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string; landed?: rules.Landed & { words: string }; bytes?: number;
+    // Commits only its HEAD's reflog reaches: removable by its own Remove alone.
+    reflog?: number }[];
   branches: { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By }[];
   repos: string[];
 };
@@ -637,7 +645,8 @@ async function heads(top: string, base?: string): Promise<{ name: string; sha: s
 }
 
 // Why a clean worktree on a landed branch is still not the pass's: an edit git is told not to look at, a repository
-// in an ignored folder, a stash entry made on its branch (what the agent's end reads, settleOwn).
+// in an ignored folder, a stash entry made on its branch (what the agent's end reads, settleOwn). Commits only its
+// HEAD's reflog reaches are read for every worktree on a branch (survey).
 async function landedHeld(top: string, path: string, branch: string, ignored: string[]): Promise<string | undefined> {
   const hidden = await hiddenEdits(path);
   if (hidden === undefined) return "the files git is told not to look at could not be compared";
@@ -645,9 +654,6 @@ async function landedHeld(top: string, path: string, branch: string, ignored: st
   const nested = await reposUnder(path, ignored);
   if (nested === undefined) return "its ignored files could not be looked through";
   if (nested.length) return `${nested.length === 1 ? "an ignored folder holds a repository" : `ignored folders hold ${nested.length} repositories`} (${nested.slice(0, 3).join(", ")})`;
-  const lone = await reflogOnly(path, branch);
-  if (lone === undefined) return "its HEAD's reflog could not be read";
-  if (lone) return reflogWords(lone);
   return await stashOn(top, branch);
 }
 
@@ -736,10 +742,15 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
       // What the agent's end looks for and git status does not see: none of it may be in a worktree the pass takes.
       const held = landed && st ? await landedHeld(r.top, t.path, t.branch!, st.ignored) : undefined;
       if (held) landed = undefined;
+      // Commits only its HEAD's reflog reaches (a detached HEAD, an unfinished rebase): the folder is the last name
+      // of them. It is removed only by the owner's own Remove of it, which says how many; the pass and Remove all skip it.
+      let kept = why ?? held;
+      const lone = !kept && t.branch && !missing ? await reflogOnly(t.path, t.branch) : 0;
+      if (lone === undefined) kept = "its HEAD's reflog could not be read";
+      const reflog = lone || undefined;
       const bytes = landed ? await sizeOf(t.path, t.head) : undefined;
-      const kept = why ?? held;
       return { repo: r.common, top: r.top, path: t.path, branch: t.branch, head: t.head, made: treeMade(t.path), dirty: st?.dirty, ignored: st?.ignored.length ? st.ignored : undefined,
-        ahead: Number.isFinite(ahead) ? ahead : undefined, base, locked: t.locked, missing: missing || undefined, by: who(sid), removable: !kept, why: kept,
+        ahead: Number.isFinite(ahead) ? ahead : undefined, base, locked: t.locked, missing: missing || undefined, by: who(sid), removable: !kept, why: kept, ...(reflog ? { reflog } : {}),
         ...(landed ? { landed: { ...landed, words: rules.landedWords(landed) }, bytes } : {}) };
     });
     out.worktrees.push(...rows);
@@ -822,15 +833,20 @@ export function endedOf(store: Store, sessionId: string): string | undefined {
   return undefined;
 }
 
-// A worktree as the owner saw it listed: its HEAD, and how many ignored paths they were told go with it.
-export type TreeSeen = { repo: string; path: string; head?: string; ignored?: number };
+// A worktree as the owner saw it listed: its HEAD, how many ignored paths they were told go with it, and how many
+// commits only its HEAD's reflog reaches.
+export type TreeSeen = { repo: string; path: string; head?: string; ignored?: number; reflog?: number };
 // A branch as listed: its tip.
 export type BranchSeen = { repo: string; branch: string; sha?: string };
 
-function treeCheck(s: Survey, seen: TreeSeen) {
+// `alone`: the owner's Remove of this one worktree, the only act that takes one whose HEAD's reflog alone reaches
+// commits, and only with the count they were shown.
+function treeCheck(s: Survey, seen: TreeSeen, alone = false) {
   const t = s.worktrees.find((w) => w.path === seen.path);
   if (!t) throw new Error("that worktree is not listed as left behind (a session works in it, or it is gone)");
   if (!t.removable) throw new Error(`not removed: ${t.why}`);
+  if (t.reflog && !alone) throw new Error(`not removed: ${reflogWords(t.reflog)}; remove it by itself to let ${t.reflog === 1 ? "it" : "them"} go`);
+  if (t.reflog && t.reflog !== seen.reflog) throw new Error(`not removed: it changed since it was listed (${reflogWords(t.reflog)}, not ${seen.reflog ?? 0} as listed)`);
   if (seen.head !== undefined && t.head !== seen.head) throw new Error(`not removed: it changed since it was listed (its HEAD is ${t.head.slice(0, 10) || "gone"} now, not ${seen.head.slice(0, 10)})`);
   if ((t.ignored?.length ?? 0) > (seen.ignored ?? 0)) throw new Error(`not removed: it holds ${rules.ignoredWords(t.ignored!)} now, more than when it was listed`);
   return t;
@@ -856,7 +872,7 @@ async function dropBranch(b: Survey["branches"][number]) {
 }
 
 export async function removeTree(c: Ctx, seen: TreeSeen): Promise<void> {
-  await dropTree(c, treeCheck(await survey(c, { only: seen.repo }), seen));
+  await dropTree(c, treeCheck(await survey(c, { only: seen.repo }), seen, true));
 }
 export async function deleteBranch(c: Ctx, seen: BranchSeen): Promise<void> {
   await dropBranch(branchCheck(await survey(c, { only: seen.repo }), seen));

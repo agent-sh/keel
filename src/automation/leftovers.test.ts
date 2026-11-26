@@ -3,7 +3,7 @@
 // (a trace file, a tmux server the owner later uses, a forced branch, an owner's branch it checks out) makes
 // anything of the owner's go. (The decisions alone are in leftover-rules.test.ts.)
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv } from "../../test/env.ts";
@@ -12,6 +12,7 @@ import { startJob } from "../tools/jobs.ts";
 import { Worktrees } from "../worktree/manager.ts";
 import { Overlaps } from "../worktree/overlap-scan.ts";
 import { bindLedger, record, repoOf, treeOf, unbindLedger } from "../checks/ledger.ts";
+import * as rules from "./leftover-rules.ts";
 import { cmd } from "./leftover-rules.ts";
 import * as leftovers from "./leftovers.ts";
 
@@ -768,8 +769,13 @@ test("a branch that undid landed work is not whole, a detached HEAD's commit kee
   const row = (p: string) => s.worktrees.find((w) => w.path === p)!;
   expect(row(undone!.wt.path).landed?.how).not.toBe("whole");
   expect(row(unfiled!.wt.path).landed?.how).not.toBe("whole");
-  expect(row(detached!.wt.path).removable).toBe(false);
-  expect(row(detached!.wt.path).why).toContain("only its HEAD's reflog reaches");
+  // Said as what it is: the branch went on after the base took it, not a base that dropped it.
+  for (const k of [undone, unfiled]) {
+    expect(row(k!.wt.path).landed?.words).toContain("the branch went on after the base took it");
+    expect(row(k!.wt.path).landed?.words).not.toContain("no longer holds");
+  }
+  expect(row(detached!.wt.path).reflog).toBe(1);
+  expect(rules.landedPass(row(detached!.wt.path))).toBeUndefined();
   const listed = [undone, unfiled].map((k) => { const w = row(k!.wt.path); return { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, how: w.landed!.how }; });
   const out = await leftovers.removeLanded(ctx, listed);
   expect(out.deleted).toEqual([]);
@@ -777,4 +783,46 @@ test("a branch that undid landed work is not whole, a detached HEAD's commit kee
   // At its end, too, the detached commit keeps the worktree and branch.
   expect(await detached!.own()).toContain("only its HEAD's reflog reaches");
   expect(existsSync(detached!.wt.path)).toBe(true);
+});
+
+// What the third review found: most commits only a HEAD's reflog reaches are a rebase's by-products (the picks of an
+// aborted rebase). The owner's Remove of that one worktree lets them go, with their count; Remove all and the pass skip it.
+test("a worktree whose HEAD's reflog alone reaches commits goes only by its own Remove, with their count", async () => {
+  const { r, store, made: [k] } = await landRepo("land-reflog", ["aborted"]);
+  git(r, "branch", "side");
+  git(r, "checkout", "-q", "side"); edit(r, 5, "five on side", "Five on side"); git(r, "checkout", "-q", "main");
+  edit(k!.wt.path, 3, "three", "Change three");
+  edit(k!.wt.path, 5, "five", "Change five");
+  edit(r, 1, "one", "Change one on main");
+  git(r, "cherry-pick", `${k!.wt.branch}~1`, k!.wt.branch);
+  // A rebase onto side picks the first commit and stops on the second; aborted, its pick is named by HEAD's reflog alone.
+  spawnSync("git", ["rebase", "side"], { cwd: k!.wt.path, stdio: "ignore" });
+  git(k!.wt.path, "rebase", "--abort");
+  const ctx = { store, isRunning: () => false, workspace: r };
+  const s = await leftovers.survey(ctx);
+  const w = s.worktrees.find((x) => x.path === k!.wt.path)!;
+  expect(w).toMatchObject({ removable: true, reflog: 1, landed: { how: "whole" } });
+  expect(rules.landedPass(w)).toBeUndefined();
+  const seen = { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 };
+  const pass = await leftovers.removeLanded(ctx, [{ ...seen, how: "whole" }]);
+  const all = await leftovers.removeAll(ctx, { worktrees: [seen] });
+  for (const out of [pass, all]) {
+    expect(out.removed).toEqual([]);
+    expect(out.refused[0]!.why).toContain("a commit only its HEAD's reflog reaches (made on a detached HEAD or an unfinished rebase) would be lost; remove it by itself to let it go");
+  }
+  // At its end the agent's worktree is kept, in the same words.
+  expect(await k!.own()).toContain("(made on a detached HEAD or an unfinished rebase) would be lost");
+  // Its own Remove needs the count the owner was shown.
+  await expect(leftovers.removeTree(ctx, seen)).rejects.toThrow("it changed since it was listed");
+  await leftovers.removeTree(ctx, { ...seen, reflog: 1 });
+  expect(existsSync(k!.wt.path)).toBe(false);
+  expect(branchesOf(r)).toContain(k!.wt.branch);
+});
+
+test("a HEAD reflog too long to read to its end is unknown, and keeps the folder", async () => {
+  const { made: [k] } = await landRepo("land-reflog-max", ["long"]);
+  edit(k!.wt.path, 3, "three", "Change three");
+  edit(k!.wt.path, 4, "four", "Change four");
+  expect(await leftovers.reflogOnly(k!.wt.path, k!.wt.branch)).toBe(0);
+  expect(await leftovers.reflogOnly(k!.wt.path, k!.wt.branch, 2)).toBeUndefined();
 });

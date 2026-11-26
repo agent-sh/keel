@@ -492,7 +492,7 @@ export const automationRoutes: RouteModule = (deps) => {
   };
   const leftCtx = () => ({ store, isRunning: (sid: string) => deps.engine.isRunning(sid), workspace: deps.workspace });
   const opt = (v: unknown) => (typeof v === "string" ? v : undefined);
-  const treeSeen = (b: any): leftovers.TreeSeen => ({ repo: String(b?.repo ?? ""), path: String(b?.path ?? ""), head: opt(b?.head), ignored: Number(b?.ignored) || 0 });
+  const treeSeen = (b: any): leftovers.TreeSeen => ({ repo: String(b?.repo ?? ""), path: String(b?.path ?? ""), head: opt(b?.head), ignored: Number(b?.ignored) || 0, ...(Number(b?.reflog) > 0 ? { reflog: Number(b.reflog) } : {}) });
   const branchSeen = (b: any): leftovers.BranchSeen => ({ repo: String(b?.repo ?? ""), branch: String(b?.branch ?? ""), sha: opt(b?.sha) });
 
   // A session another harness runs exists for the owner only (src/server/peer-scope.ts blindTo): for any other

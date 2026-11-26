@@ -72,7 +72,9 @@ export function newSince(before: GitSnap, trees: GitTree[], heads: Record<string
 //     than one subject of it is on the base: all of them, or some and a review said land it) but no commit of the
 //     base holds its lines as they are: what landed was edited (a conflict resolved, a fix on top). As "earlier".
 // A branch with no commit over the base is merged, not landed: the other rules decide it.
-export type Landed = { how: "whole" | "earlier"; at: string } | { how: "changed"; at: string; why: string };
+// `went`: the base's tip holds the branch's work, but the branch went on after the base took it (a revert, a file
+// removed again): not whole, and said so.
+export type Landed = { how: "whole" | "earlier"; at: string; went?: true } | { how: "changed"; at: string; why: string; went?: true };
 // What the landing record says of a branch whose lines no commit of the base holds. `commits`: its commits over the
 // base, by subject; `matched`: how many of those subjects a commit of the base since the fork has; `newest`: the
 // newest such commit; `queued`: the commit the landing queue landed this tip as, when the base holds it;
@@ -96,8 +98,9 @@ export function candidatesOf(baseLog: { sha: string; subject: string }[], subjec
   return out;
 }
 export function landedWords(l: Landed): string {
-  if (l.how === "changed") return `landed as ${l.at.slice(0, 10)} with changes (${l.why})`;
-  if (l.how === "earlier") return `landed as ${l.at.slice(0, 10)}, and the base's tip no longer holds its every line (reverted or edited since)`;
+  const went = l.went ? "the branch went on after the base took it (it undid part of that work)" : undefined;
+  if (l.how === "changed") return `landed as ${l.at.slice(0, 10)} with changes (${l.why})${went ? `, and ${went}` : ""}`;
+  if (l.how === "earlier") return `landed as ${l.at.slice(0, 10)}, and ${went ?? "the base's tip no longer holds its every line (reverted or edited since)"}`;
   return `the base holds its every line at ${l.at.slice(0, 10)}`;
 }
 // What the landed pass and the page call a landing.
@@ -143,8 +146,9 @@ export function ownTreeFate(s: TreeState): Fate {
 // The landed pass of the page: a listed worktree that goes, and whether its branch goes with it. A worktree with
 // anything uncommitted, locked, gone, or with no branch is not in it; a whole landing takes the branch, a changed
 // or older one leaves it.
-export function landedPass(t: { removable: boolean; branch?: string; missing?: boolean; landed?: Landed }): "tree-and-branch" | "tree" | undefined {
-  if (!t.removable || !t.branch || t.missing || !t.landed) return undefined;
+// One whose HEAD's reflog alone reaches commits (`reflog`) is the owner's to remove by itself, never the pass's.
+export function landedPass(t: { removable: boolean; branch?: string; missing?: boolean; landed?: Landed; reflog?: number }): "tree-and-branch" | "tree" | undefined {
+  if (!t.removable || !t.branch || t.missing || !t.landed || t.reflog) return undefined;
   return t.landed.how === "whole" ? "tree-and-branch" : "tree";
 }
 

@@ -22,7 +22,9 @@ type Held = { scopes: number; memory_bytes: number; others: { scopes: number; me
 type Tree = { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string;
   // The base holds its branch's work though not its commits: "whole" (its branch goes too), "earlier" (an older base commit
   // held it, the tip no longer does) or "changed" (landed edited): the branch stays for those two.
-  landed?: { how: "whole" | "earlier" | "changed"; at: string; words: string }; bytes?: number };
+  landed?: { how: "whole" | "earlier" | "changed"; at: string; words: string }; bytes?: number;
+  // Commits only its HEAD's reflog reaches (a detached HEAD, an unfinished rebase): only its own Remove takes it.
+  reflog?: number };
 type Branch = { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By };
 // A job scope that is not this daemon's job (another daemon's, or one whose processes carry another daemon's mark).
 // `daemon_live`: a daemon of the state folder its processes were started over runs now. `holds_self`: this daemon is in it.
@@ -47,6 +49,8 @@ function fateLine(sc: Scope): string {
 
 const SHOWN = 40;
 // What git deletes with a worktree without asking: its ignored files, said by count and the first names.
+// Commits only the worktree's HEAD reflog reaches: what its own Remove lets go, said in its dialog.
+const reflogSay = (n: number) => `${n === 1 ? "1 commit only its HEAD's reflog reaches goes" : `${n} commits only its HEAD's reflog reaches go`} with it (made on a detached HEAD or by a rebase that did not finish, often the picks of an aborted rebase). No branch holds ${n === 1 ? "it" : "them"}.`;
 const ignoredSay = (names: string[]) => `${names.length === 1 ? "1 ignored path goes" : `${names.length} ignored paths go`} with it: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""}.`;
 
 // Who an item is known by. "found": it was new in the repository when that agent ended, and who made it is not
@@ -112,7 +116,7 @@ export function LeftoversPanel() {
   const treeBy = sameBy(s.worktrees), branchBy = sameBy(s.branches);
   const branches = all ? s.branches : s.branches.slice(0, SHOWN);
   // The whole list in one act: every worktree that can be removed and every branch that is all on its base, as shown.
-  const trees = s.worktrees.filter((w) => w.removable), merged = s.branches.filter((b) => b.merged);
+  const trees = s.worktrees.filter((w) => w.removable && !w.reflog), merged = s.branches.filter((b) => b.merged);
   const ignoredAll = trees.reduce((n, w) => n + (w.ignored?.length ?? 0), 0);
   // What the button removes, said on it: how many of each, and the ignored files that go with the worktrees.
   const allLabel = trees.length + merged.length
@@ -137,7 +141,7 @@ export function LeftoversPanel() {
     }
   };
   // The landed pass: the worktrees whose branch's work the base holds, with what they hold on disk.
-  const landed = s.worktrees.filter((w) => w.removable && w.branch && !w.missing && w.landed);
+  const landed = s.worktrees.filter((w) => w.removable && w.branch && !w.missing && w.landed && !w.reflog);
   const landedWhole = landed.filter((w) => w.landed!.how === "whole").length;
   const landedBytes = landed.reduce((n, w) => n + (w.bytes ?? 0), 0);
   const landedIgnored = landed.reduce((n, w) => n + (w.ignored?.length ?? 0), 0);
@@ -259,6 +263,7 @@ export function LeftoversPanel() {
                         <span className={w.dirty ? "text-warn" : "text-faint"}>{w.dirty === undefined ? "status unknown" : `${w.dirty} uncommitted`}</span>
                         {!!w.ignored?.length && <span className="text-warn" title={w.ignored.join("\n")}>, {w.ignored.length} ignored</span>}
                         {w.ahead !== undefined && <span className={w.ahead ? "text-fg" : "text-faint"}>, {w.ahead} {w.ahead === 1 ? "commit" : "commits"} not on {w.base}</span>}
+                        {!!w.reflog && <span className="text-warn" data-testid="leftover-reflog" title="Made on a detached HEAD or by a rebase that did not finish: only this worktree's own Remove lets them go">, {w.reflog} only on its HEAD's reflog</span>}
                       </>}
                   </span>
                 </span>}
@@ -268,7 +273,7 @@ export function LeftoversPanel() {
                   {!treeBy && <Who by={w.by} />}{age(w.made)}
                 </>}
                 actions={<button type="button" className="k-btn" data-testid="leftover-remove" aria-label={`Remove worktree ${w.path}`} disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
-                  onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 }, "Removed.")}>
+                  onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.reflog ? `\n\n${reflogSay(w.reflog)}` : ""}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, ...(w.reflog ? { reflog: w.reflog } : {}) }, "Removed.")}>
                   Remove
                 </button>} />
             ))}
