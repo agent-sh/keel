@@ -337,7 +337,7 @@ async function readRefs(scratch: string, copy: Copy, checks: readonly Check[]) {
 // the agent's own run of the check says what it says). "stale": the agent changed its files while it waited.
 async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo, shown: readonly string[] = [], covered: () => boolean = () => false): Promise<{ ran: Ran; log: string; where?: string } | "stale" | undefined> {
   const cwd = check.dir === "." ? scratch : join(scratch, check.dir);
-  if (!existsSync(cwd)) return undefined;
+  if (!existsSync(cwd)) { since.delete(id); return undefined; }
   const cfg = setting();
   const heavy = pool.heavy(command);
   const localFree = !heavy || pool.room(heavy.cost).free > 0;
@@ -349,13 +349,17 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
     // In the agent's own sandbox, as its own commands run: never with more reach than they have. The places the
     // copy's links to installed packages point at are shown to it (a link into a folder it cannot see breaks).
     const confined = d!.confine(id, scratch, tool, [...linkTargets(repo, [check]), ...shown]);
-    if ("refused" in howToRun(d!.perm(id), confined)) return undefined;
-    const asked = Math.min(since.get(id) ?? Date.now(), Date.now());
+    if ("refused" in howToRun(d!.perm(id), confined)) { since.delete(id); return undefined; }
+    // A kept place is from a run that gave way for newer files; one older than half an hour belongs to a run that
+    // never came (it stopped early), so it is dropped rather than put ahead of the line with a wait of hours.
+    const kept = since.get(id);
+    const asked = kept !== undefined && Date.now() - kept < 30 * 60_000 ? kept : Date.now();
     const slot = await pool.take({ session: id, who: "beside", command, since: asked });
     if (slot === "aborted") return undefined;
     // The agent changed its files while this waited (its lane holds a change no run has taken): the slot goes back
     // unused, and the run of the newer files asks in this one's place.
-    if (stale(id)) { slot?.release(); if (lanes.has(id)) since.set(id, asked); return "stale"; }
+    // Only a run that waited gives way: one granted at once (or not heavy) runs on the files it copied.
+    if (slot && slot.waitedMs > 0 && stale(id)) { slot.release(); if (lanes.has(id)) since.set(id, asked); return "stale"; }
     since.delete(id);
     // The line may have been long: the agent's own run of it may have come in the meantime.
     if (covered()) { slot?.release(); stats.skipped++; return undefined; }
