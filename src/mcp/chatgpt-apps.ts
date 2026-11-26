@@ -65,7 +65,7 @@ const WRITES = new Set([
   // (Not email, message, call, order, book or sign: a read names them as things, get_email or list_order.)
 ]);
 // Words of a tool that reads a page or an address it is given: a fetch whatever its connector says of the open world.
-const WEB = new Set(["url", "urls", "web", "http", "https", "link", "links", "page", "webpage"]);
+const WEB = new Set(["url", "urls", "uri", "web", "http", "https", "link", "links", "href", "page", "pages", "webpage", "site", "website", "domain"]);
 // Words that say how many, in front of the verb (`batch_read_email`): not the verb.
 const MANY = new Set(["batch", "bulk", "multi"]);
 // A name as its words: split where it is not a letter or a digit, and where a lower-case letter meets an upper-case one.
@@ -74,6 +74,7 @@ export const nameWords = (name: string): string[] =>
 // The words of a tool's own name: what follows the app's prefix (`gmail.search_emails` is search, emails), without
 // the app's name said again in front (`slack.slack_read_channel` is read, channel) and without a word of how many.
 function ownWords(name: string): string[] {
+  if (typeof name !== "string") return [];
   const dot = name.indexOf(".");
   const app = dot < 0 ? [] : nameWords(name.slice(0, dot));
   let words = nameWords(dot < 0 ? name : name.slice(dot + 1));
@@ -85,6 +86,8 @@ export function readName(name: string): boolean {
   // A name with a letter outside ASCII can hide a write verb behind a look-alike letter: never a read.
   if (/[^\x00-\x7f]/.test(name)) return false;
   const words = ownWords(name);
+  // A name that joins two acts (get_and_email, find_or_create, list_then_archive) does more than read, whatever its words.
+  if (words.some((w) => w === "and" || w === "or" || w === "then")) return false;
   return words.length > 0 && READS.has(words[0]!) && !words.some((w) => WRITES.has(w));
 }
 type Judged = Pick<McpTool, "name" | "annotations">;
@@ -106,7 +109,7 @@ export function ownWhy(tool: Pick<McpTool, "name" | "annotations" | "_meta">): s
   const kind = appKind(tool);
   if (kind === "read" || kind === "fetch") return undefined;
   const does = kind === "delete" ? `may delete or overwrite data in ${app} (its connector says so)`
-    : kind === "send" ? `sends from ${app} to people or services outside it (its connector says so)`
+    : kind === "send" ? (tool.annotations?.openWorldHint === true ? `sends from ${app} to people or services outside it (its connector says so)` : `may reach people or services outside ${app} (its connector does not say it stays inside)`)
     : `changes things in ${app}`;
   return `${does}, as you, through your ChatGPT account: every write through a ChatGPT app is yours to allow`;
 }

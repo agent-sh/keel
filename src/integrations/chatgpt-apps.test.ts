@@ -387,3 +387,18 @@ test("an absent open-world hint, a name of a page or an address, a look-alike le
   // A letter outside ASCII can stand for a Latin one: never a read.
   expect(readName("gmail.get_s\u0435nd")).toBe(false);
 });
+
+test("a name that joins two acts is never a read, and a send its connector did not call open-world says so", () => {
+  for (const n of ["x.get_and_email", "x.find_and_order", "x.view_and_sign", "x.get_and_refund", "x.search_and_destroy", "x.find_or_create", "x.list_then_archive"]) {
+    expect([n, readName(n), appKind(named(n))]).toEqual([n, false, "write"]);
+  }
+  // The nouns a read names stay reads.
+  for (const n of ["gmail.get_email", "x.list_orders", "slack.read_message", "x.get_booking"]) expect([n, readName(n)]).toEqual([n, true]);
+  // More words of an address: a fetch even when said closed.
+  for (const n of ["x.lookup_domain", "x.get_site", "x.read_uri"]) expect([n, appKind(named(n))]).toEqual([n, "fetch"]);
+  // A name that is no string is no read, and does not throw.
+  expect(appKind({ name: 7 as unknown as string, annotations: { readOnlyHint: true, openWorldHint: false } })).toBe("write");
+  const quiet = { name: "gmail.batch_modify", annotations: { readOnlyHint: false }, _meta: { connector_id: "c", connector_name: "Gmail" } };
+  expect(ownWhy(quiet)).toContain("may reach people or services outside Gmail (its connector does not say it stays inside)");
+  expect(ownWhy(quiet)).not.toContain("its connector says so");
+});

@@ -209,7 +209,7 @@ function AppsSection({ s, base, act }: { s: McpServerState; base: string; act: A
     <div data-testid="mcp-apps" data-on={apps.on.length}>
       <div className="k-sub k-label">Apps: which ones every session gets</div>
       <p className="text-caption text-muted">
-        A session is offered only the apps turned on here; an agent definition of your own can turn one on for its agent. A tool that only reads the app runs without asking. One that reads from outside the app, a page or an address, is judged as any remote server's tool. Every tool that changes something is yours to allow on a card, in every mode, and an agent is refused it.
+        A session is offered only the apps turned on here; an agent definition of your own can turn one on for its agent. A tool that only reads the app runs without asking. One that may read from outside the app (its connector does not say it stays inside, or its name is a page or an address) is judged as any remote server's tool. Every tool that changes something is yours to allow on a card, in every mode, and an agent is refused it.
       </p>
       {apps.connectors.length === 0 && <p className="mt-2 text-caption text-faint" data-testid="mcp-apps-none">The account lists no app yet. Connect one in ChatGPT, then press Reconnect.</p>}
       <ul className="mt-2 flex flex-col">
@@ -219,7 +219,7 @@ function AppsSection({ s, base, act }: { s: McpServerState; base: string; act: A
               <div className="truncate text-fg">{c.name}</div>
               <div className="truncate font-mono text-micro text-faint">{c.id}</div>
             </div>
-            <span className="shrink-0 text-caption tabular-nums text-muted" data-testid="mcp-app-counts">
+            <span className="min-w-0 max-w-[55%] text-right text-caption tabular-nums text-muted" data-testid="mcp-app-counts">
               {c.reads} read{(c.fetches ?? 0) > 0 ? ` · ${c.fetches} read outside` : ""}{c.tools - c.reads - (c.fetches ?? 0) > 0 ? ` · ${c.tools - c.reads - (c.fetches ?? 0)} ask you` : ""}
             </span>
             <Toggle testid="mcp-app-toggle" on={on.has(c.id)} label={`${on.has(c.id) ? "Stop offering" : "Offer"} ${c.name} to every session`} onChange={(v) => put(v ? [...apps.on, c.id] : apps.on.filter((x) => x !== c.id))} />
