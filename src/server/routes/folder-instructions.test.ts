@@ -2,7 +2,7 @@
 // window, at the tail as the harness's own words: the prompt it holds keeps its bytes. What a small
 // window cuts is said, with where to read the rest.
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
 import { ErrorTracker } from "../../core/errors.ts";
@@ -56,5 +56,18 @@ test("a clone on a small window says what is cut and where to read it", async ()
   expect(n.text).not.toContain("END-RULE");
   expect(n.text).toContain(`Read ${join(to, "AGENTS.md")} from line`);
   expect(n.instructions.find((f: any) => f.path === join(to, "AGENTS.md")).state).toBe("cut");
+  store.db.close();
+});
+
+// This repository's AGENTS.md is longer than a 200K window's share of one file: a move there cuts it
+// and says so, with the line its rest starts on.
+test("this repository's AGENTS.md is not cut silently by a move", async () => {
+  const { store, routes, from, to } = setup("repo");
+  writeFileSync(join(to, "AGENTS.md"), readFileSync(join(import.meta.dir, "../../../AGENTS.md"), "utf8"));
+  const s = store.createSession({ workspace: from, model: "s:std", title: "std" });
+  expect((await post(routes, "/api/sessions/:id/folder", s.id, { cwd: to })).status).toBe(200);
+  const n = folderNote(store, s.id);
+  expect(n.text).toContain("(Cut here:");
+  expect(n.text).toContain(`Read ${join(to, "AGENTS.md")} from line`);
   store.db.close();
 });

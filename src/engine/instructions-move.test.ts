@@ -64,3 +64,22 @@ test("a move carries the version the owner trusted, never an untrusted edit", ()
     instructionFilter.file = was;
   }
 });
+
+// This repository's own AGENTS.md, as a move into a folder that holds it gives it on a 200K window and
+// on a larger one: whole, or cut with the line that says where its rest is, never cut silently.
+test("this repository's AGENTS.md is never cut silently on a move", () => {
+  const here = readFileSync(join(import.meta.dir, "../../AGENTS.md"), "utf8");
+  const from = join(root, "repo", "a"), to = join(root, "repo", "b");
+  mkdirSync(from, { recursive: true });
+  mkdirSync(to, { recursive: true });
+  writeFileSync(join(to, "AGENTS.md"), here);
+  for (const window of [200_000, 400_000, 1_000_000]) {
+    const m = instructionsMoved(to, from, window);
+    const f = m.files.find((x) => x.path === join(to, "AGENTS.md"))!;
+    if (f.state === "whole") expect(m.text).toContain(here.trimEnd().split("\n").at(-1)!);
+    else {
+      expect(f.state).toBe("cut");
+      expect(m.text).toContain(`Read ${join(to, "AGENTS.md")} from line`);
+    }
+  }
+});
