@@ -2,7 +2,7 @@
 // session opens and when the socket opens again, then from the session's `pace` frames.
 import { useEffect, useState } from "react";
 import type { PaceView } from "../../../src/automation/pace.ts";
-import { api, onFeature, readAtOpen } from "./store.ts";
+import { api, onFeature, readAtOpen, reportUnlessGone } from "./store.ts";
 import { clock } from "./utils.ts";
 
 export type { PaceView };
@@ -12,8 +12,10 @@ export function usePace(sessionId: string): PaceView | null {
   useEffect(() => {
     setV(null);
     let live = true;
-    const read = () => api<PaceView>(`/api/sessions/${sessionId}/pace?day=0`).then((x) => { if (live) setV(x); });
-    const off = onFeature({ frame: (f) => { if (f.name === "pace" && f.session_id === sessionId) setV(f.data as PaceView); }, reconnect: readAtOpen(read, "pace") });
+    const read = () => api<PaceView>(`/api/sessions/${sessionId}/pace?day=0`)
+      .then((x) => { if (live) setV(x); })
+      .catch((e) => reportUnlessGone(e, { at: "pace" }));
+    const off = onFeature({ frame: (f) => { if (f.name === "pace" && f.session_id === sessionId) setV(f.data as PaceView); }, reconnect: readAtOpen(read) });
     return () => { live = false; off(); };
   }, [sessionId]);
   return v;
