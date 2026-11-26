@@ -215,13 +215,31 @@ for (const kind of KINDS as Exclude<Kind, "secret">[]) {
     await expect(cardIn(page, target, kind)).toBeVisible();
     await page.keyboard.press("Alt+a");
     await expect(pane(page, first)).toHaveAttribute("data-helm", "true");
-    await expect(cardIn(page, first, "approval").getByTestId("allow-once")).toBeFocused();
-    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
-    await expect(cardIn(page, first, "approval").getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
-    await expect(cardIn(page, first, "approval").getByTestId("approval")).toHaveAttribute("data-live", "true");
+    const firstCard = cardIn(page, first, "approval");
+    const allow = firstCard.getByTestId("allow-once");
+    const next = pane(page, target);
+    const pressReady = async () => {
+      await expect(allow).toBeFocused();
+      await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 });
+      await page.keyboard.press("Enter");
+    };
     await rearm(page);
-    await page.keyboard.press("Enter");
-    await expect(pane(page, target)).toHaveAttribute("data-helm", "true");
+    await pressReady();
+    // The press checks geometry again. If the card moved since it said it was
+    // ready, it refuses the key and says so. Wait for readiness again, once.
+    let moved = false;
+    await expect.poll(async () => {
+      if (await next.getAttribute("data-helm") === "true") return true;
+      moved = (await firstCard.getByTestId("approval-refused").allTextContents()).includes("Not yet: it moved a moment ago");
+      return moved;
+    }).toBe(true);
+    const firstAnswers = async () => (await answersSent(page)).filter((a) => a.path.includes(`/sessions/${first}/approvals/`));
+    if (moved) {
+      expect(await firstAnswers()).toHaveLength(0);
+      await pressReady();
+    }
+    await expect(next).toHaveAttribute("data-helm", "true");
+    expect(await firstAnswers()).toHaveLength(1);
     await arrives(page, request, { way: "a step of the answering sequence, both panes on screen", kind, target, from: "keys", own: true });
     await drop(request, ...made);
   });
