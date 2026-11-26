@@ -11,7 +11,8 @@ import { toMessages } from "../../engine/turn.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { installTacitServer } from "../../integrations/tacit-mcp.ts";
-import { installChatgptApps, type AppsSignIn } from "../../integrations/chatgpt-apps.ts";
+import { installChatgptApps, standInSignIn, type AppsSignIn } from "../../integrations/chatgpt-apps.ts";
+import { patchSettings } from "../../admin/settings.ts";
 import { memoryOn } from "../../integrations/tacit.ts";
 import { isAgentKey, ProjectServers } from "../../mcp/project.ts";
 import { agentServers, defOfSession } from "../../automation/agents.ts";
@@ -102,7 +103,8 @@ export const mcpRoutes: RouteModule = (deps) => {
   installPhone(m);
   installTacitServer(m, (id) => memoryOn(deps.store, id));
   // ChatGPT's app connectors, signed in with the sign-in the plan's models use (off until the owner turns them on).
-  const chatgpt = deps.providers.get("chatgpt") as Partial<AppsSignIn> | undefined;
+  // (A scratch daemon on the scripted provider signs in to a stand-in a spec starts, never to ChatGPT.)
+  const chatgpt = standInSignIn() ?? (deps.providers.get("chatgpt") as Partial<AppsSignIn> | undefined);
   if (chatgpt?.available && chatgpt.signIn && chatgpt.account && chatgpt.appsUrl) installChatgptApps(m, chatgpt as AppsSignIn, (sid) => defOfSession(sid)?.apps);
   m.start();
   // A project's .mcp.json: its servers the owner approved go to the sessions working in it, from each turn's start.
@@ -420,6 +422,27 @@ export const mcpRoutes: RouteModule = (deps) => {
         const b = await body(req);
         if (typeof b.on !== "boolean") return bad("on is true or false");
         try { m.setCloseIdleBrowser(req.params.name, b.on); } catch (e) { return bad((e as Error).message, (e as { status?: number }).status ?? 400); }
+        return servers();
+      },
+    },
+    // The apps of ChatGPT's connectors every session is offered, by connector id; a remote device needs the passkey.
+    "/api/mcp/servers/:name/apps": {
+      PUT: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const row = m.list().find((x) => x.name === req.params.name);
+        if (!row?.apps) return bad(`${req.params.name} lists no apps now: turn it on first`, 409);
+        const b = await body(req);
+        const ids: unknown = b.connectors;
+        if (!Array.isArray(ids) || ids.some((c) => typeof c !== "string")) return bad("connectors is a list of connector ids");
+        // Only an app the account lists is turned on; one turned on before that it no longer lists may stay or go.
+        const listed = new Set([...row.apps.connectors.map((c) => c.id), ...row.apps.on]);
+        const unknown = (ids as string[]).filter((c) => !listed.has(c));
+        if (unknown.length) return bad(`the account lists no app with the id ${unknown.join(", ")}`);
+        const r = patchSettings({ chatgpt_apps: { connectors: [...new Set(ids as string[])] } });
+        if (!r.ok) return bad(r.error, r.status ?? 400);
         return servers();
       },
     },

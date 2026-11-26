@@ -119,7 +119,8 @@ export type BundledServer = {
   // are, and each is judged from its own definition. `token` signs a request in; `headers` go with every request;
   // `reads`: whether a tool only reads; `account`: why a tool is the owner's to allow in every mode, when it is
   // (src/safety/policy.ts: one that changes things; any other that is no read is judged as a remote server's tool); `meta`: what goes with a call as its `_meta`; `offers`: which tools a session is
-  // offered, when not all of them; `refused`: what is said when the sign-in was refused.
+  // offered, when not all of them; `refused`: what is said when the sign-in was refused. Only its tools are reached:
+  // its resources, prompts and skills are nobody's (`closed`), since they are not a connector's to turn on.
   remote?: {
     token(): Promise<string | undefined>;
     headers?(): Record<string, string>;
@@ -128,6 +129,12 @@ export type BundledServer = {
     meta?(tool: McpTool | undefined, callId?: string): Record<string, unknown> | undefined;
     offers?(session: string): ((tool: McpTool) => boolean) | "none" | undefined;
     refused?(): string;
+    // Whose sign-in it is (an account's id): the kept listing and the pin are that account's, so another account's
+    // listing is taken and accepted anew.
+    ident?(): string | undefined;
+    // What the owner's page shows of the listing beside the count of its tools (its apps, each with what it reads).
+    // `on`: the server is turned on.
+    shown?(tools: readonly McpTool[], on: boolean): Record<string, unknown>;
   };
   // Off until the owner turns it on (kept in the state): a server that acts with an account of the owner's.
   optIn?: true;
@@ -143,6 +150,13 @@ export type McpServerState = {
   error?: string;
   tools: number;
   tool_names: string[];
+  // ChatGPT's app connectors (src/mcp/chatgpt-apps.ts), while the server is on: each app the account lists with
+  // how many tools it has and how many only read, and the ones turned on for every session, by id.
+  apps?: { connectors: { id: string; name: string; prefix: string; tools: number; reads: number }[]; on: string[] };
+  // A server Keel brings that is off until the owner turns it on (it acts with an account of the owner's).
+  opt_in?: true;
+  // On a scratch daemon only: the file a spec writes the address of its stand-in of ChatGPT's apps server to.
+  stand_in?: string;
   read_tools: string[];   // the tools the owner marked as reads (they run without asking)
   hinted_reads: string[]; // the tools the server itself calls read-only (its word, not a read until marked)
   tool_hints: Record<string, ("destructive" | "open_world" | "idempotent")[]>; // what else the server says of a tool (src/mcp/hints.ts)
@@ -932,19 +946,19 @@ export class McpManager {
       name,
       session: e.session,
       ...(e.session ? {} : { server: true as const }),
-      tools: async () => {
+      tools: async (session?: string) => {
         // Phone control turned off leaves search, and a call still gets the plain reason.
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing" || this.twinOf(e)) return [];
         // A bundled server's shipped list: searching it starts nothing. Nor does the kept list of a command server.
         if (e.bundled && !e.bundled.remote) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
-        if (this.listed(e)) return this.forModel(e).map((t) => this.catalogTool(e, t));
+        if (this.listed(e)) return this.forSession(e, session).map((t) => this.catalogTool(e, t));
         try {
           await this.ensure(name, 8_000);
         } catch {
           return [];
         }
-        return this.forModel(e).map((t) => this.catalogTool(e, t));
+        return this.forSession(e, session).map((t) => this.catalogTool(e, t));
       },
       pending: () => (e.state === "connecting" && !e.cold ? [`${e.label ?? name}${e.startedAt ? ` (connecting for ${dur(Date.now() - e.startedAt)})` : ""}`] : []),
       // Found by a search: a command server with no process is started now, as its tool is likely called next.
@@ -956,19 +970,14 @@ export class McpManager {
         if (state !== "error" && state !== "unreachable") return [];
         return [{ name: e.label ?? name, why: (live?.error ?? e.error ?? "it failed to start").split("\nstderr:")[0]!.split("\n")[0]! }];
       },
-      known: () => {
+      known: (session?: string) => {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing" || this.twinOf(e)) return [];
         if (e.bundled && !e.bundled.remote) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
-        return e.state === "ready" || this.listed(e) ? this.forModel(e).map((t) => this.catalogTool(e, t)) : [];
+        return e.state === "ready" || this.listed(e) ? this.forSession(e, session).map((t) => this.catalogTool(e, t)) : [];
       },
-      // A server whose tools are not every session's (a remote one Keel brings): the ones this session is offered.
-      ...(bundled?.remote?.offers ? { only: (session: string) => {
-        const offers = bundled.remote!.offers!(session);
-        if (typeof offers !== "function") return offers;
-        const by = this.defsOf(e);
-        return (t: CatalogTool) => { const def = by.get(t.name); return !!def && offers(def); };
-      } } : {}),
+      // A server whose tools are not every session's (a remote one Keel brings): whether this session is offered none.
+      ...(bundled?.remote?.offers ? { none: (session: string) => bundled.remote!.offers!(session) === "none" } : {}),
     });
     return e;
   }
@@ -983,6 +992,22 @@ export class McpManager {
   private sleeps(e: Entry): boolean {
     if (e.bundled?.remote) return !!e.config.url;
     return !e.bundled && (!e.session || !!e.spec) && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e) && !this.watched?.(e.label ?? e.name);
+  }
+
+  // The tools of a listing a session is offered, as the model sees them: all of them, or of a remote server Keel
+  // brings the ones turned on for the session (chosen before anything is built of a definition).
+  private forSession(e: Entry, session: string | undefined): McpTool[] {
+    const all = this.forModel(e);
+    const offers = session ? e.bundled?.remote?.offers?.(session) : undefined;
+    return offers === "none" ? [] : offers ? all.filter(offers) : all;
+  }
+
+  // What is not reached of a remote server Keel brings: its resources, prompts and skills. A session is offered its
+  // tools by connector, and nothing says whose a resource or a prompt is, so they are nobody's: not a session's
+  // (it would read the account with no connector turned on), not the page's.
+  private closed(name: string): void {
+    const e = this.entries.get(name);
+    if (e?.bundled?.remote) throw new Error(`${e.bundled.label} offers its tools only: its resources and prompts are not reached through Keel`);
   }
 
   // A server's listed tools by name, made once a listing.
@@ -1009,7 +1034,7 @@ export class McpManager {
   private useKept(e: Entry) {
     if (e.state === "disabled" || !this.sleeps(e)) return;
     const k = this.kept[this.keptAs(e)];
-    if (!k || k.key !== keptKey(e.config) || !this.accepted(e, k.tools, k.instructions)) return;
+    if (!k || k.key !== this.keyOf(e) || !this.accepted(e, k.tools, k.instructions)) return;
     // (A session's list that is used is the newest again.)
     if (e.session && touchKept(this.kept, this.keptAs(e))) this.writeKept(this.keptAs(e));
     e.tools = k.tools;
@@ -1022,6 +1047,11 @@ export class McpManager {
 
   // The name a server's kept listing is under: its own, or for a session's server its spec (any session that is given
   // the same server finds it, and it is no other's).
+  // What a kept listing is for (keptKey), and of a remote server Keel brings whose sign-in it was listed with.
+  private keyOf(e: Entry): string {
+    const who = e.bundled?.remote?.ident?.();
+    return who === undefined ? keptKey(e.config) : digest(`${keptKey(e.config)}\n${who}`);
+  }
   private keptAs(e: Entry): string {
     return e.spec ?? e.name;
   }
@@ -1031,7 +1061,7 @@ export class McpManager {
     const at = this.keptAs(e);
     const caps = { resources: !!e.client.capabilities.resources, prompts: !!e.client.capabilities.prompts };
     const was = this.kept[at];
-    const key = keptKey(e.config);
+    const key = this.keyOf(e);
     const next: Kept = { key, tools: e.tools, instructions: e.instr ?? null, caps, ...(e.skills?.length ? { skills: e.skills.filter((k) => !k.fetched) } : {}), ...((prompts ?? (was?.key === key ? was.prompts : undefined)) ? { prompts: prompts ?? was!.prompts } : {}) };
     if (was && canon(was) === canon(next)) return;
     // (A session's lists are the newest ones: the oldest go past SESSION_KEPT.)
@@ -1298,7 +1328,7 @@ export class McpManager {
         }
         if (gone !== undefined || client.isClosed) throw new Error(`${name} closed during discovery: ${gone ?? "the connection is closed"}`);
         e.tools = tools;
-        e.skills = await this.skillsListed(name, client);
+        e.skills = e.bundled?.remote ? undefined : await this.skillsListed(name, client);
         e.cold = false;
         e.firstCall = true;
         this.settle(e, client.instructions);
@@ -1411,7 +1441,7 @@ export class McpManager {
     const offers = e && b?.remote?.offers?.(ctx.sessionId);
     if (e && offers) {
       const def = this.defsOf(e).get(tool);
-      if (offers === "none" || (def && !offers(def))) return Promise.resolve({ content: `${name}__${tool} is not turned on for this session: the owner's setting chatgpt_apps.connectors turns an app on for every session, and an agent definition turns one on for its agent.`, is_error: true });
+      if (offers === "none" || !def || !offers(def)) return Promise.resolve({ content: `${name}__${tool} is not a tool this session is offered: ${def ? "its app is not turned on for it" : "the server lists no tool of that name"}. The owner turns an app on for every session in Customize > MCP servers, and an agent definition of his turns one on for its agent.`, is_error: true });
     }
     if (e) { e.inflight = (e.inflight ?? 0) + 1; e.used = Date.now(); }
     const done = () => { if (e) { e.inflight = Math.max(0, (e.inflight ?? 1) - 1); e.used = Date.now(); } };
@@ -1698,7 +1728,7 @@ export class McpManager {
     // A tool that names an app (src/mcp/apps.ts): its page is read now, once, and kept with this result.
     const def = tools?.find((t) => t.name === tool);
     // (An app of a remote server Keel brings is not kept: its page is its service's own, and no app of it calls back.)
-    const uri = !app && def && !e?.bundled ? appUriOf(def) : undefined;
+    const uri = !app && def && !e?.bundled?.remote ? appUriOf(def) : undefined;
     if (uri && e && this.apps) {
       const kept = await this.apps.keep({ server: name, source: binding(sourced(e.config), this.bindKey), shown, tool: def!, uri, input, result: r, ctx }).catch((err) => { this.errors.capture("tool", err, { mcp: name, tool, at: "mcp app", session: ctx.sessionId }); return undefined; });
       if (kept !== undefined) out.shown = { mcp_app: kept };
@@ -1733,6 +1763,7 @@ export class McpManager {
 
   // An app's page as its server gives it: each content item whole, with its `_meta`.
   async readApp(name: string, uri: string, signal?: AbortSignal): Promise<{ uri?: string; mimeType?: string; text?: string; blob?: string; _meta?: Record<string, unknown> }[]> {
+    this.closed(name);
     const c = await this.ensure(name, 15_000);
     this.used(name);
     const r = await c.readResource(uri, signal);
@@ -2064,14 +2095,16 @@ export class McpManager {
       return {
       name: e.label ?? e.name,
       ...(e.session ? { session: e.session } : {}),
-      transport: e.bundled?.live ? "socket" : e.config.url ? "http" : "stdio",
+      transport: e.bundled?.live ? "socket" : e.config.url || e.bundled?.remote ? "http" : "stdio",
       target: e.bundled?.live?.target ?? (e.session ? shownTarget(e.config) : maskedTarget(shown)),
       enabled: e.state !== "disabled",
       state: live?.state ?? e.state,
       // (Of a session's own server, the reason in one line: what its command printed is not shown.)
       error: live ? live.error : e.session ? e.error?.split("\nstderr:")[0]!.split("\n")[0] : e.error,
       tools: (e.bundled && !e.bundled.remote && !e.client ? e.bundled.tools : e.tools).length,
-      tool_names: (e.bundled && !e.bundled.remote && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
+      // (A remote server Keel brings lists hundreds: the page shows its apps instead, not a name each.)
+      tool_names: e.bundled?.remote ? [] : (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
+      ...(e.bundled?.remote?.shown?.(e.tools, e.state !== "disabled") ?? {}),
       read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
       hinted_reads: e.bundled ? [] : e.tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
       // (What the model is offered: a changed tool the owner has not accepted is offered as accepted.)
@@ -2098,8 +2131,9 @@ export class McpManager {
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
       signed_in: !!e.config.url && this.oauth.signedIn(e.name),
       bundled: e.bundled?.label,
-      resources: !!(e.client ? e.client.capabilities.resources : e.cold && e.caps?.resources),
-      prompts: !!(e.client ? e.client.capabilities.prompts : e.cold && e.caps?.prompts),
+      ...(e.bundled?.optIn ? { opt_in: true as const } : {}),
+      resources: !e.bundled?.remote && !!(e.client ? e.client.capabilities.resources : e.cold && e.caps?.resources),
+      prompts: !e.bundled?.remote && !!(e.client ? e.client.capabilities.prompts : e.cold && e.caps?.prompts),
       resources_rev: e.resourcesRev,
       prompts_rev: e.promptsRev,
       logging: !!e.client?.capabilities.logging,
@@ -2291,7 +2325,9 @@ export class McpManager {
     return (!e.bundled || !!e.bundled.remote) && !e.session;
   }
   private pinIdent(e: Entry) {
-    return digest(endpoint(e.config)).slice(0, 16);
+    // (A remote server Keel brings is pinned for the account it signs in with: another account lists other tools.)
+    const who = e.bundled?.remote?.ident?.();
+    return digest(who === undefined ? endpoint(e.config) : `${endpoint(e.config)}\n${who}`).slice(0, 16);
   }
   private pinOf(e: Entry): Pin | undefined {
     const p = this.leashed(e) ? this.pins[e.name] : undefined;
@@ -2885,6 +2921,7 @@ export class McpManager {
   // Concrete resources and templates are listed apart: either half shows
   // when the other fails, and a server without templates is not a failure.
   async resources(name: string, signal?: AbortSignal, from?: { list: "resources" | "templates"; cursor: string }): Promise<{ resources: ResourceHalf; templates: ResourceHalf }> {
+    this.closed(name);
     const c = await this.ensure(name, 15_000);
     this.used(name);
     const half = async (list: "resources" | "templates"): Promise<ResourceHalf> => {
@@ -2904,6 +2941,7 @@ export class McpManager {
   // Each item apart, in order, with the URI the server returned. Reading a
   // URI subscribes to its changes when the server offers that.
   async readResource(name: string, uri: string, signal?: AbortSignal): Promise<ResourceItem[]> {
+    this.closed(name);
     const c = await this.ensure(name, 15_000);
     this.used(name);
     const r = await c.readResource(uri, signal);
@@ -2917,6 +2955,7 @@ export class McpManager {
   }
 
   async prompts(name: string, signal?: AbortSignal) {
+    this.closed(name);
     const c = await this.ensure(name, 15_000);
     this.used(name);
     return c.listPrompts(signal);
@@ -2931,6 +2970,7 @@ export class McpManager {
   // templates (server/utilities/completion): at most the spec's 100 values,
   // strings only. A server that does not declare completions suggests nothing.
   async complete(name: string, ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string }, argument: { name: string; value: string }, context?: Record<string, string>, signal?: AbortSignal): Promise<{ values: string[]; hasMore?: true; total?: number }> {
+    this.closed(name);
     const c = await this.ensure(name, 15_000);
     this.used(name);
     if (!c.capabilities.completions) return { values: [] };
@@ -2940,6 +2980,7 @@ export class McpManager {
   }
 
   async promptMessages(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<PromptMessage[]> {
+    this.closed(name);
     const c = await this.ensure(name, 15_000);
     this.used(name);
     const r = await c.getPrompt(prompt, args, signal);
@@ -2961,6 +3002,7 @@ export class McpManager {
   async allPrompts(signal?: AbortSignal): Promise<{ server: string; name: string; description: string; arguments: { name: string; description?: string; required?: boolean }[]; complete?: true }[]> {
     const out = await Promise.all([...this.ready(), ...this.asleep()].map(async (server) => {
       const e = this.entries.get(server);
+      if (e?.bundled?.remote) return [];
       // A server with no process lists the prompts it was last seen to have; one never listed is started for it once.
       if (e?.cold && e.state === "idle") {
         if (!e.caps?.prompts) return [];
@@ -2998,12 +3040,13 @@ export class McpManager {
   async capable(cap: "resources" | "prompts"): Promise<string[]> {
     const names: string[] = [];
     for (const s of this.ready()) {
+      if (this.entries.get(s)?.bundled?.remote) continue;
       try {
         const c = await this.ensure(s, 3000);
         if (c.capabilities[cap]) names.push(s);
       } catch {}
     }
-    for (const s of this.asleep()) if (this.entries.get(s)?.caps?.[cap]) names.push(s);
+    for (const s of this.asleep()) if (!this.entries.get(s)?.bundled?.remote && this.entries.get(s)?.caps?.[cap]) names.push(s);
     return names;
   }
 
@@ -3184,8 +3227,9 @@ export class McpManager {
   // the ones it last published. A server that has never connected under its
   // config and is connecting now is waited for, up to `waitMs` in all, so a
   // session started with the daemon gets its instructions too.
-  async configured(waitMs = 0): Promise<{ name: string; instructions?: string; same_as?: string }[]> {
-    const live = () => [...this.entries.values()].filter((e) => e.state !== "disabled" && e.state !== "missing" && !e.session);
+  // `session`: the session the list is for; a server that offers it none of its tools is no server of its.
+  async configured(waitMs = 0, session?: string): Promise<{ name: string; instructions?: string; same_as?: string }[]> {
+    const live = () => [...this.entries.values()].filter((e) => e.state !== "disabled" && e.state !== "missing" && !e.session && !(session && e.bundled?.remote?.offers?.(session) === "none"));
     const unknown = live().filter((e) => e.state === "connecting" && !e.bundled && !this.lastPublished(e));
     if (waitMs > 0 && unknown.length && !runMode.client) {
       const settled = async (e: Entry) => {

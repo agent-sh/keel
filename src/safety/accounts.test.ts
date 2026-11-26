@@ -858,7 +858,9 @@ test("a write with an account that is the owner's whole is his card in every mod
   }
   const agent = mcp({ server: "chatgpt-apps", whole } as { server: string }, "full-auto", true) as { deny: string };
   expect(agent.deny).toContain(`Refused: slack__post ${whole}. That call is the owner's to make, in every mode: an agent is never allowed it.`);
-  expect(agent.deny).toContain("the session that started you can make the call");
+  // (The agent may be the only one the app is turned on for: the call is not its parent's to make.)
+  expect(agent.deny).toContain("the call can be made only in a session where the owner turned the app on, and he answers its card there");
+  expect(agent.deny).not.toContain("the session that started you");
   // Read only refuses it as any tool that can change things.
   expect((mcp({ server: "chatgpt-apps", whole } as { server: string }, "read-only") as { deny: string }).deny).toContain("read-only");
 });

@@ -194,8 +194,8 @@ export function installMcpTools(m: McpManager) {
   // One frozen line per session so the model knows the servers exist.
   registerHooks({
     // The servers and what they published are the owner's side of the block (hooks.ts SystemBlock).
-    system: async () => {
-      const s = await m.configured(FIRST_CONNECT_WAIT_MS);
+    system: async (session) => {
+      const s = await m.configured(FIRST_CONNECT_WAIT_MS, session.id);
       const lines = s.map((x) => `- ${x.name}${x.same_as ? `: same as ${x.same_as}` : x.instructions ? `: ${oneLine(x.instructions, 200)}` : ""}`);
       return {
         name: "MCP servers are connected", data: lines.join("\n"),

@@ -57,6 +57,8 @@ export function standIns(dir: string, { host = false } = {}): Record<string, str
     KEEL_MAIL_STANDIN: join(dir, "mail"),
     KEEL_PARLAR: join(dir, "parlar/parlar"),
     KEEL_PHONE_SOCKET: join(dir, "phone/phone.sock"),
+    // ChatGPT's app connectors: the address of a stand-in server a spec starts is read from this file, never chatgpt.com.
+    KEEL_CHATGPT_APPS_STANDIN: join(dir, "chatgpt-apps.url"),
     // One ssh host is a stand-in: this machine with a scratch home, reached by the stand-in ssh.
     KEEL_SSH_STANDIN_HOST: "keel-standin",
     KEEL_SSH_STANDIN_HOME: join(dir, "box"),

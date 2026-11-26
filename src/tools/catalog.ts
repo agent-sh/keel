@@ -34,14 +34,15 @@ export type CatalogTool = {
 // `pending` names servers still connecting so search can say so.
 export type CatalogSource = {
   name: string;
-  tools(): Promise<CatalogTool[]>;
+  // `session`: the session they are for (a source whose tools differ by session gives that session's).
+  tools(session?: string): Promise<CatalogTool[]>;
   pending?(): string[];
   // Servers that should offer tools and cannot now (failed to start, need a
   // sign-in): a search says so with the reason, so a missing tool is never silent.
   failed?(): { name: string; why: string }[];
   // The tools listed right now, without connecting anything (an MCP server's
   // last listing while it is ready). A source without it is asked with tools().
-  known?(): CatalogTool[];
+  known?(session?: string): CatalogTool[];
   // A search found a tool of this source: start what a call would need (a server with no process).
   warm?(): void;
   // Families that have these tools among their own (the web pair for Claude):
@@ -52,11 +53,11 @@ export type CatalogSource = {
   session?: string;
   // An MCP server of the owner's (or one Keel brings): the owner may turn it off for one session (`sessionOff`).
   server?: true;
-  // A source whose tools are not every session's (ChatGPT's app connectors, src/mcp/chatgpt-apps.ts): which of
-  // them a session is offered, "none" when it is offered none (the source is then no source of that session's:
-  // nothing of it is searched, declared, called or started), nothing when all. The owner's own lists name no
-  // session and show all.
-  only?(session: string): ((t: CatalogTool) => boolean) | "none" | undefined;
+  // A source whose tools are not every session's (ChatGPT's app connectors, src/mcp/chatgpt-apps.ts): whether a
+  // session is offered none of them. The source is then no source of that session's: nothing of it is searched,
+  // declared, called or started. (Which ones a session is offered, `tools` and `known` say.) The owner's own
+  // lists name no session and show all.
+  none?(session: string): boolean;
 };
 
 // The servers turned off for a session, set where sessions are kept (src/server/routes/mcp.ts): a source that is a
@@ -87,12 +88,7 @@ export const unregisterCatalog = (name: string) => void sources.delete(name);
 const offered = (session?: string) => {
   const off = session ? sessionOff.of?.(session) : undefined;
   const all = [...sources.values()];
-  return [...all.filter((s) => !s.session && !(s.server && off?.includes(s.name)) && !(session && s.only?.(session) === "none")), ...(session ? all.filter((s) => s.session === session) : [])];
-};
-// A source's tools as a session is offered them.
-const forSession = (s: CatalogSource, session: string | undefined, tools: CatalogTool[]): CatalogTool[] => {
-  const keep = session ? s.only?.(session) : undefined;
-  return typeof keep === "function" ? tools.filter(keep) : tools;
+  return [...all.filter((s) => !s.session && !(s.server && off?.includes(s.name)) && !(session && s.none?.(session))), ...(session ? all.filter((s) => s.session === session) : [])];
 };
 
 // Why a tool is not there, when its server is turned off for the session: the words a call to it is told. The tool is
@@ -117,7 +113,7 @@ export function unavailableNote(session?: string): string {
 // tools a request declares (src/tools/defer.ts).
 export async function catalogReady(family?: string, session?: string): Promise<CatalogTool[]> {
   const use = offered(session).filter((s) => !family || !s.except?.includes(family));
-  const lists = await Promise.allSettled(use.map(async (s) => forSession(s, session, await (s.known ? s.known() : s.tools()))));
+  const lists = await Promise.allSettled(use.map((s) => (s.known ? s.known(session) : s.tools(session))));
   return lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 
@@ -134,7 +130,7 @@ export function surfaced(tools: { server: string }[], session?: string) {
 }
 
 export async function catalogTools(session?: string): Promise<CatalogTool[]> {
-  const lists = await Promise.allSettled(offered(session).map(async (s) => forSession(s, session, await s.tools())));
+  const lists = await Promise.allSettled(offered(session).map((s) => s.tools(session)));
   return lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 

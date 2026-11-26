@@ -156,19 +156,16 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         )}
         {(s.twin_of || s.offer_twin) && !s.plugin && !s.session && <OfferTwinSection s={s} base={base} act={act} />}
         {s.held && <ToolChanges s={s} base={base} act={act} />}
-        {offered(s) && s.tool_names.length > 0 && (s.bundled || s.plugin ? (
-          <div>
-            <div className="k-sub k-label">Tools</div>
-            <div className="flex flex-wrap gap-1">{s.tool_names.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}</div>
-          </div>
-        ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
+        {s.apps && <AppsSection s={s} base={base} act={act} />}
+        {offered(s) && s.tool_names.length > 0 && (s.bundled || s.plugin ? <ToolChips names={s.tool_names} />
+          : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
         {s.class && <ClassSection s={s} base={base} act={act} />}
         {offered(s) && s.schema_fit?.length > 0 && <SchemaFit rows={s.schema_fit} />}
         {s.idle_browser && !s.plugin && !s.session && (s.idle_browser.can || s.idle_browser.on) && <IdleBrowserSection s={s} base={base} act={act} />}
         {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
         {(s.state === "ready" || s.state === "idle") && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {(s.logging || s.log_rev > 0) && <ServerLog s={s} base={base} />}
-        {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
+        {!offered(s) && !s.error && <p className="text-caption text-faint">{s.state === "disabled" && s.opt_in ? "Off. It acts with an account of yours, so it stays off until you turn it on. What it offers shows then." : "Its tools show once it connects."}</p>}
         {!s.bundled && (
           <p className="text-caption text-faint" data-testid="mcp-pinning">
             {s.session ? "Not pinned: a server an editor passes lives with its session, and a change of what it lists is not held."
@@ -176,6 +173,65 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+// The tools of a server Keel or a plugin brings, by name: the first ones, the rest on a press.
+const CHIPS = 60;
+function ToolChips({ names }: { names: string[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? names : names.slice(0, CHIPS);
+  return (
+    <div data-testid="mcp-tool-chips" data-shown={shown.length}>
+      <div className="k-sub k-label">Tools</div>
+      <div className="flex flex-wrap gap-1">
+        {shown.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}
+        {names.length > CHIPS && (
+          <button type="button" data-testid="mcp-tool-chips-more" onClick={() => setAll(!all)} className="px-1 text-micro text-faint hover:text-fg">
+            {all ? "fewer" : `+${names.length - CHIPS} more`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ChatGPT's app connectors (src/mcp/chatgpt-apps.ts): the apps the account lists, and which of them every session is
+// offered. One row an app: what it reads without asking, what asks, its switch. Named by connector id.
+function AppsSection({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const apps = s.apps!;
+  const on = new Set(apps.on);
+  const listed = new Set(apps.connectors.map((c) => c.id));
+  const gone = apps.on.filter((id) => !listed.has(id));
+  const put = (ids: string[]) => act(`${base}/apps`, { connectors: ids }, "PUT");
+  return (
+    <div data-testid="mcp-apps" data-on={apps.on.length}>
+      <div className="k-sub k-label">Apps: which ones every session gets</div>
+      <p className="text-caption text-muted">
+        A session is offered only the apps turned on here; an agent definition of your own can turn one on for its agent. A tool that only reads the app runs without asking. Every other tool is yours to allow on a card, in every mode, and an agent is refused it.
+      </p>
+      {apps.connectors.length === 0 && <p className="mt-2 text-caption text-faint" data-testid="mcp-apps-none">The account lists no app yet. Connect one in ChatGPT, then press Reconnect.</p>}
+      <ul className="mt-2 flex flex-col">
+        {apps.connectors.map((c) => (
+          <li key={c.id} className="flex min-w-0 items-center gap-3 border-t border-line py-1.5 first:border-t-0" data-testid="mcp-app" data-id={c.id} data-on={on.has(c.id) || undefined}>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-fg">{c.name}</div>
+              <div className="truncate font-mono text-micro text-faint">{c.id}</div>
+            </div>
+            <span className="shrink-0 text-caption tabular-nums text-muted" data-testid="mcp-app-counts">
+              {c.reads} read{c.tools - c.reads > 0 ? ` · ${c.tools - c.reads} ask you` : ""}
+            </span>
+            <Toggle testid="mcp-app-toggle" on={on.has(c.id)} label={`${on.has(c.id) ? "Stop offering" : "Offer"} ${c.name} to every session`} onChange={(v) => put(v ? [...apps.on, c.id] : apps.on.filter((x) => x !== c.id))} />
+          </li>
+        ))}
+      </ul>
+      {gone.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 text-micro text-faint" data-testid="mcp-apps-gone">
+          <span>Turned on, no longer listed by the account: <span className="font-mono">{gone.join(", ")}</span></span>
+          <button type="button" className="k-link hover:text-fg hover:underline" onClick={() => put(apps.on.filter((id) => listed.has(id)))}>Drop</button>
+        </div>
+      )}
     </div>
   );
 }

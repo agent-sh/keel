@@ -112,7 +112,9 @@ export default function Plugins() {
           </>
         ) : b ? (
           <>
-            <ReaderHead title={b.bundled ?? b.name} desc={`Keel brings this one itself: every session has it with no setup, as the ${b.name} MCP server. It can be turned off, not removed.`} facts={[["State", b.state.replace("_", " ")], ["Tools", `${b.tools}`], ["Transport", b.transport]]}>
+            <ReaderHead title={b.bundled ?? b.name} desc={b.opt_in
+              ? `Keel brings this one itself, as the ${b.name} MCP server. It acts with an account of yours, so it is off until you turn it on, and a session is offered only what you turn on for it in Customize > MCP servers. It can be turned off, not removed.`
+              : `Keel brings this one itself: every session has it with no setup, as the ${b.name} MCP server. It can be turned off, not removed.`} facts={[["State", b.state.replace("_", " ")], ["Tools", `${b.tools}`], ["Transport", b.transport]]}>
               {b.error && <div className="k-issue mt-3" data-tone={b.state === "missing" || b.state === "not_armed" ? "quiet" : undefined}>{b.error}</div>}
             </ReaderHead>
             <div className="k-reader-body">

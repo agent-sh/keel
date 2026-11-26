@@ -1023,7 +1023,7 @@ export function accountContext(command: string, cwd: string, looked: Looked | un
 }
 
 // What an agent is told of a write that acts as the owner in a service of someone else's (a ChatGPT app).
-const AGENT_ACTS = "That call is the owner's to make, in every mode: an agent is never allowed it. Do not try another form of it. Say in your report exactly what you wanted it to do (the tool and what it would send or change) and go on with the rest: the session that started you can make the call, and the owner answers its card.";
+const AGENT_ACTS = "That call is the owner's to make, in every mode: an agent is never allowed it. Do not try another form of it. Say in your report exactly what you wanted it to do (the tool and what it would send or change) and go on with the rest: the call can be made only in a session where the owner turned the app on, and he answers its card there.";
 const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it unless the place is one of his namespaces (Settings > Permissions > Your accounts, where he names them). Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";
 // What a write with an account beyond the owner's namespaces asks: the owner's card in every mode; an agent is refused.
 function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign> extends infer T ? (T extends { account: infer A } ? A : never) : never }, f: Facts, what = "the command", own = false): Decision {

@@ -1,5 +1,5 @@
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tempTree } from "../../test/env.ts";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -1652,9 +1652,18 @@ test("a Codex agent file's plugins and app connectors are read: an app's agent i
       appsNow.of = () => ({ on: true, connectors: [{ id: "connector_2", name: "Slack" }] });
       expect(agents.definitions(dir).find((d) => d.name === "mailer")!.unavailable).toBe("it turns on a ChatGPT app connector, and the owner's ChatGPT account does not list connector_1");
       // On, and the account lists it: offered, the connector with its definition and named in its task.
-      appsNow.of = () => ({ on: true, connectors: [{ id: "connector_1", name: "Gmail" }, { id: "connector_2", name: "Slack" }] });
+      appsNow.of = () => ({ on: true, connectors: [{ id: "connector_1", name: "Gmail", prefix: "gmail" }, { id: "connector_2", name: "Slack", prefix: "slack" }] });
       const on = agents.definitions(dir).find((d) => d.name === "mailer")!;
       expect([on.unavailable, on.apps, on.notTaken]).toEqual([undefined, ["connector_1"], undefined]);
+      // The owner's own folder is read once, as his. A session in a folder of his home that is no repository walks
+      // up to the home, whose .codex/agents is that same folder: its file is still his, and its connector is on.
+      const home = join(dir, "a-home");
+      mkdirSync(join(home, "notes"), { recursive: true });
+      symlinkSync(codex, join(home, ".codex"));
+      mkdirSync(join(home, ".git"));
+      const loose = agents.definitions(join(home, "notes")).find((d) => d.name === "mailer")!;
+      expect([loose.source, loose.unavailable, loose.apps]).toEqual(["owner", undefined, ["connector_1"]]);
+      expect(agents.agentFolders(join(home, "notes")).filter((f) => f.codex).map((f) => f.layer)).toEqual(["owner", "project"]);
       expect(agents.offeredTypes(dir)).toContain("- mailer: Gmail searches");
       // A repository's own agent file turns no connector on, the server on or not: it is not offered.
       expect(agents.definitions(dir).find((d) => d.name === "borrowed")).toMatchObject({ unavailable: "it turns on a ChatGPT app connector, and only an agent definition of the owner's own turns one on (a file in his own agents folder, not a repository's)" });

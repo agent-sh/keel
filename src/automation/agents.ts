@@ -1,7 +1,7 @@
 import { crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
 import { allowedOnly, allows, providerOf } from "../safety/route-rule.ts";
 import type { Database } from "bun:sqlite";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { bareBy } from "../core/bare-index.ts";
 import { git as gitRun } from "../core/git.ts";
 import { basename, dirname, join, resolve } from "node:path";
@@ -678,9 +678,15 @@ export function agentFolders(cwd: string): { dir: string; layer: "owner" | "proj
     dirs.unshift(d);
     if (existsSync(join(d, ".git")) || dirname(d) === d || d === homeDir()) break;
   }
+  // A folder that is one of the owner's own (a session in a folder of the home that is no repository walks up to
+  // the home, whose .codex/agents and .claude/agents are his) is read once, as his: not again as a project's.
+  const real = (dir: string) => { try { return realpathSync(dir); } catch { return dir; } };
+  const owners = new Set(out.map((f) => real(f.dir)));
   for (const d of dirs) {
-    out.push({ dir: join(d, ".codex", "agents"), layer: "project", codex: true });
-    for (const sub of [".claude/agents", ".agents/agents", ".keel/agents"]) out.push({ dir: join(d, sub), layer: "project", codex: false });
+    for (const [sub, codex] of [[".codex/agents", true], [".claude/agents", false], [".agents/agents", false], [".keel/agents", false]] as const) {
+      const dir = join(d, sub);
+      if (!owners.has(real(dir))) out.push({ dir, layer: "project", codex });
+    }
   }
   return out;
 }
