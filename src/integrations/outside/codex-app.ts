@@ -31,7 +31,7 @@ import type { Bus } from "../../core/bus.ts";
 import type { Store } from "../../core/store.ts";
 import type { Holder } from "../../core/types.ts";
 import type { Gate } from "../../safety/gate.ts";
-import { holderSaid } from "../../core/watch.ts";
+import { holderSaid } from "../../core/holder-words.ts";
 import { homeDir } from "../../core/paths.ts";
 import type { ToolCall } from "../../engine/hooks.ts";
 import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools/interact.ts";

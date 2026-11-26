@@ -10,7 +10,8 @@ import { ArrowUp, ChevronDown, ChevronRight, CornerDownRight, Square, X } from "
 import { useEffect, useRef, useState } from "react";
 import type { Holder, Session, Usage } from "../../../src/core/types.ts";
 import { shortPath } from "../../../src/core/tool-line.ts";
-import { holderSaid, OUTSIDE_LABEL } from "../../../src/core/watch.ts";
+import { OUTSIDE_LABEL } from "../../../src/core/watch.ts";
+import { holderSaid } from "../../../src/core/holder-words.ts";
 import { api, failed, onFeature, reportUnlessGone } from "../lib/store.ts";
 import { composing } from "../lib/keys.ts";
 import { navigate } from "../lib/ui.ts";
