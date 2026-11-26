@@ -16,6 +16,7 @@ import { startTimes } from "../core/start-trace.ts";
 import { addAdmission } from "../server/admission.ts";
 import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
+import { logOwn, type LogLine } from "./logs.ts";
 import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
 import { beatLife, endLife, lifeDraining, restarts } from "./life.ts";
 import { ranWords } from "./activity.ts";
@@ -399,7 +400,7 @@ export class Daemon {
     // (Said once: the words carry the time the restart was asked, not the time they are said again.)
     const words = `No backup was made before the restart at ${clock(Date.now())}: the store's disk did not answer.`;
     const noBackup = () => {
-      if (this.silent() && this.draining!.restart && this.beforeRestart.length) this.say(words);
+      if (this.silent() && this.draining!.restart && this.beforeRestart.length) this.say(words, "warn");
       return this.silent();
     };
     noBackup();
@@ -419,11 +420,11 @@ export class Daemon {
         // more (drain-commands.ts): parking the turn stops it. The notes say how many it waits for and how many it cut.
         const waiting = this.fronts().length;
         if (waiting) {
-          this.say(commandsBegin(waiting, COMMAND_WAIT_MS), false);
+          this.say(commandsBegin(waiting, COMMAND_WAIT_MS), "info", false);
           mine.deadline_ms = Date.now() + COMMAND_WAIT_MS;
           this.emit();
           const ended = await waitForCommands({ list: () => this.fronts(), boundMs: COMMAND_WAIT_MS });
-          if (ended.cut && this.draining === mine) this.say(commandsEnd(ended.cut, COMMAND_WAIT_MS), false);
+          if (ended.cut && this.draining === mine) this.say(commandsEnd(ended.cut, COMMAND_WAIT_MS), "warn", false);
         }
       })();
       const silent = noBackup();
@@ -471,7 +472,7 @@ export class Daemon {
       // What the store still owes (the owner's stops and answers from while its disk did not answer) is
       // in its file for the next start, or is said exactly when that file could not be written either.
       const left = await owedAtStop(this.deps.store, this.draining!.restart ? "restart" : "stop");
-      for (const n of left.notes) this.say(n, false);
+      for (const n of left.notes) this.say(n, left.lost ? "error" : "warn", false);
       this.deps.providers.shutdown();
       endLife(this.draining!.restart ? "restart" : "stop");
       if (this.draining!.restart) this.relaunch();
@@ -490,11 +491,11 @@ export class Daemon {
 
   // A word about this stop or restart: in the daemon's state (the answer, the command line), on the
   // console, and kept for the next start (`next`: unless the file it would be kept in is what failed).
-  private say(note: string, next = true) {
+  private say(note: string, level: Exclude<LogLine["level"], "debug">, next = true) {
     const d = this.draining;
     if (!d || d.notes?.includes(note)) return;
     (d.notes ??= []).push(note);
-    console.error(`[daemon] ${note}`);
+    logOwn(`[daemon] ${note}`, level);
     if (next) try { this.deps.store.noteNext(note); } catch {}
   }
 

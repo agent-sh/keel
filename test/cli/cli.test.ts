@@ -1005,6 +1005,11 @@ describe("a session a script holds open", () => {
       const said = readFileSync(join(`${state}-logs`, "start-1.log"), "utf8");
       expect(said).toMatch(/1 command runs in front of a turn: the restart waits up to 60 s more for it before it parks the turns\./);
       expect(said).not.toMatch(/in front of them cut/);
+      const logs = join(state, "logs");
+      const lines = readdirSync(logs).filter((name) => /^keel-.*\.log$/.test(name)).map((name) => readFileSync(join(logs, name), "utf8")).join("\n");
+      expect(lines.match(/^.*1 command runs in front of a turn: the restart waits up to 60 s more.*$/gm)).toEqual([
+        expect.stringMatching(/ INFO  \[daemon\] 1 command runs in front of a turn:/),
+      ]);
     } finally {
       await d.stop();
     }
