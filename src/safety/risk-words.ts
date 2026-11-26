@@ -297,7 +297,9 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[], o:
     if (real && /(^|\/)\.\.(\/|$)/.test(arg)) return true;
     return cdpath && !/^(\/|~|\.{1,2}(\/|$))/.test(arg);
   };
-  let others = new Set<string | null>(), pending = new Set<string | null>(), nested = false;
+  // `lost`: a chain of relative cds led past the longest path there is. From there the shell is somewhere the rules cannot
+  // name, and no folder is followed further (each would be resolved again at every cd after it).
+  let others = new Set<string | null>(), pending = new Set<string | null>(), nested = false, lost = false;
   const ends = (i: number) => { const n = runs[i + 1]?.words[0]; return parts[i]!.sep === "||" && n === "exit" && !parts[i + 1]!.nested; };
   for (let i = 0; i < parts.length; i++) {
     const s = parts[i]!, w = runs[i]!.words;
@@ -317,10 +319,15 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[], o:
     }
     const next = new Set<string | null>();
     const from = relative(w);
-    if (from !== undefined) for (const o of others) { const at = o === null ? null : resolve(o, from); next.add(at !== null && at.length > PATH_MAX ? null : at); }
+    if (from !== undefined && !lost) for (const o of others) {
+      const at = o === null ? null : resolve(o, from);
+      if (at !== null && at.length > PATH_MAX) { lost = true; break; }
+      next.add(at);
+    }
+    if (lost) { next.clear(); next.add(null); pending.clear(); }
     if (unsure(w, s)) next.add(null);
     // Where the shell stays when this one fails: for what follows it, or for what follows its `&&` chain.
-    const stay = [dirs[i] ?? null, ...others];
+    const stay = lost ? [null] : [dirs[i] ?? null, ...others];
     // A cd the shell may pass over, or make in a shell of its own, though what follows is joined to it by `&&`: one after
     // `||` (not run when what stands before it worked), one side of a pipe (the shell itself stays), a negated one (what
     // its `&&` joins runs where it failed). What follows runs where the shell was, too.

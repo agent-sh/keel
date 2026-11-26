@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { foreign, ghBase, say, namespaceOf, owned, parseNamespace, parseNamespaces, repoOf, writesOf, namedOwners, type Manifest, type Remotes } from "./accounts.ts";
 import type { Looked } from "./looked.ts";
 import { accountContext, classify, decide, type CallClass, type Mode } from "./policy.ts";
+import { PARTS_MAX, dirsOf, elseOf, unwrap } from "./risk-words.ts";
+import { splitCommand } from "./shell.ts";
 
 test("a namespace is read from the owner's words", () => {
   expect(parseNamespace("avifenesh")).toEqual({ kind: "forge", host: "github.com", path: ["avifenesh"] });
@@ -489,6 +491,29 @@ test("--git-dir stands whatever -C says, and a write another command's output fe
   ];
   for (const [command, want, cwd] of rows) expect([command, where(command, cwd)]).toEqual([command, want]);
   expect((run("echo x | xargs git push", "/w/own", "ask") as { ask: { why: string } }).ask.why).toContain("another command's output");
+});
+
+// What one decision costs is bounded: a chain of relative cds that passes the longest path there is leaves the shell
+// somewhere the rules cannot name, and no folder is carried past it; a script handed to a shell or to eval is read only
+// when it holds no more commands than a whole line may.
+test("a long chain of cds carries no folder past the longest path, and a script of too many commands is not read", () => {
+  const parts = splitCommand("cd x; ".repeat(6_000) + "git push")!;
+  const runs = parts.map((p) => unwrap(p.words));
+  const or = elseOf(parts, runs, dirsOf(parts, runs, "/w/own", "/home/u"));
+  expect(or[1]).toEqual(["/w/own"]);
+  expect(or[5_000]).toEqual([null]);
+  expect(or.at(-1)).toEqual([null]);
+  const where = (command: string) => {
+    const d = run(command, "/w/own", "ask");
+    return how(d) === "account" ? (d as { ask: { account: string; why: string } }).ask : null;
+  };
+  expect(where(`eval "${"true; ".repeat(100)}git push"`)).toBeNull();
+  const long = where(`eval "${"true; ".repeat(PARTS_MAX)}git push"`);
+  expect(long?.account).toBe("");
+  expect(long?.why).toContain(`holds ${PARTS_MAX + 1} commands`);
+  expect(where(`bash -c '${"true; ".repeat(PARTS_MAX)}git push'`)?.account).toBe("");
+  // (Nothing in it writes with an account: nothing is asked for it.)
+  expect(where(`eval "${"true; ".repeat(PARTS_MAX + 5)}"`)).toBeNull();
 });
 
 // A config file the line has git read, a setting it takes from the environment, and the keys that pick the remote of a

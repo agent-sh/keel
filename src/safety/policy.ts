@@ -919,7 +919,9 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
     if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { shell = run.words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x)); if (shell > 0) script = run.words[shell + 1]; }
     else if (first === "eval") script = run.words.slice(1).join(" ");
     if (script !== undefined) {
-      const inner = depth < 2 ? splitCommand(script) : null;
+      // (A script of more commands than a whole line may hold is not read, as a line of that many is not.)
+      const split = depth < 2 ? splitCommand(script) : null;
+      const inner = split && split.length <= PARTS_MAX ? split : null;
       if (inner) {
         const runs = inner.map((x) => unwrap(x.words));
         // The script's own HOME: the line's, unless the script or the line can change it, or another account starts its shell.
@@ -928,7 +930,7 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
         const dirs = dirsOf(inner, runs, pre.dirs[i] ?? null, runs.some(readsHome) && !innerKept() ? null : home);
         out.push(...accountWrites(inner, { runs, dirs }, f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added, moved: !!env.moved, unsure: others.length > 0,
           homeKept: innerKept, cdpath, real: real || (shell > 0 && startsReal(run.words, shell)) }));
-      } else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: "the script it runs is nested deeper than the rules read, or not one they can read" });
+      } else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: split ? `the script it runs holds ${split.length} commands, more than the rules read through (${PARTS_MAX})` : "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
     // What this part gives the parts after it.
     const w0 = baseName(run.words[0]);
