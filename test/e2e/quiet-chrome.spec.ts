@@ -313,3 +313,20 @@ test("a page of settings is not a column of bold: a setting's name is regular ov
   await expect(page.locator(".k-setting").first()).toBeVisible();
   await shoot(page, "quiet-13-settings");
 });
+
+test("the Permissions page is made of the Settings kit: every group is named in one face and the boxes end on one edge", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/settings/safety");
+  await expect(page.getByTestId("sandbox-reads")).toBeVisible();
+  await expect(page.getByTestId("accounts-card")).toBeVisible();
+  const heads = await page.locator(".k-settings-scroll h3").evaluateAll((els) => els.map((el) => ({ words: el.textContent, kit: !!el.closest(".k-set-title"), face: `${getComputedStyle(el).fontWeight} ${getComputedStyle(el).fontSize} ${getComputedStyle(el).color}` })));
+  expect(heads.length).toBeGreaterThanOrEqual(6);
+  expect(heads.filter((h) => !h.kit).map((h) => h.words), "a head that is not the kit's").toEqual([]);
+  expect(new Set(heads.map((h) => h.face)).size, "one face for every group's name").toBe(1);
+  // A box of the page ends where the others do (the trial of a rule change below them is a page of its own tables, and
+  // the judge's figures, once there are some, are a table that takes the page's width).
+  const edges = await page.locator(".k-set-column > .k-set-group:not(.k-set-wide) > .k-set-box").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().right)));
+  expect(edges.length).toBeGreaterThanOrEqual(6);
+  expect(new Set(edges).size, `the boxes' right edges ${edges}`).toBe(1);
+  await shoot(page, "quiet-14-permissions");
+});

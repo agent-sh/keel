@@ -7,7 +7,8 @@
 //            over one framed box. `bare` keeps the head and drops the box (figures
 //            that frame themselves, a chart).
 //   Card     the framed box alone.
-//   SettingRow  a setting: its label and hint on the left, its control on the right.
+//   SettingRow  a setting: its label and hint on the left, its control on the right
+//            (`stack`: a wide control under them).
 //   List, Item  a list with actions: a mark, a name and its line, figures, a status, the
 //            actions. Narrow, what is beside the name goes under it.
 //   More     the "show all" line under a list cut short.
@@ -67,14 +68,15 @@ export function Card({ children }: { children: ReactNode }) {
   return <div className="k-card rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
 }
 
-export function SettingRow({ label, hint, help, children, testid, ...data }: { label: ReactNode; testid?: string; hint?: ReactNode; help?: ReactNode; children: ReactNode } & Data) {
+// `stack`: a control as wide as the row (a text box, a list with a field to add to it) goes under the words.
+export function SettingRow({ label, hint, help, children, stack, testid, ...data }: { label: ReactNode; testid?: string; hint?: ReactNode; help?: ReactNode; stack?: boolean; children: ReactNode } & Data) {
   return (
-    <div data-testid={testid} {...data} className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
+    <div data-testid={testid} {...data} data-stack={stack || undefined} className={cn("k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0", !stack && "sm:flex-row sm:items-center sm:gap-8")}>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-base font-medium">{label}{help && <Help label={label}>{help}</Help>}</div>
         {hint && <div className="mt-0.5 text-ui text-muted">{hint}</div>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className={stack ? "min-w-0" : "shrink-0"}>{children}</div>
     </div>
   );
 }

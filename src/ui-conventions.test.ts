@@ -529,7 +529,7 @@ const NOT_ON_KIT = [
   "components/HelperPanel.tsx", "components/MemoryFacts.tsx",
   "components/MemoryUsage.tsx", "components/NewModels.tsx", "components/ProviderModels.tsx", "components/ResumeFrom.tsx", "components/TakeOver.tsx",
   "components/surfaces/PluginUnits.tsx",
-  "components/ProvidersPanel.tsx", "components/SafetySettings.tsx", "components/Settings.tsx",
+  "components/ProvidersPanel.tsx", "components/Settings.tsx",
 ];
 // The module each registered section shows: a lazy import's file, a component imported by name, or the file that registers it.
 function sectionFiles(list: Src[]): string[] {

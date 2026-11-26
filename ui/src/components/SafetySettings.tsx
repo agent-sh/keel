@@ -6,7 +6,7 @@ import type { WorktreeStatus } from "../lib/worktree.ts";
 import { useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { enroll, passkeyBlock } from "../lib/presence.ts";
-import { Card, SettingRow } from "./Settings.tsx";
+import { Cell, Disclosure, Empty, Group, Item, List, Notice, Page, SettingRow, Status, Table, Row, type Col } from "./settings/kit.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 import { AccountsCard } from "./AccountsCard.tsx";
 import { RuleTrialCard } from "./RuleTrialCard.tsx";
@@ -32,8 +32,8 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
   const sameAs = <span className="text-caption text-faint">the session's own model</span>;
 
   return (
-    <div className="flex flex-col gap-6">
-      <Card>
+    <Page className="k-set-column">
+      <Group>
         <SettingRow label="New sessions start in" hint={modes.find((m) => m.id === perm?.default_mode)?.description}>
           <Select
             data-testid="default-mode"
@@ -49,11 +49,9 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
             {perm?.reviewer_model && <button className="text-caption text-faint hover:text-fg" onClick={() => putPerm({ reviewer_model: null })}>Reset</button>}
           </div>
         </SettingRow>
-        <div className="border-b border-line py-4">
-          <div className="text-base font-medium">Judge policy</div>
-          <div className="mt-0.5 text-ui text-muted">Your own rules for the judge, in plain words. They win over its built-in guidance.</div>
+        <SettingRow stack label="Judge policy" hint="Your own rules for the judge, in plain words. They win over its built-in guidance.">
           <PolicyBox value={perm?.reviewer_policy ?? ""} onSave={(v) => putPerm({ reviewer_policy: v })} />
-        </div>
+        </SettingRow>
         <SettingRow label="Code review model" hint="The independent reviewer in the Review panel. Another family than the session's gives a second opinion.">
           <div className="flex items-center gap-2" data-testid="code-review-model">
             {reviewModel ? null : sameAs}
@@ -61,7 +59,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
             {reviewModel && <button className="text-caption text-faint hover:text-fg" onClick={() => api<{ model: string | null }>("/api/reviews/settings", { method: "PUT", body: JSON.stringify({ model: null }) }).then((r) => setReviewModel(r.model)).catch(reportError)}>Reset</button>}
           </div>
         </SettingRow>
-      </Card>
+      </Group>
       <JudgePrecisionCard />
       <SandboxReadsCard />
       <PasskeysCard />
@@ -71,7 +69,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
       <RuleTrialCard />
       <WorktreesCard />
       {children}
-    </div>
+    </Page>
   );
 }
 
@@ -79,7 +77,7 @@ function PolicyBox({ value, onSave }: { value: string; onSave: (v: string) => vo
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   return (
-    <div className="mt-2.5 flex flex-col items-end gap-2">
+    <div className="flex flex-col items-end gap-2">
       <textarea
         data-testid="reviewer-policy"
         value={v}
@@ -88,7 +86,7 @@ function PolicyBox({ value, onSave }: { value: string; onSave: (v: string) => vo
         placeholder="For example: never allow network uploads; allow package installs from the lock file."
         className="k-field h-auto w-full resize-y py-2"
       />
-      <button data-testid="reviewer-policy-save" disabled={v === value} onClick={() => onSave(v)} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">Save policy</button>
+      <button type="button" data-testid="reviewer-policy-save" data-ink="" disabled={v === value} onClick={() => onSave(v)} className="k-btn k-btn-lg">Save policy</button>
     </div>
   );
 }
@@ -115,67 +113,38 @@ const pct = (r: PrecisionRow) => (r.precision !== null ? `${Math.round(r.precisi
 function JudgePrecisionCard() {
   const [p, setP] = useState<Precision | null>(null);
   useEffect(() => { api<Precision>("/api/permissions/judge?days=7").then(setP).catch(reportError); }, []);
-  const th = "px-2 py-1.5 font-normal", td = "px-2 py-1.5 tabular-nums";
-  const counts = (r: PrecisionRow) => (
-    <>
-      <td className={`${td} text-right`}>{r.reviewed}</td>
-      <td className={`${td} text-right`}>{r.refused}</td>
-      <td className={`${td} text-right ${r.taken_back ? "text-warn" : "text-muted"}`}>{r.taken_back}</td>
-      <td className={`${td} text-right font-medium`}>{pct(r)}</td>
-    </>
-  );
-  // (One set of column widths for both tables, so their numbers line up.)
-  const cols = <colgroup><col /><col className="w-24" /><col className="w-24" /><col className="w-32" /><col className="w-24" /></colgroup>;
-  const head = (first: string) => (
-    <thead>
-      <tr className="border-b border-line text-left text-caption text-faint">
-        <th className={th}>{first}</th><th className={`${th} text-right`}>Reviewed</th><th className={`${th} text-right`}>Refused</th>
-        <th className={`${th} text-right`}>Taken back</th><th className={`${th} text-right`}>Stood</th>
-      </tr>
-    </thead>
-  );
+  const C: Record<string, Col> = { reviewed: { head: "Reviewed", end: true, minor: true }, refused: { head: "Refused", end: true }, back: { head: "Taken back", end: true, minor: true }, stood: { head: "Stood", end: true } };
+  // (An array, not a fragment: a Row reads its cells to list the dropped ones under it.)
+  const counts = (r: PrecisionRow) => [
+    <Cell key="reviewed" col={C.reviewed!}>{r.reviewed}</Cell>,
+    <Cell key="refused" col={C.refused!}>{r.refused}</Cell>,
+    <Cell key="back" col={C.back!} className={r.taken_back ? "text-warn" : "text-muted"}>{r.taken_back}</Cell>,
+    <Cell key="stood" col={C.stood!}>{pct(r)}</Cell>,
+  ];
+  const cols = (first: string): Col[] => [{ head: first, grow: true }, C.reviewed!, C.refused!, C.back!, C.stood!];
   return (
-    <div className="k-after-card flex flex-col gap-2">
-      <h3 className="px-1 text-ui font-medium text-muted">Judge precision</h3>
-      <Card>
-        <div className="py-4" data-testid="judge-precision">
-          <p className="text-ui text-muted">Calls the judge or Keel's rules decided for you in the last seven days. A refusal is taken back when you let one retry of it through, or allow the same call in that session later. Stood is the share of refusals you did not take back, given from five refusals on.</p>
-          {!p ? null : p.total.reviewed === 0 ? <p className="k-empty mt-3">No verdicts in the last seven days.</p> : (
-            <div className="mt-3 flex flex-col gap-4">
-              <table className="w-full table-fixed text-ui" data-testid="judge-precision-classes">
-                {cols}{head("Class")}
-                <tbody>
-                  {p.classes.map((r) => {
-                    const w = classWords(r.key);
-                    return (
-                      <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid="judge-precision-class" data-key={r.key}>
-                        <td className="px-2 py-1.5"><span className="font-medium">{w.who}</span> <span className="text-muted">{w.what}</span></td>
-                        {counts(r)}
-                      </tr>
-                    );
-                  })}
-                  <tr className="border-t border-line" data-testid="judge-precision-total">
-                    <td className="px-2 py-1.5 font-medium">All</td>
-                    {counts(p.total)}
-                  </tr>
-                </tbody>
-              </table>
-              <table className="w-full table-fixed text-ui" data-testid="judge-precision-days">
-                {cols}{head("Day")}
-                <tbody>
-                  {p.days.map((r) => (
-                    <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid="judge-precision-day">
-                      <td className="px-2 py-1.5 tabular-nums text-muted">{r.key}</td>
-                      {counts(r)}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </Card>
-    </div>
+    <Group
+      // With figures it is a table: it takes the page's width, so every column shows on a desk (in the column of
+      // setting boxes it would count as narrow and put Reviewed and Taken back under each row, as it does on a phone).
+      title="Judge precision" testid="judge-precision" className={p && p.total.reviewed ? "k-set-wide" : undefined}
+      hint="Calls the judge or Keel's rules decided for you in the last seven days."
+      help="A refusal is taken back when you let one retry of it through, or allow the same call in that session later. Stood is the share of refusals you did not take back, given from five refusals on."
+    >
+      {!p ? undefined : p.total.reviewed === 0 ? <Empty>No verdicts in the last seven days.</Empty> : (
+        <>
+          <Table cols={cols("Class")} label="Verdicts by class" testid="judge-precision-classes">
+            {p.classes.map((r) => {
+              const w = classWords(r.key);
+              return <Row key={r.key} testid="judge-precision-class" data-key={r.key} title={`${w.who} ${w.what}`} name={<>{w.who} <span className="text-muted">{w.what}</span></>}>{counts(r)}</Row>;
+            })}
+            <Row testid="judge-precision-total" name="All">{counts(p.total)}</Row>
+          </Table>
+          <Table cols={cols("Day")} label="Verdicts by day" testid="judge-precision-days">
+            {p.days.map((r) => <Row key={r.key} testid="judge-precision-day" name={<span className="text-muted">{r.key}</span>}>{counts(r)}</Row>)}
+          </Table>
+        </>
+      )}
+    </Group>
   );
 }
 
@@ -202,43 +171,34 @@ function SandboxReadsCard() {
   const own = (scope && v.workspaces[scope]) || {};
   const mb = v.bytes >= 1024 * 1024 * 1024 ? `${(v.bytes / 1024 / 1024 / 1024).toFixed(1)} GB` : `${Math.round(v.bytes / 1024 / 1024)} MB`;
   return (
-    <div className="k-after-card flex flex-col gap-2" data-testid="sandbox-reads">
-      <h3 className="px-1 text-ui font-medium text-muted">Sandbox: what commands can read</h3>
-      {(v.config_refused ?? []).map((line) => (
-        <p key={line} role="alert" data-testid="config-refused" className="rounded-lg border border-danger/40 bg-raised px-3 py-2 text-ui break-words text-danger">{line}</p>
-      ))}
-      <Card>
-        <div className="border-b border-line py-4">
-          <div className="text-base font-medium">Every folder</div>
-          <div className="mt-0.5 text-ui text-muted">A sandboxed command does not see your home folder. It reads the session's folder, the system, and what is listed below. Add a folder or a file that the commands of every session may read.</div>
+    <>
+      {(v.config_refused ?? []).map((line) => <Notice key={line} tone="broken" testid="config-refused"><span className="break-words text-danger">{line}</span></Notice>)}
+      <Group title="Sandbox: what commands can read" testid="sandbox-reads">
+        <SettingRow stack label="Every folder" hint="A sandboxed command does not see your home folder. It reads the session's folder, the system, and what is listed below. Add a folder or a file that the commands of every session may read.">
           <PathList testid="sandbox-read-all" paths={v.read} onChange={(read) => put({ read })} />
-          <details className="mt-3 text-caption text-muted">
-            <summary className="cursor-pointer select-none hover:text-fg" data-testid="sandbox-shown-toggle">Readable in every sandbox by design</summary>
-            <ul className="mt-2 flex list-disc flex-col gap-1 pl-5" data-testid="sandbox-by-design">
+          <Disclosure summary="Readable in every sandbox by design" testid="sandbox-shown-toggle">
+            <ul className="flex list-disc flex-col gap-1 pl-5 text-caption text-muted" data-testid="sandbox-by-design">
               <li>The other checkouts of the session's repository (its main checkout and worktrees), read-only.</li>
               <li>Your package caches (cargo, Go, bun, npm, pnpm, uv, pip, Playwright and the like): read as they are; what a command writes there stays in the sandbox.</li>
               <li>Git's global config and ignore file, and version files such as .tool-versions.</li>
               <li>The skills and commands Keel offers the session, the files you attached to it and its artifacts.</li>
               {v.shown.length > 0 && <li>Your toolchains, read-only: <span className="break-all font-mono" data-testid="sandbox-shown">{v.shown.join(", ")}</span></li>}
             </ul>
-          </details>
+          </Disclosure>
           {v.hidden_settings.length > 0 && (
-            <details className="mt-2 text-caption text-muted">
-              <summary className="cursor-pointer select-none hover:text-fg" data-testid="sandbox-hidden-toggle">Settings files of yours that are hidden there: {v.hidden_settings.length}</summary>
-              <p className="mt-2">A tool inside a sandbox runs without these, so it may behave differently there (another registry, no sign-in).</p>
-              <ul className="mt-1 flex flex-col gap-0.5 font-mono" data-testid="sandbox-hidden">{v.hidden_settings.map((h) => <li key={h.path} className="break-all">{h.path}{h.note && <span className="font-sans text-faint"> ({h.note})</span>}</li>)}</ul>
-            </details>
+            <Disclosure summary={`Settings files of yours that are hidden there: ${v.hidden_settings.length}`} testid="sandbox-hidden-toggle">
+              <p className="text-caption text-muted">A tool inside a sandbox runs without these, so it may behave differently there (another registry, no sign-in).</p>
+              <ul className="flex flex-col gap-0.5 font-mono text-caption text-muted" data-testid="sandbox-hidden">{v.hidden_settings.map((h) => <li key={h.path} className="break-all">{h.path}{h.note && <span className="font-sans text-faint"> ({h.note})</span>}</li>)}</ul>
+            </Disclosure>
           )}
-        </div>
-        <div className="border-b border-line py-4">
-          <div className="text-base font-medium">One folder</div>
-          <div className="mt-0.5 text-ui text-muted">For the sessions that work in one repository or folder.</div>
-          {v.scopes.length === 0 ? <p className="k-empty mt-3">Nothing yet: open a session in a folder first.</p> : (
+        </SettingRow>
+        <SettingRow stack label="One folder" hint="For the sessions that work in one repository or folder.">
+          {v.scopes.length === 0 ? <Empty>Nothing yet: open a session in a folder first.</Empty> : (
             <>
-              <Select data-testid="sandbox-scope" value={scope} onChange={(e) => setScope(e.target.value)} className="mt-3 max-w-full font-mono text-caption">
+              <Select data-testid="sandbox-scope" value={scope} onChange={(e) => setScope(e.target.value)} className="max-w-full font-mono text-caption">
                 {v.scopes.map((s) => <option key={s} value={s}>{s}</option>)}
               </Select>
-              <PathList testid="sandbox-read-one" paths={own.read ?? []} onChange={(read) => put({ workspace: { scope, read } })} />
+              <div className="mt-3"><PathList testid="sandbox-read-one" paths={own.read ?? []} onChange={(read) => put({ workspace: { scope, read } })} /></div>
               <label className="mt-3 flex items-start gap-2.5 text-ui">
                 <Switch.Root checked={!!own.ssh_agent} onCheckedChange={(on) => put({ workspace: { scope, ssh_agent: on } })} data-testid="sandbox-ssh-agent" className="k-switch mt-0.5">
                   <Switch.Thumb className="k-switch-thumb" />
@@ -248,12 +208,10 @@ function SandboxReadsCard() {
             </>
           )}
           {err && <p className="mt-3 text-caption text-danger" role="alert" data-testid="sandbox-reads-error">{err}</p>}
-        </div>
-        <div className="border-b border-line py-4">
-          <div className="text-base font-medium">Environment variables</div>
-          <div className="mt-0.5 text-ui text-muted">A sandboxed command gets the variables a build needs (PATH, the locale, the toolchains' folders) and none of the rest of the daemon's environment: no variable named as a token, key or password, and a URL in a kept one goes in without its sign-in. Name a variable to pass it on as it is.</div>
+        </SettingRow>
+        <SettingRow stack label="Environment variables" hint="A sandboxed command gets the variables a build needs (PATH, the locale, the toolchains' folders) and none of the rest of the daemon's environment: no variable named as a token, key or password, and a URL in a kept one goes in without its sign-in. Name a variable to pass it on as it is.">
           <PathList testid="sandbox-env" paths={v.env} onChange={(env) => put({ env })} placeholder="NAME" label="An environment variable a sandboxed command keeps" />
-        </div>
+        </SettingRow>
         <SettingRow label="On disk" hint="What sandboxed commands wrote to their own package caches and temp folders. Temp files go after 10 days and a cache layer no command used after 30; clearing removes the temp files and every layer no running command holds.">
           <div className="flex items-center gap-3">
             <span className="text-ui tabular-nums text-muted" data-testid="sandbox-bytes">{mb}</span>
@@ -261,8 +219,8 @@ function SandboxReadsCard() {
               className="k-btn k-btn-lg">Clear</button>
           </div>
         </SettingRow>
-      </Card>
-    </div>
+      </Group>
+    </>
   );
 }
 
@@ -271,7 +229,7 @@ function PathList({ paths, onChange, testid, placeholder = "~/folder or /path", 
   const [add, setAdd] = useState("");
   const commit = () => { const t = add.trim(); if (!t || paths.includes(t)) return; onChange([...paths, t]); setAdd(""); };
   return (
-    <div className="mt-3 flex flex-col gap-1.5" data-testid={testid}>
+    <div className="flex flex-col gap-1.5" data-testid={testid}>
       {paths.map((p) => (
         <div key={p} className="flex items-start gap-2 text-caption">
           <span className="min-w-0 flex-1 break-all font-mono" data-testid="sandbox-read-path">{p}</span>
@@ -303,9 +261,10 @@ function WorktreesCard() {
   useEffect(load, []);
   const live = list.filter((w) => w.state !== "removed");
   return (
-    <div className="k-after-card flex flex-col gap-2">
-      <h3 className="px-1 text-ui font-medium text-muted">Worktrees</h3>
-      <Card>
+    <Group
+      title="Worktrees"
+      actions={<>{note && <span className="text-caption text-muted" data-testid="worktree-prune-note">{note}</span>}<button type="button" data-testid="worktree-prune" onClick={() => api<{ removed: string[] }>("/api/worktrees/prune", { method: "POST", body: "{}" }).then((r) => { setNote(r.removed.length ? `Removed ${r.removed.length}, working state saved.` : "Nothing to prune."); load(); }).catch((e) => setNote(failed(e, { at: "SafetySettings" })))} className="k-btn k-btn-lg">Prune now</button></>}
+    >
         <SettingRow label="Keep" hint="Past this many, the worktrees of archived or deleted sessions are removed, each with its working state saved so it can be restored. Running and open sessions keep theirs.">
           <input
             type="number" min={0} max={1000} data-testid="worktree-keep" value={keep ?? ""}
@@ -314,29 +273,22 @@ function WorktreesCard() {
             className="k-field w-20 text-right tabular-nums"
           />
         </SettingRow>
-        <div className="py-3">
-          {live.length === 0 ? <p className="k-empty">No managed worktrees.</p> : (
-            <ul className="flex flex-col gap-1" data-testid="worktree-list">
-              {live.map((w) => {
-                const s = sessions[w.session_id];
-                return (
-                  <li key={w.session_id} className="flex items-center gap-2 text-caption">
-                    <span className="max-w-[45%] shrink-0 k-truncate font-mono">{w.branch}</span>
-                    <span className="min-w-0 flex-1 k-truncate text-faint">{s ? (s.archived ? "archived" : s.title || "session") : "session deleted"}</span>
-                    <span className={w.state === "parked" ? "shrink-0 text-warn" : "shrink-0 text-muted"}>{w.state}{w.state === "active" && (w.dirty || w.commits_ahead) ? ` · ${w.dirty} changed · ${w.commits_ahead} ahead` : ""}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          <div className="mt-3 flex items-center gap-2">
-            <button data-testid="worktree-prune" onClick={() => api<{ removed: string[] }>("/api/worktrees/prune", { method: "POST", body: "{}" }).then((r) => { setNote(r.removed.length ? `Removed ${r.removed.length}, working state saved.` : "Nothing to prune."); load(); }).catch((e) => setNote(failed(e, { at: "SafetySettings" })))}
-              className="k-btn k-btn-lg">Prune now</button>
-            {note && <span className="text-caption text-muted" data-testid="worktree-prune-note">{note}</span>}
-          </div>
-        </div>
-      </Card>
-    </div>
+        {live.length === 0 ? <Empty>No managed worktrees.</Empty> : (
+          <List dense testid="worktree-list" label="Managed worktrees">
+            {live.map((w) => {
+              const s = sessions[w.session_id];
+              return (
+                <Item
+                  key={w.session_id} mono name={w.branch}
+                  sub={s ? (s.archived ? "archived" : s.title || "session") : "session deleted"} clip
+                  meta={w.state === "active" && (w.dirty || w.commits_ahead) ? <><span>{w.dirty} changed</span><span>{w.commits_ahead} ahead</span></> : undefined}
+                  status={<Status tone={w.state === "parked" ? "warn" : "quiet"}>{w.state}</Status>}
+                />
+              );
+            })}
+          </List>
+        )}
+    </Group>
   );
 }
 
@@ -346,9 +298,7 @@ function TrustCard() {
   useEffect(() => { api<{ new_files: "auto" | "ask" }>("/api/trust/settings").then((r) => setV(r.new_files)).catch(reportError); }, []);
   const put = (new_files: "auto" | "ask") => api<{ new_files: "auto" | "ask" }>("/api/trust/settings", { method: "PUT", body: JSON.stringify({ new_files }) }).then((r) => setV(r.new_files)).catch(reportError);
   return (
-    <div className="k-after-card flex flex-col gap-2">
-      <h3 className="px-1 text-ui font-medium text-muted">Repository files</h3>
-      <Card>
+    <Group title="Repository files">
         <SettingRow label="A repository's new instruction files and skills" hint="A changed one always waits for you, and a repository's hook file always does. The Trust panel of a session shows what is held.">
           <Select data-testid="trust-new-files" value={v ?? ""} onChange={(e) => put(e.target.value as "auto" | "ask")}>
             <option value="auto">Load on first sight</option>
@@ -356,8 +306,7 @@ function TrustCard() {
           </Select>
         </SettingRow>
         <SetupVariables />
-      </Card>
-    </div>
+    </Group>
   );
 }
 
@@ -412,17 +361,14 @@ function PasskeysCard() {
     } catch (e) { setMsg({ text: failed(e, { at: "SafetySettings" }), error: true }); }
   };
   return (
-    <div className="k-after-card flex flex-col gap-2">
-      <h3 className="px-1 text-ui font-medium text-muted">Passkeys</h3>
-      <Card>
-        <div className="py-4" data-testid="passkeys">
-          <p className="text-ui text-muted">
-            {info.enrolled
-              ? "From another device, a high-risk approval and changes that let sessions do more (a looser mode, a grant, trusting a repository's files, these settings) need your passkey, signed over that one action. Here at the desk nothing asks."
-              : "With a passkey enrolled, a high-risk approval and changes that let sessions do more need it when they come from another device. Here at the desk nothing asks."}
-          </p>
+    <Group
+      title="Passkeys" pad testid="passkeys"
+      hint={info.enrolled
+        ? "From another device, a high-risk approval and changes that let sessions do more (a looser mode, a grant, trusting a repository's files, these settings) need your passkey, signed over that one action. Here at the desk nothing asks."
+        : "With a passkey enrolled, a high-risk approval and changes that let sessions do more need it when they come from another device. Here at the desk nothing asks."}
+    >
           {info.passkeys.length > 0 && (
-            <ul className="mt-3 flex flex-col gap-1" data-testid="passkey-list">
+            <ul className="mb-3 flex flex-col gap-1" data-testid="passkey-list">
               {info.passkeys.map((p) => (
                 <li key={p.id} className="flex items-center gap-2 text-caption">
                   <span className="min-w-0 flex-1 k-truncate">{p.label ?? "Passkey"}</span>
@@ -435,17 +381,17 @@ function PasskeysCard() {
           )}
           {block ? (
             <>
-              <p className="mt-3 text-caption text-warn" data-testid="passkey-blocked">
+              <p className="text-caption text-warn" data-testid="passkey-blocked">
                 {block.why}
                 {block.localhost && <> To enroll this computer, <a data-testid="passkey-localhost" className="font-medium text-accent-ink underline" href={block.localhost}>open this page at localhost</a>.</>}
               </p>
               {addDevice && <div className="mt-3 flex flex-wrap items-center gap-2">{addDevice}</div>}
             </>
           ) : (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {!info.local && <input data-testid="passkey-code" value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder="Code shown at the desk" className="k-field w-52 font-mono placeholder:font-sans" />}
               <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={info.local ? "This computer" : "This device"} className="k-field w-44" />
-              <button data-testid="passkey-enroll" disabled={!info.local && !typed.trim()} onClick={doEnroll} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+              <button type="button" data-testid="passkey-enroll" data-ink="" disabled={!info.local && !typed.trim()} onClick={doEnroll} className="k-btn k-btn-lg">
                 {here.length ? "Enroll another passkey here" : "Enroll this device"}
               </button>
               {addDevice}
@@ -456,10 +402,8 @@ function PasskeysCard() {
               On the other device, open Keel over HTTPS, go to Settings, Safety, and enroll it with <span className="rounded bg-code px-1.5 py-0.5 font-mono text-ui text-fg">{code.code}</span> (until {clock(code.expires)}).
             </p>
           )}
-          {msg && <p className={msg.error ? "mt-2 text-caption text-danger" : "mt-2 text-caption text-ok"} data-testid="passkey-msg">{msg.text}</p>}
-        </div>
-      </Card>
-    </div>
+          {msg && <p className={msg.error ? "mt-2 text-caption text-danger" : "mt-2 text-caption text-muted"} data-testid="passkey-msg">{msg.text}</p>}
+    </Group>
   );
 }
 
@@ -473,20 +417,15 @@ function RemoteAccessCard() {
   if (!link) return null;
   const full = link.hosts[0] ? `https://${link.hosts[0]}${link.path}` : link.path;
   return (
-    <div className="k-after-card flex flex-col gap-2">
-      <h3 className="px-1 text-ui font-medium text-muted">Remote access</h3>
-      <Card>
-        <div className="py-4" data-testid="remote-access">
-          <p className="text-ui text-muted">
-            A request through a tunnel or proxy, from another address or from another account on this machine needs this daemon's access token. Open this link once on the other device; it keeps the token as a cookie. Anyone with the link can use Keel as you.
-          </p>
-          <div className="mt-3 flex items-center gap-2">
+    <Group
+      title="Remote access" pad testid="remote-access"
+      hint="A request through a tunnel or proxy, from another address or from another account on this machine needs this daemon's access token. Open this link once on the other device; it keeps the token as a cookie. Anyone with the link can use Keel as you."
+    >
+          <div className="flex items-center gap-2">
             <code className="min-w-0 flex-1 k-truncate rounded bg-code px-2 py-1 font-mono text-caption text-fg" data-testid="remote-access-link">{full.replace(/token=[^&]+/, "token=\u2026")}</code>
             <button data-testid="remote-access-copy" onClick={(e) => copyOrSay(full, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })} className="k-btn k-btn-lg">{copied ? "Copied" : "Copy link"}</button>
           </div>
           {!link.hosts.length && <p className="k-empty mt-2">No tunnel host is set: start the daemon with KEEL_ALLOWED_HOSTS naming it.</p>}
-        </div>
-      </Card>
-    </div>
+    </Group>
   );
 }

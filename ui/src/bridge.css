@@ -1641,6 +1641,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-card:has(> .k-setting), .k-set-group:has(.k-setting) { max-width: 52rem; }
 /* A page that is one column of such boxes, short tables and forms stops them all there: one right edge. */
 .k-set-column > * { max-width: 52rem; }
+/* (A group that is a table of figures takes the page's width: in the column its box counts as narrow and drops columns.) */
+.k-set-column > .k-set-wide { max-width: none; }
 /* An offer at the top of a group's box (read my words, not wanted): a line and its answers, ruled off from the form. */
 .k-tiers-offer { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); line-height: 1.55; color: var(--muted); }
 
@@ -1665,7 +1667,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-help > svg { width: 0.9375rem; height: 0.9375rem; }
 .k-set-help:hover, .k-set-help[data-popup-open] { color: var(--fg); }
 .k-set-helptip { box-sizing: border-box; width: min(26rem, calc(100vw - 1rem)); padding: 0.625rem 0.75rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); box-shadow: var(--shadow-3); font-size: var(--text-ui); font-weight: 400; line-height: 1.5; color: var(--muted); text-wrap: pretty; outline: none; }
-.k-set-disclosure { margin-top: 0.375rem; }
+.k-set-disclosure { margin-top: 0.375rem; font-size: var(--text-caption); }
 .k-set-disclosure > summary { display: inline-flex; align-items: center; cursor: pointer; border-radius: var(--radius-sm); color: var(--muted); }
 .k-set-disclosure > summary:hover { color: var(--fg); }
 .k-set-disclosure > div { max-width: 48rem; margin-top: 0.25rem; display: flex; flex-direction: column; gap: 0.25rem; }
@@ -1681,6 +1683,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-box .k-scroll-x { --k-scroll-bg: var(--raised); }
 /* A list or a table runs to the box's edges; its rows keep the box's inset. */
 .k-set-box > .k-set-list, .k-set-box > .k-set-table-wrap { margin: 0 -1.25rem; }
+/* Two tables in one box (the same figures by another key): a hairline between them. */
+.k-set-box > .k-set-table-wrap + .k-set-table-wrap { border-top: 1px solid var(--line); }
 
 .k-set-list { display: flex; flex-direction: column; min-width: 0; margin: 0; padding: 0; list-style: none; }
 .k-set-item {

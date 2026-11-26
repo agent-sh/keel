@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { composing } from "../lib/keys.ts";
 import { api, failed, reportError } from "../lib/store.ts";
-import { Card, SettingRow } from "./Settings.tsx";
+import { Empty, Group, SettingRow } from "./settings/kit.tsx";
 
 type Candidate = { namespace: string; why: string; count?: number };
 
@@ -25,9 +25,7 @@ export function AccountsCard() {
   if (!list) return null;
   const add = async (ns: string) => { if (ns.trim() && await save([...list, ns.trim()])) { setTyped(""); setFound((f) => f && f.filter((c) => c.namespace !== ns)); } };
   return (
-    <div className="k-after-card flex flex-col gap-2" data-testid="accounts-card">
-      <h3 className="px-1 text-ui font-medium text-muted">Your accounts</h3>
-      <Card>
+    <Group title="Your accounts" testid="accounts-card">
         <SettingRow
           label="Namespaces that are yours"
           hint="A git push, a comment, review or release on a repository, or a publish of a package, outside these asks you in every mode, and an agent is refused it. Write GitHub users and organizations as they are, other forges as host/group, packages as npm:@scope, pypi:name or crates:name."
@@ -42,7 +40,7 @@ export function AccountsCard() {
           </div>
         </SettingRow>
         <div className="border-b border-line py-3 last:border-0">
-          {list.length === 0 ? <p className="k-empty" data-testid="accounts-empty">None named yet. Until you name them, every such write asks you.</p> : (
+          {list.length === 0 ? <Empty testid="accounts-empty">None named yet. Until you name them, every such write asks you.</Empty> : (
             <ul className="flex flex-col gap-1" data-testid="accounts-list">
               {list.map((n) => (
                 <li key={n} className="flex items-center gap-2 text-ui">
@@ -75,7 +73,6 @@ export function AccountsCard() {
             ) : null}
           </div>
         ) : null}
-      </Card>
-    </div>
+    </Group>
   );
 }
