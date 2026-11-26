@@ -465,15 +465,18 @@ test.describe("on a phone", () => {
     test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
     await arrivals(page, request);
   });
-  test("the open row keeps its place as sessions arrive above it, in WebKit", async ({ request, baseURL }) => {
+  test("the open row keeps its place as sessions arrive above it, in WebKit", async ({ request, baseURL, viewport, hasTouch, isMobile, storageState }) => {
     test.setTimeout(180_000);
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
     test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
     test.skip(!existsSync(webkit.executablePath()), "needs WebKit: npx playwright install webkit");
-    const browser = await webkit.launch({ headless: true });
+    const browser = await webkit.launch({ headless: true }).catch((error: unknown) => {
+      test.skip(error instanceof Error && error.message.includes("Host system is missing dependencies"), "needs WebKit system libraries: npx playwright install-deps webkit");
+      throw error;
+    });
     try {
-      const ctx = await browser.newContext({ baseURL, viewport: { width: 390, height: 844 }, hasTouch: true,
-        storageState: { cookies: [], origins: [{ origin: new URL(baseURL!).origin, localStorage: [{ name: "keel.focus", value: "true" }] }] } });
+      // Share the phone settings and workbench state with Chromium. Focus hides the dock.
+      const ctx = await browser.newContext({ baseURL, viewport, hasTouch, isMobile, storageState });
       await arrivals(await ctx.newPage(), request);
     } finally { await browser.close(); }
   });
