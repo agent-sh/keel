@@ -152,3 +152,22 @@ test("a tree held past the cap goes on and its parent hears it once", async () =
   expect(JSON.stringify(told)).toContain("waited 10 min for the machine");
   store.db.close();
 });
+
+// The day's account outlives a restart: Health's "over the line N min in the last day" said only what the
+// daemon had seen since it started, and a busy day restarts it several times an hour.
+test("the day's time over the line and the trees that waited are kept across a restart", () => {
+  const { store, bus, engine } = rig(join(dir, "state4"));
+  core.setDeps({ store, bus, engine, errors: { capture() {} }, providers: {} } as any);
+  loadHold.reset();
+  load = 36;
+  const clock = minute(20_000_000);
+  load = 2;
+  loadHold.tick(clock + 61_000);
+  const day = loadHold.state(clock + 61_000).over_min_day;
+  expect(day).toBeGreaterThanOrEqual(1);
+  // A restart: the module's memory is gone, the store is the same.
+  loadHold.reset();
+  loadHold.tick(clock + 70_000);
+  expect(loadHold.state(clock + 70_000).over_min_day).toBe(day);
+  store.db.close();
+});

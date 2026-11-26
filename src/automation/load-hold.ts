@@ -39,6 +39,40 @@ const overByHour = new Map<number, number>();
 const DAY = 86_400_000;
 let printed = "";
 
+// The day's account is kept in the store: a restart (several an hour on a busy day) left "the last day" at
+// what this daemon had seen since it started. Read at the first pass, written when a tree let go or, for the
+// time over the line, at most once a minute.
+const KEPT = "load_hold_day";
+const KEEP_MS = 60_000;
+let loaded = false;
+let keptPrint = "";
+let keptAt = 0;
+function loadKept(now: number) {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const db = D().store.db;
+    db.exec("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    const row = db.query<{ value: string }, [string]>("SELECT value FROM admin_meta WHERE key = ?").get(KEPT);
+    if (!row) return;
+    const k = JSON.parse(row.value) as { waited?: Waited[]; over?: [number, number][] };
+    const hour = Math.floor(now / 3_600_000);
+    const mine = new Set(waited.map((w) => `${w.key}\0${w.from}`));
+    const old = (Array.isArray(k.waited) ? k.waited : []).filter((w) => typeof w?.from === "number" && typeof w?.ms === "number" && now - w.from < DAY && !mine.has(`${w.key}\0${w.from}`));
+    waited = [...waited, ...old].sort((a, b) => b.from - a.from).slice(0, 50);
+    for (const [h, ms] of Array.isArray(k.over) ? k.over : []) if (typeof h === "number" && typeof ms === "number" && h > hour - 24) overByHour.set(h, (overByHour.get(h) ?? 0) + ms);
+  } catch (e) { capture(e, { at: "load hold: the day's account" }); }
+}
+function keep(now: number, soon: boolean) {
+  const value = JSON.stringify({ waited, over: [...overByHour] });
+  if (value === keptPrint || (!soon && now - keptAt < KEEP_MS)) return;
+  try {
+    D().store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES (?, ?)").run(KEPT, value);
+    keptPrint = value;
+    keptAt = now;
+  } catch (e) { capture(e, { at: "load hold: the day's account" }); }
+}
+
 // The tree a session works in: the agent its top session started, or the top session itself.
 export function treeOf(s: Session): string {
   const { store } = D();
@@ -133,6 +167,8 @@ export function tick(now = Date.now()) {
     if (!c.on) { if (st.held.length) settle(IDLE, now); readings = []; tell(); return; }
     const m = machine.read();
     const r: Reading = { at: now, load1: m.load1, threads: c.threads ?? m.cores };
+    loadKept(now);
+    const had = waited.length ? waited[0] : undefined;
     // Readings older than the minute (and a sample) are no longer read. A hole in them (the pulse paused while
     // the daemon was idle) starts them again: `over` then waits for a whole minute of readings.
     const prev = readings.at(-1);
@@ -142,6 +178,7 @@ export function tick(now = Date.now()) {
     const next = decide(st, readings, [...known.values()], now);
     settle(next, now);
     for (const k of next.capped) toldCap(k, r);
+    keep(now, waited[0] !== had);
     tell();
   } catch (e) { capture(e, { at: "load hold" }); }
 }
@@ -230,4 +267,4 @@ export function healthRows(now = Date.now()): Row[] {
 }
 
 // For a test: nothing held, nothing read.
-export function reset() { releaseAll(); readings = []; st = IDLE; lastAt = 0; known = new Map(); heldAt.clear(); capTold.clear(); waited = []; overByHour.clear(); printed = ""; }
+export function reset() { releaseAll(); readings = []; st = IDLE; lastAt = 0; known = new Map(); heldAt.clear(); capTold.clear(); waited = []; overByHour.clear(); printed = ""; loaded = false; keptPrint = ""; keptAt = 0; }
