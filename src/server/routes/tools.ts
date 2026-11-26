@@ -99,8 +99,9 @@ export const toolRoutes: RouteModule = (deps) => {
     deliver(job.sessionId, text, meta, {
       coalesceMs: 300,
       // A background command the model left running may wait for the session's pace (a call waiting on it does not).
-      // Owed in the pace's table by its key, so a restart while it waits sends it again.
-      pace: { owe: key },
+      // Not owed in the pace's table: the job's record owes it across a restart (adoptJobs tells an ended
+      // unreported job again), and a second copy would carry the end twice.
+      pace: {},
       // Read with a request of a turn at work meanwhile (src/tools/jobs.ts calls jobEnded.read): nothing left to tell.
       refresh: () => hasNotice(job.sessionId, key) ? {
         text, meta,
