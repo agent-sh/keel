@@ -178,5 +178,48 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         await drop(request, id);
       }
     });
+
+    // After a steer the command moved behind and its end started a turn of its own: that input is named for what
+    // it is, the note that asked the model to reply first is nowhere, and each reply's marks stand together.
+    test("a steered turn reads as what happened, and a reply's marks are one row", async ({ page, request }) => {
+      test.setTimeout(150_000);
+      await scripted(request);
+      const id = await create(request, "Run the slow suite", folder(`phone-focus-steer-${size.width}`));
+      try {
+        await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "echo starting; sleep 14; echo done" } }]) } });
+        await page.goto(`/s/${id}`);
+        const pane = page.locator(".k-station[data-helm]");
+        await expect(pane.locator('[data-testid="tool-call"][data-state="running"]')).toBeVisible({ timeout: 30_000 });
+        await pane.getByTestId("composer").tap();
+        await pane.getByTestId("composer").fill("Why is the suite so slow today?");
+        await pane.getByTestId("composer").press("Enter");
+        // The steer moves the command behind; its end, later, starts the second turn.
+        await expect.poll(async () => ((await (await request.get(`/api/sessions/${id}`)).json()).events as { kind: string }[]).filter((e) => e.kind === "turn_end").length, { timeout: 90_000 }).toBe(2);
+        await expect(pane.getByTestId("turn-end")).toHaveCount(2);
+        await page.waitForTimeout(500);
+        await shoot(page, `phone-focus-06-steered-${size.width}`);
+        const ended = pane.getByTestId("job-notice");
+        await expect(ended, "the command's end is named").toContainText("Background command ended");
+        await expect(ended).toContainText("exited with code 0");
+        await expect(pane.getByTestId("harness-notice"), "no bare harness note").toHaveCount(0);
+        await expect(pane.getByText("waiting for your reply"), "the reply-first note is not shown").toHaveCount(0);
+        // Each footer's marks stand side by side, their glyphs on one line.
+        for (const foot of await pane.locator(".k-turn-foot").all()) {
+          const marks = await foot.evaluate((f) => [...f.querySelectorAll<HTMLElement>('[data-testid="message-menu"], .k-note-chip, [data-testid="turn-figures"]')].filter((m) => m.getClientRects().length && m.getBoundingClientRect().width > 0).map((m) => {
+            const r = m.getBoundingClientRect();
+            const g = m.querySelector("svg") ?? m;
+            const range = document.createRange(); range.selectNodeContents(g); const t = g instanceof SVGElement ? g.getBoundingClientRect() : range.getBoundingClientRect();
+            return { left: r.left, right: r.right, mid: (t.top + t.bottom) / 2 };
+          }));
+          for (let i = 1; i < marks.length; i++) {
+            expect(marks[i]!.left - marks[i - 1]!.right, "no gap between the footer's marks").toBeLessThanOrEqual(1);
+            expect(Math.abs(marks[i]!.mid - marks[0]!.mid), "the footer's marks on one line").toBeLessThanOrEqual(2);
+          }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }

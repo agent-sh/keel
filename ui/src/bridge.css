@@ -1828,6 +1828,13 @@ button.k-note-chip:hover, button.k-note-chip[data-popup-open] { color: var(--fg)
 div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row-gap: 2px; }
 .k-turn-end { flex-wrap: wrap; row-gap: 2px; }
 .k-turn-end > span, .k-notes { white-space: nowrap; }
+/* On a phone each mark of the footer is a finger's target already: they stand side by side with no gap of
+   their own between them, so the menu's dots, the turn's notes and its figures read as one row of marks. */
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
+  .k-turn-foot { gap: 0; }
+  .k-turn-foot > .k-notes, .k-turn-foot > .k-turn-end { margin-left: 0; }
+  .k-turn-foot > .k-notes { gap: 0; }
+}
 
 /* ---------- Cards, each saying what it wants from the owner ---------- */
 /* A secret the model asks for: it waits on them, so it is yellow like an approval; the value is set in mono. */

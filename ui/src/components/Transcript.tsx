@@ -721,7 +721,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
         {counted && <span className="max-md:hidden">{fmtTokens(u.output)} out</span>}
         {!figures ? null : cost ? <span className="max-md:hidden" data-testid="turn-cost">{cost}</span> : u?.unpriced ? <span className="max-md:hidden">cost unknown</span> : null}
         {figures && <Popover.Root>
-          <Popover.Trigger className="k-turn-figs hidden whitespace-nowrap rounded-xs px-1 hover:bg-hover hover:text-muted max-md:inline-flex" aria-label="Time, tokens and cost" data-testid="turn-figures">
+          <Popover.Trigger className="k-turn-figs hidden items-center whitespace-nowrap rounded-xs px-1 hover:bg-hover hover:text-muted max-md:inline-flex" aria-label="Time, tokens and cost" data-testid="turn-figures">
             {cost || secs}
           </Popover.Trigger>
           <Popover.Portal>

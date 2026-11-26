@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, Eye, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, ShieldAlert, Sprout, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, Eye, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, ShieldAlert, Sprout, SquareTerminal, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -174,6 +174,12 @@ function ReportTimes({ r, reached }: { r: Report; reached: number }) {
   return words ? <div className="mb-1.5 text-caption text-faint" data-testid="agent-report-times">{words}</div> : null;
 }
 
+// How the command ended and the command (how it stands first: a narrow line cuts at its end), from the words the harness told the model (src/tools/jobs.ts).
+const jobEnded = (text: string): string | undefined => {
+  const m = /background (?:command|program) (.+?) \(ID [^)]+\) ([^,.]+)/.exec(text) ?? /has ended, after [^:]+: (.+?) \(ID [^)]+\) ([^,.]+)/.exec(text);
+  return m ? `${m[2]} · ${m[1]!.replace(/^`|`$/g, "")}` : undefined;
+};
+
 // A message the harness put in the conversation: an agent's report, a wake, a
 // loop run, a task. Shown as what it is, never as the owner's words.
 export function InputNotice({ e }: { e: StoredEvent }) {
@@ -343,6 +349,16 @@ export function InputNotice({ e }: { e: StoredEvent }) {
         </div>
         <p className="k-heard-body whitespace-pre-wrap text-read leading-relaxed text-fg">{task}</p>
       </div>
+    );
+  }
+  // A background command of the model's ended (src/tools/jobs.ts): named as that, with the command and how it
+  // ended on its line, so the turn it starts says why; the note is under it.
+  if (typeof e.data.job === "string") {
+    const ended = jobEnded(text);
+    return (
+      <Shell icon={SquareTerminal} label="Background command ended" sub={ended} testid="job-notice">
+        <p className="whitespace-pre-wrap break-words text-ui text-muted">{text.replace(/^\[harness\]\s*/, "")}</p>
+      </Shell>
     );
   }
   return (
