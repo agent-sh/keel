@@ -11,7 +11,7 @@ import { useAgentsSeen } from "../lib/agent-seen.ts";
 import { EarlierRow } from "./automation/Earlier.tsx";
 import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
-import { branchGone, canLand, landBlock, landHeld, toLand, type Change } from "../../../src/board/rules.ts";
+import { branchGone, canLand, landBlock, landHeld, omittedWords, toLand, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { checksWords } from "../lib/check-words.ts";
 import { queueBranches } from "../lib/landing.ts";
@@ -436,7 +436,7 @@ export function WorkBoard({ session }: { session: Session }) {
           {fold.earlier > 0 && <li className="list-none"><EarlierRow n={fold.earlier} onMore={fold.more} extra={toLandLeft ? `${toLandLeft} to land` : undefined} testid="board-earlier" className="k-earlier" /></li>}
         </ul>
       )}
-      {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{b.total - b.rows.length} older agents are not shown.</p>}
+      {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{omittedWords(b)} not shown.</p>}
       {reviewing && <Suspense fallback={null}><TreeReviewDialog session={session} onClose={() => { setReviewing(false); loadBoard(session.id, true).catch(() => {}); }} /></Suspense>}
     </div>
   );

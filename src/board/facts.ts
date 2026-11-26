@@ -19,13 +19,17 @@ export type VerdictRow = { agent_id: string; commit_sha: string; branches: strin
 export type DeployRow = { repo: string; to_sha: string; ended: number };
 // A pair the branches were checked in (src/landing/together.ts), as its row keeps it.
 export type PairCheckRow = { repo: string; tip1: string; tip2: string; branch1: string; branch2: string; base_tip: string | null; why: string; detail: string | null; state: string; checks: string | null; error: string | null; started: number; ended: number | null };
-export type Facts = { total: number; agents: AgentFact[]; reviews: ReviewFact[]; queue: QueueRow[]; deploys: DeployRow[]; pairs: PairCheckRow[] };
+// live_cut: agents that work or wait and are still not among `agents` (only when more of them work than MAX_ROWS).
+export type Facts = { total: number; live_cut: number; agents: AgentFact[]; reviews: ReviewFact[]; queue: QueueRow[]; deploys: DeployRow[]; pairs: PairCheckRow[] };
 
 const tried = <T>(f: () => T[]): T[] => { try { return f(); } catch { return []; } };
 const has = (db: Database, table: string, col: string) => tried(() => db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all()).some((c) => c.name === col);
 
 // The tree under `root`, to the depth agents can reach and a little past it.
 const TREE = "WITH RECURSIVE t(s, d) AS (SELECT ?1, 0 UNION SELECT a.session_id, t.d + 1 FROM agents a JOIN t ON a.parent_id = t.s WHERE t.d < 12)";
+// An agent that works or waits: it is on the board before any finished one, so the row cap never hides one behind
+// newer finished siblings (newest first within each, and the rows still go newest first).
+const LIVE = "(a.status IN ('running', 'waiting'))";
 // The longest part of a report a verdict is read from: a verdict is said near its start or its end.
 const REPORT_HEAD = 16_000, REPORT_TAIL = 4_000;
 // The longest answer to an output_schema read for its verdicts.
@@ -33,13 +37,15 @@ const ANSWER_MAX = 64_000;
 
 export function boardFacts(db: Database, a: { root: string }): Facts {
   const reviewsCol = has(db, "agents", "reviews") ? "a.reviews" : "NULL";
-  const total = tried(() => db.query<{ n: number }, [string]>(`${TREE} SELECT COUNT(*) AS n FROM agents a JOIN t ON a.parent_id = t.s`).all(a.root))[0]?.n ?? 0;
+  const counted = tried(() => db.query<{ n: number; live: number | null }, [string]>(`${TREE} SELECT COUNT(*) AS n, SUM(${LIVE}) AS live FROM agents a JOIN t ON a.parent_id = t.s`).all(a.root))[0];
+  const total = counted?.n ?? 0;
   const wt = tried(() => db.query<{ n: number }, []>("SELECT 1 AS n FROM sqlite_master WHERE type = 'table' AND name = 'worktrees'").all()).length > 0;
   const agents = tried(() => db.query<AgentFact, [string, number]>(`${TREE}
     SELECT a.id, a.parent_id, a.session_id, t.d + 1 AS depth, a.title, a.type, a.model, a.status, a.created, a.ended, a.branch, a.worktree, a.machine, ${reviewsCol} AS reviews, a.output_schema IS NOT NULL AS structured,
       ${wt ? "w.repo_root, w.base, w.base_commit, w.state AS wt_state, w.path AS wt_path" : "NULL AS repo_root, NULL AS base, NULL AS base_commit, NULL AS wt_state, NULL AS wt_path"}
     FROM agents a JOIN t ON a.parent_id = t.s ${wt ? "LEFT JOIN worktrees w ON w.session_id = a.session_id" : ""}
-    ORDER BY a.created DESC LIMIT ?2`).all(a.root, MAX_ROWS));
+    ORDER BY ${LIVE} DESC, a.created DESC LIMIT ?2`).all(a.root, MAX_ROWS)).sort((x, y) => y.created - x.created);
+  const live_cut = Math.max(0, (counted?.live ?? 0) - agents.filter((x) => x.status === "running" || x.status === "waiting").length);
   const branches = new Set(agents.map((x) => x.branch).filter((b): b is string => !!b));
 
   // Reviews by agents of the tree: the branches each names (its spawn's `reviews` or its task), its
@@ -127,7 +133,7 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
     pairs.push(...tried(() => db.query<PairCheckRow, [string, string]>(`SELECT repo, tip1, tip2, branch1, branch2, base_tip, why, detail, state, checks, error, started, ended FROM pair_checks
       WHERE repo = ?1 AND (branch1 IN (SELECT value FROM json_each(?2)) OR branch2 IN (SELECT value FROM json_each(?2))) ORDER BY started DESC LIMIT 400`).all(repo, JSON.stringify(list))));
   }
-  return { total, agents, reviews, queue, deploys, pairs };
+  return { total, live_cut, agents, reviews, queue, deploys, pairs };
 }
 
 export type TreeRun = { tree: string; head: string | null; session_id: string; name: string; command: string; dir: string; result: string; ended: number };

@@ -130,13 +130,20 @@ export type BoardRow = {
 export type Board = {
   session_id: string;
   rows: BoardRow[];
-  total: number;                // agents of the tree; rows holds the newest MAX_ROWS of them
+  total: number;                // agents of the tree; rows holds MAX_ROWS of them, every working one first, then the newest
+  live_cut?: number;            // working agents left out even so (more of them work than MAX_ROWS)
   repos: { repo: string; base: string | null; base_tip: string | null; deploys: Deploy[] }[];
   at: number;
   took_ms: number;
 };
 
 export const MAX_ROWS = 200;
+// The agents a board leaves out, in words: older finished ones, and working ones only when more work than it holds.
+export const omittedWords = (b: Pick<Board, "total" | "rows" | "live_cut">): string => {
+  const n = b.total - b.rows.length, live = Math.min(n, b.live_cut ?? 0);
+  if (!live) return `${n} older finished ${n === 1 ? "agent is" : "agents are"}`;
+  return `${n} ${n === 1 ? "agent is" : "agents are"} (${live} working, the oldest${n > live ? `, and ${n - live} finished` : ""})`;
+};
 export const LINE_MAX = 160;
 
 // ---- reviews
@@ -555,7 +562,7 @@ export function boardText(b: Board, o: { all?: boolean; agent?: string } = {}): 
   if (reviewers.length) out.push(`Reviewers done: ${reviewers.join(", ")}.`);
   if (other.length) out.push(`Done with no branch to land: ${other.join(", ")}.`);
   if (gone.length) out.push(`Done, branch removed: ${gone.join(", ")}.`);
-  if (b.total > b.rows.length) out.push(`${b.total - b.rows.length} older agents are not on the board.`);
+  if (b.total > b.rows.length) out.push(`${omittedWords(b)} not on the board.`);
   if (!o.all && rest.length) out.push("all: true lists every row; agent: <id> shows one row in full.");
   return out.join("\n");
 }

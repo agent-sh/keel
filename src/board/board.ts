@@ -316,7 +316,7 @@ export class WorkBoard {
     // task list keeps finished work below running work).
     const rank = (r: BoardRow) => (r.state === "running" || r.state === "waiting" ? 0 : toLand(r) ? 1 : 2);
     const ordered = [...rows.values()].sort((a, b) => rank(a) - rank(b) || b.created - a.created);
-    return { session_id: root, rows: ordered, total: facts.total, repos, at: Date.now(), took_ms: Math.round(performance.now() - t0) };
+    return { session_id: root, rows: ordered, total: facts.total, ...(facts.live_cut ? { live_cut: facts.live_cut } : {}), repos, at: Date.now(), took_ms: Math.round(performance.now() - t0) };
   }
 }
 
