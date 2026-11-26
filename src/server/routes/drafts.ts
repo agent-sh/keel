@@ -44,6 +44,20 @@ const typed = new Map<string, Map<string, number>>(); // session -> page -> last
 // a turn's step that would take the owner's steer waits while he types the next (src/engine/steer-gather.ts).
 const keyed = new Map<string, Map<string, number>>(); // session -> page -> last key
 const emptied = new Map<string, number>();
+const forgetTyping = (id: string) => { typed.delete(id); keyed.delete(id); emptied.delete(id); };
+// What a page said goes stale in three beats: a session deleted or left idle keeps nothing past that. Swept at
+// most once a beat, from the presence route.
+let swept = 0;
+export function sweepTyping(now = Date.now()) {
+  if (now - swept < DRAFT_BEAT_MS) return;
+  swept = now;
+  const stale = (t: number) => now - t > 3 * DRAFT_BEAT_MS;
+  for (const m of [typed, keyed]) for (const [id, pages] of m) {
+    for (const [p, t] of pages) if (stale(t)) pages.delete(p);
+    if (!pages.size) m.delete(id);
+  }
+  for (const [id, t] of emptied) if (stale(t)) emptied.delete(id);
+}
 
 // The owner's typing in this session's boxes: the newest key into a box that holds a message now, and when one emptied.
 export function ownerTyping(id: string, now = Date.now()): Typing | undefined {
@@ -92,6 +106,7 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
   // (a loop, a wait, an agent's report, a peer: `kind`; momentum, the queue:
   // `origin`), at the place it sends. Speech is the owner's too.
   bus.on((f) => {
+    if (f.t === "session" && (f.deleted || f.session.archived)) { forgetTyping(f.session.id); return; }
     if (f.t !== "event" || f.event.kind !== "user") return;
     const d = f.event.data as { origin?: string; kind?: string };
     if (!d?.kind && (!d?.origin || d.origin === "voice")) touch(f.event.session_id);
@@ -186,7 +201,10 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
         try { b = JSON.parse(await req.text()); } catch {}
         const page = typeof b?.page === "string" ? b.page.slice(0, 64) : "";
         const id = req.params.id as string;
-        if (b?.draft === true || b?.typed === true) {
+        sweepTyping();
+        // A key says nothing of the box's claim: a ping that comes after the box said it emptied must not
+        // claim a draft the restart wait would hold for (only `draft` does).
+        if (b?.draft === true) {
           const pages = typed.get(id) ?? new Map<string, number>();
           pages.set(page, Date.now());
           typed.set(id, pages);

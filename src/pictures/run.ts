@@ -85,9 +85,12 @@ export type PictureRun = {
   kept: boolean;            // its pictures are still on disk
   created: number; started: number | null; ended: number | null;
   sizes?: string[]; themes?: string[];
-  // The owner's look the run took its pictures at too ("owner" in the sizes), the same on both sides and across a restart.
-  look: Look | null;
+  // The owner's look the run took its pictures at too ("owner" in the sizes), the same on both sides and across a restart;
+  // "none" when the daemon had none at the run's start (kept so a restart does not give one side a look the other lacked).
+  look: Look | "none" | null;
 };
+const NO_LOOK = '"none"';
+const lookOf = (r: PictureRun): Look | undefined => r.look && r.look !== "none" ? r.look : undefined;
 type Row = Omit<PictureRun, "selection" | "sides" | "pairs" | "counts" | "kept" | "look"> & { selection: string | null; sides: string; pairs: string | null; kept: number; look: string | null };
 
 type Deps = {
@@ -113,7 +116,7 @@ const kept = ((globalThis as any).__keelPictures ??= { chain: Promise.resolve(),
 
 const toRun = (r: Row): PictureRun => {
   const pairs = r.pairs ? JSON.parse(r.pairs) as Pair[] : [];
-  return { ...r, selection: r.selection ? JSON.parse(r.selection) : null, sides: JSON.parse(r.sides), pairs, counts: countsOf(pairs), kept: !!r.kept, look: r.look ? readLook(JSON.parse(r.look)) ?? null : null };
+  return { ...r, selection: r.selection ? JSON.parse(r.selection) : null, sides: JSON.parse(r.sides), pairs, counts: countsOf(pairs), kept: !!r.kept, look: r.look === NO_LOOK ? "none" : r.look ? readLook(JSON.parse(r.look)) ?? null : null };
 };
 export function countsOf(pairs: readonly Pair[]): Counts {
   const c: Counts = { changed: 0, unstable: 0, new: 0, gone: 0, unread: 0, same: 0 };
@@ -151,7 +154,7 @@ async function sweep() {
 function save(r: PictureRun) {
   // (Who is owed its answer is written by owe and followed alone: a run going holds no word of it.)
   d!.store.db.query("UPDATE pictures SET state = ?, why = ?, sides = ?, pairs = ?, kept = ?, started = ?, ended = ?, look = ? WHERE id = ?")
-    .run(r.state, r.why, JSON.stringify(r.sides), r.pairs.length ? JSON.stringify(r.pairs) : null, r.kept ? 1 : 0, r.started, r.ended, r.look ? JSON.stringify(r.look) : null, r.id);
+    .run(r.state, r.why, JSON.stringify(r.sides), r.pairs.length ? JSON.stringify(r.pairs) : null, r.kept ? 1 : 0, r.started, r.ended, r.look === "none" ? NO_LOOK : r.look ? JSON.stringify(r.look) : null, r.id);
   r.counts = countsOf(r.pairs);
   for (const sid of new Set([...(r.session_id ? [r.session_id] : []), ...(d!.viewers?.(r) ?? [])])) d!.bus.emit({ t: "feature", name: "pictures", session_id: sid, data: brief(r) });
 }
@@ -282,8 +285,10 @@ async function executeOf(run: PictureRun, known?: { cfg: PicturesConfig; paths: 
   run.state = "running";
   run.started = Date.now();
   // The owner's look is read once, when the run first starts: both sides, and a side a restart cut, take the same.
-  if (cfg.owner && !run.look) { const l = d!.look?.(); run.look = l ? readLook(l) ?? null : null; }
-  run.sizes = [...cfg.sizes.map(sizeWord), ...(run.look ? [`owner ${lookWord(run.look)}`] : [])];
+  if (cfg.owner && !run.look) { const l = d!.look?.(); run.look = (l && readLook(l)) || "none"; }
+  const look = lookOf(run);
+  if (cfg.owner && !look) run.why = "no page has said how the owner's view is drawn: the owner's look was not taken";
+  run.sizes = [...cfg.sizes.map(sizeWord), ...(look ? [`owner ${lookWord(look)}`] : [])];
   run.themes = cfg.themes;
   save(run);
   const specs = run.selection!.specs.map((s) => s.path);
@@ -358,7 +363,7 @@ async function takeSide(run: PictureRun, repo: Repo, cfg: PicturesConfig, side: 
     const env: Record<string, string> = {
       ...(sid ? toolEnv(sid) : toolEnv("pictures")), CI: "1",
       KEEL_PICTURES_OUT: shots, KEEL_SHOT_SIZES: cfg.sizes.map(sizeWord).join(","), KEEL_SHOT_THEMES: cfg.themes.join(","),
-      ...(run.look ? { KEEL_LOOK: JSON.stringify(run.look) } : {}),
+      ...(lookOf(run) ? { KEEL_LOOK: JSON.stringify(lookOf(run)) } : {}),
       // The run's instant, to the minute: the same on every side (src/core/fixed-world.ts).
       [FIXED_ENV]: String(Math.floor(run.created / 60_000) * 60_000),
       // A temporary folder of the side's own, at the same path on every side (a scratch path the page shows).
