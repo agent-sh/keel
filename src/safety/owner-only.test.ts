@@ -172,6 +172,20 @@ test("a name with no value in sight, after a protected folder that is spelled ou
   }
 });
 
+test("the relative steps after a cd spelled with a name the line sets lead on from where it led", () => {
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  const two = "p=/home/u; q=$p/own; D=$q; ";
+  for (const command of [
+    `${two}cd $D; cd ..; cat .ssh/id_rsa`, `${two}cd $D && cd .git && printf x > config`, `${two}cd $D; cd ..; cd .ssh; cat id_rsa`, `${two}cd $D; cd ../.ssh; cp k authorized_keys`,
+    `${two}pushd $D; cd .git/hooks; echo x > pre-commit`,
+  ]) expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "owner", "ask-high"]);
+  // From a folder the words do not show, the steps are tried from the folders a line usually means.
+  for (const command of ["D=$(pwd); cd $D; cd .git/hooks; echo x > pre-commit", "read D; cd $D; cd ..; cat .ssh/id_rsa"])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-high", "ask-high"]);
+  for (const command of [`${two}cd $D; cd sub; cat notes.txt`, `${two}cd $D; cd ..; echo x > notes.txt`, "D=$(pwd); cd $D; cd src; cat main.ts > out.txt"])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-low", "allow"]);
+});
+
 test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
   const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
   // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)

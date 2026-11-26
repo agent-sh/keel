@@ -1079,7 +1079,7 @@ const SOMEWHERE = "\0";
 const ANY = "\x01", LOOSE = "\x02";
 const whole = (c: string) => !/[\0\x01\x02]/.test(c);
 const ROOTED = /^(\/|~(\/|$))/;
-const CANDIDATES = 8, NAMES = 256, PATHS = 2_000, WORD = 4_096;
+const CANDIDATES = 8, NAMES = 256, PATHS = 2_000, WORD = 4_096, STEPS = 32;
 // An expansion in a word: `${NAME...}`, any other `${...}`, `$NAME`, `$(...)`, a special parameter, a backtick pair.
 // (Each form closes within a few hundred characters or is not read as one: a run of unclosed `${` costs no more than its length.)
 const EXPANSION = /\$\{([#!]?)([A-Za-z_][A-Za-z0-9_]*)([^}]{0,256})\}|\$\{[^}]{0,256}\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$\([^)]{0,256}\)|\$[^\s\/]|`[^`]{0,256}`/g;
@@ -1185,15 +1185,31 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
   // lead to, else the ones a line usually means. (`shown`: the line's words show the folder, it is no guess.)
   type Folder = { dir: string; shown: boolean };
   const usual = (i: number): Folder[] => [...new Set([pre.dirs[i] ?? cwd, cwd, f.workspace, home])].map((dir) => ({ dir, shown: false }));
-  // The `cd` that left the folder of part `i` unknown, when it is spelled with a name the line sets.
-  // (`last`: the `cd` nearest before each part, found once for the line.)
+  // The `cd` that left the folder of part `i` unknown, when it is spelled with a name the line sets, and the
+  // relative steps written out after it (`cd $D; cd ..; cd .ssh`), which lead on from wherever it led.
+  // (`last`: the `cd` nearest before each part, found once for the line; `chains`: what each `cd` comes to.)
+  type Entered = { to: string; at: number; then: string[]; key: number };
   const last: (number | undefined)[] = [];
   parts.forEach((p, j) => { const w = pre.runs[j]!.words; last[j + 1] = !p.heredoc && (w[0] === "cd" || w[0] === "pushd") ? j : last[j]; });
-  const entered = (i: number): { to: string; at: number } | null => {
-    const j = last[i];
-    if (j === undefined || (pre.dirs[i] !== null && pre.dirs[i] !== undefined)) return null;
-    const to = pre.runs[j]!.words.slice(1).find((a) => !a.startsWith("-"));
-    return to !== undefined && namesSet(to, s) ? { to, at: j } : null;
+  const chains = new Map<number, Entered | null>();
+  const entered = (i: number): Entered | null => {
+    const key = last[i];
+    if (key === undefined || (pre.dirs[i] !== null && pre.dirs[i] !== undefined)) return null;
+    let got = chains.get(key);
+    if (got !== undefined) return got;
+    got = null;
+    const then: string[] = [];
+    for (let j: number | undefined = key; j !== undefined; j = last[j]) {
+      const to = pre.runs[j]!.words.slice(1).find((a) => !a.startsWith("-"));
+      if (to !== undefined && namesSet(to, s)) { got = { to, at: j, then: then.reverse(), key }; break; }
+      // (Any other `cd` is followed by the rules above, or leads where nothing here says: a written-out folder from
+      // the root or the home, no folder, `-`, an expansion that is no name of the line's.)
+      if (to === undefined || /[$`]/.test(to) || /^(["']?)(\/|~)/.test(to) || (pre.dirs[j] !== null && pre.dirs[j] !== undefined)) break;
+      // (More steps than a line takes: not followed, and not known to lead nowhere protected.)
+      if (then.push(to) > STEPS) { s.cost.over = true; break; }
+    }
+    chains.set(key, got);
+    return got;
   };
   // (The folders a `cd` may lead to are the same for every part after it.)
   const led = new Map<number, Folder[]>();
@@ -1201,15 +1217,23 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
     if (pre.dirs[i] !== null && pre.dirs[i] !== undefined) return [{ dir: pre.dirs[i]!, shown: true }];
     const cd = entered(i);
     if (!cd) return usual(i);
-    let to = led.get(cd.at);
+    let to = led.get(cd.key);
     if (!to) {
       const from = pre.dirs[cd.at] ?? null, dirs = new Map<string, boolean>();
+      // (The steps after it, from each folder it may have led to: from a guessed one, with the steps up and without.)
+      const on = cd.then.map(clean).join("/");
+      const add = (dir: string | null, shown: boolean) => {
+        for (const t of !on ? [""] : !shown && UP.test(on) ? [on, on.replace(/(^|\/)\.\.(?=\/|$)/g, "$1.")] : [on]) {
+          const d = dir === null || !t ? dir : spelled(t, dir, home);
+          if (d) dirs.set(d, !!dirs.get(d) || shown);
+        }
+      };
       for (const c of wordStands(cd.to, cd.at, s, home)) {
-        if (c.startsWith(SOMEWHERE)) { for (const u of usual(cd.at)) if (!dirs.has(u.dir)) dirs.set(u.dir, false); continue; }
-        const text = clean(c), dir = spelled(text, from ?? cwd, home);
-        if (dir) dirs.set(dir, !!dirs.get(dir) || (whole(c) && (from !== null || ROOTED.test(text))));
+        if (c.startsWith(SOMEWHERE)) { for (const u of usual(cd.at)) add(u.dir, false); continue; }
+        const text = clean(c);
+        add(spelled(text, from ?? cwd, home), whole(c) && (from !== null || ROOTED.test(text)));
       }
-      led.set(cd.at, to = [...dirs].slice(0, CANDIDATES).map(([dir, shown]) => ({ dir, shown })));
+      led.set(cd.key, to = [...dirs].slice(0, CANDIDATES).map(([dir, shown]) => ({ dir, shown })));
     }
     return to;
   };
