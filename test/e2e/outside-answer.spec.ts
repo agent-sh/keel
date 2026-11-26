@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { choose, shoot } from "./shots.ts";
@@ -336,5 +337,37 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     if (sid) await request.delete(`/api/sessions/${sid}`);
     rmSync(dir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// An Antigravity conversation Keel follows is read-only here: its bar says so, has no box, and names no holder
+// (who holds a session says whether Keel can answer it, and Keel answers this one nowhere). Run the daemon with
+// KEEL_IMPORT_AGY_DIR at a scratch store (scripts/scratch-env.ts names it).
+test("an Antigravity session is followed read-only: no box and no holder in its bar", async ({ page, request }) => {
+  const listed = await (await request.get("/api/import/sessions?limit=1")).json();
+  const home = listed.harnesses?.find((h: any) => h.harness === "agy")?.store as string | undefined;
+  test.skip(!home || !home.includes("import/agy"), "needs a scratch Antigravity store (KEEL_IMPORT_AGY_DIR)");
+  const tag = String(Date.now());
+  const id = `a9a9a9a9-0000-4000-8000-${tag.slice(-12).padStart(12, "0")}`;
+  const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `outside-agy-${tag}`);
+  mkdirSync(cwd, { recursive: true });
+  const transcript = execFileSync("bun", [join(import.meta.dirname, "fixtures/agy-store.ts"), home!, cwd, id, `Keeper${tag.slice(-4)}`], { encoding: "utf8" }).trim();
+  const sessionOf = async () => ((await (await request.get("/api/sessions")).json()).sessions as any[]).find((s) => s.outside?.source_id === id);
+  // The conversation grows while Keel watches: that is what makes it a session of the list.
+  await expect.poll(async () => {
+    appendFileSync(transcript, JSON.stringify({ step_index: 6 + Math.floor(Math.random() * 1e6), type: "USER_INPUT", source: "USER_EXPLICIT", status: "DONE", created_at: new Date().toISOString().replace("T", " ").replace("Z", "000000+00:00"), content: "<USER_REQUEST>\nAnd the keeper's name?\n</USER_REQUEST>" }) + "\n");
+    return !!(await sessionOf());
+  }, { timeout: 30_000, intervals: [2000] }).toBe(true);
+  const sid = (await sessionOf()).id as string;
+  try {
+    await page.goto(`/s/${sid}`);
+    const bar = page.getByTestId("outside-bar");
+    await expect(bar).toHaveAttribute("data-harness", "agy");
+    await expect(bar.getByTestId("outside-note")).toContainText("Read-only here");
+    await expect(bar.getByTestId("outside-compose")).toHaveCount(0);
+    await expect(bar.getByTestId("outside-holder")).toHaveCount(0);
+    await shoot(page, "outside-answer-agy-read-only");
+  } finally {
+    await request.delete(`/api/sessions/${sid}`).catch(() => {});
   }
 });

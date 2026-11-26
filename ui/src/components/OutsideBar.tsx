@@ -130,7 +130,8 @@ export function OutsideBar({ session }: { session: Session }) {
             {o.since > 0 && <span className="k-outside-since" title={`Since ${clock(o.since, { seconds: true })}`}> since {clock(o.since)}</span>}
           </p>
           <p className="k-outside-facts" data-testid="outside-facts">
-            <span className="k-outside-holder" data-testid="outside-holder" data-kind={holder?.kind ?? "free"}>{holderSaid(holder, where)}</span>
+            {/* Who holds it says whether Keel can answer it; a session Keel only reads has nothing to say there. */}
+            {route !== "none" && <span className="k-outside-holder" data-testid="outside-holder" data-kind={holder?.kind ?? "free"}>{holderSaid(holder, where)}</span>}
             {spent && <span data-testid="outside-spent">{spent}</span>}
             {o.files > 0 && (
               <button type="button" className="k-outside-files-btn" aria-expanded={files} data-testid="outside-files-toggle" onClick={() => setFiles((x) => !x)}>
