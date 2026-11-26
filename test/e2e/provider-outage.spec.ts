@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -187,19 +187,30 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
   mkdirSync(scratch, { recursive: true });
   const work = mkdtempSync(join(scratch, "outage-agents-"));
   made.push(work);
+  const t0 = Date.now();
   const parent = await open(request, "Outage: twelve agents", work);
   expect((await request.patch(`/api/sessions/${parent}/agents`, { data: { limit: 12 } })).ok()).toBe(true); // more than the eight a session gets by default
   await page.goto(`/s/${parent}`);
   // Twelve background agents, each in the middle of its work (a command) when the provider goes.
   const N = 12;
-  const kids = Array.from({ length: N }, (_, i) => ({ name: "spawn_agent", input: { message: `Worker ${i + 1}\nscript:calls ${JSON.stringify([{ name: "Bash", input: { command: `sleep 5; echo worker-${i + 1} >> done-${i + 1}.txt` } }])}`, isolation: "none" } }));
+  const gates = Array.from({ length: N }, (_, i) => `release-${i + 1}`);
+  expect(spawnSync("mkfifo", gates, { cwd: work }).status).toBe(0);
+  const kids = gates.map((gate, i) => ({ name: "spawn_agent", input: { message: `Worker ${i + 1}\nscript:calls ${JSON.stringify([{ name: "Bash", input: { command: `timeout 45 cat ${gate} >/dev/null && echo worker-${i + 1} >> done-${i + 1}.txt` } }])}`, isolation: "none" } }));
   await send(page, `script:batch ${JSON.stringify(kids)}`);
   const agents = async () => (await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as any[];
   await expect.poll(async () => (await agents()).length, { timeout: 30_000 }).toBe(N);
-  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+  // The Conversation lens folds the parent turn's footer into its reply. Wait for the ledger and
+  // for all twelve commands to be in flight before cutting off the next provider request.
+  await expect.poll(async () => (await events(request, parent)).filter((e) => e.kind === "turn_end").length).toBe(1);
+  await expect.poll(async () => {
+    const jobs = await Promise.all((await agents()).map((a) => request.get(`/api/sessions/${a.session_id}/jobs`).then((r) => r.json())));
+    return jobs.filter(({ jobs }) => jobs.some((j: any) => j.running)).length;
+  }, { timeout: 30_000 }).toBe(N);
   // The provider is gone for a minute (a broker's 502 naming a DNS failure), from another session's request.
   const starter = await open(request, "Outage: starter");
   await request.post(`/api/sessions/${starter}/messages`, { data: { text: "script:outage gateway 60000" } });
+  await expect.poll(async () => (await stateOf(request, starter)).why).toBe("unreachable");
+  expect(spawnSync("timeout", ["15", "sh", "-c", 'for gate do echo go > "$gate" || exit; done', "sh", ...gates], { cwd: work }).status).toBe(0);
 
   // Every agent waits; none failed, none ended.
   await expect.poll(async () => {
@@ -213,7 +224,7 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
   await expect(row.locator('[data-testid="row-why"][data-why="unreachable"]')).toContainText(/12 agents wait: the provider cannot be reached since \d\d:\d\d/);
   await shoot(page, "outage-02-agents-wait");
   // The owner writes to the parent meanwhile: its request carries the one line about its agents, and waits too.
-  await page.waitForTimeout(6_000);
+  await expect.poll(async () => (await (await request.get("/api/activity?kind=daemon&limit=20")).json()).items.find((a: any) => a.sub === "outage" && a.ts >= t0)?.data.sessions, { timeout: 20_000 }).toBe(N + 1);
   await request.post(`/api/sessions/${parent}/messages`, { data: { text: "script:say Noted while they wait." } });
   await expect(page.getByTestId("provider-wait")).toContainText(SINCE, { timeout: 15_000 });
   await expect(page.getByTestId("provider-wait")).toContainText("could not reach");
@@ -235,7 +246,7 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
   expect(notes.filter((t) => /the 12 agents that waited for it went on/.test(t))).toHaveLength(1);
   // Waiters that joined after confirmation update the same Activity row.
   const { items } = await (await request.get("/api/activity?kind=daemon&limit=20")).json();
-  const outage = items.find((a: any) => a.sub === "outage");
+  const outage = items.find((a: any) => a.sub === "outage" && a.ts >= t0);
   expect(outage?.data.sessions).toBe(N + 2); // agents, starter and parent
   expect(outage?.text).toContain(`${N + 2} sessions wait`);
 
@@ -271,7 +282,7 @@ function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
     proc.stderr!.on("data", on);
   });
 }
-const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
+const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null || p.signalCode !== null ? r() : p.once("exit", () => r())));
 
 test("a daemon restart in the middle of the outage: the turn waits on in the next daemon and completes", async ({ page }) => {
   const state = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state", `outage-${Date.now()}`);
@@ -300,6 +311,7 @@ test("a daemon restart in the middle of the outage: the turn waits on in the nex
     expect(Date.now() - t0).toBeLessThan(10_000);
     d = await daemon(state);
     await page.goto(`${d.url}/s/${session.id}`);
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 }); // the workbench shows the session's row
     // The resumed turn waits again, for the same outage: the same start, and no second line in Activity.
     await expect(page.getByTestId("provider-wait")).toContainText(SINCE, { timeout: 60_000 });
     const now = (await call(d.url, "/api/state")).states[session.id];
@@ -341,7 +353,9 @@ test("a wait names the provider's status page and its open incident", async ({ p
   try {
     expect((await request.patch("/api/settings", { data: { status_pages: { pages: { scripted: base } } } })).ok()).toBe(true);
     await page.goto(`/s/${id}`);
-    await send(page, "script:outage dns 12000");
+    // Recent outages carry their retry cadence. Allow two five-second probes to fail even
+    // with scheduling jitter; the incident list is populated only after confirmation.
+    await send(page, "script:outage dns 20000");
     const wait = page.getByTestId("provider-wait");
     await expect(wait).toContainText(SINCE);
     const status = wait.getByTestId("provider-status");
@@ -349,7 +363,7 @@ test("a wait names the provider's status page and its open incident", async ({ p
     await expect(status.getByTestId("provider-status-incident")).toContainText("Elevated errors on the stand-in");
     await expect(status.getByTestId("provider-status-incident")).toHaveAttribute("href", "https://stub.invalid/inc/abc");
     // The incident the daemon keeps for the wait carries the same words, for its alert and its row.
-    await expect.poll(async () => (await (await request.get("/api/incidents")).json()).open.find((i: any) => i.key === "provider:scripted")?.status?.incident?.title).toBe("Elevated errors on the stand-in");
+    await expect.poll(async () => (await (await request.get("/api/incidents")).json()).open.find((i: any) => i.key === "provider:scripted")?.status?.incident?.title, { timeout: 15_000 }).toBe("Elevated errors on the stand-in");
     await shoot(page, "outage-02-status-page");
     await page.setViewportSize({ width: 390, height: 844 });
     // The incident's words stay inside the line's box on a phone (cut with an ellipsis, not run past its border).
