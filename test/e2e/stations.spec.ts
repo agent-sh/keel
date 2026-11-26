@@ -11,7 +11,9 @@ import { HAIKU, shoot, WORKBENCH } from "./shots.ts";
 test.use({ storageState: WORKBENCH });
 
 test("keys and drafts per station", async ({ page, request }) => {
-  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  // Loop stalls are diagnosed by the stall spec, not by this page's draft/preview check.
+  const errors = async () => (await (await request.get("/api/errors")).json()).errors.filter((e: { context?: { kind?: string } }) => e.context?.kind !== "stall").length;
+  const errorsBefore = await errors();
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `stations-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
   const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU, title } })).json()).session.id as string;
@@ -61,13 +63,15 @@ test("keys and drafts per station", async ({ page, request }) => {
   await page.goto(`/s/${copy.session.id}`);
   // (The pane worked in carries no line of its own; the card beside its row shows the same line.)
   await expect(page.locator(`section[data-station="${copy.session.id}"]`)).toBeVisible();
-  await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${copy.session.id}"]`).hover();
+  // Keyboard focus opens the same preview without a hover timer while the rail settles.
+  const imported = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${copy.session.id}"]`);
+  await imported.focus();
+  await expect(imported).toBeFocused();
   // Beside a row, identical state and last-reply text are shown once.
   await expect(page.getByTestId("rail-card")).toContainText("PASS all colored done");
   await request.delete(`/api/sessions/${copy.session.id}`);
 
-  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
-  expect(errorsAfter).toBe(errorsBefore);
+  expect(await errors()).toBe(errorsBefore);
 });
 
 // Feature: more panes than the window holds. At five and six panes on 1920x1040 the session
