@@ -107,6 +107,8 @@ test("Settings and Customize share one heading face and one width, and open on t
   const startTitle = page.locator(".k-pane-title", { hasText: "Start a session" }).first();
   await expect(startTitle).toBeVisible();
   expect(await startTitle.evaluate((el) => getComputedStyle(el).fontFamily), "Start a session").toMatch(/Plex Sans/);
+  // A label over the box is told by its place: a regular weight, smaller than the words typed under it.
+  expect(await startTitle.evaluate((el) => [getComputedStyle(el).fontWeight, parseFloat(getComputedStyle(el).fontSize) < parseFloat(getComputedStyle(document.querySelector('[data-testid="composer"]')!).fontSize)]), "a quiet label").toEqual(["400", true]);
   await page.getByTestId("errors-button").click();
   expect(await page.getByTestId("errors-panel").locator(".k-surface-title").evaluate((el) => getComputedStyle(el).fontFamily), "a panel's title").toMatch(/Plex Sans/);
   await page.keyboard.press("Escape");
