@@ -34,9 +34,32 @@ test.each(["{ :; cat f; } > /dev/null", "( :; cat f; ) >out", "{ :; echo hi > f;
   expect([shown(command, "/w"), made(command, "/w")]).toEqual([[], []]);
 });
 
-test.each(["cd \"$DIR\"", "cd sub[12]", "cd -", "cd", "pushd sub", "popd"])("the directory is no longer known after %s", (change) => {
+test.each([
+  "cd \"$DIR\"", "cd sub[12]", "cd -", "cd", "pushd sub", "popd",
+  "(cd sub; :)", "for d in sub; do cd \"$d\"; done", "builtin cd sub", "command cd sub",
+  "if pushd sub; then :; fi", "{ popd; }", "CDPATH=/elsewhere cd sub", "export CDPATH=/elsewhere",
+])("the directory is no longer known after %s", (change) => {
   expect(shown(`cat before && ${change} && cat f && cd elsewhere && cat g`, "/w")).toEqual([{ path: "/w/before", lines: Infinity }]);
   expect(made(`echo hi > before && ${change} && echo hi > f`, "/w")).toEqual(["/w/before"]);
+});
+
+test("a background separator ends the operands without breaking redirects", () => {
+  expect(shown("head -n 5 F & wait", "/w")).toEqual([{ path: "/w/F", lines: 5 }]);
+  expect(shown("head -n 5 F&wait", "/w")).toEqual([{ path: "/w/F", lines: 5 }]);
+  expect(shown("cd sub & cat f", "/w")).toEqual([]);
+  expect(shown("echo 'x & cat f' && cat g 2>&1", "/w")).toEqual([{ path: "/w/g", lines: Infinity }]);
+  expect(made("tee first & tee second", "/w")).toEqual(["/w/first", "/w/second"]);
+});
+
+test("a plain cd proves paths only within the rest of its AND chain", () => {
+  expect(shown("cd sub && cat f; cat g", "/w")).toEqual([{ path: "/w/sub/f", lines: Infinity }]);
+  expect(made("cd sub && tee out; tee other", "/w")).toEqual(["/w/sub/out"]);
+  expect(shown("cd sub && cat f || cat g", "/w")).toEqual([]);
+});
+
+test("tee credits output operands but not a file opened for input", () => {
+  expect(made("tee out < f", "/w")).toEqual(["/w/out"]);
+  expect(made("tee <f out > copy", "/w")).toEqual(["/w/copy", "/w/out"]);
 });
 
 test("sed prints a range across files, not a range per file", () => {

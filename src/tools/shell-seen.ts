@@ -4,8 +4,9 @@
 // knows. Read from the command's words and the file's size, no model.
 import { statSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { segments, withoutHeredocs } from "../engine/work-calls.ts";
+import { withoutHeredocs } from "../engine/work-calls.ts";
 import { realOf } from "../core/paths.ts";
+import { splitCommand, type Simple } from "../safety/shell.ts";
 import type { ToolContext } from "./types.ts";
 
 // A command's output past this is cut before the model reads it (INLINE_OK in claude.ts).
@@ -15,7 +16,6 @@ export const INLINE = 30_000;
 export const uncut = (ctx: Pick<ToolContext, "inline">, output: string) => output.length <= Math.min(INLINE, ctx.inline?.cap ?? INLINE);
 
 const WHOLE = new Set(["cat", "nl", "bat", "batcat", "less", "more"]);
-const words = (s: string) => s.trim().split(/\s+/).map((w) => w.replace(/^['"]|['"]$/g, "")).filter(Boolean);
 const plain = (a: string) => a !== "" && !/[<>$`*?~{}()[\]\\'"&]/.test(a);
 const at = (dir: string, p: string) => (isAbsolute(p) ? p : resolve(dir, p));
 const groupRedirect = /[})][ \t]*(?:[0-9]+|&)?[<>]/;
@@ -25,8 +25,31 @@ const program = (w: string[]) => {
   return { name: (w[i] ?? "").split("/").pop() ?? "", args: w.slice(i + 1) };
 };
 const changesDir = (name: string) => name === "cd" || name === "pushd" || name === "popd";
-const goesTo = (name: string, args: string[], here: string): string | undefined =>
-  name === "cd" && args.length === 1 && plain(args[0]!) && !args[0]!.startsWith("-") ? at(here, args[0]!) : undefined;
+const partsOf = (command: string): Simple[] =>
+  groupRedirect.test(withoutHeredocs(command)) ? [] : splitCommand(command)?.filter((p) => !p.heredoc) ?? [];
+
+// Follow only a plain `cd path && ...`: the next command depends on success.
+// A different form, including a wrapped or nested cd, leaves later paths unknown.
+function* located(parts: Simple[], dir: string) {
+  let here = dir;
+  let moved = false;
+  const fallback = parts.some((p) => p.sep === "||");
+  for (const part of parts) {
+    if (part.words.some((w) => /^CDPATH\+?=/.test(w))) break;
+    if (part.words.some(changesDir)) {
+      const [cmd, path] = part.words;
+      if (cmd !== "cd" || !path || part.words.length !== 2 || !plain(path) || path.startsWith("-") ||
+          part.nested || part.flow || part.unknown || part.dyn || /[<>]/.test(part.text) ||
+          part.sep !== "&&" || part.led || fallback) break;
+      here = at(here, path);
+      moved = true;
+      continue;
+    }
+    if (!part.nested && !part.flow && !part.unknown) yield { ...program(part.words), part, here };
+    // After an independent command boundary, the overall exit code no longer proves the cd ran.
+    if (moved && part.sep !== "&&") break;
+  }
+}
 
 // `end`: the lines are the file's last ones (tail), not its first.
 export type Shown = { path: string; lines: number; end?: true };
@@ -37,23 +60,13 @@ export type Shown = { path: string; lines: number; end?: true };
 // that filters its output through a pipe shows what the filter keeps: no read.
 // `dir`: where the command starts; a `cd` to a plain path moves it.
 export function shown(command: string, dir: string): Shown[] {
-  const text = withoutHeredocs(command);
-  // The simple command scan cannot associate a redirect after a group with its body.
-  if (groupRedirect.test(text)) return [];
-  const piped = /(^|[^|])\|([^|]|$)/.test(text);
+  const parts = partsOf(command);
+  if (parts.some((p) => p.sep === "|" || p.sep === "|&" || p.led === "|" || p.led === "|&")) return [];
   const out: Shown[] = [];
-  let here = dir;
-  for (const whole of segments(command)) {
-    // (The error stream sent anywhere takes nothing from what the command shows, and its target is no file it prints.)
-    const seg = whole.replace(/(^|\s)2>>?\s*(&1|[^\s&|;<>]+)/g, "$1");
-    const { name, args } = program(words(seg));
-    if (changesDir(name)) {
-      const next = goesTo(name, args, here);
-      if (next === undefined) break; // Later paths have no reliable base.
-      here = next;
-      continue;
-    }
-    if (piped || (!WHOLE.has(name) && name !== "head" && name !== "tail" && name !== "sed")) continue;
+  for (const { name, args, part, here } of located(parts, dir)) {
+    if (part.dyn || (!WHOLE.has(name) && name !== "head" && name !== "tail" && name !== "sed")) continue;
+    // The error stream sent anywhere takes nothing from what the command shows.
+    const seg = part.text.replace(/(^|\s)2>>?\s*(&1|[^\s&|;<>]+)/g, "$1");
     // Any other redirect (to a file, to /dev/null, `&>`) sends the lines somewhere the model does not read.
     if (seg.includes(">")) continue;
     let lines = Infinity;
@@ -93,23 +106,14 @@ export function shown(command: string, dir: string): Shown[] {
 
 // The files a command writes with a redirect or tee: its own, whatever they held.
 export function made(command: string, dir: string): string[] {
-  if (groupRedirect.test(withoutHeredocs(command))) return [];
   const out: string[] = [];
-  let here = dir;
-  for (const seg of segments(command)) {
-    const { name, args } = program(words(seg));
-    if (changesDir(name)) {
-      const next = goesTo(name, args, here);
-      if (next === undefined) break;
-      here = next;
-      continue;
-    }
+  for (const { name, args, part, here } of located(partsOf(command), dir)) {
     // An append does not replace the text that was already there.
-    for (const m of seg.matchAll(/(?:^|[^0-9&<>])>(?![>&])\s*([^\s;&|<>]+)/g)) {
+    for (const m of part.text.matchAll(/(?:^|[^0-9&<>])>(?![>&])\s*([^\s;&|<>]+)/g)) {
       const p = m[1]!.replace(/^['"]|['"]$/g, "");
       if (plain(p) && !p.startsWith("/dev/")) out.push(at(here, p));
     }
-    if (name === "tee" && !args.some((a) => a === "--append" || /^-[^-]*a/.test(a))) {
+    if (name === "tee" && !part.dyn && !args.some((a) => a === "--append" || /^-[^-]*a/.test(a))) {
       for (const a of args) if (!a.startsWith("-") && plain(a) && !a.startsWith("/dev/")) out.push(at(here, a));
     }
   }
