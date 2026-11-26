@@ -88,6 +88,9 @@ export function made(command: string, dir: string): string[] {
   return out;
 }
 
+// A file longer than this is not one a command's output held whole (the output is cut at INLINE), and is not
+// read to count its lines: the count reads the whole file on the loop.
+export const SEEN_BYTES = INLINE - 2_000;
 export const lineCount = (p: string) => { const t = readFileSync(p, "utf8"); return t === "" ? 0 : t.split("\n").length - (t.endsWith("\n") ? 1 : 0); };
 
 // After a command that ended with status 0: the files it showed whole and the
@@ -96,7 +99,7 @@ export function markSeen(ctx: ToolContext, command: string, dir: string, output:
   try {
     for (const s of shown(command, dir)) {
       const st = statSync(s.path);
-      if (!st.isFile() || st.size > INLINE - 2_000 || output.length > INLINE) continue;
+      if (!st.isFile() || st.size > SEEN_BYTES || output.length > INLINE) continue;
       if (Number.isFinite(s.lines) && lineCount(s.path) > s.lines) continue;
       ctx.seen.set(realOf(s.path), st.mtimeMs);
     }

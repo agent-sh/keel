@@ -3,7 +3,7 @@
 // edit change, the fallback when no reading comes back, and the urgent marks.
 // A stand-in takes the reader's place.
 import { afterAll, afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toolMarks } from "../core/build.ts";
@@ -15,7 +15,8 @@ import { FLOOR } from "./carry.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { stopJob, jobsOf } from "./jobs.ts";
-import { DIFF_LINES, expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, touched } from "./reading.ts";
+import { DIFF_LINES, expandReading, knownOf, merge, missing, pageOf, READER_REST_MS, rebase, shellSaw, touched } from "./reading.ts";
+import { SEEN_BYTES } from "./shell-seen.ts";
 import type { Tool, ToolContext } from "./types.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "reading-"));
@@ -342,6 +343,29 @@ describe("an edit after a reading", () => {
     expect(knownOf(ctx, p)).toBeUndefined();
     expect((await Edit.run({ file_path: p, old_string: line(400), new_string: "x" }, ctx)).is_error).toBeFalsy();
   }, 30_000);
+
+  test("a long file is never read to count its lines: its first N lines are the session's as printed, its tail adds nothing", async () => {
+    const { ctx } = rig();
+    const p = file(Array.from({ length: 8_000 }, (_, i) => line(i + 1)).join("\n") + "\n");
+    expect(statSync(p).size).toBeGreaterThan(SEEN_BYTES);
+    await Read.run({ file_path: p, limit: 3_000 }, ctx);
+    // (A file that cannot be opened: what is known of it after a command was known without reading it.)
+    chmodSync(p, 0o000);
+    try {
+      shellSaw(ctx, `head -n 40 ${p}`, dir, "x");
+      shellSaw(ctx, `sed -n '1,60p' ${p}`, dir, "x");
+      expect(knownOf(ctx, p)!.lines).toEqual([{ from: 1, to: 60 }, { from: 120, to: 122 }]);
+    } finally { chmodSync(p, 0o644); }
+    // Which lines a tail printed is known only by the file's length: not counted for a file this long.
+    shellSaw(ctx, `tail -n 20 ${p}`, dir, "x");
+    shellSaw(ctx, `cat ${p}`, dir, "x");
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 1, to: 60 }, { from: 120, to: 122 }]);
+    // A file under the bound is counted: its tail is its last lines.
+    const q = file();
+    await Read.run({ file_path: q }, ctx);
+    shellSaw(ctx, `tail -n 20 ${q}`, dir, "x");
+    expect(knownOf(ctx, q)!.lines).toEqual([{ from: 120, to: 122 }, { from: 581, to: 600 }]);
+  });
 
   test("Gemini's replace names its own way to read the lines; the GPT family's apply_patch is not held", async () => {
     const g = rig();

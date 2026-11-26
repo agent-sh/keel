@@ -28,7 +28,7 @@ import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/
 import { READING_HEAD } from "../safety/addresses.ts";
 import { FLOOR } from "./carry.ts";
 import { diffLines, splitLines, type Op } from "./diff.ts";
-import { INLINE, lineCount, shown } from "./shell-seen.ts";
+import { INLINE, lineCount, SEEN_BYTES, shown } from "./shell-seen.ts";
 import type { ToolContext } from "./types.ts";
 
 export type Span = { from: number; to: number };
@@ -212,6 +212,10 @@ export function sawText(ctx: Pick<ToolContext, "seen">, p: string, mtime: number
 // src/tools/shell-seen.ts): a file printed from its first line (cat, head, sed -n '1,Np') or to its last
 // (tail), with nothing filtering the output and the output not cut. A command that only names the file (a
 // listing, a count, a search) showed none of its lines. (A file printed whole is the session's by markSeen.)
+// The file is never read here for a print of its first N lines: they are lines 1 to N whatever its length (a
+// file with fewer has no line past its last to edit). Which lines a tail printed, and how many a whole print
+// did, needs the file's line count, which reads the file whole on the loop: counted only for a file under
+// the size the overwrite guard counts (SEEN_BYTES), and a longer file's tail adds nothing.
 export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string, dir: string, output: string): void {
   const b = books.get(ctx.seen);
   if (!b?.files.size || output.length > INLINE) return;
@@ -223,6 +227,11 @@ export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string, dir: s
       const st = statSync(p);
       if (!st.isFile()) continue;
       if (k.mtime !== st.mtimeMs) { k.lines = []; k.mtime = st.mtimeMs; k.refused = undefined; }
+      if (!s.end && Number.isFinite(s.lines)) {
+        if (s.lines >= 1) k.lines = merge([...k.lines, { from: 1, to: s.lines }]);
+        continue;
+      }
+      if (st.size > SEEN_BYTES) continue;
       const total = lineCount(p);
       const n = Math.min(total, s.lines);
       if (n >= 1) k.lines = merge([...k.lines, s.end ? { from: total - n + 1, to: total } : { from: 1, to: n }]);
