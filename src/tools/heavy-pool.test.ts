@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { splitCommand } from "../safety/shell.ts";
-import { before, checkConfig, compile, cpuList, heavyPattern, light, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
+import { before, checkConfig, compile, MEM_WAIT_MS, cpuList, heavyPattern, light, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
 import { DEFAULTS } from "./heavy.ts";
 
 const pats = compile(DEFAULTS.patterns, DEFAULTS.cost);
@@ -92,6 +92,41 @@ describe("the room the machine has", () => {
   test("free memory under the floor and a command's memory holds the next", () => {
     expect(room(r(2, 9000), held(1), cfg)).toMatchObject({ free: 0, cause: "memory" });
     expect(room(r(2, 8192 + 1536 + 100), held(1), cfg).free).toBe(1);
+  });
+  test("with no slot held, free memory under the floor holds the first command too, and its coming back lets it go", () => {
+    // Nothing runs, the processors are idle, but 9 GB free under an 8 GB floor leaves no room for 1.5 GB more.
+    expect(room(r(2, 9000), [], cfg)).toMatchObject({ slots: 0, free: 0, cause: "memory" });
+    expect(room(r(2, 0), [], cfg)).toMatchObject({ free: 0, cause: "memory" });
+    expect(room(r(2, 8192 + 1536 + 100), [], cfg)).toMatchObject({ free: 1, cause: "room" });
+    // The processors alone still never hold the first one.
+    expect(room(r(30, 40_000), [], cfg)).toMatchObject({ slots: 1, free: 1 });
+  });
+  test("a command whose estimate and the floor are more than the machine has runs alone at once, and says why it waits behind others", () => {
+    const big = { cores: 2, memory_mb: 30_000 };
+    const total = (mem: number) => ({ ...r(2, mem), mem_total_mb: 32_000 });
+    expect(room(total(20_000), [], cfg, [], 0, big)).toMatchObject({ free: 1 });
+    expect(room(total(1000), [], cfg, [], 0, big)).toMatchObject({ free: 1 });
+    const behind = room(total(20_000), held(1), cfg, [], 0, big);
+    expect(behind).toMatchObject({ free: 0, cause: "memory" });
+    expect(behind.why).toBe("its 30000 MB estimate and the 8192 MB kept free are more than this machine's 32000 MB: it runs alone when no slot is held");
+    // One that fits a machine with that much memory waits for it as any other.
+    expect(room({ ...r(2, 20_000), mem_total_mb: 64_000 }, [], cfg, [], 0, big)).toMatchObject({ free: 0, cause: "memory" });
+  });
+  test("an 8 GB machine under the default floor runs its heavy commands one at a time", () => {
+    const small = (mem: number) => ({ ...r(1, mem), mem_total_mb: 7_800 });
+    expect(room(small(3_000), [], cfg)).toMatchObject({ slots: 1, free: 1 });
+    expect(room(small(3_000), held(1), cfg)).toMatchObject({ free: 0, cause: "memory" });
+  });
+  test("with no slot held, the head waits for memory at most MEM_WAIT_MS, then runs alone; its reason says so", () => {
+    // A 16 GB desktop with 8 GB free: under the 8 GB floor plus 1.5 GB, but the floor plus the estimate fits 16 GB.
+    const desk = { ...r(1, 8_000), mem_total_mb: 15_800 };
+    const waiting = room(desk, [], cfg, [], 0, cfg.cost, MEM_WAIT_MS - 1);
+    expect(waiting).toMatchObject({ free: 0, cause: "memory" });
+    expect(waiting.why).toBe(`free memory is under the 8192 MB kept free plus its 1536 MB estimate; with no slot held it runs alone after ${MEM_WAIT_MS / 1000} s`);
+    expect(room(desk, [], cfg, [], 0, cfg.cost, MEM_WAIT_MS)).toMatchObject({ slots: 1, free: 1 });
+    // Alone: a second waits while the first holds its slot, whatever the first one waited.
+    expect(room(desk, held(1), cfg, [], 0, cfg.cost, MEM_WAIT_MS)).toMatchObject({ free: 0, cause: "memory" });
+    expect(room(desk, held(1), cfg).why).toBe("free memory is under the 8192 MB kept free plus its 1536 MB estimate");
   });
   test("the owner's fixed number of slots", () => {
     expect(room(r(2), [], { ...cfg, slots: 2 })).toMatchObject({ slots: 2, free: 2 });

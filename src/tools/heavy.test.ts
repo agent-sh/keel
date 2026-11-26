@@ -58,3 +58,39 @@ test("the line names another session's holder by its kind and a fixed command wo
   expect(pool.lineOf("w")).toBe("Waiting for a heavy-command slot: next in line, held by make (another session); every slot is taken");
   expect(["cargo test --workspace", "bun run deploy-prod", "npm deploy", "go vet ./..."].map(program)).toEqual(["cargo test", "bun run", "npm", "go vet"]);
 });
+
+test("with nothing held, an agent's first heavy command waits while free memory is under the floor and starts when it comes back; the owner's does not wait", async () => {
+  let mem = 4_000;
+  machine.read = () => ({ cores: 8, load1: 0.1, runnable: 0.1, sched_ns: undefined, mem_available_mb: mem, mem_total_mb: 64_000 });
+  let got: Slot | "aborted" | undefined;
+  void pool.take({ session: "a", who: "agent", command: "bun test ./src", call: "t" }).then((s) => { got = s; });
+  await Bun.sleep(0);
+  expect(got).toBeUndefined();
+  expect(pool.lineOf("a")).toBe("Waiting for a heavy-command slot: next in line, none held; free memory is under the 8192 MB kept free plus its 2048 MB estimate; with no slot held it runs alone after 30 s");
+  const own = await pool.take({ session: "o", who: "owner", command: "bun test ./src", call: "o" });
+  expect(own && own !== "aborted").toBe(true);
+  (own as Slot).release();
+  mem = 40_000;
+  await Bun.sleep(1_100); // the line's next sample
+  expect(got && got !== "aborted").toBe(true);
+});
+
+test("with nothing held and memory that does not come back, the head of the line runs alone after the bounded wait", async () => {
+  // A 16 GB desktop at 8 GB free: under the floor plus the estimate, though both fit its memory.
+  machine.read = () => ({ cores: 8, load1: 0.1, runnable: 0.1, sched_ns: undefined, mem_available_mb: 8_000, mem_total_mb: 15_800 });
+  const told: HeavyChange[] = [];
+  heavyChanged.tell = (c) => told.push(c);
+  const start = Date.now();
+  let got: Slot | "aborted" | undefined;
+  void pool.take({ session: "a", who: "beside", command: "bun test ./src", call: "t" }).then((s) => { got = s; });
+  let second: Slot | "aborted" | undefined;
+  void pool.take({ session: "b", who: "beside", command: "bun test ./src", call: "u" }).then((s) => { second = s; });
+  await Bun.sleep(0);
+  expect(got).toBeUndefined();
+  setSystemTime(new Date(start + 31_000));
+  await Bun.sleep(1_100); // the line's next sample
+  expect(got && got !== "aborted").toBe(true);
+  // Alone: the next waits while it holds its slot.
+  expect(second).toBeUndefined();
+  expect(told.some((c) => c.state === "started" && c.key.startsWith("a:"))).toBe(true);
+});

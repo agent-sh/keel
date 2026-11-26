@@ -24,8 +24,13 @@
 // text costs `cost`). The next command may start while busy plus its cost
 // stays under the limit and free memory stays above `free_mb` after its
 // memory. At most what fits the limit at each holder's cost run at once (or
-// `slots`, when the owner sets a number), and one always may when none runs:
-// the line moves even while other work fills the machine.
+// `slots`, when the owner sets a number). When none runs, the load never holds
+// the next one (the line moves even while other work fills the machine), but
+// free memory under the floor does, for at most MEM_WAIT_MS with nothing held:
+// then it runs alone, and so does at once a command whose estimate and the
+// floor together are more than the machine has (an 8 GB machine under the
+// default 8 GB floor), so that a machine short of memory still runs its heavy
+// commands one at a time instead of never.
 //
 // The owner's own commands (typed in the terminal pane) never wait: they take
 // a slot when one is free and run over the pool when none is. In line, a
@@ -43,7 +48,7 @@ export type Cost = { cores: number; memory_mb: number };
 // A pattern with its own cost; a pattern given as text costs `cost`.
 export type Pattern = { pattern: string; cores: number; memory_mb: number };
 export type PoolConfig = { patterns: (string | Pattern)[]; load_share: number; free_mb: number; cost: Cost & { ramp_s: number }; slots: number | null };
-export type Reading = { cores: number; load1: number; runnable?: number; mem_available_mb: number; at: number };
+export type Reading = { cores: number; load1: number; runnable?: number; mem_available_mb: number; mem_total_mb?: number; at: number };
 export type Held = { key: string; who: Who; since: number; cost: Cost };
 export type Gone = { at: number; cost: Cost };
 export type Waiting = { key: string; who: Who; at: number };
@@ -209,7 +214,20 @@ const sum = (xs: Cost[], k: keyof Cost) => xs.reduce((a, x) => a + x[k], 0);
 
 // How many heavy commands the machine has room for now, and how many of them
 // are free, for a next command of cost `next` (the head of the line's).
-export function room(r: Reading, held: Held[], cfg: PoolConfig, gone: Gone[] = [], windowMs = 0, next: Cost = cfg.cost): Room {
+// How long the head of the line waits for memory with no slot held before it runs alone. Memory a finished
+// command gives back shows in the next sample (a second): what has not come back in half a minute is held by
+// work outside the pool, which waiting longer does not free.
+export const MEM_WAIT_MS = 30_000;
+
+// Why a command waits for memory, in words that hold no live number (a waiting session's line).
+export function memoryReason(cfg: Pick<PoolConfig, "free_mb">, next: Cost, totalMb: number | undefined, heldNone: boolean): string {
+  if (neverFits(cfg, next, totalMb)) return `its ${next.memory_mb} MB estimate and the ${cfg.free_mb} MB kept free are more than this machine's ${totalMb} MB: it runs alone when no slot is held`;
+  return `free memory is under the ${cfg.free_mb} MB kept free plus its ${next.memory_mb} MB estimate` + (heldNone ? `; with no slot held it runs alone after ${MEM_WAIT_MS / 1000} s` : "");
+}
+const neverFits = (cfg: Pick<PoolConfig, "free_mb">, next: Cost, totalMb: number | undefined) => next.memory_mb > 0 && totalMb !== undefined && next.memory_mb + cfg.free_mb > totalMb;
+
+// `idleMs`: how long the head of the line has waited with no slot held.
+export function room(r: Reading, held: Held[], cfg: PoolConfig, gone: Gone[] = [], windowMs = 0, next: Cost = cfg.cost, idleMs = 0): Room {
   const limit = r.cores * cfg.load_share;
   const cost = Math.max(0.1, next.cores);
   const busyNow = r.runnable ?? r.load1;
@@ -221,12 +239,17 @@ export function room(r: Reading, held: Held[], cfg: PoolConfig, gone: Gone[] = [
   const mem = next.memory_mb > 0 ? Math.floor(memLeft / next.memory_mb) : Infinity;
   const more = Math.max(0, Math.min(cpu, mem));
   const counted = held.length;
+  // One may start when none runs, whatever the load (the line moves while other work fills the machine), but
+  // not into memory under the floor: that one waits for memory to come back (the pool samples while it waits),
+  // for at most MEM_WAIT_MS, and not at all when it could never fit (waiting would hold it for good).
+  const never = neverFits(cfg, next, r.mem_total_mb);
+  const first = counted === 0 && (mem >= 1 || never || idleMs >= MEM_WAIT_MS) ? 1 : 0;
   // At most what fits the limit at each command's own peak, or the owner's number.
   const cap = cfg.slots ?? Math.max(1, counted + Math.floor((limit - sum(held.map((h) => h.cost), "cores")) / cost));
-  const slots = Math.max(1, Math.min(cap, counted + more));
+  const slots = Math.max(first, Math.min(cap, counted + more));
   const free = Math.max(0, slots - counted);
-  const cause: Cause = free > 0 ? "room" : counted >= cap ? "slots" : mem < cpu ? "memory" : "load";
-  const why = { room: "room", slots: cap === 1 ? "the one slot is taken" : `all ${cap} slots are taken`, memory: `free memory under ${cfg.free_mb + next.memory_mb} MB`, load: `load ${busy.toFixed(1)} of ${limit.toFixed(1)}` }[cause];
+  const cause: Cause = free > 0 ? "room" : counted >= cap ? "slots" : counted === 0 || mem < cpu ? "memory" : "load";
+  const why = { room: "room", slots: cap === 1 ? "the one slot is taken" : `all ${cap} slots are taken`, memory: memoryReason(cfg, next, r.mem_total_mb, counted === 0), load: `load ${busy.toFixed(1)} of ${limit.toFixed(1)}` }[cause];
   return { slots, free, limit, busy, cause, why };
 }
 
@@ -261,11 +284,12 @@ export const quiet = (q: Quiet | undefined) => !!q && q.at - q.from >= IDLE_MS;
 // slots and why it waits. No live number in it, so it changes only when the
 // place, the holders or the cause do.
 const CAUSE: Record<Cause, string> = { room: "a slot is freeing", slots: "every slot is taken", load: "the machine is busy", memory: "free memory is low" };
-export function placeLine(ahead: number, holders: string[], cause: Cause): string {
+// `reason`: the head's own words for its cause (memoryReason), in place of the short one.
+export function placeLine(ahead: number, holders: string[], cause: Cause, reason?: string): string {
   const place = ahead === 0 ? "next in line" : `${ahead} ahead`;
   const named = holders.slice(0, 3).join(", ") + (holders.length > 3 ? ` and ${holders.length - 3} more` : "");
   const by = holders.length ? `held by ${named}` : "none held";
-  return `Waiting for a heavy-command slot: ${place}, ${by}; ${CAUSE[cause]}`;
+  return `Waiting for a heavy-command slot: ${place}, ${by}; ${reason ?? CAUSE[cause]}`;
 }
 
 export function checkConfig(v: any): string | undefined {

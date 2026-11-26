@@ -8,12 +8,12 @@
 //
 // A call run on another machine (keel__run_on, a session whose tools run
 // there) asks that machine's daemon, which has its own pool.
-import { availableParallelism, freemem, loadavg, platform } from "node:os";
+import { availableParallelism, freemem, loadavg, platform, totalmem } from "node:os";
 import { readFileSync } from "node:fs";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { cpuMs, jobSlots, running, startJob, type Job, type StartOpts } from "./jobs.ts";
-import { before, checkConfig, compile, cpuList, loadBetween, nextQuiet, quiet, schedTime, heavyPattern, order, placeLine, room, type Cost, type Gone, type Held, type Match, type PoolConfig, type Quiet, type Reading, type Room, type Who } from "./heavy-pool.ts";
+import { before, checkConfig, memoryReason, compile, cpuList, loadBetween, nextQuiet, quiet, schedTime, heavyPattern, order, placeLine, room, type Cost, type Gone, type Held, type Match, type PoolConfig, type Quiet, type Reading, type Room, type Who } from "./heavy-pool.ts";
 
 // The defaults. Each kind's cost is measured, one command at a time in a
 // cgroup of its own, as its peak over two seconds and its peak memory:
@@ -75,6 +75,9 @@ function memAvailableMb(): number {
   const m = read("/proc/meminfo").match(/MemAvailable:\s+(\d+)/);
   return m ? Math.round(Number(m[1]) / 1024) : Math.round(freemem() / 1048576);
 }
+// The machine's memory, for a command whose estimate could never fit (read once: it does not change).
+let totalMb: number | undefined;
+const memTotalMb = () => (totalMb ??= Math.round(totalmem() / 1048576));
 // The processes that run or wait for a processor now, without this read's own thread.
 function runnableNow(): number | undefined {
   if (platform() !== "linux") return undefined;
@@ -91,9 +94,9 @@ const allowedCpus = () => {
 // What the machine is read as, and a job's processor time in ms (a test sets its own).
 export const machine = {
   cpu: (job: Job): Promise<number> => cpuMs(job),
-  read: (): { cores: number; load1: number; runnable?: number; sched_ns?: number; mem_available_mb: number } => ({
+  read: (): { cores: number; load1: number; runnable?: number; sched_ns?: number; mem_available_mb: number; mem_total_mb?: number } => ({
     cores: allowedCpus()?.size || availableParallelism(), load1: loadavg()[0]!, runnable: runnableNow(),
-    sched_ns: platform() === "linux" ? schedTime(read("/proc/schedstat"), allowedCpus()) : undefined, mem_available_mb: memAvailableMb(),
+    sched_ns: platform() === "linux" ? schedTime(read("/proc/schedstat"), allowedCpus()) : undefined, mem_available_mb: memAvailableMb(), mem_total_mb: memTotalMb(),
   }),
 };
 
@@ -101,16 +104,18 @@ class Pool {
   held = new Map<string, Holder>();
   line: Entry[] = [];
   gone: Gone[] = [];
-  private samples: { at: number; runnable?: number; ns?: number; load1: number; mem: number; cores: number }[] = [];
+  private samples: { at: number; runnable?: number; ns?: number; load1: number; mem: number; total?: number; cores: number }[] = [];
   private timer: ReturnType<typeof setInterval> | undefined;
   private n = 0;
   private ticks = 0;
   private sampling: Promise<void> | undefined;
+  // When the last slot was given back (the head's wait with none held counts from then).
+  private emptyAt = 0;
 
   private sample() {
     const m = machine.read();
     const at = Date.now();
-    this.samples.push({ at, runnable: m.runnable, ns: m.sched_ns, load1: m.load1, mem: m.mem_available_mb, cores: m.cores });
+    this.samples.push({ at, runnable: m.runnable, ns: m.sched_ns, load1: m.load1, mem: m.mem_available_mb, total: m.mem_total_mb, cores: m.cores });
     if (this.samples.length > WINDOW) this.samples.shift();
   }
 
@@ -124,14 +129,18 @@ class Pool {
     const over = timed.length > 1 && timed.at(-1)!.at - timed[0]!.at >= 500 ? loadBetween({ at: timed[0]!.at, ns: timed[0]!.ns! }, { at: timed.at(-1)!.at, ns: timed.at(-1)!.ns! }) : undefined;
     const run = s.filter((x) => x.runnable !== undefined);
     const busy = over ?? (run.length ? run.reduce((a, x) => a + x.runnable!, 0) / run.length : undefined);
-    return { cores: last.cores, load1: last.load1, mem_available_mb: last.mem, at: now, ...(busy !== undefined ? { runnable: busy } : {}) };
+    return { cores: last.cores, load1: last.load1, mem_available_mb: last.mem, ...(last.total !== undefined ? { mem_total_mb: last.total } : {}), at: now, ...(busy !== undefined ? { runnable: busy } : {}) };
   }
 
   // The room for the next command: the head of the line's cost, else a command of `next`'s.
   room(next?: Cost): Room {
     this.gone = this.gone.filter((g) => Date.now() - g.at < 60_000);
     const cfg = config();
-    return room(this.reading(), [...this.held.values()], cfg, this.gone, WINDOW * SAMPLE_MS, next ?? order(this.line)[0]?.cost ?? cfg.cost);
+    const head = order(this.line)[0];
+    const now = Date.now();
+    // How long the head has waited with no slot held (a command asking now has waited none).
+    const idle = this.held.size || !head || next ? 0 : now - Math.max(this.emptyAt, head.at);
+    return room(this.reading(), [...this.held.values()], cfg, this.gone, WINDOW * SAMPLE_MS, next ?? head?.cost ?? cfg.cost, idle);
   }
 
   // What names a command heavy and what it costs, or nothing (no slot is asked for).
@@ -152,7 +161,7 @@ class Pool {
       release: () => {
         if (done) return;
         done = true;
-        if (this.held.get(e.key) === h) { this.held.delete(e.key); this.gone.push({ at: Date.now(), cost: h.cost }); }
+        if (this.held.get(e.key) === h) { this.held.delete(e.key); this.gone.push({ at: Date.now(), cost: h.cost }); if (!this.held.size) this.emptyAt = Date.now(); }
         this.pump();
       },
     };
@@ -211,7 +220,7 @@ class Pool {
       r = this.room();
     }
     order(this.line).forEach((e, i) => {
-      const line = placeLine(i, this.holders(e.session), r.cause);
+      const line = placeLine(i, this.holders(e.session), r.cause, i === 0 && r.cause === "memory" ? memoryReason(config(), e.cost, this.reading().mem_total_mb, !this.held.size) : undefined);
       if (line === e.told) return;
       e.told = line;
       heavyChanged.tell?.({ session_id: e.session, call_id: e.call, key: e.key, state: "waiting", line, pattern: e.pattern });
@@ -289,7 +298,7 @@ class Pool {
   }
 
   // For a test: no slot held, no one in line.
-  reset() { this.held.clear(); this.line = []; this.gone = []; this.samples = []; this.sampling = undefined; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
+  reset() { this.held.clear(); this.line = []; this.gone = []; this.samples = []; this.emptyAt = 0; this.sampling = undefined; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 }
 
 // While a line waits, the holders' processor time is read every QUIET_EVERY samples.
