@@ -56,11 +56,15 @@ const dir = () => join(d!.store.stateDir, ...BESIDE_DIR);
 // Kept by the process, not the module: a module loaded again (a dev daemon's reload) keeps the lanes.
 // `refs`: what a test file reaches, by its blob (the same file in every agent's copy is read once).
 // `rates`: what a test file of a check took in its last run here, by repository and check.
-const kept = ((globalThis as any).__keelBeside2 ??= { lanes: new Map(), timers: new Map(), dirty: new Set(), refs: new Map(), rates: new Map(), stats: { runs: 0, cpu_ms: 0, ms: 0, told: 0, skipped: 0 } }) as {
+// `since`: when a lane's run that gave its slot back first asked for one, so the run after it keeps its place in
+// the line. `dropped`: runs that got their slot after the agent had changed its files again: the copy they would
+// check was no longer the agent's, and the slot went back unused.
+const kept = ((globalThis as any).__keelBeside3 ??= { lanes: new Map(), timers: new Map(), dirty: new Set(), refs: new Map(), rates: new Map(), since: new Map(), stats: { runs: 0, cpu_ms: 0, ms: 0, told: 0, skipped: 0, dropped: 0 } }) as {
   lanes: Map<string, Lane>; timers: Map<string, ReturnType<typeof setTimeout>>; dirty: Set<string>; refs: Map<string, Refs>; rates: Map<string, number>;
-  stats: { runs: number; cpu_ms: number; ms: number; told: number; skipped: number };
+  since: Map<string, number>;
+  stats: { runs: number; cpu_ms: number; ms: number; told: number; skipped: number; dropped: number };
 };
-const { lanes, timers, dirty, refs, rates, stats } = kept;
+const { lanes, timers, dirty, refs, rates, since, stats } = kept;
 // As many test files as a few repositories of this size hold, kept by content.
 const REFS_MAX = 20_000;
 // What the checks beside agents cost since the daemon started (the resources view reads it).
@@ -135,6 +139,7 @@ export function forget(sessionId: string) {
   clearTimeout(timers.get(sessionId));
   timers.delete(sessionId);
   dirty.delete(sessionId);
+  since.delete(sessionId);
   if (lanes.get(sessionId)?.running) return; // its run removes them when it ends
   lanes.delete(sessionId);
   sweep(sessionId);
@@ -257,6 +262,9 @@ async function runIn(id: string, held: string[]): Promise<Done> {
     const lacks = pk.failed.get(check.dir);
     if (lacks) { ran.push(check.name); setups.push({ name: check.name, line: lacks, check, command, t0, log: null }); continue; }
     const r = await runCheck(id, s, check, command, scratch, tool, limitMs, repo, pk.shown, covered);
+    // The agent changed its files while this waited for its slot: nothing more runs on this copy, and the lane's tree stays
+    // the one checked last, so the next run checks the change since then.
+    if (r === "stale") { stats.dropped++; return { tree: null }; }
     if (!r) continue;
     ran.push(!tests.length ? check.name : of > tests.length ? `${check.name} (the ${tests.length} most direct of the ${of} test files the change touches)` : `${check.name} (${tests.length} test file${tests.length === 1 ? "" : "s"})`);
     if (r.where) where = r.where;
@@ -326,8 +334,8 @@ async function readRefs(scratch: string, copy: Copy, checks: readonly Check[]) {
 
 // One check on the copy: on this machine through the heavy pool (behind every other command), or on the
 // owner's host when this machine has no room and one is set. Undefined: it could not run (said nowhere:
-// the agent's own run of the check says what it says).
-async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo, shown: readonly string[] = [], covered: () => boolean = () => false): Promise<{ ran: Ran; log: string; where?: string } | undefined> {
+// the agent's own run of the check says what it says). "stale": the agent changed its files while it waited.
+async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo, shown: readonly string[] = [], covered: () => boolean = () => false): Promise<{ ran: Ran; log: string; where?: string } | "stale" | undefined> {
   const cwd = check.dir === "." ? scratch : join(scratch, check.dir);
   if (!existsSync(cwd)) return undefined;
   const cfg = setting();
@@ -342,8 +350,13 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
     // copy's links to installed packages point at are shown to it (a link into a folder it cannot see breaks).
     const confined = d!.confine(id, scratch, tool, [...linkTargets(repo, [check]), ...shown]);
     if ("refused" in howToRun(d!.perm(id), confined)) return undefined;
-    const slot = await pool.take({ session: id, who: "beside", command });
+    const asked = Math.min(since.get(id) ?? Date.now(), Date.now());
+    const slot = await pool.take({ session: id, who: "beside", command, since: asked });
     if (slot === "aborted") return undefined;
+    // The agent changed its files while this waited (its lane holds a change no run has taken): the slot goes back
+    // unused, and the run of the newer files asks in this one's place.
+    if (stale(id)) { slot?.release(); if (lanes.has(id)) since.set(id, asked); return "stale"; }
+    since.delete(id);
     // The line may have been long: the agent's own run of it may have come in the meantime.
     if (covered()) { slot?.release(); stats.skipped++; return undefined; }
     mkdirSync(tool, { recursive: true });
@@ -358,6 +371,9 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
   await Bun.write(log, `$ ${command}\n${ran.out}`);
   return { ran, log, ...(place === "host" ? { where: cfg.host! } : {}) };
 }
+
+// A lane whose agent changed its files after its running run took them.
+const stale = (id: string) => (lanes.get(id)?.first ?? null) !== null;
 
 // --- the base's packages for the copy
 

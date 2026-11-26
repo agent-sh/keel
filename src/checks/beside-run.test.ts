@@ -14,6 +14,8 @@ import { afterCall, afterStep, afterTurn, bindBeside, laneOf } from "./beside-ru
 import { scratchName, BESIDE_DIR, type AgentState } from "./beside.ts";
 import { bindLedger, keyOf, ofSession, record, repoOf, treeOf } from "./ledger.ts";
 import { baseFor, beforeCall, dropCall } from "./runs.ts";
+import { patchSettings } from "../admin/settings.ts";
+import { config as heavyConfig, pool } from "../tools/heavy.ts";
 
 const dir = tempTree("keel-beside-run-");
 const store = new Store(join(dir, "state"));
@@ -254,4 +256,31 @@ test("a check that could not start for want of a package is the setup's: said on
   expect(rows.map((r) => r.result)).toEqual(["stopped"]);
   const note = store.db.query<{ note: string }, [number]>("SELECT note FROM check_runs WHERE id = ?").get(rows[0]!.id)!.note;
   expect(note).toContain("Cannot find module 'gone-package'");
+});
+
+test("a run that waited for a heavy slot while the agent changed its files gives the slot back, and the newer files are checked in its place", async () => {
+  const { session, write } = repo({ "lib.sh": "x=1\n", "lib.test.sh": ". ./lib.sh; exit 0\n" });
+  const was = heavyConfig();
+  expect(patchSettings({ heavy: { patterns: [{ pattern: "t\\.sh", cores: 1, memory_mb: 0 }], slots: 1 } }).ok).toBe(true);
+  // Another session's command of the pattern holds the only slot.
+  const holder = pool.count({ session: "other", command: "sh t.sh hold" })!;
+  try {
+    write("lib.sh", "x=2\n");
+    step(session);
+    for (const end = Date.now() + 30_000; !pool.waits(session.id); await Bun.sleep(25)) if (Date.now() > end) throw new Error("the run beside never asked for a slot");
+    const asked = pool.waitingSince(session.id)!;
+    // The agent goes on while that run waits: its files now are not the ones the waiting run copied.
+    write("lib.sh", "x=3\n");
+    step(session);
+    holder.release();
+    await idle(session.id);
+  } finally {
+    holder.release();
+    patchSettings({ heavy: { patterns: was.patterns, slots: was.slots } });
+  }
+  // One run, on the files as they are now: the one that waited ran nothing.
+  const rows = ofSession(session.id).filter((r) => r.by === "beside");
+  expect(rows).toHaveLength(1);
+  const look = await treeOf(repoOf(session.workspace)!);
+  expect(rows[0]!.tree).toBe(look!.tree!);
 });

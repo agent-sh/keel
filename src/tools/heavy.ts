@@ -161,7 +161,8 @@ class Pool {
   // A slot for a command, given at once or when one frees; undefined when the
   // command is not heavy; "aborted" when the call was stopped while it waited.
   // `as`: what a command costs that the patterns may not name (Keel's own heavy work).
-  async take(o: { session: string; who: Who; command: string; call?: string; signal?: AbortSignal; as?: Cost }): Promise<Slot | "aborted" | undefined> {
+  // `since`: when it first asked, for one that asks again after a wait it gave up (it keeps its place in line).
+  async take(o: { session: string; who: Who; command: string; call?: string; signal?: AbortSignal; as?: Cost; since?: number }): Promise<Slot | "aborted" | undefined> {
     const m = this.heavy(o.command) ?? (o.as ? { pattern: "keel", cost: o.as, line: o.command.slice(0, 200) } : undefined);
     if (!m) return undefined;
     const key = `${o.session}:${o.call ?? `c${++this.n}`}:${++this.n}`;
@@ -172,7 +173,7 @@ class Pool {
     const ahead = before(this.line, o.who);
     if (ahead === 0 && this.room(m.cost).free > 0) return this.grant(base, 0);
     if (o.signal?.aborted) return "aborted";
-    const at = Date.now();
+    const at = Math.min(o.since ?? Date.now(), Date.now());
     return await new Promise<Slot | "aborted">((resolve) => {
       const e: Entry = { ...base, at, ahead0: ahead, go: (s) => { o.signal?.removeEventListener("abort", stop); resolve(s); } };
       const stop = () => {
