@@ -6,7 +6,8 @@ export type ToolKind = "shell" | "stdin" | "read" | "edit" | "write" | "patch" |
   | "web" | "fetch" | "plan" | "ask" | "skill" | "mcp" | "stop" | "other";
 
 export const KINDS: Record<string, ToolKind> = {
-  Bash: "shell", exec_command: "shell", run_shell_command: "shell", write_stdin: "stdin", TaskStop: "stop",
+  // (Codex's shell tools by their names in its transcript: shell, shell_command, local_shell, container.exec.)
+  Bash: "shell", exec_command: "shell", run_shell_command: "shell", shell: "shell", shell_command: "shell", local_shell: "shell", "container.exec": "shell", write_stdin: "stdin", TaskStop: "stop",
   Read: "read", read_file: "read", Edit: "edit", replace: "edit", Write: "write", write_file: "write",
   apply_patch: "patch", NotebookEdit: "notebook", Grep: "search", grep_search: "search", Glob: "glob", glob: "glob",
   list_directory: "list", WebSearch: "web", google_web_search: "web", WebFetch: "fetch", web_fetch: "fetch",

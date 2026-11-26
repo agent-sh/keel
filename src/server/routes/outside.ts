@@ -70,7 +70,7 @@ export const outsideRoutes: RouteModule = (deps) => {
   app.start();
   const o = outside;
   // What the bar shows besides the transcript's facts: who holds it, what a send does now, the sends not yet delivered.
-  const inPlace = (id: string, holder = o.holderNow(id)) => ({ holder, route: o.row(id)?.harness === "codex" ? app.route(id, holder) : "none", turn: app.running(id), sends: app.sends(id), notes: app.notes(id) });
+  const inPlace = (id: string, holder = o.holderNow(id)) => ({ holder, route: o.row(id)?.harness === "codex" ? app.route(id, holder) : "none", turn: app.running(id), sends: app.sends(id), notes: app.notes(id), answers: app.answers(id) });
   return {
     // (The owner's alone, as the sessions are: peer-scope.ts blindTo.)
     "/api/outside": { GET: (req: Request) => (seesOutside(req) ? json(o.status()) : bad("not found", 404)) },

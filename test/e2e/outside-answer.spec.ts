@@ -72,12 +72,33 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(bar.getByTestId("outside-stop")).toBeVisible();
     // The owner's message is in the row as Codex wrote it.
     await expect(page.getByTestId("transcript").getByText(`Run the tests ${tag}`).first()).toBeVisible();
+    // The card waits on the owner: the session needs him, on its row and in its bar, not "working".
+    await expect(page.locator(`[data-testid="session-row"][data-session="${sid}"]`)).toHaveAttribute("data-watch", "need");
+    await expect(bar.getByTestId("outside-state")).toContainText("Waits for your answer: Codex asks above");
     await shoot(page, "outside-answer-card");
+    // On a phone the bar is one quiet line over a box that fits: Send and Stop are in view, nothing runs off.
+    const desk = page.viewportSize()!;
+    await page.setViewportSize({ width: 390, height: 844 });
+    try {
+      const fits = async (id: string) => { const b = (await bar.getByTestId(id).boundingBox())!; return b.x >= 0 && b.x + b.width <= 390 + 0.5; };
+      await expect.poll(() => fits("outside-send")).toBe(true);
+      expect(await fits("outside-stop")).toBe(true);
+      expect(await fits("outside-copy")).toBe(true);
+      expect(await bar.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      await expect(bar.getByTestId("outside-note")).toBeHidden();
+      await expect(bar.getByTestId("outside-facts")).toBeHidden();
+      await shoot(page, "outside-answer-card-phone");
+    } finally { await page.setViewportSize(desk); }
 
     // Answered once: the reply comes into the same row, from the rollout.
     await card.getByRole("button", { name: /Allow once/i }).click();
     await expect(page.getByTestId("transcript").getByText(`The command was allowed: Run the tests ${tag}`).first()).toBeVisible({ timeout: 15_000 });
     await expect(card).toHaveCount(0);
+    // The call's line says the command, and what the owner chose (Codex's record says only what it returned).
+    const line = page.locator('[data-testid="tool-call"][data-call="c1"]').last();
+    await expect(line.getByTestId("call-answer")).toHaveText("allowed by you");
+    await expect(line).toContainText("make test");
+    await expect(line).not.toContainText('{"command"');
     // The turn is over and the child with it: the thread is free again, the send is delivered.
     await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
     await expect(bar.getByTestId("outside-sends")).toHaveCount(0);
@@ -90,6 +111,27 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(bar.getByTestId("outside-said")).toContainText("asked for a form, and Keel declined it", { timeout: 15_000 });
     await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
     await shoot(page, "outside-answer-form");
+
+    // A command that is really high risk is marked so, in Keel's words; on a phone the mark gives way to the
+    // card's title (a row of its own) instead of squeezing it a word a line. Denied, its line says so.
+    await input.fill(`wipe it ${tag}`);
+    await bar.getByTestId("outside-send").click();
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    const risk = card.getByTestId("approval-risk");
+    await expect(risk).toBeVisible();
+    await expect(risk).not.toContainText("Codex runs this command");
+    await page.setViewportSize({ width: 390, height: 844 });
+    try {
+      const title = card.locator('[id$="-title"]').first();
+      await expect.poll(async () => { const t = (await title.boundingBox())!, r = (await risk.boundingBox())!; return t.y + t.height <= r.y + 0.5 || r.x >= t.x + t.width - 0.5; }).toBe(true);
+      // The title keeps its words on a line or two, never one word a line.
+      expect((await title.boundingBox())!.height).toBeLessThan(64);
+      await shoot(page, "outside-answer-risk-phone");
+    } finally { await page.setViewportSize(desk); }
+    await card.getByRole("button", { name: /^Deny/ }).click();
+    await card.getByTestId("deny-send").click();
+    await expect(page.locator('[data-testid="tool-call"][data-call="c2"]').last().getByTestId("call-answer")).toHaveText("denied by you", { timeout: 15_000 });
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
 
     // A Codex that keeps no writer locks: nothing says whether a terminal has it open, so the box goes.
     rmSync(join(home!, "thread-writer-locks"), { recursive: true, force: true });

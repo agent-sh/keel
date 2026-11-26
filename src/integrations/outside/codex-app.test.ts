@@ -117,7 +117,7 @@ describe("a Codex session answered in place", () => {
       expect(text).toContain('"message":"fix the build"');
       expect(text).toContain("The command was allowed: fix the build");
       // One card, for its one command, in the harness's words.
-      expect(r.cards).toEqual([{ name: "Codex command", input: { command: "make test", cwd: expect.any(String) }, why: "Codex runs this command in the session if you allow it, under the sandbox its turn has", shown: undefined, notice: "Codex says: It runs the project's tests" }]);
+      expect(r.cards).toEqual([{ name: "Codex command", input: { command: "make test", cwd: expect.any(String), item: "c1" }, why: "Codex runs this command in the session if you allow it, under the sandbox its turn has", shown: undefined, notice: "Codex says: It runs the project's tests" }]);
       // The reply streamed as deltas; nothing was stored as an event of the session by the driver: the mirror stores the rollout's.
       const deltas = r.frames.filter((f): f is Extract<Frame, { t: "delta" }> => f.t === "delta" && f.session_id === s.id).map((f) => f.text).join("");
       expect(deltas).toContain("The command was allowed: fix the build");
@@ -187,14 +187,35 @@ describe("a Codex session answered in place", () => {
       const s = await r.session();
       r.app().send(s.id, "edit the constant", "k1");
       const a = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0], 15_000);
-      expect(a).toMatchObject({ tool: "Codex file change", kind: "edit", once: true, risk: "high", facts: { held: "harness" }, why: "Codex writes these changes if you allow them", notice: "Codex says: It fixes the constant" });
+      // A change in the thread's own folder is no high risk: judged as Keel's own edit there would be.
+      expect(a).toMatchObject({ tool: "Codex file change", kind: "edit", once: true, risk: "low", facts: { held: "harness" }, why: "Codex writes these changes if you allow them", notice: "Codex says: It fixes the constant" });
       expect(a.summary).toContain("+const a = 2;");
       expect(a.summary).toContain(join(r.cwd, "a.ts"));
       expect(r.gate()!.resolve(a.id, s.id, { choice: "deny" })).toEqual({ ok: true });
       await until(() => readFileSync(r.rollout, "utf8").includes("The change was declined: edit the constant"), 15_000);
+      // The answer is kept by the call's item, for its line in the mirror (the rollout says only what it returned).
+      expect(r.app().answers(s.id)).toEqual({ f1: { state: "denied" } });
       await until(() => !r.app().ours(s.id));
     } finally { r.done(); }
   }, 30_000);
+
+  test("a command Codex asks about is judged by the rules Keel's own calls are: high risk only for what is", async () => {
+    const r = rig({ realGate: true });
+    try {
+      const s = await r.session();
+      const sess = r.store.session(s.id)!;
+      const asks = (id: string, command: string) => {
+        const call = { id, tool: { name: "Codex command", kind: "shell", description: "", readOnly: false, input_schema: { properties: { command: {} } }, run: async () => ({ content: "" }) }, input: { command, cwd: r.cwd }, ctx: { sessionId: s.id, cwd: r.cwd, signal: new AbortController().signal, spillDir: "", seen: new Map() } } as any;
+        void r.gate()!.askOnce(sess, call, "Codex command", "Codex runs this command", "harness");
+        return until(() => r.gate()!.approvals({ session: s.id, pending: true }).find((a) => a.call_id === id));
+      };
+      const tests = await asks("codex-r-1-1", "make test");
+      expect([tests.risk, tests.why]).toEqual(["low", "Codex runs this command"]);
+      const wipe = await asks("codex-r-2-2", "rm -rf ~");
+      expect(wipe.risk).toBe("high");
+      expect(wipe.why).not.toBe("Codex runs this command");
+    } finally { r.done(); }
+  });
 
   test("Codex's question is a question card; its answer goes back by question id", async () => {
     const r = rig();

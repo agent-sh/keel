@@ -13,6 +13,8 @@
 //     naming what the client answered.
 //   - "edit ...": a file change it asks to make (a.ts in its folder), then a
 //     reply naming the decision.
+//   - "wipe ...": a command it asks to run that deletes the home folder (rm -rf ~),
+//     then a reply naming the decision.
 //   - anything else: a command it asks to run (make test), then a reply naming
 //     the decision.
 // Every request it got is appended to <rollout>.standin.log, one JSON line each.
@@ -111,12 +113,15 @@ async function run(turnId: string, text: string) {
     await reply(turnId, "m4", `The change was ${decision === "accept" ? "allowed" : "declined"}: ${text}`);
     return finish(turnId, "completed");
   }
-  await reply(turnId, "m1", "Running the tests first.");
-  note("item/started", { threadId: thread, turnId, item: { type: "commandExecution", id: "c1", command: "make test", cwd: process.cwd(), status: "inProgress" } });
-  const r = await ask("item/commandExecution/requestApproval", { kind: "command", threadId: thread, turnId, itemId: "c1", startedAtMs: Date.now(), environmentId: null, reason: "It runs the project's tests", command: "make test", cwd: process.cwd() });
+  const wipe = /^wipe\b/i.test(text);
+  const command = wipe ? "rm -rf ~" : "make test";
+  const item = wipe ? "c2" : "c1";
+  await reply(turnId, "m1", wipe ? "Clearing it out." : "Running the tests first.");
+  note("item/started", { threadId: thread, turnId, item: { type: "commandExecution", id: item, command, cwd: process.cwd(), status: "inProgress" } });
+  const r = await ask("item/commandExecution/requestApproval", { kind: "command", threadId: thread, turnId, itemId: item, startedAtMs: Date.now(), environmentId: null, reason: wipe ? "It clears the home folder" : "It runs the project's tests", command, cwd: process.cwd() });
   const decision = typeof r?.decision === "string" ? r.decision : "decline";
-  record("response_item", { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["make", "test"] }), call_id: "c1" });
-  record("response_item", { type: "function_call_output", call_id: "c1", output: decision === "accept" ? "ok" : "the owner declined" });
+  record("response_item", { type: "function_call", name: "shell", arguments: JSON.stringify({ command: command.split(" ") }), call_id: item });
+  record("response_item", { type: "function_call_output", call_id: item, output: decision === "accept" ? "ok" : "the owner declined" });
   if (decision === "cancel") return finish(turnId, "interrupted");
   await reply(turnId, "m3", `The command was ${decision === "accept" ? "allowed" : "declined"}: ${text}`);
   finish(turnId, "completed");

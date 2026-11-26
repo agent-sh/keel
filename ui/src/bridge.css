@@ -1957,10 +1957,21 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside-state { font-size: var(--text-ui); font-weight: 600; color: var(--fg); overflow-wrap: anywhere; }
 .k-outside[data-state="waiting"] .k-outside-state { color: var(--st-need-ink); }
 .k-outside[data-state="stale"] .k-outside-state { font-weight: 400; color: var(--muted); }
-/* On a phone the button stands on its own line under the sentence, as wide as the bar. */
+/* Each line of the bar is held to its width (a long placeholder or name never pushes Send out of view). */
+.k-outside > * { min-width: 0; }
+/* On a phone the bar is one quiet line over the box: the state in a few words, Copy as its mark alone; what
+   it spent and who holds it are left to the large screen, the box and its lines take the whole width, and the
+   sentence of how answering works is not repeated under a box that is there. */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
-  .k-outside-head { flex-wrap: wrap; row-gap: 0.5rem; }
-  .k-outside-head > .k-btn { flex: 1 0 100%; justify-content: center; }
+  .k-outside { gap: 0.25rem; padding: 0.375rem 0.5rem; }
+  .k-outside-head { gap: 0.5rem; }
+  .k-outside-head > div { min-width: 0; }
+  .k-outside-state { overflow: hidden; font-size: var(--text-caption); font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+  .k-outside[data-answering] .k-outside-facts { display: none; }
+  .k-outside-head > .k-btn { flex-shrink: 0; }
+  .k-outside-copy-label { display: none; }
+  .k-outside-compose, .k-outside-sends, .k-outside-files, .k-outside-note { margin-left: 0; }
+  .k-outside-note[data-quiet] { display: none; }
 }
 .k-outside-since { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
 .k-outside-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.875rem; margin-top: 0.125rem; font-size: var(--text-caption); color: var(--muted); font-variant-numeric: tabular-nums; }

@@ -2208,7 +2208,17 @@ export class Gate {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const short = inShort(cls, call.input);
-    return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined, held, ...(notice ? { notice } : {}) }, true);
+    // Another harness's request (a command Codex asks about) is judged by the rules Keel's own calls are: the
+    // risk of its class, red only for what Ask would mark high, with the gate's reason then.
+    const own = held === "harness" ? this.ownRisk(session, call) : { risk: "high" as const };
+    const risk = own.risk === "high" ? { risk: "high" as const, why: own.why ?? why } : { risk: "low" as const, why };
+    return this.card(session, call, name, cls, shown ?? short.summary, { ...risk, suggest: [], cut: shown === undefined ? short.cut : undefined, held, ...(notice ? { notice } : {}) }, true);
+  }
+
+  // A call's own risk and reason as Ask would judge it, whatever the session's mode.
+  private ownRisk(session: Session, call: ToolCall): { risk: "high" | "low"; why?: string } {
+    const d = this.evaluate(session, call.tool.name, callClass(call, null), undefined, undefined, undefined, "ask");
+    return "ask" in d ? { risk: d.ask.risk, why: d.ask.why } : "deny" in d ? { risk: "high", why: d.deny } : { risk: "low" };
   }
 
   // A hook of the owner's asks about a call the gate let through. The card is answered once, as askOnce's,

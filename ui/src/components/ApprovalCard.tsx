@@ -1152,7 +1152,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   );
   const fromCode = a.call_id.includes("~") && <span className="rounded-full bg-sunken px-1.5 py-px text-micro text-muted" data-testid="approval-from-code">from a program</span>;
   const title = (
-    <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "min-w-0 text-ui font-medium max-md:grow max-md:basis-0", dense && plain && "sr-only")}>
+    <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "min-w-[min(100%,12rem)] text-ui font-medium max-md:grow max-md:basis-0", dense && plain && "sr-only")}>
       {asker && <span className="sr-only">{asker}: </span>}
       {TITLE[a.kind]} <span className="font-mono text-caption font-normal text-faint">{a.tool}</span>
     </span>
@@ -1309,7 +1309,8 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
             {place}
             {fromCode}
             {a.risk === "high" && (
-              <span className="ml-auto rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger" data-testid="approval-risk">
+              /* (It gives way to the title: its words wrap inside it, and it takes a row of its own before the title is squeezed.) */
+              <span className="ml-auto min-w-0 max-w-full rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger" data-testid="approval-risk">
                 {a.why ? `High risk: ${a.why}` : "High risk"}
               </span>
             )}

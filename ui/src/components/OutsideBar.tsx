@@ -16,13 +16,14 @@ import { composing } from "../lib/keys.ts";
 import { navigate } from "../lib/ui.ts";
 import { clock, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { useSessionState } from "../lib/watch.ts";
+import { setAnswers, type Answered } from "../lib/outside-answers.ts";
 import { Mark } from "./Mark.tsx";
 
 type Send = { id: string; text: string; state: "stored" | "started" | "delivered" | "lost" | "failed" | "cut"; said: string | null };
 type Route = "resume" | "steer" | "held" | "missing" | "unlocked" | "none";
 type Details = {
   harness: string; label: string; source_id: string; path: string; live: boolean; files: string[]; usage: { model: string; usage: Usage; cost: number | null }[];
-  holder?: Holder; route?: Route; turn?: boolean; sends?: Send[]; notes?: string[];
+  holder?: Holder; route?: Route; turn?: boolean; sends?: Send[]; notes?: string[]; answers?: Record<string, Answered>;
 };
 
 const tokensOf = (u: Usage) => u.input + u.output + u.cache_read + u.cache_write;
@@ -48,15 +49,16 @@ export function OutsideBar({ session }: { session: Session }) {
   // Read when the bar shows and again when what it shows changed (a file more, the state, who holds it): the transcript catches up first.
   useEffect(() => {
     let live = true;
-    api<Details>(`/api/sessions/${session.id}/outside`).then((r) => { if (live) { setD(r); setSends(r.sends ?? []); setNotes(r.notes ?? []); } }, (e) => reportUnlessGone(e, { at: "OutsideBar" }));
+    api<Details>(`/api/sessions/${session.id}/outside`).then((r) => { if (live) { setD(r); setSends(r.sends ?? []); setNotes(r.notes ?? []); setAnswers(session.id, r.answers); } }, (e) => reportUnlessGone(e, { at: "OutsideBar" }));
     return () => { live = false; };
   }, [session.id, o.files, o.state, o.failures, o.holder?.kind, o.holder?.pid]);
   // The sends not yet in the transcript, as they change.
   useEffect(() => onFeature({ frame: (f) => {
     if (f.name !== "outside_sends" || f.session_id !== session.id) return;
-    const data = f.data as { sends?: Send[]; notes?: string[] } | undefined;
+    const data = f.data as { sends?: Send[]; notes?: string[]; answers?: Record<string, Answered> } | undefined;
     setSends(data?.sends ?? []);
     setNotes(data?.notes ?? []);
+    if (data?.answers) setAnswers(session.id, data.answers);
   } }), [session.id]);
   const go = async () => {
     setBusy(true);
@@ -97,7 +99,8 @@ export function OutsideBar({ session }: { session: Session }) {
   };
   const dismiss = (id: string) => api(`/api/sessions/${session.id}/outside/sends/${id}`, { method: "DELETE" }).catch((e) => setNote(failed(e, { at: "OutsideBar dismiss" })));
   // Stale: it worked or waited and has written nothing since (no process vouches for it): said as that, in no state's colour.
-  const said = o.state === "waiting" ? `Waits in ${where} for ${o.waiting_for ?? "your answer"}` : o.state === "working" ? `Working in ${where}` : o.state === "stale" ? `No record from ${where}` : `Done in ${where}`;
+  // A card of Codex's waits on the owner above: that is what the session waits for now, whatever its record says.
+  const said = st.watch === "need" && o.state !== "waiting" ? `Waits for your answer: ${where} asks above` : o.state === "waiting" ? `Waits in ${where} for ${o.waiting_for ?? "your answer"}` : o.state === "working" ? `Working in ${where}` : o.state === "stale" ? `No record from ${where}` : `Done in ${where}`;
   const u = session.usage;
   const cost = typeof u.cost === "number" && !u.unpriced ? fmtSessionCost(u.cost) : typeof u.cost === "number" && u.cost > 0 ? `${fmtSessionCost(u.cost)} and more unpriced` : "";
   const spent = [o.model, tokensOf(u) ? `${fmtTokens(tokensOf(u))} tokens` : "", cost].filter(Boolean).join(" · ");
@@ -110,7 +113,7 @@ export function OutsideBar({ session }: { session: Session }) {
     : route === "none" ? `Read-only here: Keel sends nothing to ${where}. Copy into Keel makes a copy you work on here; the session there keeps running.`
     : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards. Copy into Keel makes a copy instead.`;
   return (
-    <section className="k-outside" data-testid="outside-bar" data-state={o.state} data-harness={o.harness} aria-label={`${where} session`}>
+    <section className="k-outside" data-testid="outside-bar" data-state={st.watch === "need" ? "waiting" : o.state} data-harness={o.harness} data-answering={answering ? "" : undefined} aria-label={`${where} session`}>
       <div className="k-outside-head">
         <Mark w={st.watch} />
         <div className="min-w-0 flex-1">
@@ -129,8 +132,8 @@ export function OutsideBar({ session }: { session: Session }) {
             {o.failures > 0 && <span className="k-outside-failed" data-testid="outside-failures">{plural(o.failures, "failed call")}</span>}
           </p>
         </div>
-        <button type="button" className="k-btn k-btn-lg" data-ink={answering ? undefined : ""} data-testid="outside-copy" disabled={busy} onClick={go} title={`A copy goes on here; the session in ${where} keeps running there`}>
-          <CornerDownRight aria-hidden="true" />Copy into Keel
+        <button type="button" className="k-btn k-btn-lg" data-ink={answering ? undefined : ""} data-testid="outside-copy" disabled={busy} onClick={go} aria-label="Copy into Keel" title={`A copy goes on here; the session in ${where} keeps running there`}>
+          <CornerDownRight aria-hidden="true" /><span className="k-outside-copy-label">Copy into Keel</span>
         </button>
       </div>
       {files && d && (
@@ -173,7 +176,7 @@ export function OutsideBar({ session }: { session: Session }) {
         </form>
       )}
       {notes.map((n) => <p key={n} className="k-outside-note k-outside-said" data-testid="outside-said">{n}</p>)}
-      <p className="k-outside-note" data-testid="outside-note">{note || quiet}</p>
+      <p className="k-outside-note" data-testid="outside-note" data-quiet={!note && answering ? "" : undefined}>{note || quiet}</p>
     </section>
   );
 }

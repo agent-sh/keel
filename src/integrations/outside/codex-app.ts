@@ -76,6 +76,7 @@ const UNLOCKED = "this Codex keeps no writer locks (a Codex before 0.172), so Ke
 export type Send = { id: string; session_id: string; key: string; text: string; state: SendState; offset: number | null; said: string | null; created: number };
 
 // What of the gate the driver uses: the one-call card, and the open cards it closes at a start.
+export type Answered = { state: "allowed" | "denied"; reason?: string };
 export type CardGate = Pick<Gate, "askOnce" | "approvals" | "settled">;
 
 export type CodexAppDeps = {
@@ -307,8 +308,20 @@ export class CodexApp {
     return this.said.get(sessionId) ?? [];
   }
 
+  // What the owner answered on the cards of Codex's calls, by the call's id in the rollout (its item id): the
+  // call's line in the mirror says it (the rollout itself says only what the call returned).
+  answers(sessionId: string): Record<string, Answered> {
+    const out: Record<string, Answered> = {};
+    for (const a of this.d.gate()?.approvals({ session: sessionId }) ?? []) {
+      if (!a.call_id.startsWith("codex-") || typeof a.input?.item !== "string") continue;
+      if (a.state === "allowed") out[a.input.item] = { state: "allowed" };
+      else if (a.state === "denied") out[a.input.item] = { state: "denied", ...(a.reason ? { reason: a.reason } : {}) };
+    }
+    return out;
+  }
+
   private told(sessionId: string) {
-    this.d.bus.emit({ t: "feature", name: "outside_sends", session_id: sessionId, data: { sends: this.sends(sessionId), notes: this.notes(sessionId) } });
+    this.d.bus.emit({ t: "feature", name: "outside_sends", session_id: sessionId, data: { sends: this.sends(sessionId), notes: this.notes(sessionId), answers: this.answers(sessionId) } });
   }
 
   private note(sessionId: string, text: string) {
@@ -547,9 +560,12 @@ export class CodexApp {
     const call = (tool: Partial<Tool> & { name: string }, input: Json): ToolCall => ({ id: `codex-${run.nonce}-${String(p?.itemId ?? rid)}-${String(p?.approvalId ?? rid)}`, tool: { description: "", input_schema: {}, readOnly: false, run: async () => ({ content: "" }), ...tool } as Tool, input, ctx });
     // Why the card asks is said in Keel's words; what Codex gave as its reason is shown apart, as Codex's.
     const says = typeof p?.reason === "string" && p.reason.trim() ? `Codex says: ${p.reason.trim().slice(0, 500)}` : undefined;
+    // The card's input names the call's item, as the rollout's call id: its line says the answer.
+    const item = typeof p?.itemId === "string" && p.itemId ? { item: p.itemId } : {};
     const ask = async (tool: Partial<Tool> & { name: string }, input: Json, name: string, why: string, shown?: string) => {
       if (!s || !gate) return false;
-      const v = await gate.askOnce(s, call(tool, input), name, why, "harness", shown, says);
+      const v = await gate.askOnce(s, call(tool, { ...input, ...item }), name, why, "harness", shown, says);
+      if (!this.closed) this.told(run.sessionId);
       return !v && !signal.aborted;
     };
     try {

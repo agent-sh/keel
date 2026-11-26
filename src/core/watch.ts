@@ -403,9 +403,8 @@ const queued = (n: number) => `${n} queued prompt${n === 1 ? "" : "s"} wait${n =
 
 export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchFacts = {}): SessionState {
   const agents = f.agents ?? 0;
-  // A session another harness runs is in the state its own records say: it waits on the owner there.
-  if (s.outside) return outsideState(s.outside, agents);
-  // What waits on the owner comes first, oldest first: nothing else moves until they answer.
+  // What waits on the owner comes first, oldest first: nothing else moves until they answer. A session another
+  // harness runs that Keel answers in place has its cards here too (a command Codex asks about).
   // A turn a restart cut that Keel did not continue is one of those things.
   const asks = [...(f.asks ?? []), ...(f.held ? [{ kind: "resume" as const, ...f.held }] : [])].sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity));
   if (asks.length) {
@@ -418,6 +417,8 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   }
   // The caller knows only that it waits on the owner (a count, or a running turn whose every call does): said without the thing.
   if ((f.approvals ?? 0) > 0 || f.asking) return { watch: "need", agents, why: f.approvals ? "approval" : f.owner ? "owner" : "question", ...(f.owner ? { text: "Waits for your answer" } : {}), asks: Math.max(1, f.approvals ?? 0) };
+  // Else a session another harness runs is in the state its own records say: it waits on the owner there.
+  if (s.outside) return outsideState(s.outside, agents);
   const { watch: w, end, by } = own(s, events);
   // How many of its agents wait: the rest work, and a head counts those.
   const parked = f.parked ? { parked: Math.min(agents, f.parked) } : {};

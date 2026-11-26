@@ -40,6 +40,7 @@ import { WaitMark } from "./WaitMark.tsx";
 import { Copyable, CopyButton } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 import { splitDiagnostics, type ResultDiagnostics } from "../lib/tools.ts";
+import { useOutsideAnswer } from "../lib/outside-answers.ts";
 
 // The file a call names, for its copy line.
 const pathOf = (input: any): string | undefined => { const p = input?.file_path ?? input?.path ?? input?.notebook_path; return typeof p === "string" && p ? p : undefined; };
@@ -215,6 +216,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const { working, waiting } = useCallsLive(sessionId, mine);
   const marked = useMarked(sessionId, [use]);
   const marks = marked ? marksOf(sessionId, use.id) : [];
+  // A call of another harness's session the owner answered on its card here: the harness's record says only what it returned.
+  const answered = useOutsideAnswer(sessionId, use.id);
   // How it stands: a call the owner's stop or a restart ended did not fail, and neither did one that was
   // turned away before it ran, by the owner on its card or by the policy, the reviewer or the judge.
   const ended = result?.is_error ? stopKind(result.content) : undefined;
@@ -319,6 +322,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {!quiet && gate.map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
           {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="idle" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
           {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="idle" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
+          {answered?.state === "allowed" && <><span className="k-line-state k-line-mark" data-tone="own" data-testid="call-answer" title="You allowed this one call on its card.">allowed by you</span>{" "}</>}
+          {answered?.state === "denied" && state !== "denied" && <><span className="k-line-state k-line-mark" data-tone="own" data-testid="call-answer" title={answered.reason ? `You denied it on its card: ${answered.reason}` : "You denied it on its card."}>denied by you</span>{" "}</>}
           {card?.choice === "once" && <><span className="k-line-state k-line-mark" data-tone="own" data-testid="call-helper" title={`Its card was ${card.said}. This one call only: nothing more was granted.`}>allowed by the Helper</span>{" "}</>}
           {/* While its approval card is open the card carries what is asked: the line says only that it waits. */}
           {/* (When more than one call of its step waits, each line names its call, trimmed: it matches its card.) */}
