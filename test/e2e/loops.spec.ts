@@ -45,6 +45,19 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
 
   // A calendar loop made in the panel, in a session of its own.
   await page.getByTestId("new-loop-button").click();
+  // The form's fields lie on the dialog's own white with a hairline round them (no grey well), and what a run
+  // starts with is a line of quiet choices: the mode is no box beside the folder and the model.
+  await page.mouse.move(5, 5);
+  const look = (id: string) => page.getByTestId(id).evaluate((el) => {
+    const probe = document.body.appendChild(document.createElement("i"));
+    probe.style.color = "var(--line)";
+    const s = getComputedStyle(el), line = getComputedStyle(probe).color;
+    probe.remove();
+    return { ground: s.backgroundColor, edge: s.borderTopColor === line ? "line" : s.borderTopColor };
+  });
+  expect(await look("new-loop-prompt")).toEqual({ ground: "rgba(0, 0, 0, 0)", edge: "line" });
+  expect(await look("new-loop-mode")).toEqual({ ground: "rgba(0, 0, 0, 0)", edge: "rgba(0, 0, 0, 0)" });
+  await shoot(page, "loops-04b-form");
   await page.getByTestId("new-loop-schedule").fill("weekdays 09:30");
   await page.getByTestId("new-loop-prompt").fill("Summarize yesterday's commits in this repository.");
   await page.getByRole("button", { name: "Create loop" }).click();

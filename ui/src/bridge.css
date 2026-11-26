@@ -2165,6 +2165,15 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    is, and so does a menu anchored to one of its rows. */
 .k-box-more-pop { width: 14rem; }
 .k-box-more-pop > button { width: 100%; }
+/* The Loops form (LoopsPanel.tsx), on the dialog's white. A field is the same white with a hairline round it: the
+   toolkit's field is set into a page's paper, and on white a column of them reads as grey wells. What a run starts
+   with (the folder, the mode, the model, the effort) is one line of quiet choices, none of them a box. */
+.k-loop-form .k-field { background: transparent; border-color: var(--line); }
+.k-loop-form .k-field:hover { border-color: var(--line-strong); }
+.k-loop-form .k-field:focus, .k-loop-form .k-field[data-popup-open] { border-color: var(--ring); }
+.k-loop-where .k-select { gap: 0.25rem; padding: 0 0.5rem; border-color: transparent; border-radius: var(--radius-md); font-size: var(--text-ui); color: var(--muted); }
+.k-loop-where .k-select:hover, .k-loop-where .k-select[data-popup-open] { border-color: transparent; background: var(--hover); color: var(--fg); }
+.k-loop-where .k-select:focus-visible { border-color: var(--ring); }
 /* Point (lib/point.ts). Its row in the box's +, a quiet row like the pickers over it. */
 .k-point-ask { display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-ui); text-align: left; color: var(--muted); }
 .k-point-ask:hover { background: var(--hover); color: var(--fg); }

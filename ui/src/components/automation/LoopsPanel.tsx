@@ -245,7 +245,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   const gateable = !("error" in preview) && (preview.kind === "interval" || preview.kind === "cron");
   return (
     <form
-      className="flex flex-col gap-3 p-5"
+      className="k-loop-form flex flex-col gap-3 p-5"
       data-testid="new-loop"
       onSubmit={async (e) => {
         e.preventDefault();
@@ -264,14 +264,14 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
     >
       <h3 className="text-base font-semibold">New loop</h3>
       <p className="-mt-2 text-caption text-muted">Runs in a session of its own. Use /loop in a session's composer to loop there.</p>
-      <div className="flex flex-wrap items-center gap-2" data-testid="new-loop-where">
+      <div className="k-loop-where flex flex-wrap items-center gap-x-1 gap-y-2" data-testid="new-loop-where">
         <WorkspacePicker value={cwd} onChange={setCwd} />
-        <Select data-testid="new-loop-mode" aria-label="Permission mode" value={mode} onChange={(e) => setMode(e.target.value)} className="w-40 text-caption">
+        <Select data-testid="new-loop-mode" aria-label="Permission mode" value={mode} onChange={(e) => setMode(e.target.value)}>
           {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </Select>
         <ModelPicker value={runsOn} onChange={(id) => setModel(id)} placeholder="Default model" />
         {efforts.length > 0 && (
-          <Select data-testid="new-loop-effort" aria-label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)} className="w-36 text-caption">
+          <Select data-testid="new-loop-effort" aria-label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)}>
             <option value="">Model's effort</option>
             {efforts.map((x) => <option key={x} value={x}>{x}</option>)}
           </Select>
@@ -307,7 +307,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
       )}
       {err && <p className="text-caption text-danger">{err}</p>}
       {keys && <ShownOnce keys={keys} />}
-      <button type="submit" disabled={"error" in preview || !!keys} className="self-start rounded-lg bg-accent px-3.5 py-1.5 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+      <button type="submit" disabled={"error" in preview || !!keys} data-ink className="k-btn k-btn-lg self-start" data-testid="new-loop-create">
         Create loop
       </button>
     </form>
