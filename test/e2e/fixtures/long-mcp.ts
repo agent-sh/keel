@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-// A stdio MCP server (2025-11-25) with a tool that takes as long as it is told, and one that answers at once: for
-// the calls that go on in the background. LONG_MCP_LOG, when set, gets one line per call as it starts and ends.
-import { appendFileSync } from "node:fs";
+// A stdio MCP server (2025-11-25) with a tool held until the spec writes LONG_MCP_RELEASE, and one that answers
+// at once. LONG_MCP_LOG gets one line per call as it starts and ends.
+import { appendFileSync, existsSync } from "node:fs";
+const release = process.env.LONG_MCP_RELEASE;
 const log = (line: string) => { if (process.env.LONG_MCP_LOG) appendFileSync(process.env.LONG_MCP_LOG, `${line}\n`); };
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 const tool = (name: string, description: string, properties: Record<string, unknown> = {}) => ({ name, description, inputSchema: { type: "object", properties } });
@@ -13,13 +14,17 @@ async function handle(m: any) {
     case "initialize":
       return reply({ protocolVersion: m.params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "long-mcp", version: "1.0.0" } });
     case "tools/list":
-      return reply({ tools: [tool("nap", "Takes the given seconds, then says so.", { seconds: { type: "number" } }), tool("quick", "Answers at once.")] });
+      return reply({ tools: [tool("nap", "Waits for the release signal.", {}), tool("quick", "Answers at once.")] });
     case "tools/call": {
-      const name = m.params?.name, seconds = Number(m.params?.arguments?.seconds ?? 0);
+      const name = m.params?.name;
       log(`start ${name}`);
-      if (name === "nap") await Bun.sleep(seconds * 1000);
+      if (name === "nap") {
+        const deadline = Date.now() + 60_000;
+        while (release && !existsSync(release) && Date.now() < deadline) await Bun.sleep(25);
+        if (!release || !existsSync(release)) return send({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: "No release signal" } });
+      }
       log(`end ${name}`);
-      return reply({ content: [{ type: "text", text: name === "nap" ? `napped ${seconds} seconds` : "quick: done" }] });
+      return reply({ content: [{ type: "text", text: name === "nap" ? "nap: done" : "quick: done" }] });
     }
     default:
       return send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `Method not found: ${m.method}` } });

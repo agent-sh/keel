@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { sessionsFolder, specEnv } from "./own-daemon.ts";
@@ -75,16 +75,16 @@ test("a call that runs long goes on in the background, and its end wakes the ses
   const k = await setup("long");
   try {
     const log = join(k.state, "long.log");
-    expect((await k.call("/api/mcp/servers", { name: "long", command: "bun", args: [LONG], env: { LONG_MCP_LOG: log } })).status).toBe(200);
+    const release = join(k.state, "release-nap");
+    expect((await k.call("/api/mcp/servers", { name: "long", command: "bun", args: [LONG], env: { LONG_MCP_LOG: log, LONG_MCP_RELEASE: release } })).status).toBe(200);
     await expect.poll(async () => ((await k.call("/api/mcp/servers")).servers as any[]).find((s) => s.name === "long")?.state, { timeout: 30_000 }).toBe("ready");
     const id = await k.session("A long call");
     await page.goto(`${k.at.d.url}/s/${id}`);
+    await page.getByTestId("focus-leave").click();
 
-    // The nap takes six seconds. At two the turn is told it goes on, and the next call of the same turn runs.
-    const t0 = Date.now();
-    await k.send(id, { name: "mcp_call", input: { tool: "long__nap", arguments: { seconds: 6 } } }, { name: "mcp_call", input: { tool: "long__quick", arguments: {} } });
+    // The nap stays held while the turn is told it goes on and the next call runs.
+    await k.send(id, { name: "mcp_call", input: { tool: "long__nap", arguments: {} } }, { name: "mcp_call", input: { tool: "long__quick", arguments: {} } });
     await expect.poll(async () => (await k.results(id)).length, { timeout: 20_000 }).toBe(2);
-    expect(Date.now() - t0).toBeLessThan(5_500);
     const [handle, quick] = await k.results(id);
     expect(handle).toMatch(/^long__nap has run for \d+ s, so it goes on in the background \(wait \w+\)/);
     expect(quick).toContain("quick: done");
@@ -112,21 +112,21 @@ test("a call that runs long goes on in the background, and its end wakes the ses
     await page.keyboard.press("Escape");
 
     // Its end starts the next turn, with the file its result is in.
+    writeFileSync(release, "");
     await expect.poll(async () => (await k.wakes(id)).length, { timeout: 30_000 }).toBe(1);
     const wake = (await k.wakes(id))[0]!;
     expect(wake).toContain(waitId);
     const file = /(\/[^\s"\\]+mcp-call-\w+\.txt)/.exec(wake)?.[1];
     expect(file).toBeTruthy();
-    expect(wake).not.toContain("napped 6 seconds"); // a server's words are read from the file, not given as the harness's
-    expect(readFileSync(file!, "utf8")).toBe("napped 6 seconds\n");
+    expect(wake).not.toContain("nap: done"); // a server's words are read from the file, not given as the harness's
+    expect(readFileSync(file!, "utf8")).toBe("nap: done\n");
     await expect.poll(async () => await k.ends(id), { timeout: 30_000 }).toBe(2);
-    await expect(page.getByTestId("dock-job")).toHaveCount(0);
+    await expect(page.getByTestId("dock-jobs")).toBeHidden();
     await shoot(page, "mcp-background-02-woken");
     // Called once, woken once.
     expect(readFileSync(log, "utf8").trim().split("\n").filter((l) => l.startsWith("start nap"))).toHaveLength(1);
-    await new Promise((r) => setTimeout(r, 1_500));
-    expect((await k.wakes(id)).length).toBe(1);
     expect(((await k.call("/api/waits")).waits as any[]).filter((w) => w.kind === "mcp_call").map((w) => w.status)).toEqual(["fired"]);
+    expect(await k.wakes(id)).toHaveLength(1);
   } finally {
     await k.stop();
   }

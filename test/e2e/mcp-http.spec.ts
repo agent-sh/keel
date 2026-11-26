@@ -159,14 +159,18 @@ test("mcp sse: an old SSE-only server connects, named or found, and its tool run
   const row = async (name: string) => ((await (await request.get("/api/mcp/servers")).json()).servers as any[]).find((s) => s.name === name);
   for (const n of names) await request.delete(`/api/mcp/servers/${n}`).catch(() => {});
   try {
-    expect((await request.post("/api/mcp/servers", { data: { name: names[0], url: `${base}/sse`, transport: "sse" } })).ok()).toBe(true);
+    // Two distinct endpoints: aliases for the same address would offer only one tool.
+    expect((await request.post("/api/mcp/servers", { data: { name: names[0], url: `${base}/sse?mode=named`, transport: "sse" } })).ok()).toBe(true);
+    await expect.poll(async () => (await row(names[0]!))?.state, { timeout: 20_000 }).toBe("ready");
+    // The explicit transport never posts to the stream's address.
+    expect(await (await request.get(`${base}/stats`)).json()).toMatchObject({ streams_open: 1, refused_posts: 0 });
     expect((await request.post("/api/mcp/servers", { data: { name: names[1], url: `${base}/sse` } })).ok()).toBe(true);
-    for (const n of names) await expect.poll(async () => (await row(n))?.state, { timeout: 20_000 }).toBe("ready");
+    await expect.poll(async () => (await row(names[1]!))?.state, { timeout: 20_000 }).toBe("ready");
     for (const n of names) expect(await row(n)).toMatchObject({ transport: "http", sse: true, tools: 1, tool_names: ["echo"], version: "2024-11-05", server_info: { name: "legacy-sse" } });
-    // The one whose transport was named never posted to the stream's address; the other was refused once, then found.
+    // The unnamed transport tries HTTP before falling back to the event stream.
     const st = await (await request.get(`${base}/stats`)).json();
     expect(st.streams_open).toBe(2);
-    expect(st.refused_posts).toBeGreaterThanOrEqual(1);
+    expect(st.refused_posts).toBeGreaterThan(0);
 
     await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
     const session = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "MCP over SSE" } })).json()).session;
