@@ -142,7 +142,7 @@ export function OutsideBar({ session }: { session: Session }) {
           </p>
         </div>
         <button type="button" className="k-btn k-btn-lg" data-ink={answering ? undefined : ""} data-testid="outside-copy" disabled={busy} onClick={go} aria-label="Copy into Keel" title={`A copy goes on here; the session in ${where} keeps running there`}>
-          <CornerDownRight aria-hidden="true" /><span className="k-outside-copy-label">Copy into Keel</span>
+          <CornerDownRight aria-hidden="true" /><span className="k-outside-copy-label">Copy into Keel</span><span className="k-outside-copy-word" aria-hidden="true">Copy</span>
         </button>
       </div>
       {files && d && (

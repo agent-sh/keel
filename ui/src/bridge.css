@@ -2002,9 +2002,12 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-outside[data-answering] .k-outside-facts { display: none; }
   .k-outside-head > .k-btn { flex-shrink: 0; }
   .k-outside-copy-label { display: none; }
+  /* Read-only, the bar has room beside its state: the button says its word. */
+  .k-outside:not([data-answering]) .k-outside-copy-word { display: inline; }
   .k-outside-compose, .k-outside-sends, .k-outside-files, .k-outside-note { margin-left: 0; }
   .k-outside-note[data-quiet] { display: none; }
 }
+.k-outside-copy-word { display: none; }
 .k-outside-since { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
 .k-outside-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.875rem; margin-top: 0.125rem; font-size: var(--text-caption); color: var(--muted); font-variant-numeric: tabular-nums; }
 .k-outside-files-btn { display: inline-flex; align-items: center; gap: 0.125rem; color: var(--muted); border-radius: var(--radius-xs); }

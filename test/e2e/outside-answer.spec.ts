@@ -367,6 +367,13 @@ test("an Antigravity session is followed read-only: no box and no holder in its 
     await expect(bar.getByTestId("outside-compose")).toHaveCount(0);
     await expect(bar.getByTestId("outside-holder")).toHaveCount(0);
     await shoot(page, "outside-answer-agy-read-only");
+    // On a phone the read-only bar has room beside its state: Copy says its word, and its whole name to a screen reader.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const copy = bar.getByRole("button", { name: "Copy into Keel" });
+    await expect(copy).toHaveAttribute("title", /keeps running there/);
+    await expect(copy.getByText("Copy", { exact: true })).toBeVisible();
+    await expect(copy.getByText("Copy into Keel", { exact: true })).toBeHidden();
+    await shoot(page, "outside-answer-agy-read-only-phone");
   } finally {
     await request.delete(`/api/sessions/${sid}`).catch(() => {});
   }
