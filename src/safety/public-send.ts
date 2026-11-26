@@ -30,6 +30,7 @@ import { registerPrivateSettings } from "./private-settings.ts";
 import { reboundBy } from "./policy.ts";
 import { laid } from "./risk.ts";
 import { follow, makerOf, type Over } from "./line-makes.ts";
+import { shellGiven } from "./risk-words.ts";
 import { narrow, untilde } from "./line-vars.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { splitCommand, type Simple } from "./shell.ts";
@@ -302,9 +303,9 @@ async function actsOf(command: string, cwd: string, home: string, depth = 0, fro
     cut = i;
     const joined = !part.nested && !part.flow && !part.unknown && !part.redirects && part.led === undefined && part.sep === "&&" && !pre.runs[i]!.set.length && part.words[0] === "git";
     if (/^(sh|bash|zsh|dash|ksh)$/.test(prog) && depth < 2) {
-      const c = words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x));
-      if (c > 0 && words[c + 1] !== undefined) {
-        const inner = await actsOf(words[c + 1]!, dir ?? cwd, home, depth + 1, { rewired: rewired || added.size > 0, makes: makes.mayHold });
+      const script = shellGiven(words.slice(1)).script;
+      if (script !== undefined) {
+        const inner = await actsOf(script, dir ?? cwd, home, depth + 1, { rewired: rewired || added.size > 0, makes: makes.mayHold });
         // (What a script does to the remotes is not carried out of it: after one that changes them, they are not read.)
         if (inner.rewired) rewired = true;
         out.push(...inner.acts);

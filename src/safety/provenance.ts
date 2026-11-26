@@ -38,7 +38,7 @@ import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
 import { inCopy, ownersImported } from "./imported.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
-import { name as baseName, unwrap, type Run } from "./risk-words.ts";
+import { name as baseName, shellGiven, unwrap, type Run } from "./risk-words.ts";
 import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
 import { bareFetch } from "./bare-fetch.ts";
 import { familyOf } from "./interp-code.ts";
@@ -463,9 +463,10 @@ function interpreterReaches(parts: Simple[], at: number, run: Run, prog: string,
     if (ps) out.push(...reachesOf(resolveVariables(ps), { ...f, cwd: dir }, depth + 1, false)); else unread(p.text);
   };
   if (SHELLS.test(prog)) {
-    const k = args.indexOf("-c");
-    if (k >= 0) {
-      const v = args[k + 1] === undefined ? undefined : wordValue(p, idx(k + 1), known);
+    // (-c in any cluster, with other options around it: bash -lc, sh -c -x.)
+    const given = shellGiven(args);
+    if (given.c) {
+      const v = given.at < 0 ? undefined : wordValue(p, idx(given.at), known);
       if (v === null) unread(p.text);
       else if (v !== undefined) {
         const ps = depth < 2 ? splitCommand(v) : null;

@@ -1,14 +1,17 @@
 // What a shell command reads of where credentials are kept (credentials.ts), judged from its words: the files and
 // stores it names to a program that reads them, straight or through a helper (xargs, find -exec, a substitution), a
-// wildcard that can reach one, a copy of one, and a recursive search of a folder that holds the home's stores or
-// files named like credentials. A file tool's read of the same paths is the same class (policy.ts decides both).
+// wildcard that can reach one, a loop that reads each word of its list, a copy of one, a client told to print the
+// credential it holds (gh auth token), and a recursive search of a folder that holds the home's stores or files
+// named like credentials. The script a line hands a shell it starts is read as a line of its own (nested-shell.ts).
+// A file tool's read of the same paths is the same class (policy.ts decides both).
 import { lstatSync, readdirSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { timed } from "../admin/stall.ts";
 import { contains } from "../core/paths.ts";
 import { credentialAt, credentialName, foreignAt, homeOf, placesOf, realPlaces, storesSaid, storesUnder, STORES, type Credential } from "./credentials.ts";
+import { innerLines } from "./nested-shell.ts";
 import { laid, type Laid } from "./risk.ts";
-import { name as baseName } from "./risk-words.ts";
+import { name as baseName, printsHeld } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
 
 // Programs whose file operands are read for their content (a command of the shell's allow-list prints them, or
@@ -124,7 +127,9 @@ function substituted(how: Made | undefined, depth = 0): string[] {
   return out;
 }
 
-export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}): Reads | null {
+// `scripts`: the scripts the line hands a shell it starts (`bash -c '...'`, a here-document into sh) are read too,
+// each as a line of its own where its shell starts (nested-shell.ts).
+export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}, scripts = true): Reads | null {
   let first: { what: string; by: string; api?: string } | null = null;
   const paths: string[] = [];
   const hits: Hit[] = [];
@@ -248,9 +253,12 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
   // The folders the line's own `cd`s name: a command after one may run in it whatever stands between them (`;` as
   // well as `&&`, in a group or a subshell too), so it is read there as well.
   const entered: string[] = [];
+  // The words each `for` of the line gives its name in turn: a reader of `$name` reads each of them.
+  const loops = new Map<string, string[]>();
   for (let i = 0; i < parts.length && paths.length < 64; i++) {
     const part = parts[i]!;
     if (part.heredoc) continue;
+    if (part.loop) loops.set(part.loop.name, part.loop.items);
     const here = pre.dirs[i] ?? null;
     for (const dir of [here, ...entered.filter((e) => e !== here)]) {
     for (const t of part.inputs ?? []) reads(t, dir, "the command reads");
@@ -259,6 +267,9 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     let args = run.words.slice(1);
     let argAt = run.at + 1;
     let folder = dir;
+    // A client told to print the credential it holds (gh auth token, git credential fill): a read of its store.
+    const held = printsHeld(run.words);
+    if (held) note(join(home, held), "the command prints a credential kept in");
     // git reads two paths with no repository (`git diff --no-index`) and searches a folder as grep does (`git grep --no-index`).
     let gitSearch = false;
     if (prog === "git") {
@@ -344,6 +355,9 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       const how = idx >= 0 ? part.how?.[part.dyn?.indexOf(idx) ?? -1] : undefined;
       let done = false;
       for (const inner of substituted(how)) done = reads(inner, folder, "the command reads") || done;
+      // (for f in ~/.ssh/*; do cat $f; done)
+      const turn = loops.size ? loops.get(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(o)?.[1] ?? "") : undefined;
+      for (const item of turn ?? []) done = reads(item, folder, "the command reads in a loop") || done;
       if (done || reads(o, folder, "the command reads")) continue;
       const p = at(o, folder);
       if (!p) continue;
@@ -357,6 +371,14 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       const to = arg === undefined ? home : at(arg, here);
       if (to && !entered.includes(to)) entered.push(to);
     }
+  }
+  if (scripts) for (const inner of innerLines(parts, pre, home)) {
+    if (paths.length >= 64) break;
+    const r = shellCredentialReads(inner.parts, cwd, home, credential, inner.pre, look, false);
+    if (!r) continue;
+    first ??= { what: r.what, by: r.by, ...(r.api ? { api: r.api } : {}) };
+    paths.push(...r.paths);
+    hits.push(...r.hits);
   }
   return first ? { ...(first as { what: string; by: string; api?: string }), paths, hits } : null;
 }

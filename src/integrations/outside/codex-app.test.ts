@@ -242,7 +242,19 @@ describe("a Codex session answered in place", () => {
       // As Codex sends them, inside its shell's -c: the script is read as a line of its own.
       for (const c of [`cat ${homeDir()}/.ssh/id_ed25519`, `bash -lc 'cat ${homeDir()}/.ssh/id_ed25519'`, "/bin/bash -lc 'cat .env'", `bash -lc 'echo x >> ~/.bashrc'`])
         expect([c, (await command(c)).risk]).toEqual([c, "high"]);
+      // One wrapper deeper, other options around -c, an argument after the script, eval: the script is found as it
+      // is for Keel's own calls (nested-shell.ts), and so are a loop over a store and a client told to print its token.
+      // (A pattern is the files it matches on the disk: the test's own home holds a key.)
+      mkdirSync(join(homeDir(), ".ssh"), { recursive: true });
+      writeFileSync(join(homeDir(), ".ssh/id_rsa"), "not a key\n");
+      for (const c of [`bash -lc "bash -lc 'cat ~/.ssh/id_rsa'"`, `bash -lc 'sh -c "cat ~/.ssh/id_rsa"'`, "bash --login -c 'cat ~/.ssh/id_rsa'", "bash -o pipefail -c 'cat ~/.ssh/id_rsa'", "bash -lc 'cat ~/.ssh/id_rsa' arg0",
+        "env A=1 bash -lc 'cat ~/.ssh/id_rsa'", "timeout 10 bash -lc 'cat ~/.ssh/id_rsa'", `/bin/bash -lc 'eval "cat ~/.ssh/id_rsa"'`, "bash -lc 'cat ~/.ssh/id_rsa' > /var/tmp/k", "bash -lc 'cat ~/.ssh/id_rsa'; true",
+        `bash -lc "bash -c 'echo x >> ~/.bashrc'"`, "bash -lc 'echo x >> ~/.bashrc' arg0", "bash --login -c 'echo x >> ~/.bashrc'",
+        "bash -lc 'for f in ~/.ssh/*; do cat $f; done'", "bash -lc 'gh auth token'", "bash -lc 'git credential fill'"])
+        expect([c, (await command(c)).risk]).toEqual([c, "high"]);
+      rmSync(join(homeDir(), ".ssh/id_rsa"), { force: true });
       expect((await command("/bin/bash -lc 'make test'")).risk).toBe("low");
+      expect((await command(`bash -lc "bash -lc 'make test'"`)).risk).toBe("low");
       expect((await command("make test")).risk).toBe("low");
       // A command it does not name, and more permissions, are the owner's to weigh: high.
       expect((await command("")).risk).toBe("high");
@@ -251,6 +263,9 @@ describe("a Codex session answered in place", () => {
       const mine = join(r.cwd, "a.ts"), rc = join(homeDir(), ".bashrc");
       expect((await asks("Codex file change", { file_path: mine, paths: [mine] }, "edit")).risk).toBe("low");
       expect((await asks("Codex file change", { file_path: mine, paths: [mine, rc] }, "edit")).risk).toBe("high");
+      // A file outside the session's folder (another project, a file of the system) is high; its scratch and a temporary folder are not.
+      for (const p of [join(homeDir(), "projects/other/src/x.ts"), "/etc/hosts"]) expect([p, (await asks("Codex file change", { file_path: p, paths: [p] }, "edit")).risk]).toEqual([p, "high"]);
+      expect((await asks("Codex file change", { file_path: "/tmp/keel-note.txt", paths: ["/tmp/keel-note.txt"] }, "edit")).risk).toBe("low");
     } finally { r.done(); }
   });
 

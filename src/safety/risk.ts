@@ -39,7 +39,7 @@ export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
 import { awkReads, harmless, runsProgram, sedReads } from "./closed-code.ts";
-import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
+import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, printsHeld, redirected, rootOf, shellGiven, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
 import { outputsOf } from "./outputs.ts";
 import { docOf, docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
@@ -588,8 +588,8 @@ function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts
   if (SHELLS.test(q) && words.includes("-n")) return null;
   const args = words.slice(1);
   if (SHELLS.test(q)) {
-    const k = args.findIndex((a) => /^-[a-zA-Z]*c$/.test(a));
-    const given = k >= 0 ? args[k + 1] : undefined;
+    const started = shellGiven(args);
+    const given = started.script;
     // The script is the first word that is no option: the words after it are its arguments (bash run.sh d.json).
     if (given === undefined) {
       const at = args.findIndex((a, j) => !/^[-+]/.test(a) && !/^[-+][oO]$/.test(args[j - 1] ?? ""));
@@ -597,7 +597,7 @@ function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts
     }
     if (depth >= DEPTH || given.length > SCRIPT_MAX) return null;
     // A file handed to the script as $0, $1 or "$@" (sh -c '. "$1"' _ f.sh) is what the script may run.
-    if (args.slice(k + 2).some(hit)) return { how: "handed", by: q };
+    if (started.rest.some(hit)) return { how: "handed", by: q };
     // (A script the rules cannot split is high risk on its own. A substitution stands for what its command prints,
     // and comes after it: source <(cat x.sh).)
     let printed = false;
@@ -641,7 +641,7 @@ function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts
   return codeRuns(q, code, hit, module) ? { how: "code", by: q } : null;
 }
 // Whether a shell or an interpreter reads its program from its input: it is given no script and no code.
-const fromInput = (p: string, args: string[]) => inline(p, args) === null && (!args.some((a) => !a.startsWith("-")) || args.includes("-s") || args.includes("-")) && !(SHELLS.test(p) && args.some((a) => /^-[a-zA-Z]*c$/.test(a)));
+const fromInput = (p: string, args: string[]) => inline(p, args) === null && (!args.some((a) => !a.startsWith("-")) || args.includes("-s") || args.includes("-")) && !(SHELLS.test(p) && shellGiven(args).c);
 const STDIN = /^(\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
 
 // An install or a run whose source is an address the command names (a URL, a
@@ -915,7 +915,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
   const reads = (k: number) => {
     const q = parts[k]!, r = runs[k]!.words, p = name(r[0]);
     // A client told to print the credential it holds.
-    if ((p === "aws" && r.includes("export-credentials")) || (p === "gh" && r[1] === "auth" && r[2] === "token") || (p === "gcloud" && r[1] === "auth" && /^print-(access|identity)-token$/.test(r[2] ?? ""))) return ENVIRONMENT;
+    if (printsHeld(r)) return ENVIRONMENT;
     if (sender(p)) return undefined;
     // The environment printed whole, or one variable of it by name, is what holds the tokens.
     if (p === "printenv" || (p === "env" && r.length === 1) || (p === "set" && r.length === 1) || ((p === "export" || p === "declare") && r[1] === "-p")) return ENVIRONMENT;
@@ -1134,8 +1134,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     // What a delete written in code would be as a command, for code whose every delete names its path.
     const judge = (path: string) => deletes({ ...x, run: { words: ["rm", "-r", path], at: 0, set: [] }, p: "rm", args: ["-r", path], plain: [path], made: () => undefined }, cx, null);
     // A script given to a shell, to eval, or to a program that runs one, is read as the commands it holds.
-    const here = SHELLS.test(x.p) && fromInput(x.p, args) ? /<<<\s*(?:'([^']*)'|"([^"$`\\]*)")/.exec(s.text) : null;
-    if (here) sub(here[1] ?? here[2]!, dir, out);
+    if (s.here !== undefined && SHELLS.test(x.p) && fromInput(x.p, args)) sub(s.here, dir, out);
     // macOS: a script handed to the shell through AppleScript.
     if (x.p === "osascript") { const told = /do shell script\s+"((?:[^"\\]|\\.)*)"/.exec(args.join(" ")); if (told) sub(told[1]!.replace(/\\(.)/g, "$1"), dir, out); }
     // An editor told to run a shell command (vim -c ':!cmd'), and a makefile another command or the line's own text hands it.
@@ -1146,10 +1145,12 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     if ((x.p === "docker" || x.p === "podman") && /^(rm|kill|stop)$/.test(x.plain[0] ?? "") && (s.how ?? []).some((m) => m.subs.some((sub) => sub.some((q) => /^(docker|podman)$/.test(name(q.words[0])) && q.words[1] === "ps"))))
       out.push({ rule: "destroys", why: `stops or removes every container ${x.p} lists` });
     if (SHELLS.test(x.p) || x.p === "su" || x.p === "script" || x.p === "nix-shell") {
-      const k = args.findIndex((a) => (x.p === "nix-shell" ? a === "--run" || a === "--command" : /^-[a-zA-Z]*c$/.test(a)));
-      const given = k >= 0 ? args[k + 1] : undefined;
+      // (A shell's own script is found as every rule finds it, shellGiven; su and script take it after their -c.)
+      const started = SHELLS.test(x.p) ? shellGiven(args) : null;
+      const k = started ? -1 : args.findIndex((a) => (x.p === "nix-shell" ? a === "--run" || a === "--command" : /^-[a-zA-Z]*c$/.test(a)));
+      const given = started ? started.script : k >= 0 ? args[k + 1] : undefined;
       // Fed by xargs or find with no script of its own, or with one that is only what it is fed: what runs comes from there.
-      if (run.fed && SHELLS.test(x.p) && k >= 0 && (given === undefined || /^\{\}$|^"?\$[@*1]"?$/.test(given.trim()))) out.push({ rule: "hidden", why: `runs in ${x.p} what another command prints: its text is not in the command` });
+      if (run.fed && started?.c && (given === undefined || /^\{\}$|^"?\$[@*1]"?$/.test(given.trim()))) out.push({ rule: "hidden", why: `runs in ${x.p} what another command prints: its text is not in the command` });
       else if (given !== undefined) sub(given, dir, out);
     } else if (x.p === "trap") {
       const action = args.find((a) => !a.startsWith("-"));
@@ -1313,8 +1314,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
             // A script given to a shell: its commands run where the shell does.
             if (at && SHELLS.test(q) && deep < DEPTH && !rs[k]!.words.includes("-n")) {
               const a = rs[k]!.words.slice(1);
-              const c = a.findIndex((x) => /^-[a-zA-Z]*c$/.test(x));
-              const given = c >= 0 ? a[c + 1] : undefined;
+              const given = shellGiven(a).script;
               const inner = given !== undefined && given.length <= SCRIPT_MAX ? splitCommand(given) : null;
               if (inner) {
                 const l = laid(inner, at, w.home, false);

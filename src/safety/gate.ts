@@ -38,7 +38,7 @@ import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart, type AskedPart } from "./summary.ts";
 import { agoSaid, answerSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { localPlace, ownerClass, type CardFacts, type Held as HeldBy } from "./delegate.ts";
-import type { RiskRule } from "./risk-words.ts";
+import { target, type RiskRule } from "./risk-words.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
@@ -297,20 +297,6 @@ const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.
 // A card that opens in Full auto too, and goes to no judge: a write with the owner's account beyond his namespaces, and a
 // tool whose server requires his answer on every call.
 const staysOwners = (a: Ask) => a.account !== undefined || !!a.interaction;
-// The script of a command that is a shell started with -c on it and nothing more (`bash -lc 'make test'`), as
-// another harness sends what it runs; undefined for any other line.
-export function shellScript(command: string): string | undefined {
-  const parts = splitCommand(command);
-  const p = parts?.length === 1 ? parts[0]! : undefined;
-  if (!p || p.redirects || p.dyn?.length || p.nested || p.heredoc) return undefined;
-  const [sh, ...rest] = p.words;
-  if (!sh || !/^(ba|z|da|k|)sh$/.test(basename(sh))) return undefined;
-  let i = 0;
-  let c = false;
-  while (i < rest.length - 1 && /^-[a-z]+$/.test(rest[i]!)) { c ||= rest[i]!.includes("c"); i++; }
-  return c && i === rest.length - 1 ? rest[i] : undefined;
-}
-
 function callClass(call: ToolCall, target: Target): CallClass {
   // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
   // Its path keys, and every string anywhere in the input that is a path or a file: URL by itself.
@@ -2252,10 +2238,20 @@ export class Gate {
     const listed = named.kind === "edit" && Array.isArray(call.input?.paths) ? (call.input.paths as unknown[]).filter((x): x is string => typeof x === "string" && !!x) : [];
     const c: CallClass = named.kind === "edit" && listed.length ? { ...named, paths: [...new Set([...named.paths, ...listed])] } : named;
     if (c.kind === "shell" ? !c.command.trim() : c.kind !== "edit") return { risk: "high" };
-    // (A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`: the script is what is judged,
-    // read as a line of its own, so what the rules read at a line's top (credential reads, writes) is read in it.)
-    const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, command: shellScript(c.command) ?? c.command, unconfined: true } : c, undefined, undefined, undefined, "ask", true);
-    return "ask" in d ? { risk: d.ask.risk, why: d.ask.why } : "deny" in d ? { risk: "high", why: d.deny } : { risk: "low" };
+    // (A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`: the rules read the script a
+    // line hands a shell as a line of its own, for Keel's own calls and these alike: nested-shell.ts.)
+    const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, unconfined: true } : c, undefined, undefined, undefined, "ask", true);
+    if ("deny" in d) return { risk: "high", why: d.deny };
+    if ("ask" in d && d.ask.risk === "high") return { risk: "high", why: d.ask.why };
+    // A file change outside the session's folder, its scratch and the temporary folders (another project, /etc/hosts):
+    // Keel's own edit there asks in the asking modes and its sandbox refuses it. A harness's request has neither.
+    if (c.kind === "edit") {
+      const { workspace, scratch } = this.scope(session);
+      const w = { cwd: workspace, home: realOf(homeDir()), workspace, scratch };
+      const out = c.paths.find((p) => { const t = target(p, undefined, workspace, w, new Map(), 0); return "place" in t && (t.place === "outside" || t.place === "folder"); });
+      if (out) return { risk: "high", why: `it changes ${out}, outside the session's folder` };
+    }
+    return { risk: "low" };
   }
 
   // A hook of the owner's asks about a call the gate let through. The card is answered once, as askOnce's,

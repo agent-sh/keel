@@ -7,13 +7,14 @@ import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
 import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
 import type { Looked } from "./looked.ts";
-import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
+import { innerLines } from "./nested-shell.ts";
+import { RULE_WORDS, codeGiven, laid, risksAt, type Laid } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
 import type { AskedPart } from "./summary.ts";
 import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
-import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, name as baseName, namesCdpath, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
+import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, name as baseName, namesCdpath, shellGiven, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { follow } from "./line-makes.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
@@ -944,7 +945,7 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
     const first = baseName(run.words[0]);
     // sh -c 'git push ...', bash -lc "...", eval '...'
     let script: string | undefined, shell = -1;
-    if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { shell = run.words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x)); if (shell > 0) script = run.words[shell + 1]; }
+    if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { const given = shellGiven(run.words.slice(1)); if (given.script !== undefined) { shell = given.at; script = given.script; } }
     else if (first === "eval") script = run.words.slice(1).join(" ");
     if (script !== undefined) {
       // (A script of more commands than a whole line may hold is not read, as a line of that many is not.)
@@ -1074,9 +1075,19 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     // (An agent's line waits for the owner only when every write of it that is beyond his namespaces goes to a remote of the repository.)
     if (hit) return uncovered(accountDecision(hit, f, "the command", hit.account !== null && foreignAll(f.accounts.names, writes).every((w) => w.own && w.account)), whyForeign(hit, f.accounts.names));
   }
-  if (f.mode !== "read-only") {
+  // The scripts the line hands a shell it starts (`bash -c '...'`, a here-document into sh, eval), each read as a line
+  // of its own where its shell starts (nested-shell.ts): what is never allowed, a write of a file that is the owner's
+  // alone to change and a read of a credential are judged in a script as they are in a plain line.
+  const scripts = f.mode === "read-only" ? [] : innerLines(parts, pre, home);
+  for (const s of scripts) {
+    const inner = neverAllowed(s.parts, pre.dirs[s.at] ?? cwd, home);
+    if (inner) return uncovered(never(inner, f), inner);
+  }
+  // (`top`: for a script, the part of the line that starts its shell: the one the card names.)
+  const whole = parts;
+  const ownerWrites = (parts: Simple[], pre: Laid, cwd: string | null, top?: number): Decision | null => {
     let askAt: number | undefined; // the part the loop below is reading
-    const owners = (o: OwnerOnly): Decision => naming(uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why), parts, askAt);
+    const owners = (o: OwnerOnly): Decision => naming(uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why), whole, top ?? askAt);
     // The variables the line gives one value, and the links it makes: a write through either lands where they lead.
     let vals: ReturnType<typeof valuesOf> | undefined;
     const links = new Map<string, string>();
@@ -1169,6 +1180,12 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
       // (Each quoted string as it stands: a short one is passed, not skipped half-way into the next.)
       if (code) for (const m of code.matchAll(/"([^"]*)"|'([^']*)'/g)) { const t = m[1] ?? m[2]!; const o = t.length >= 3 && t.length <= 300 && !/\s/.test(t) && /[\/.]/.test(t) ? here(t) : null; if (o) return owners(o); }
     }
+    return null;
+  };
+  if (f.mode !== "read-only") {
+    const d = ownerWrites(parts, pre, cwd);
+    if (d) return d;
+    for (const s of scripts) { const inner = ownerWrites(s.parts, s.pre, pre.dirs[s.at] ?? null, s.at); if (inner) return inner; }
   }
   const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)), ...(resolved ? { beside: true as const } : {}) }, pre);
   if (risks.length) {
@@ -1181,7 +1198,8 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   }
   // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
   // same class as a file tool's read of it.
-  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look);
+  // (In Read only a line that starts a shell is refused below as no read: its script adds no card to that.)
+  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look, f.mode !== "read-only");
   if (cred) {
     // In the sandbox the command reads what the sandbox shows and nothing else: a credential it hides is not read,
     // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a

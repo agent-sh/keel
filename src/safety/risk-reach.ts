@@ -3,7 +3,7 @@
 // `exposes`, a file that holds credentials handed to something that sends
 // it. With them, what a database client drops or empties.
 import { CRED_PATH } from "./autonomy.ts";
-import { INTERPRETERS, SHELLS, literal, name, target, untrailed, written, type Risk, type Run, type Values, type Where } from "./risk-words.ts";
+import { INTERPRETERS, SHELLS, literal, name, shellGiven, target, untrailed, written, type Risk, type Run, type Values, type Where } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
 
 // One part of the line, as the classes read it. `made(k)`: what is known of argument k when an expansion makes it.
@@ -233,7 +233,7 @@ export function remote(x: Part, fed: { text: string; piped: boolean }, w: Where,
   for (const [who, what] of PUBLISH) if (who.test(p) && (what.source === "^" || plain.slice(0, 3).some((a) => what.test(a)))) return add(`publishes or deploys where others take it from, which cannot be taken back (${`${p} ${plain.find((a) => what.test(a)) ?? ""}`.trim()})`);
   if (INTERPRETERS.test(p) && plain[0] === "twine" && plain[1] === "upload") return add("publishes a package (twine upload)");
   // A deploy or publish step of the project: what it does elsewhere is not in the command.
-  const script = SHELLS.test(p) ? !args.some((a) => /^-[a-zA-Z]*c$/.test(a)) : INTERPRETERS.test(p) && !args.some((a) => /^-[a-zA-Z]*[cer]$/.test(a) || a === "--eval" || a === "eval");
+  const script = SHELLS.test(p) ? !shellGiven(args).c : INTERPRETERS.test(p) && !args.some((a) => /^-[a-zA-Z]*[cer]$/.test(a) || a === "--eval" || a === "eval");
   const step = /^(make|gmake|just|task|rake|invoke)$/.test(p) ? args.find((a, k) => !a.startsWith("-") && !/^-[CfIoWl]$/.test(args[k - 1] ?? "") && !a.includes("=") && NAMED_DEPLOY.test(a))
     : /^(npm|pnpm|yarn|bun)$/.test(p) ? (plain[0] === "run" || plain[0] === "run-script" ? plain[1] : p === "npm" ? undefined : plain[0])
     : script ? plain[0] : prog.includes("/") ? prog : undefined;

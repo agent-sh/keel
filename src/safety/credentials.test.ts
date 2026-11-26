@@ -92,6 +92,19 @@ test("the shell's reads of credentials: the operands a reader reads, not a searc
 const shell = (c: string, cwd = `${home}/projects/app`, look?: Parameters<typeof shellCredentialReads>[5]) =>
   shellCredentialReads(splitCommand(c)!, cwd, home, (p) => credentialAt(p, at), undefined, look)?.by ?? null;
 
+test("a client told to print the credential it holds and a loop over a store are reads of it", () => {
+  for (const c of ["gh auth token", "gh auth status --show-token", "GH_TOKEN=$(gh auth token) docker build .", "gcloud auth print-access-token", "gcloud auth application-default print-access-token",
+    "aws configure export-credentials --format env", "git credential fill", "git -C repo credential-store get", "secret-tool lookup service x"])
+    expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
+  for (const c of ["gh auth status", "gh pr view 12", "git credential-cache exit", "git config credential.helper", "secret-tool search service x", "aws s3 ls", "gcloud auth list"]) expect([c, shell(c)]).toEqual([c, null]);
+  for (const c of ["for f in ~/.ssh/*; do cat $f; done", "for f in ~/.aws/credentials notes.txt; do head -3 \"$f\"; done", "for k in $HOME/.ssh/id_*; do base64 ${k}; done"])
+    expect([c, shell(c)]).toEqual([c, "the command reads in a loop"]);
+  for (const c of ["for f in src/*.ts; do cat $f; done", "for f in ~/.ssh/*; do ls -l $f; done", "for h in a b; do ssh $h uptime; done"]) expect([c, shell(c)]).toEqual([c, null]);
+  // (With the disk's answer a pattern is the files it matches: the public keys are none.)
+  expect(shell("for f in ~/.ssh/*.pub; do cat $f; done", undefined, { expand: () => [`${home}/.ssh/id_ed25519.pub`] })).toBeNull();
+  expect(shell("for f in ~/.ssh/*; do cat $f; done", undefined, { expand: () => [`${home}/.ssh/id_ed25519.pub`, `${home}/.ssh/id_ed25519`] })).toBe("the command reads in a loop");
+});
+
 test("a helper that reads a file for a command is the same class as a plain cat of it", () => {
   for (const c of [
     "echo ~/.aws/credentials | xargs cat", "printf '%s\\n' ~/.aws/credentials | xargs -I{} cat {}", "find ~/.aws -type f -print0 | xargs -0 cat", "ls ~/.aws | xargs head",

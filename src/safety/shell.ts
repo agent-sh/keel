@@ -11,6 +11,8 @@ import { name, unwrap } from "./risk-words.ts";
 // `heredoc`: a line of a here-document read as a script, for the risk rules
 // alone: it runs only if the command it feeds runs it, and that one is judged.
 // `doc`: on the first line of a here-document, its text as written
+// `here`: the word of its here-string (`<<< WORD`), its quotes taken off and its expansions left as written.
+// `loop`: on the first command after a `for NAME in WORDS` header, the name and the words it takes in turn.
 // A redirect is kept wherever it stands: one after a group, a loop or a
 // conditional, or with no command at all, is a part with no words.
 // `dyn`: the words (by index) an expansion makes ($x, $(...), {a,b}), so what
@@ -23,7 +25,7 @@ import { name, unwrap } from "./risk-words.ts";
 // `|&` or `&`, whatever it follows (a command, a group, a subshell): it runs only when that failed, as one side of a
 // pipe, or after what stands before it was sent to the background. `def`: its words are a function's name, with the
 // `()` of a definition right after them (`cd () ...`, `function cd () ...`): they run nothing.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; led?: string; flow?: true; def?: true };
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; here?: string; loop?: { name: string; items: string[] }; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; led?: string; flow?: true; def?: true };
 
 // What is known of a word an expansion makes. `one`: it stays one word (every
 // expansion in it is inside double quotes, and no glob or brace is). `lead`:
@@ -117,6 +119,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
   let unknown = false;
   let depth = 0;
   let inputs: string[] = [];
+  let here: string | undefined; // the word of a here-string
+  let loop: { name: string; items: string[] } | undefined; // a `for` header read, for the command after it
   let targets: Made["vars"] = []; // the variables the targets of its redirects name
   let quotes: number[] = []; // the words that have a quoted or escaped character
   let param = 0; // ${ ... } still open: what stands in it is its text, whatever it looks like
@@ -131,6 +135,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     if (kind === ">") redirects ||= made || !SINK.test(w); // >, >>, >|, &>, &>> and <> (opened for writing too)
     else if (kind === ">&") redirects ||= made || (!/^(\d+-?|-)$/.test(w) && !SINK.test(w)); // >&2 copies a descriptor; >&file writes it
     else if (kind === "<") { inputs.push(w); redirects ||= made || /^\/dev\/(tcp|udp)\//.test(w); } // /dev/tcp opens a connection
+    else if (kind === "<<<") here = w;
     else if (kind === "<<" || kind === "<<-") { if (made) bad = true; docs.push({ delim: w, tabs: kind === "<<-", quoted }); } // bash takes the delimiter as written: $(..) in it is text
   };
   const flushWord = () => {
@@ -156,7 +161,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     const led = before;
     if (sep !== undefined) { if (!(sep === "\n" && !closed && !words.length && !redirects && !unknown && !inputs.length)) before = sep; closed = false; }
     // The elements of an array assignment are values: nothing of them is a program word.
-    if (bare && !unknown && !redirects && !inputs.length) { words = []; dyn = []; how = []; splits = false; text = ""; return; }
+    if (bare && !unknown && !redirects && !inputs.length) { words = []; dyn = []; how = []; splits = false; text = ""; here = undefined; return; }
     // The words in front of a command that are the shell's syntax and run nothing: a keyword (if, then, do, {, !, time),
     // the head of a loop and `case WORD in`. With `do` or `{` right after a loop's name (`for i do rm x; done`,
     // `for i { rm x; }`) the body's first command stands in the same part and is read as the command it is; with `in`
@@ -175,6 +180,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         // reads there changes what the body runs (for PATH in .; do ls; done runs ./ls). Only a plain name in small letters.
         const name = words[at + 1], next = words[at + 2];
         if (name !== undefined && (!PLAIN.test(name) || KEPT.test(name) || dyn.includes(at + 1))) unknown = true;
+        // (`for NAME in ITEMS`: the values the loop gives its variable, for a rule that reads its body with them.)
+        if (w === "for" && next === "in" && name !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) loop = { name, items: words.slice(at + 3) };
         if (next === undefined || next === "in") return words.length;
         // (Anything else there is no loop to bash: a part nothing is known of.)
         if ((next !== "do" && next !== "{") || dyn.includes(at + 2) || quotes.includes(at + 2)) { unknown = true; return words.length; }
@@ -204,15 +211,17 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
       out.push({
         words, text: text.trim(), redirects,
         ...(depth > 0 ? { nested: true as const } : {}), ...(unknown ? { unknown: true as const } : {}),
-        ...(dyn.length ? { dyn, how } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}),
+        ...(dyn.length ? { dyn, how } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}), ...(here !== undefined ? { here } : {}), ...(loop && words.length ? { loop } : {}),
         ...(targets.length ? { targets } : {}), ...(quoteds.length ? { quotes: quoteds } : {}),
         ...(sep && sep !== ";" && sep !== "\n" ? { sep } : {}), ...(led === "||" || led === "|" || led === "|&" || led === "&" ? { led } : {}), ...(flow ? { flow: true as const } : {}),
         ...(def && (words.length === 1 || (words.length === 2 && words[0] === "function")) ? { def: true as const } : {}),
       });
+    if (words.length) loop = undefined;
     words = [];
     dyn = [];
     how = [];
     inputs = [];
+    here = undefined;
     targets = [];
     quotes = [];
     splits = false;

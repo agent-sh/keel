@@ -41,6 +41,43 @@ export const WORDS_MAX = 1_024; // paths one command writes or deletes
 export const SCRIPT_MAX = 4_000;
 
 export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash)$/;
+// A client told to print the credential it holds, as the store under the home it keeps it in, else null: gh auth
+// token, gcloud auth print-access-token, aws configure export-credentials, git credential fill, secret-tool lookup.
+// Its output is the credential, as a read of the store's file is.
+export function printsHeld(words: string[]): string | null {
+  const p = name(words[0]);
+  if (p === "gh") return words[1] === "auth" && (words[2] === "token" || (words[2] === "status" && words.some((a) => a === "--show-token" || /^-[a-zA-Z]*t/.test(a)))) ? ".config/gh" : null;
+  if (p === "gcloud") return words.includes("auth") && words.some((a) => /^print-(access|identity)-token$/.test(a)) ? ".config/gcloud" : null;
+  if (p === "aws") return words.includes("export-credentials") ? ".aws" : null;
+  if (p === "secret-tool") return words[1] === "lookup" ? ".local/share/keyrings" : null;
+  if (p !== "git") return null;
+  let k = 1;
+  for (; k < words.length && words[k]!.startsWith("-"); k++) if (words[k] === "-C" || words[k] === "-c") k++;
+  const sub = words[k] ?? "";
+  return (sub === "credential" && words[k + 1] === "fill") || (sub.startsWith("credential-") && words.includes("get")) ? ".git-credentials" : null;
+}
+// What a shell is started with, from the words after its name, read as the shell reads them: its options first (a
+// cluster of letters such as -lc or -xec, `-o NAME` and `-O NAME` with their value, a long option, `--rcfile FILE`),
+// up to the first word that is none or to `--`. With -c anywhere among them that word is the script, whatever
+// stands between (`bash -c -x 'script'`, `sh -euc 'script'`), and the words after it are its $0 and arguments.
+// `at`: where the script stands in `args`, -1 with none. `input`: no -c and no script file (or -s): it reads its
+// commands from its input. A script file it names is `rest[0]`, and is not read. Every rule that reads the script
+// a shell is given finds it here.
+export type Given = { c: boolean; script?: string; at: number; rest: string[]; input: boolean };
+export function shellGiven(args: string[]): Given {
+  let c = false, s = false, i = 0;
+  for (; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--" || a === "-") { i++; break; }
+    if (a.startsWith("--")) { if (a === "--rcfile" || a === "--init-file") i++; continue; }
+    if (a.length < 2 || (a[0] !== "-" && a[0] !== "+") || !/^[a-zA-Z]+$/.test(a.slice(1))) break;
+    if (a[0] === "-") { c ||= a.includes("c"); s ||= a.includes("s"); }
+    if (a.includes("o") || a.includes("O")) i++;
+  }
+  const rest = args.slice(i);
+  if (c) return { c, ...(rest[0] !== undefined ? { script: rest[0], at: i } : { at: -1 }), rest: rest.slice(1), input: false };
+  return { c, at: -1, rest, input: s || !rest.length };
+}
 export const INTERPRETERS = /^(python[0-9.]*|node|nodejs|bun|deno|perl|ruby|php)$/;
 export const GLOB = /[*?[]/;
 // Whether the session's sandbox is what stops a write to this path: the session is confined, the path is surely

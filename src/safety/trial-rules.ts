@@ -22,6 +22,7 @@ export const RULE_MODULES: { file: string; fn: string; what: string }[] = [
   { file: "accounts.ts", fn: "writesOf", what: "a write with the owner's accounts, and whose namespace it goes to" },
   { file: "credentials.ts", fn: "credentialAt", what: "where the owner's credentials are kept" },
   { file: "credential-reads.ts", fn: "shellCredentialReads", what: "a command's reads of credentials" },
+  { file: "nested-shell.ts", fn: "innerLines", what: "the script a line hands a shell it starts, as a line of its own" },
   { file: "shared-branches.ts", fn: "sharedRefusal", what: "an agent's worktree guard of the branches it shares" },
   { file: "resolved-line.ts", fn: "resolvedLine", what: "a line whose program words are variables it set, written out for the rules to judge" },
   { file: "line-makes.ts", fn: "makerOf", what: "the folders a line's own git makes a repository in (worktree add, clone, init)" },
