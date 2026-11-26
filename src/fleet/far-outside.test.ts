@@ -83,3 +83,35 @@ test("asks only the ssh machines that answer, and tells the pages once a change"
   expect(failures).toEqual([]);
   expect(far.sessions("m2")).toEqual([]);
 });
+
+test("an offline or removed machine has no rows, and outside sessions off asks nothing and shows nothing", async () => {
+  let machines = [machine({}), machine({ id: "m2", name: "two", ssh_host: "two" })];
+  let cfg = ON;
+  const asked: string[] = [];
+  const bus = new Bus();
+  const frames: string[] = [];
+  bus.on((f) => { if (f.t === "feature" && f.name === "fleet_outside") frames.push(f.data.machine); });
+  const far = new FarOutside({
+    fleet: { rows: () => machines, isSsh: (m) => m.source === "ssh", handsJson: async <T,>(id: string) => { asked.push(id); return { sessions: [row({ original: { state: "active" } })] } as T; } },
+    bus, heard: () => true, capture: () => {}, settings: () => cfg,
+  });
+  await far.poll();
+  expect(far.sessions("m1")[0]!.outside!.state).toBe("working");
+  expect(far.sessions("m2")).toHaveLength(1);
+  frames.length = 0;
+  // m1 goes offline: its last rows are not shown as working; m2 is removed: its rows are deleted.
+  machines = [machine({ state: "offline" })];
+  await far.poll();
+  expect(far.sessions("m1")).toEqual([]);
+  expect(far.sessions("m2")).toEqual([]);
+  expect(frames.sort()).toEqual(["m1", "m2"]);
+  // Back, and then outside sessions switched off: no request, no rows.
+  machines = [machine({})];
+  await far.poll();
+  expect(far.sessions("m1")).toHaveLength(1);
+  asked.length = 0;
+  cfg = { enabled: false, exclude: [] };
+  await far.poll();
+  expect(far.sessions("m1")).toEqual([]);
+  expect(asked).toEqual([]);
+});

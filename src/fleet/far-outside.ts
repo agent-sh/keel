@@ -3,12 +3,15 @@
 // sessions they run here are (src/integrations/outside/service.ts). The
 // helper there names what its harnesses hold open (src/fleet/hands-sessions.ts,
 // `running`); a row carries its harness, its title, its folder and its state,
-// and nothing of what it says: its prompts, its replies and its transcript
-// stay on that machine until the owner imports it. Nothing is kept on disk:
-// the rows are what the machine said last.
+// and nothing else of what it says: its replies and its transcript stay on that
+// machine until the owner imports it. The title is the harness's own, which may
+// be the first prompt's words, as for a local outside row. Nothing is kept on
+// disk: the rows are what the machine said last, while it answers (a machine
+// that is offline or removed has none; a brief failure of a ready one keeps them).
 //
-// Cost: one request a machine every POLL_MS, only while a page shows the list
-// and the machine answers. The helper reads its process table and Claude Code's
+// Cost: one request a machine every POLL_MS, only while a page hears the
+// `fleet_outside` feed (its list shows an External section that can hold these
+// rows), outside sessions are on, and the machine answers. The helper reads its process table and Claude Code's
 // own list of live sessions for it, and walks its stores at most every 30 s.
 import type { Bus } from "../core/bus.ts";
 import { emptyUsage, type OutsideMark, type Session } from "../core/types.ts";
@@ -77,7 +80,7 @@ export class FarOutside {
   constructor(private d: { fleet: FleetLike; bus: Bus; heard: () => boolean; capture: (e: unknown, ctx: Record<string, unknown>) => void; settings?: () => { enabled: boolean; exclude: string[] } }) {}
 
   start() {
-    this.timer ??= setInterval(() => { if (this.d.heard()) this.poll(); }, POLL_MS);
+    this.timer ??= setInterval(() => { if (this.d.heard()) void this.poll(); }, POLL_MS);
     this.timer.unref?.();
   }
 
@@ -86,23 +89,40 @@ export class FarOutside {
     this.timer = undefined;
   }
 
-  // The rows a machine showed last; a list older than POLL_MS is asked for again behind the answer.
+  private cfg() {
+    return (this.d.settings ?? outsideSettings)();
+  }
+
+  // The rows a machine showed last, while it answers; a list older than POLL_MS is asked for again behind the answer.
   sessions(machine: string): Session[] {
+    this.prune();
+    const m = this.d.fleet.rows().find((r) => r.id === machine);
+    if (!m || !this.askable(m)) return [];
     const had = this.rows.get(machine);
-    if (!had || Date.now() - had.at >= POLL_MS) {
-      const m = this.d.fleet.rows().find((r) => r.id === machine);
-      if (m && this.askable(m)) void this.ask(m);
-    }
+    if (!had || Date.now() - had.at >= POLL_MS) void this.ask(m);
     return had?.sessions ?? [];
   }
 
-  // Every machine that answers, now.
+  // Every machine that answers, now; the rows of one that went offline or was removed go.
   poll(): Promise<void> {
+    this.prune();
+    if (!this.cfg().enabled) return Promise.resolve();
     return Promise.all(this.d.fleet.rows().filter((m) => this.askable(m)).map((m) => this.ask(m))).then(() => {});
   }
 
+  // Rows only of a machine that answers, with outside sessions on: the others' go, each change one frame.
+  private prune() {
+    const on = this.cfg().enabled;
+    const live = new Set(this.d.fleet.rows().filter((m) => this.askable(m)).map((m) => m.id));
+    for (const [id, had] of this.rows) {
+      if (on && live.has(id)) continue;
+      this.rows.delete(id);
+      if (had.print !== "[]") this.d.bus.emit({ t: "feature", name: "fleet_outside", data: { machine: id } });
+    }
+  }
+
   private askable(m: MachineRow) {
-    return this.d.fleet.isSsh(m) && (m.state === "ready" || m.state === "busy");
+    return this.cfg().enabled && this.d.fleet.isSsh(m) && (m.state === "ready" || m.state === "busy");
   }
 
   private async ask(m: MachineRow): Promise<void> {
@@ -110,7 +130,9 @@ export class FarOutside {
     this.asking.add(m.id);
     try {
       const r = await this.d.fleet.handsJson<{ sessions?: FarRunning[] }>(m.id, "/api/fleet/hands/transcripts?running=1&peek=1&limit=50", { timeout: 20_000, idempotent: true });
-      this.take(m.id, farSessions(Array.isArray(r.sessions) ? r.sessions : [], (this.d.settings ?? outsideSettings)()));
+      // The machine may have gone while it answered: what it said then is no row.
+      const now = this.d.fleet.rows().find((x) => x.id === m.id);
+      if (now && this.askable(now)) this.take(m.id, farSessions(Array.isArray(r.sessions) ? r.sessions : [], this.cfg()));
     } catch (e) {
       // Out of reach: the machine's line says so, and its rows stand as it last told them until it answers.
       if (!(e instanceof LinkError)) this.d.capture(e, { at: "fleet far outside", machine: m.id });

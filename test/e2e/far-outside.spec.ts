@@ -57,6 +57,14 @@ test("a machine's running Claude Code session: a read-only row under its line, o
     await expect(row.getByTestId("row-pin")).toHaveCount(0);
     await expect(row.getByTestId("row-archive")).toHaveCount(0);
     await shoot(page, "far-outside-01-row");
+    // Its menu offers nothing to file or select: there is no session of this daemon's behind it.
+    await row.click({ button: "right" });
+    await expect(page.getByTestId("row-menu")).toBeVisible();
+    await expect(page.getByTestId("row-menu-select")).toHaveCount(0);
+    await expect(page.getByTestId("row-menu-move")).toHaveCount(0);
+    await expect(page.getByTestId("row-menu-pin")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("row-menu")).toHaveCount(0);
 
     // Opened: where it runs and in what, and no box to type in.
     await row.click();

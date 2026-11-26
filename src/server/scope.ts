@@ -19,7 +19,7 @@ export const ROWS = "rows";
 export const LIST_ROWS = "rows:list";
 export const sessionTopic = (id: string) => `s:${id}`;
 // Frames one view reads, across sessions: the Activity list, a project's files, the daemon panel, the lessons.
-export const FEEDS = ["activity", "artifacts", "awake", "caps", "landings", "lessons"] as const;
+export const FEEDS = ["activity", "artifacts", "awake", "caps", "fleet_outside", "landings", "lessons"] as const;
 export const feedTopic = (name: string) => `f:${name}`;
 // A feed of one tree of agents: their "now" lines (src/automation/now.ts), named by the tree's root
 // while a view shows the tree's rows (the sidebar's tree under a session).
@@ -96,6 +96,9 @@ export function route(f: Frame): Route {
       // The branches ready to land across the owner's sessions (src/server/routes/ready.ts): Home and the Inbox
       // read them, a frame only when the list changed.
       if (f.name === "landings") return { topics: [feedTopic("landings"), EVERY] };
+      // What Claude Code or Codex runs on a machine reached over ssh changed (src/fleet/far-outside.ts): to the
+      // lists that show an External section, which name the feed while they are up.
+      if (f.name === "fleet_outside") return { topics: [feedTopic("fleet_outside"), EVERY] };
       if (f.name === "tree_review" && f.session_id) return { topics: [feedTopic(reviewFeed(f.session_id)), EVERY] };
       // What the agents of one tree are doing now: to the views of the sessions that started them
       // (their agent lines) and to a view of the tree's rows, never to every socket.

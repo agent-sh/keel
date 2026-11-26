@@ -81,7 +81,7 @@ export function MachineSep({ machine, count, testid = "machine-sep", className, 
     <div className={cn("k-machine-sep", className)} data-testid={testid} data-machine={machine ?? "local"} data-section={external ? "external" : undefined} data-reach={w?.reach} title={external ? "Sessions of other harnesses that are not in Keel. Import or take one over and it moves up into Keel's list." : w?.title ?? "Sessions on this machine"} style={whereStyle(w?.colour)} role="separator" aria-label={external ? name : w ? `${w.name}${w.word ? `, ${w.word}` : ""}` : "This machine"}>
       <Icon aria-hidden="true" />
       <span className="k-machine-sep-name">{name}</span>
-      {w?.word && !external && <span className="k-machine-sep-reach">{w.word}</span>}
+      {w?.word && (!external || w.reach === "offline") && <span className="k-machine-sep-reach">{w.word}</span>}
       {note && <span className="k-machine-sep-note">{note}</span>}
       <span className="k-machine-sep-count">{count}</span>
     </div>

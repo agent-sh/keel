@@ -18,7 +18,7 @@ import { composing, runCommand } from "../lib/keys.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
-import { actions, api, reportError, useStore } from "../lib/store.ts";
+import { actions, api, reportError, scope, useStore } from "../lib/store.ts";
 import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, scrollerOf, useActed, useAnchor, useCounts, useHand, usePhoneWidth, useUnderLook, type Hand } from "../lib/list-hold.ts";
 import { around, folders, held as heldList, isNews, pinnedOrder, tally } from "../lib/list-order.ts";
 import { countedState, withAgentFailures } from "../lib/home.ts";
@@ -349,7 +349,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       draggable={!phone()}
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
       onPointerDown={(e) => {
-        if (e.pointerType !== "touch" || left) return;
+        if (e.pointerType !== "touch" || left || fixed) return;
         const p = { x: e.clientX, y: e.clientY, fired: false, timer: 0 };
         p.timer = window.setTimeout(() => { p.fired = true; toggleSelected(s.id); }, LONG_PRESS_MS);
         longPress.current = p;
@@ -362,7 +362,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       onClick={(e) => {
         card.onClick?.(e);
         // Ctrl or Shift click marks the row (Shift: every row from the last marked one); with rows marked, a click marks or unmarks.
-        if (!left && (e.shiftKey || e.ctrlKey || e.metaKey || selected().size > 0)) return e.shiftKey ? selectRange(s.id, orderOf()) : toggleSelected(s.id);
+        if (!left && !fixed && (e.shiftKey || e.ctrlKey || e.metaKey || selected().size > 0)) return e.shiftKey ? selectRange(s.id, orderOf()) : toggleSelected(s.id);
         open(false);
       }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openBeside(s.id); } }}
@@ -377,7 +377,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         if (e.target !== e.currentTarget) return;
         if (e.key === "F2" && canRename) { e.preventDefault(); e.stopPropagation(); return setRenaming(true); }
         if (e.altKey && pinned && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); e.stopPropagation(); return move(e.key === "ArrowUp" ? -1 : 1); }
-        if (e.key === " " && !e.altKey && !e.ctrlKey && !e.metaKey && !left) { e.preventDefault(); return toggleSelected(s.id); }
+        if (e.key === " " && !e.altKey && !e.ctrlKey && !e.metaKey && !left && !fixed) { e.preventDefault(); return toggleSelected(s.id); }
         if (e.key !== "Enter") return;
         // Shift Enter: the menu of panes, to place the session in one of them.
         if (e.shiftKey && panes > 1 && !restore && !phone()) { e.preventDefault(); return setPlacing(true); }
@@ -499,9 +499,9 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           onRename={canRename ? () => setRenaming(true) : undefined}
           onArchive={fixed ? undefined : () => { listActed(s.id); archive(s, !restore).catch(reportError); }}
           // The same mark the row's dot reads (the command and the session menu set it too): kept until the session is opened again.
-          onSelect={() => toggleSelected(s.id)}
+          onSelect={fixed ? undefined : () => toggleSelected(s.id)}
           onUnread={!unread && !s.machine && !s.parent_id ? () => { listActed(s.id); auto.unreadSession(s.id).catch(reportError); } : undefined}
-          session={s.machine ? undefined : { id: s.id, folder: s.settings.folder_id ?? null }}
+          session={s.machine || fixed ? undefined : { id: s.id, folder: s.settings.folder_id ?? null }}
         />
       )}
     </div>
@@ -1083,6 +1083,10 @@ function Index({ current }: { current: string | null }) {
   useAnchor(nav);
   const note = useNote();
   useFleet((s) => s.machines.length); // machine names in the group heads
+  // An External section of a machine reached over ssh can be up while one answers: the list hears what its
+  // harnesses run (a feed, src/fleet/far-outside.ts); with none, the daemon asks none of them.
+  const farUp = useFleet((s) => s.machines.some((m) => m.source === "ssh" && (m.state === "ready" || m.state === "busy")));
+  useEffect(() => (farUp ? scope.feed("fleet_outside") : undefined), [farUp]);
   const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
   // (One function for the life of the list: the filter is memoized, and a new one each render drew it again each time.)
   const showArchive = useCallback((on: boolean) => setTab(on ? "archived" : "active"), []);

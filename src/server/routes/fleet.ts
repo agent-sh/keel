@@ -73,7 +73,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   // What Claude Code and Codex run now on the machines reached over ssh: rows of the list, read-only (src/fleet/far-outside.ts).
   const gfo = globalThis as { __keelFarOutside?: FarOutside };
   gfo.__keelFarOutside?.stop();
-  const farOutside = (gfo.__keelFarOutside = new FarOutside({ fleet: f, bus, heard: () => feedHeard.lists(), capture: (e, c) => errors.capture("server", e, c) }));
+  const farOutside = (gfo.__keelFarOutside = new FarOutside({ fleet: f, bus, heard: () => feedHeard.of("fleet_outside"), capture: (e, c) => errors.capture("server", e, c) }));
   farOutside.start();
   const msgs = new Messages(store, bus, engine, f, (id) => (gate ? gate.perm(id) : undefined), (m, s) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
