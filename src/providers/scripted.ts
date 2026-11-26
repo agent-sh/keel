@@ -495,6 +495,12 @@ export class ScriptedProvider implements Provider {
     }
     // A history read as a transcript in parts: the summary names the part it reached.
     const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
+    // Let the browser and the API observe the first part's plan before any part finishes.
+    const gate = part?.[2] === "1" && lastText.match(/Keep above all: script:summary-hold (\S+)/)?.[1];
+    if (gate) {
+      for (let i = 0; i < 600 && !existsSync(gate) && !req.signal.aborted; i++) await Bun.sleep(100);
+      if (req.signal.aborted) throw reportUsage(req.signal.reason ?? Object.assign(new Error("interrupted"), { name: "AbortError" }), usage);
+    }
     if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);
     if (lastText.includes("[harness] The context is being compacted")) {
       if (req.purpose === "summary" && lastText.includes("Keep above all: script:compact-error"))

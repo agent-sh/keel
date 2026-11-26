@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Feature: a history larger than the model's window. A session moved in from
 // another harness carries no token counts and can be longer than its model
@@ -233,34 +235,27 @@ test("a history far over the window is summarized in at most eight requests and 
   // The page says what the compaction takes before its first request, and counts them as they finish.
   await page.goto(`/s/${id}`);
   await expect(page.getByText("Step 2000: check the service on port 9000.")).toBeVisible({ timeout: 60_000 });
-  // The line lasts as long as the requests do: every text it shows is noted as it changes.
-  await page.evaluate(() => {
-    const seen: string[] = ((window as any).__compacting = []);
-    new MutationObserver(() => {
-      const t = document.querySelector('[data-testid="compacting"]')?.textContent;
-      if (t && seen.at(-1) !== t) seen.push(t);
-    }).observe(document.body, { childList: true, subtree: true, characterData: true });
-  });
-  const asked = request.post(`/api/sessions/${id}/compact`, { data: {}, timeout: 120_000 });
-  const plans: any[] = [];
-  const watch = (async () => {
-    for (let i = 0; i < 3000 && !plans.some((p) => p.done > 0); i++) {
-      const st = (await (await request.get(`/api/sessions/${id}?events=0`)).json()).status;
-      if (st?.kind === "compacting" && st.plan && !plans.some((p) => p.done === st.plan.done)) plans.push(st.plan);
-      if (st?.kind === "idle" && plans.length) break;
-    }
-  })();
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
+  mkdirSync(ws, { recursive: true });
+  const gate = join(ws, `summary-hold-${id}`);
+  const asked = request.post(`/api/sessions/${id}/compact`, { data: { focus: `script:summary-hold ${gate}` }, timeout: 120_000 });
+  let plan: any;
+  try {
+    // The scripted first part cannot finish until the browser and API both show its plan.
+    await expect(page.getByTestId("compacting")).toHaveText(/Compacting the context: too long for one request, read in \d requests of about [\d.]+k tokens \([\d.]+k in all, about \$[\d.]+\), the oldest [\d,]+ steps left out; 0 of \d done/);
+    plan = (await (await request.get(`/api/sessions/${id}?events=0`)).json()).status?.plan;
+  } finally {
+    writeFileSync(gate, "");
+    await asked.finally(() => rmSync(gate, { force: true }));
+  }
   const res = await asked;
-  await watch;
   expect(res.ok()).toBe(true);
   await expect(page.getByTestId("compacted")).toHaveCount(1);
-  const shown: string[] = await page.evaluate(() => (window as any).__compacting);
-  expect(shown.join("\n")).toMatch(/Compacting the context: too long for one request, read in \d requests of about [\d.]+k tokens \([\d.]+k in all, about \$[\d.]+\), the oldest [\d,]+ steps left out; 0 of \d done/);
   const cp = (await res.json()).event;
   // What was said first is what it took: the requests, and the tokens they sent (cached ones too) within a quarter.
-  expect(plans[0]).toMatchObject({ requests: cp.data.parts, done: 0, steps_left_out: cp.data.steps_left_out });
+  expect(plan).toMatchObject({ requests: cp.data.parts, done: 0, steps_left_out: cp.data.steps_left_out });
   const sent = cp.data.usage.input + (cp.data.usage.cache_read ?? 0) + (cp.data.usage.cache_write ?? 0);
-  expect(Math.abs(plans[0].input_tokens - sent) / sent, `planned ${plans[0].input_tokens}, sent ${sent}`).toBeLessThan(0.25);
+  expect(Math.abs(plan.input_tokens - sent) / sent, `planned ${plan.input_tokens}, sent ${sent}`).toBeLessThan(0.25);
   expect(cp.data.parts).toBeGreaterThan(1);
   expect(cp.data.parts).toBeLessThanOrEqual(8);
   expect(cp.data.outputs_shortened).toBe(2000);
