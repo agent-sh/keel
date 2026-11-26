@@ -19,8 +19,7 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
     test.setTimeout(120_000);
 
     test("the conversation and a one-line box, the list one tap away, the agents one quiet item", async ({ page, request }) => {
-      const model = await scripted(request);
-      test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+      await scripted(request);
       const coord = await create(request, "Phone coordinator", folder("phone-focus-coord"));
       const asker = await create(request, "Phone asks for a command", folder("phone-focus-asker"));
       try {
