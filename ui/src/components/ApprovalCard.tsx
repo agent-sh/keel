@@ -810,7 +810,9 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list"; touch: boolean;
   onLater?: () => void; // put away to the count in the session head (an agent's requests have none)
 }) {
-  const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
+  // An agent's request, under its agent's line in the parent's pane, is a row too: three agents that wait are
+  // three rows the owner reads at a glance, not three cards that take the conversation's room.
+  const dense = (many || !!asker) && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
   const Icon = a.risk === "high" ? ShieldAlert : ICON[a.kind];
   const [denying, setDenying] = useState(false);
   const [reason, setReason] = useState("");

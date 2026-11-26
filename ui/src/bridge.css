@@ -1215,7 +1215,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-approval, .k-question[data-state="open"] { border-radius: var(--radius-md); border: 1px solid var(--line-strong); box-shadow: inset 0.1875rem 0 0 var(--st-need); }
 .k-approval[data-risk="high"] { box-shadow: inset 0.1875rem 0 0 var(--st-fail); }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within, [data-hot]) { box-shadow: none; }
+.k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-question[data-state="open"]:not(:focus-within) { box-shadow: none; }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within) .k-allow { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* The second answer is not heavier than the first: Always allow in the weight of Allow once. */
+.k-approval .k-grant { font-weight: 400; }
 /* What waits, over a list of requests: a state word (its face is the state role's, styles.css). */
 .k-ask-count { font-weight: 600; font-size: var(--text-micro); line-height: 1.25rem;  color: var(--st-need-ink); }
 .k-allow-all { border-radius: var(--radius-md); }
@@ -1811,6 +1814,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-trusted-files { color: var(--muted); }
 /* Approvals a subagent waits on, in the parent's station: the same yellow. */
 .k-child-approvals > * { border-radius: var(--radius-md); }
+/* An agent whose request is a question ends with the room a list of requests ends with: its card does not stand
+   on the message box. */
+.k-child-approvals > [data-testid="child-asks"]:not(:has(.k-ask-list)) { margin-bottom: 0.5rem; }
 /* An agent's report row: after the title and the state word, what is left of the line. It is cut at its
    end while its first words have room, and goes whole where they have not (an empty first item lets it wrap out of sight). */
 .k-report-rest { display: flex; flex-wrap: wrap; flex: 1 1 0; min-width: 0; height: 1.25rem; overflow: hidden; }

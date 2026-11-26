@@ -56,8 +56,8 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
               className="mb-1 flex max-w-full items-center gap-1.5 text-left text-caption text-muted hover:text-fg"
             >
               <AgentMark w="need" />
-              {/* The same line an agent's report has: its name first and heavier, then its state word. */}
-              <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words" data-testid="child-path" title={agent}>Agent {names.length > 1 && <>{names.slice(0, -1).join(" › ")} › </>}<span className="font-semibold text-fg">{names.at(-1)}</span></span>
+              {/* A dock line's voice: small, muted, one dot of colour. The name is told by its ink, not by its weight. */}
+              <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words" data-testid="child-path" title={agent}>Agent {names.length > 1 && <>{names.slice(0, -1).join(" › ")} › </>}<span className="text-fg" data-testid="child-name">{names.at(-1)}</span></span>
               {/* The card under it says what is asked, and the dot says who needs the owner: the phrase is for a reader only. */}
               <span className="sr-only">{stateWords({ watch: "need", why: asks && !open[id]?.length ? "question" : "approval" }).phrase.toLowerCase()}</span>
             </button>

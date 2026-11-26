@@ -44,15 +44,24 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
       await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`)).getByTestId("child-path")).toHaveText(/^Agent Alpha › Gamma$/);
       // (the same prefix at every depth)
       await expect(ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`)).getByTestId("child-path")).toHaveText(/^Agent Alpha$/);
-      // The line is an agent's line as its report has it: the name heavier, then the state word in the ink of Needs you.
+      // The line speaks as a dock line does: small, muted, one dot of colour. The name is told by its ink, not by its weight.
       const line = ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`)).locator("> button");
-      expect(await line.locator("span.font-semibold").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("600");
-      expect(await line.locator("> span").last().evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
+      const name = line.getByTestId("child-name");
+      await expect(name).toHaveText("Alpha");
+      expect(await name.evaluate((el) => { const c = getComputedStyle(el), p = getComputedStyle(el.parentElement!); return [c.fontWeight, c.color !== p.color, parseFloat(c.fontSize) < parseFloat(getComputedStyle(document.body).fontSize)]; })).toEqual(["400", true, true]);
+      await expect(line.locator(".k-mark")).toHaveCount(1);
       await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`))).toHaveAttribute("data-depth", "2");
       await expect(ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`))).toHaveAttribute("data-depth", "1");
       const card = (id: string) => page.locator(`[data-station="${root}"] [data-agent="${id}"]`);
       await expect(card(a!.session_id).getByTestId("approval")).toHaveCount(1);
       await expect(card(g.session_id).getByTestId("approval")).toHaveCount(1);
+      // An agent's request is a row under its line, not a card of its own height, and only the one Enter answers carries the state's edge.
+      for (const id of [a!.session_id, g.session_id]) await expect(card(id).getByTestId("approval")).toHaveAttribute("data-dense", "true");
+      // The second answer is not heavier than the first.
+      if (size.width > 767) expect(await card(a!.session_id).getByTestId("allow-always").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
+      // The last of them does not stand on the message box.
+      const gap = async () => (await page.locator(`[data-station="${root}"]`).getByTestId("composer-box").boundingBox())!.y - await ask(page, root).last().evaluate((el) => el.lastElementChild!.getBoundingClientRect().bottom);
+      if (size.width > 767) expect(await gap()).toBeGreaterThanOrEqual(6);
       await expect(card(b!.session_id).getByTestId("question-submit")).toHaveCount(1);
       // The question's header chip shows once at every width (wide: beside the question, narrow: leading its text).
       await expect(card(b!.session_id).locator(".k-q-chip").filter({ visible: true })).toHaveCount(1);
