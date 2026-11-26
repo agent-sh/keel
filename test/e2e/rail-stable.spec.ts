@@ -112,7 +112,13 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     }
   })();
   try {
+    // Open the workbench on this first visit. A saved view preference would
+    // instead make this a returning profile for the Arrange migration below.
+    await page.goto("/api/daemon");
+    await page.evaluate(() => localStorage.removeItem("keel.workbench"));
     await page.goto(`/s/${ids.reader}`);
+    await expect(page.getByTestId("composer")).toBeFocused();
+    await page.keyboard.press("Control+.");
     await expect(row(ids.need!)).toHaveAttribute("data-watch", "need");
     await expect(page.getByTestId("composer")).toBeFocused();
     // The message queued behind the working turn shows on its row (looked at first: the command
