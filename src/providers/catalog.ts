@@ -141,8 +141,16 @@ export class Catalog {
   // the full models.dev document (several MB) costs tens of MB of resident
   // memory that the allocator keeps; a start reads the small copy instead and
   // the full document is parsed only when the copy is a day old.
-  async load(): Promise<void> {
-    if (Date.now() - this.loaded < MAX_AGE && this.byId.size) return;
+  // Calls made while one reads share it: a start resolves many models at once, each a listing's
+  // refresh, and each read and parsed the whole saved copy (megabytes of text, tens of MB of objects
+  // the collector had not taken) before the first had filled the catalog.
+  private loading?: Promise<void>;
+  load(): Promise<void> {
+    if (Date.now() - this.loaded < MAX_AGE && this.byId.size) return Promise.resolve();
+    return (this.loading ??= this.loadNow().finally(() => (this.loading = undefined)));
+  }
+
+  private async loadNow(): Promise<void> {
     const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
     const full = join(this.cacheDir, "models-dev.json"); // the earlier full copy, read once if nothing else is there
     const saved = await this.saved();
@@ -181,9 +189,14 @@ export class Catalog {
     }));
   }
 
-  private async saved(): Promise<{ shape?: string; sections?: Sections; providers?: CatalogProvider[] } | null> {
-    const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
-    try { return (await file.exists()) ? JSON.parse(await file.text()) : null; } catch { return null; }
+  // A read of the saved copy is shared by the callers that ask while it runs (ready() and the
+  // loads of a start), and not kept after: the catalog's maps hold what is needed of it.
+  private savedRead?: Promise<{ shape?: string; sections?: Sections; providers?: CatalogProvider[] } | null>;
+  private saved(): Promise<{ shape?: string; sections?: Sections; providers?: CatalogProvider[] } | null> {
+    return (this.savedRead ??= (async () => {
+      const file = Bun.file(join(this.cacheDir, "models-dev.compact.json"));
+      try { return (await file.exists()) ? JSON.parse(await file.text()) : null; } catch { return null; }
+    })().finally(() => (this.savedRead = undefined)));
   }
 
   private apply(sections: Sections, providers: CatalogProvider[] | null) {
