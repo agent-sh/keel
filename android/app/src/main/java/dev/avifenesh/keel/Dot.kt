@@ -71,7 +71,7 @@ fun look(dot: Dot, ring: String = "", word: String = dot.word, reducedMotion: Bo
     dot == Dot.WAIT -> Look(dot, Form.HALF, "--dot-work", "--dot-work", false, false, word)
     dot == Dot.FAIL -> Look(dot, Form.SOLID, "--dot-fail", "--dot-fail", false, false, word)
     dot == Dot.DECLINED -> Look(dot, Form.HOLLOW, "--dot-fail", "--dot-fail", false, false, word)
-    // Done is the quiet grey of a state at rest (the page's --dot-done is --st-idle): colour is for what needs the owner, failed and at work.
+    // Done is the quiet grey of a state at rest: colour is for what needs the owner, failed and at work. (The page draws a finished row of its rail with no dot; its --dot-done green is for where finishes are counted.)
     dot == Dot.DONE -> Look(dot, Form.SOLID, "--st-idle", "--st-idle", false, false, word)
     dot == Dot.IDLE -> Look(dot, Form.HOLLOW, "--st-idle", "--st-idle", false, false, word)
     dot == Dot.STOP -> Look(dot, Form.SQUARE, "--st-idle", "--st-idle", false, false, word)

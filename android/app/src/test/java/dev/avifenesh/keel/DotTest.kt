@@ -84,7 +84,7 @@ class DotTest {
     }
 
     @Test fun doneIsTheQuietGreyAndNewsIsTheTitlesWeight() {
-        // Done is the grey of a state at rest, the page's --dot-done; colour is for what needs the owner, failed and at work.
+        // Done is the grey of a state at rest, as the page's rail draws no dot for it; colour is for what needs the owner, failed and at work.
         assertEquals("--st-idle", look(Dot.DONE).fill)
         assertEquals(StatePalette.of("--st-idle", false), StatePalette.of(look(Dot.IDLE).fill, false))
         val chroma = { rgb: Long -> val c = listOf(16, 8, 0).map { ((rgb shr it) and 0xFF).toInt() }; c.max() - c.min() }

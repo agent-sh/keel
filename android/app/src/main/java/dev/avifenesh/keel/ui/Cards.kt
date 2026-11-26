@@ -50,7 +50,8 @@ import dev.avifenesh.keel.Route
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.nextAfterAnswer
 
-private fun closedWords(c: Card): Pair<State, String> = when (c.state) {
+/** What a closed card says, in the quiet ink of a state at rest: a denial or a dismissal is the owner's own answer, not a failure. */
+fun closedWords(c: Card): Pair<State, String> = when (c.state) {
     "approved" -> State.DONE to when {
         c.plan -> if (c.choice == "once") "Approved: each change asks" else "Approved: edits run"
         c.question -> "Answered"
@@ -58,7 +59,7 @@ private fun closedWords(c: Card): Pair<State, String> = when (c.state) {
         c.choice == "always" -> "Allowed always"
         else -> "Allowed once"
     }
-    "denied" -> State.FAILED to if (c.plan) "Sent back to planning" else if (c.question) "Dismissed" else "Denied"
+    "denied" -> State.STOPPED to if (c.plan) "Sent back to planning" else if (c.question) "Dismissed" else "Denied"
     "expired" -> State.STOPPED to "Closed without an answer"
     else -> State.IDLE to c.state
 }
@@ -159,7 +160,15 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))
                         .heightIn(max = if (c.held) 360.dp else 180.dp).verticalScroll(scroll).onGloballyPositioned { reading.saw(it) }.padding(horizontal = 12.dp, vertical = 10.dp)
                         .semantics { contentDescription = "request-${c.id}" },
-                ) { Txt(c.shown, T.code.copy(textDirection = TextDirection.Ltr), k.fg) }
+                ) {
+                    // A chained command asked by one part: that part is underlined, as the page draws it.
+                    val part = c.askedPart
+                    val shown = if (part == null) androidx.compose.ui.text.AnnotatedString(c.shown) else androidx.compose.ui.text.buildAnnotatedString {
+                        append(c.shown)
+                        addStyle(androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline), part.first, part.last + 1)
+                    }
+                    androidx.compose.foundation.text.BasicText(shown, style = T.code.copy(textDirection = TextDirection.Ltr, color = k.fg))
+                }
                 if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }
             }
             if (c.pending) {

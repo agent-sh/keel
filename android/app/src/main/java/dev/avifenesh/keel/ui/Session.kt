@@ -71,6 +71,9 @@ import dev.avifenesh.keel.elapsed
 import dev.avifenesh.keel.newestTs
 import dev.avifenesh.keel.sendArrived
 import dev.avifenesh.keel.stateOf
+import dev.avifenesh.keel.boxButtons
+import dev.avifenesh.keel.foldedLine
+import dev.avifenesh.keel.traceLine
 import kotlinx.coroutines.launch
 
 @Composable
@@ -126,9 +129,8 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
-        Head(chat?.title ?: "Session", sub = {
-            StateTag(state, when (state) { State.WORKING -> working[id]?.let { elapsed(it, now) }.orEmpty(); else -> "" })
-        }, lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = back ?: Route.Tabs(0) }) }) {
+        // The state's mark and word, no clock: the time it took is the live line's, in the conversation.
+        Head(chat?.title ?: "Session", sub = { StateTag(state) }, lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = back ?: Route.Tabs(0) }) }) {
             IconBtn(Ic.FileDiff, "Changes", { Ui.route.value = Route.Changes(id) }, tint = k.muted)
             IconBtn(Ic.ChartColumn, "Session usage", {
                 if (usage != null) usage = null
@@ -136,8 +138,8 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
             }, tint = if (usage != null) k.fg else k.muted)
         }
         Rule()
-        // Its agents, and its starter when it is one: one line until opened.
-        AgentsBar(id, chats, cards.values.filter { it.pending }.map { it.chatId }.toSet(), working, now) { Ui.openFrom(it, Route.Session(id, back)) }
+        // The way up to its starter when it is an agent. Its own agents are one quiet item over the box.
+        StarterLine(id, chats) { Ui.openFrom(it, Route.Session(id, back)) }
         usage?.let { Txt(it, T.meta, k.muted, Modifier.fillMaxWidth().background(k.panel).padding(horizontal = S.lg, vertical = 8.dp)) }
         // Offline is a state, not a failure: said in the quiet color.
         if (error.isNotBlank()) Notice(error, color = if (error.startsWith("Offline.")) k.muted else k.danger, modifier = Modifier.padding(S.md))
@@ -173,6 +175,7 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
             }
             if (items.isEmpty() && !isWorking) item(key = "empty") { Empty("Nothing here yet", "Write the first message below. The session runs on the computer.") }
         }
+        AgentsBar(id, chats, cards.values.filter { it.pending }.map { it.chatId }.toSet(), working, now) { Ui.openFrom(it, Route.Session(id, back)) }
         Composer(id, isWorking, chat?.archived == true) { error = it }
     }
     viewing?.let { Viewer(it) { viewing = null } }
@@ -289,6 +292,8 @@ private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?, o
             CardView(act, card ?: cardFromMessage(m.approvalId ?: m.id, m.chatId, m.cardKind, m.cardCommand, m.content, m.cardState, m.ts))
         }
         m.kind == "trace" -> Trace(m)
+        // An agent's report or a wake: the agents' work, folded to a line so the conversation keeps the screen.
+        !m.mine && foldedLine(m) != null -> Folded(m, foldedLine(m)!!)
         m.kind == "status" -> Row(Modifier.fillMaxWidth().padding(horizontal = S.lg, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             val s = when { m.outcome == "error" || m.content.startsWith("Failed") -> State.FAILED; m.outcome.isNotBlank() -> State.STOPPED; else -> State.IDLE }
             StateMark(s, 8.dp)
@@ -339,25 +344,43 @@ fun CopyBtn(text: String, label: String, tag: String) {
         tint = if (done) k.done else k.faint, modifier = Modifier.testTag(tag))
 }
 
-/** The tool calls of one reply, folded into one line; open, one row each. */
+/**
+ * The tool calls of one reply, folded into one line: the newest call's description, quiet. Open, each call
+ * is a line of its own, its description and the tool faint under it. How many there were shows when opened.
+ */
 @Composable
 private fun Trace(m: Msg) {
     val k = k()
     var open by rememberSaveable(m.id) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = S.md, vertical = 2.dp).clip(RoundedCornerShape(S.r)).press({ open = !open }).animateContentSize().padding(horizontal = 4.dp, vertical = 6.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = S.md, vertical = 2.dp).clip(RoundedCornerShape(S.r)).press({ open = !open }).animateContentSize().padding(horizontal = 4.dp, vertical = 6.dp)
+        .semantics { contentDescription = "trace-${m.id}" }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             KIcon(if (open) Ic.ChevronDown else Ic.ChevronRight, k.faint, 16.dp)
             Spacer(Modifier.width(6.dp))
-            val tools = m.steps.map { it.tool }.distinct()
-            Txt("${tools.joinToString(", ")}  ·  ${m.steps.size} step${if (m.steps.size == 1) "" else "s"}", T.meta, k.muted, maxLines = 1)
+            Txt(if (open) "${m.steps.size} call${if (m.steps.size == 1) "" else "s"}" else traceLine(m.steps), T.small, k.muted, Modifier.weight(1f), maxLines = 1)
         }
-        if (open) Column(Modifier.padding(start = 22.dp, top = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            for (s in m.steps) Row {
-                Txt(s.tool, T.code.copy(fontSize = T.meta.fontSize), k.fg)
-                Spacer(Modifier.width(8.dp))
-                Txt(s.what, T.code.copy(fontSize = T.meta.fontSize), k.muted, maxLines = 3)
+        if (open) Column(Modifier.padding(start = 22.dp, top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (s in m.steps) Column {
+                Txt(s.what.ifBlank { s.tool }, T.small, k.muted, maxLines = 1)
+                if (s.what.isNotBlank()) Txt(s.tool, T.code.copy(fontSize = T.meta.fontSize), k.faint, maxLines = 1)
             }
         }
+    }
+}
+
+/** An agent's report or a wake in the conversation: one quiet line that opens to the whole of it on a tap. */
+@Composable
+private fun Folded(m: Msg, line: String) {
+    val k = k()
+    var open by rememberSaveable(m.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = S.md, vertical = 2.dp).clip(RoundedCornerShape(S.r)).animateContentSize()
+        .semantics { contentDescription = "folded-${m.id}" }) {
+        Row(Modifier.fillMaxWidth().press({ open = !open }).padding(horizontal = 4.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            KIcon(if (open) Ic.ChevronDown else Ic.ChevronRight, k.faint, 16.dp)
+            Spacer(Modifier.width(6.dp))
+            Txt(line, T.small, k.muted, Modifier.weight(1f), maxLines = 1)
+        }
+        if (open) Box(Modifier.padding(start = 26.dp, end = 4.dp, bottom = 6.dp)) { SelectionContainer { Markdown(m.content) } }
     }
 }
 
@@ -479,20 +502,23 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
         Rule()
         if (archived) { Txt("This session is archived. Unarchive it on the computer to write here.", T.small, k.muted, Modifier.padding(S.lg)); return }
         PickedRow(id, picked)
-        if (menu) Row(Modifier.padding(start = S.md, end = S.md, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(S.sm)) {
-            Btn("Photos", { menu = false; photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, Tone.LINE, icon = Ic.Image, compact = true, tag = "attach-photos")
-            Btn("Files", { menu = false; docs.launch(arrayOf("*/*")) }, Tone.LINE, icon = Ic.File, compact = true, tag = "attach-files")
+        // Behind the plus: photos, files, and while a turn runs whether a message steers it or waits for it.
+        if (menu) Column(Modifier.padding(start = S.md, end = S.md, top = 10.dp), verticalArrangement = Arrangement.spacedBy(S.sm)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(S.sm)) {
+                Btn("Photos", { menu = false; photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, Tone.LINE, icon = Ic.Image, compact = true, tag = "attach-photos")
+                Btn("Files", { menu = false; docs.launch(arrayOf("*/*")) }, Tone.LINE, icon = Ic.File, compact = true, tag = "attach-files")
+            }
+            if (working) Row(verticalAlignment = Alignment.CenterVertically) {
+                Segmented(listOf("steer" to "Steer", "queue" to "Queue"), mode) { mode = it }
+                Spacer(Modifier.width(S.md))
+                Txt(if (mode == "steer") "Joins the running turn" else "Runs after this turn", T.meta, k.faint, maxLines = 1)
+            }
         }
-        if (working) Row(Modifier.padding(start = S.md, end = S.md, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Segmented(listOf("steer" to "Steer", "queue" to "Queue"), mode) { mode = it }
-            Spacer(Modifier.width(S.md))
-            Txt(if (mode == "steer") "Joins the running turn" else "Runs after this turn", T.meta, k.faint, maxLines = 1)
-        }
-        Row(Modifier.fillMaxWidth().padding(S.md), verticalAlignment = Alignment.Bottom) {
-            Box(Modifier.padding(bottom = 3.dp)) { IconBtn(Ic.Paperclip, "attach", { menu = !menu }, tint = if (menu) k.fg else k.muted) }
-            Spacer(Modifier.width(4.dp))
+        // One line: the plus, the field, and small send and stop icons, each in a finger's target.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
+            IconBtn(Ic.Plus, "more", { menu = !menu }, tint = if (menu) k.fg else k.muted, modifier = Modifier.testTag("composer-more"))
             val shape = RoundedCornerShape(S.rLg)
-            Box(Modifier.weight(1f).clip(shape).background(k.raised).border(1.dp, k.line, shape).padding(horizontal = 14.dp, vertical = 11.dp)) {
+            Box(Modifier.weight(1f).clip(shape).background(k.raised).border(1.dp, k.line, shape).padding(horizontal = 12.dp, vertical = 8.dp)) {
                 if (text.isEmpty()) Txt(when {
                     uploading > 0 -> "Uploading ${if (uploading == 1) "a file" else "$uploading files"}"
                     working -> if (mode == "steer") "Steer the running turn" else "Queue the next message"
@@ -503,17 +529,9 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
                 BasicTextField(text, { text = it }, Modifier.fillMaxWidth().semantics { contentDescription = "composer" }, textStyle = T.body.copy(color = k.fg),
                     maxLines = 6, cursorBrush = SolidColor(k.fg))
             }
-            Spacer(Modifier.width(S.sm))
-            val stopNow = working && text.isBlank() && picked.isEmpty()
-            Box(
-                Modifier.size(46.dp).clip(RoundedCornerShape(S.rPill)).background(if (stopNow) k.dangerSoft else if (!ready) k.inkSoft else k.ink)
-                    .press({ if (stopNow) stop() else send() }, enabled = stopNow || ready)
-                    .semantics { contentDescription = if (stopNow) "stop" else "send" },
-                contentAlignment = Alignment.Center,
-            ) {
-                if (stopNow) Box(Modifier.size(14.dp).clip(RoundedCornerShape(3.dp)).background(k.danger))
-                else KIcon(Ic.ArrowUp, if (!ready) k.faint else k.inkFg, 22.dp)
-            }
+            val buttons = boxButtons(working, text.isNotBlank() || picked.isNotEmpty())
+            if (buttons.stop) IconBtn(Ic.Square, "stop", { stop() }, tint = k.fg, modifier = Modifier.testTag("composer-stop"))
+            if (buttons.send) IconBtn(Ic.ArrowUp, "send", { send() }, tint = k.fg, enabled = ready, modifier = Modifier.testTag("composer-send"))
         }
     }
 }

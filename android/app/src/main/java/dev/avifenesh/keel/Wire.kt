@@ -413,11 +413,19 @@ data class Card(
     val waitKey: Double = 0.0, val waitLine: String = "",
     /** When its alert was first raised (seconds; 0: none told): what the daemon breaks ties of the key by. */
     val asked: Double = 0.0,
+    /** A chained command asked by one of its parts: where that part stands in `text`, [from, to). Empty: the whole line asked. */
+    val at: List<Int> = emptyList(),
 ) {
     val pending get() = state == "pending"
     val question get() = kind == "question"
     /** A plan the model presents: approved to start the work in a mode, or sent back to planning. */
     val plan get() = kind == "plan"
+    /** The part of `shown` that asked, when the daemon named one and it falls inside the text as drawn; null otherwise. */
+    val askedPart: IntRange? get() {
+        if (at.size != 2 || rtl || text.isBlank()) return null
+        val (from, to) = at[0] to at[1]
+        return if (from in 0 until to && to <= text.length) from until to else null
+    }
     /** Allow is given only once the whole text was on screen. */
     val held get() = hold.isNotEmpty()
     /** What the card draws of the request: the whole text when the daemon sent it, else the summary. */
@@ -474,6 +482,7 @@ data class Card(
                 hold = strings(o.optJSONArray("hold")), rtl = o.optBoolean("rtl"), machine = o.str("machine"), from = o.str("from"),
                 line = o.str("line"), glance = o.optBoolean("glance"), grants = strings(o.optJSONArray("grants")),
                 waitKey = o.optJSONObject("wait")?.optDouble("key", 0.0) ?: 0.0, waitLine = o.str("wait_line"), asked = o.optDouble("asked", 0.0),
+                at = o.optJSONArray("at")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty(),
             )
         }
     }
@@ -855,6 +864,7 @@ fun Card.json(): JSONObject = JSONObject().put("id", id).put("chat_id", chatId).
     .apply { if (grants.isNotEmpty()) put("grants", JSONArray(grants)) }
     .apply { if (waitKey != 0.0) put("wait", JSONObject().put("key", waitKey)) }.opt("wait_line", waitLine)
     .apply { if (asked != 0.0) put("asked", asked) }
+    .apply { if (at.isNotEmpty()) put("at", JSONArray(at)) }
 
 /** "14:32" today, "Mon 14:32" this week, else "23 Nov 14:32": when the phone was last level with the computer, in its own time. */
 fun syncedAt(ms: Long, now: Long = System.currentTimeMillis(), zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {

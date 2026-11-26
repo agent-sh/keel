@@ -1,6 +1,5 @@
-// A session's agents on the phone: the tree under it (the agents it started, theirs, and so on), each
-// with its state, folded into one line until opened; and in an agent's session, the way up to the
-// session that started it.
+// A session's agents on the phone: the tree under it (the agents it started, theirs, and so on), one
+// quiet item over the box until opened; and in an agent's session, the way up to the session that started it.
 package dev.avifenesh.keel.ui
 
 import androidx.compose.animation.animateContentSize
@@ -32,21 +31,40 @@ import dev.avifenesh.keel.dotOf
 import dev.avifenesh.keel.dotWordOf
 import dev.avifenesh.keel.look
 import dev.avifenesh.keel.agentTree
-import dev.avifenesh.keel.ago
-import dev.avifenesh.keel.elapsed
+import dev.avifenesh.keel.agentsMark
+import dev.avifenesh.keel.agentsWord
 import dev.avifenesh.keel.stateOf
 
+/** In an agent's session, the way up to the session that started it. Nothing for a session no agent started. */
+@Composable
+fun StarterLine(id: String, chats: Map<String, Chat>, onOpen: (String) -> Unit) {
+    val k = k()
+    val parent = chats[id]?.parentId?.let { chats[it] } ?: return
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().press({ onOpen(parent.id) }).semantics { contentDescription = "starter-${parent.title}" }.padding(horizontal = S.lg, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            KIcon(Ic.CornerLeftUp, k.faint, 16.dp)
+            Spacer(Modifier.width(8.dp))
+            Txt("Started by ", T.small, k.muted)
+            Txt(parent.title, T.small, k.muted, Modifier.weight(1f), maxLines = 1)
+        }
+        Rule()
+    }
+}
+
 /**
- * The agents under session `id`, and its starter when it is an agent. `needs`: the sessions with a card
- * that waits; `working`: the running turns by session, with when they started. Shows nothing for a
- * session that started no agent and was started by none.
+ * The agents under session `id`, as one quiet item over the box: "Agents N", with one mark only when an
+ * agent waits on the owner (and the words) or failed. Opened, the tree, one row an agent. `needs`: the
+ * sessions with a card that waits; `working`: the running turns by session. Nothing for a session that
+ * started no agent.
  */
 @Composable
-fun AgentsBar(id: String, chats: Map<String, Chat>, needs: Set<String>, working: Map<String, Double>, now: Double, onOpen: (String) -> Unit) {
+fun AgentsBar(id: String, chats: Map<String, Chat>, needs: Set<String>, working: Map<String, Double>, @Suppress("UNUSED_PARAMETER") now: Double, onOpen: (String) -> Unit) {
     val k = k()
-    val parent = chats[id]?.parentId?.let { chats[it] }
     val rows = agentTree(chats.values, id)
-    if (parent == null && rows.isEmpty()) return
+    if (rows.isEmpty()) return
     // An agent needs the owner when a card of its own waits. One the daemon calls "needs you" for a card of
     // an agent below it waits on that agent: it works, and the row of the one that asks says so.
     val states = rows.associate { r ->
@@ -54,51 +72,32 @@ fun AgentsBar(id: String, chats: Map<String, Chat>, needs: Set<String>, working:
         r.chat.id to if (!own && r.chat.status == "needs_you") State.WORKING else stateOf(r.chat, own, r.chat.id in working)
     }
     val need = states.values.count { it == State.NEEDS }
-    val work = states.values.count { it == State.WORKING }
     val failed = states.values.count { it == State.FAILED }
+    val mark = agentsMark(need, failed)
     // Open by itself when an agent waits on the owner: that is what they came to answer.
     var open by rememberSaveable(id) { mutableStateOf(need > 0) }
-    Column(Modifier.fillMaxWidth().background(k.panel).animateContentSize()) {
-        if (parent != null) Row(
-            Modifier.fillMaxWidth().press({ onOpen(parent.id) }).semantics { contentDescription = "starter-${parent.title}" }.padding(horizontal = S.lg, vertical = 10.dp),
+    Column(Modifier.fillMaxWidth().animateContentSize()) {
+        Rule()
+        // A tall tree scrolls in its own place, over the item: the conversation keeps the screen.
+        if (open) Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).padding(top = 4.dp)) {
+            for (r in rows) AgentLine(r, states.getValue(r.chat.id)) { onOpen(r.chat.id) }
+        }
+        Row(
+            Modifier.fillMaxWidth().press({ open = !open }).semantics { contentDescription = "agents-${rows.size}" }.padding(horizontal = S.lg, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            KIcon(Ic.CornerLeftUp, k.muted, 16.dp)
-            Spacer(Modifier.width(8.dp))
-            Txt("Started by ", T.small, k.muted)
-            Txt(parent.title, T.small.copy(fontWeight = T.uiStrong.fontWeight), k.fg, Modifier.weight(1f), maxLines = 1)
+            Txt(agentsWord(rows.size), T.small, k.muted)
+            if (mark == State.NEEDS) { Spacer(Modifier.width(S.sm)); StateTag(State.NEEDS, "$need need${if (need == 1) "s" else ""} you", only = true) }
+            else if (mark != null) { Spacer(Modifier.width(S.sm)); Box(Modifier.semantics { contentDescription = "agents-mark-failed" }) { StateMark(mark, 8.dp) } }
+            Spacer(Modifier.weight(1f))
+            KIcon(if (open) Ic.ChevronDown else Ic.ChevronRight, k.faint, 16.dp)
         }
-        if (rows.isNotEmpty()) {
-            if (parent != null) Rule()
-            Row(
-                Modifier.fillMaxWidth().press({ open = !open }).semantics { contentDescription = "agents-${rows.size}" }.padding(horizontal = S.lg, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                KIcon(if (open) Ic.ChevronDown else Ic.ChevronRight, k.faint, 16.dp)
-                Spacer(Modifier.width(8.dp))
-                Txt("AGENTS", T.label, k.muted)
-                Spacer(Modifier.width(8.dp))
-                Txt("${rows.size}", T.label, k.faint)
-                Spacer(Modifier.weight(1f))
-                // What the tree is doing, the owner's part first.
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (need > 0) { StateTag(State.NEEDS, "$need need${if (need == 1) "s" else ""} you", only = true); Spacer(Modifier.width(S.md)) }
-                    if (work > 0) { StateTag(State.WORKING, "$work working", only = true); Spacer(Modifier.width(S.md)) }
-                    if (failed > 0) StateTag(State.FAILED, "$failed failed", only = true)
-                    if (need == 0 && work == 0 && failed == 0) StateTag(State.DONE, "all done", only = true)
-                }
-            }
-            // A tall tree scrolls in its own place: the conversation keeps the screen.
-            if (open) Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).padding(bottom = 6.dp)) {
-                for (r in rows) AgentLine(r, states.getValue(r.chat.id), working[r.chat.id], now) { onOpen(r.chat.id) }
-            }
-        }
-        Rule()
     }
 }
 
+/** One agent of the tree: its mark, its title, and what it is at in a quiet line. No clock or count on a row: its session has them. */
 @Composable
-private fun AgentLine(r: AgentRow, s: State, since: Double?, now: Double, onOpen: () -> Unit) {
+private fun AgentLine(r: AgentRow, s: State, onOpen: () -> Unit) {
     val k = k()
     val c = r.chat
     // Each level in by a step, four at most: a deep chain stays readable on a phone.
@@ -119,11 +118,6 @@ private fun AgentLine(r: AgentRow, s: State, since: Double?, now: Double, onOpen
                 else -> s.word
             }
             Txt(line, T.meta, if (s == State.FAILED) k.failInk else k.muted, maxLines = 1)
-        }
-        Spacer(Modifier.width(S.sm))
-        Column(horizontalAlignment = Alignment.End) {
-            Txt(if (s == State.WORKING && since != null) elapsed(since, now) else ago(c.updated, now), T.meta, if (s == State.WORKING) k.workInk else k.faint)
-            if (r.below > 0) Txt("${r.below} below", T.meta, k.faint)
         }
     }
 }
