@@ -25,7 +25,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
 import { configDir } from "../providers/config.ts";
-import { chunks, pumpText } from "../core/proc.ts";
+import { chunks, outputOf } from "../core/proc.ts";
 import { hookSaid } from "../engine/hooks.ts";
 import { cutTitle } from "../engine/title.ts";
 import { homeOf } from "../safety/credentials.ts";
@@ -1081,21 +1081,12 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }
   started?.(p.pid);
-  let timedOut = false;
-  const t = Number.isFinite(ms) ? setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms) : undefined;
-  // The turn that asked ended: the hook ends with it.
+  // Past its time, or when the turn that asked ended, the hook's group is stopped.
   const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
-  if (signal?.aborted) stop(); else signal?.addEventListener("abort", stop, { once: true });
   // Read to the end, kept to a bound: a hook that prints without end fills no memory.
-  const read = async (s: ReadableStream<Uint8Array> | number | undefined) => {
-    let out = "";
-    await pumpText(s, (t) => { if (out.length < OUT_MAX) out += t.slice(0, OUT_MAX - out.length); }, "hook").catch(() => {});
-    return out;
-  };
-  const [stdout, stderr, code] = await Promise.all([read(p.stdout), read(p.stderr), p.exited]);
-  clearTimeout(t);
-  signal?.removeEventListener("abort", stop);
-  return { code: timedOut ? null : code, stdout, stderr };
+  const r = await outputOf(p, { where: "hook", timeoutMs: ms, signal, kill: stop, cap: OUT_MAX }).catch(() => null);
+  if (!r) return { code: -1, stdout: "", stderr: "the hook's output could not be read" };
+  return { code: r.timedOut ? null : r.code, stdout: r.out, stderr: r.err };
 }
 
 // The event as the body of a POST. A 2xx answer with no body is a hook with

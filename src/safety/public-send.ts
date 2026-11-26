@@ -15,7 +15,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 import { settings } from "../admin/settings.ts";
 import { timed } from "../admin/stall.ts";
 import { git, gitEach, gitEnv, locate, realDir } from "../core/git.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { homeDir } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
@@ -703,7 +703,7 @@ export const bounded = async (argv: string[], env: Record<string, string | undef
   } catch (e) {
     return { out: "", err: (e as Error).message, code: -2 };
   }
-  const done = Promise.all([readText(p.stdout as ReadableStream<Uint8Array>), readText(p.stderr as ReadableStream<Uint8Array>), p.exited]).then(([out, err, code]): Ran => ({ out, err, code: p.signalCode ? -1 : code }));
+  const done = outputOf(p).then(({ out, err, code }): Ran => ({ out, err, code: p.signalCode ? -1 : code }));
   const settled = done.catch((e): Ran => ({ out: "", err: String(e), code: -2 }));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cut = new Promise<Ran>((res) => {

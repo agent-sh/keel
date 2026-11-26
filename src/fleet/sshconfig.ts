@@ -5,7 +5,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { ownerHome } from "../core/paths";
 
 const MAX_DEPTH = 16;
@@ -64,7 +64,7 @@ export async function sshReach(alias: string): Promise<{ ok: true; detail: strin
   if (!plainAlias(alias)) return { ok: false, reason: `${alias} is not a plain host alias` };
   const p = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, alias, "uname -sm"], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const timer = setTimeout(() => p.kill(), 12_000);
-  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+  const { out, err, code } = await outputOf(p);
   clearTimeout(timer);
   return code === 0 ? { ok: true, detail: out.trim() } : { ok: false, reason: (err.trim().split("\n").pop() || `ssh exited ${code}`).slice(0, 300) };
 }
@@ -88,7 +88,7 @@ type Resolved = ReturnType<typeof fieldsOf>;
 
 async function resolveAlias(program: string, alias: string): Promise<Resolved> {
   const p = Bun.spawn([program, "-G", alias], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 10_000, killSignal: "SIGKILL" });
-  const [out, code] = await Promise.all([readText(p.stdout), p.exited]);
+  const { out, code } = await outputOf(p);
   return code === 0 ? fieldsOf(out) : fieldsOf("");
 }
 

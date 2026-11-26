@@ -15,7 +15,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homeDir } from "../core/paths.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { instructionNames } from "../safety/instruction-files.ts";
 
 export type Level = "error" | "warning" | "info";
@@ -212,7 +212,7 @@ export class Agnix {
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; proc.kill("SIGKILL"); }, this.o.ms ?? RUN_MS);
     try {
-      const [out, err] = await Promise.all([readText(proc.stdout as any, "agnix"), readText(proc.stderr as any, "agnix"), proc.exited]);
+      const { out, err } = await outputOf(proc, { where: "agnix" });
       const ms = Date.now() - t0;
       if (timedOut) return { ...base, ms, failed: `took longer than ${Math.round((this.o.ms ?? RUN_MS) / 1000)} s` };
       const r = parseLint(out);

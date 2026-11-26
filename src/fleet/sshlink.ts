@@ -14,7 +14,7 @@
 //   spill/                          the sessions' jobs and long outputs
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { readText } from "../core/proc.ts";
+import { readText, outputOf } from "../core/proc.ts";
 import type { Facts } from "./db.ts";
 import { LinkError } from "./link.ts";
 import { sshProgram } from "./sshconfig.ts";
@@ -140,7 +140,7 @@ export class SshLink {
     const alias = await this.master();
     const p = Bun.spawn([sshProgram(), "-S", this.ctl(), "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-T", alias, loginCommand(script)],
       { stdin: opts.stdin ? new Blob([opts.stdin as BlobPart]) : "ignore", stdout: "pipe", stderr: "pipe", signal: opts.signal, timeout: opts.timeout ?? 60_000 });
-    const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+    const { out, err, code } = await outputOf(p);
     return { code, out, err };
   }
 

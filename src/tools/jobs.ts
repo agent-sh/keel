@@ -17,7 +17,7 @@ import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conc
 import { contains, realOf } from "../core/paths.ts";
 import { tempEnv } from "../core/temp.ts";
 import { readStat } from "../core/pid.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { timed } from "../admin/stall.ts";
 import { RESTART_RAN } from "../core/stops.ts";
 import { lastDown, whileDown } from "../core/late.ts";
@@ -479,7 +479,7 @@ export function jobScope(): { slice?: string; why?: string; weights?: string } {
 function weighUnattended(at: { weights?: string }) {
   try {
     const p = Bun.spawn(["systemctl", "--user", "set-property", "--runtime", SLICES.unattended, ...unattendedProps()], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-    void Promise.all([p.exited, readText(p.stderr, "set-property")]).then(([code, err]) => {
+    void outputOf(p, { where: "set-property" }).then(({ code, err }) => {
       if (code !== 0) at.weights = err.trim().slice(0, 200) || `systemctl set-property exited ${code}`;
     }, (e) => { at.weights = String(e?.message ?? e).slice(0, 200); });
   } catch (e: any) { at.weights = String(e?.message ?? e).slice(0, 200); }
@@ -1520,7 +1520,7 @@ async function grepMarks(wanted: string[]): Promise<Map<string, number[]>> {
   if (!wanted.length) return by;
   try {
     const p = Bun.spawn(["sh", "-c", 'exec grep -sazxHF "$@" /proc/[0-9]*/environ', "sh", ...wanted.flatMap((m) => ["-e", `${MARK}=${m}`])], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
-    const [out, code] = await Promise.all([readText(p.stdout, "the look for jobs' marks"), p.exited]);
+    const { out, code } = await outputOf(p, { where: "the look for jobs' marks" });
     // 0: found, 1: none, 2: some files could not be read (another user's processes) and the rest were.
     // Anything else: grep did not run.
     if (code > 2) throw new Error(`grep exited with ${code}`);

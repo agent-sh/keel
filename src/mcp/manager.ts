@@ -27,7 +27,7 @@ import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles
 import { ClientRefused, OAuthStore, type Forgotten } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { Links, placeKept, touchKept } from "./links.ts";
-import { chunksUntil } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { appUriOf, visibleTo } from "./apps.ts";
 import { base64Bytes as b64Bytes } from "../tools/blob.ts";
@@ -405,24 +405,9 @@ export async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv
   // pipes are read until every writer is gone, and not past its time.
   const p = Bun.spawn(run.argv ?? ["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true, ...(run.cwd ? { cwd: run.cwd } : {}), ...(run.env ? { env: run.env } : {}) });
   const group = () => { try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch { /* gone already */ } } };
-  let late = false;
-  let stop!: () => void;
-  const stopped = new Promise<void>((r) => (stop = r));
-  const timer = setTimeout(() => { late = true; group(); stop(); }, timeoutMs);
-  const read = async (pipe: ReadableStream<Uint8Array>) => {
-    const dec = new TextDecoder();
-    let text = "";
-    for await (const c of chunksUntil(pipe, stopped)) if (text.length < HELPER_OUTPUT_MAX) text += dec.decode(c, { stream: true });
-    return text + dec.decode();
-  };
-  const reading = Promise.all([read(p.stdout), read(p.stderr)]);
-  const code = await p.exited;
-  clearTimeout(timer);
-  // It ended: what it left running is stopped, so the pipes end with what was written.
-  group();
-  // (A process that left the group holds a pipe open: it is not waited for past a moment more.)
-  const grace = setTimeout(stop, 1000);
-  const [out, err] = await reading.finally(() => { clearTimeout(grace); stop(); });
+  // It ended: what it left running is stopped, so the pipes end with what was written. (A process that
+  // left the group holds a pipe open: it is not waited for past a moment more.)
+  const { out, err, code, timedOut: late } = await outputOf(p, { where: "headers helper", timeoutMs, kill: group, exited: group, graceMs: 1000, cap: HELPER_OUTPUT_MAX });
   if (late) throw new Error(`the headers helper did not finish within ${Math.round(timeoutMs / 1000)} s and was stopped`);
   if (code !== 0) throw new Error(`the headers helper exited with ${code}${err.trim() ? `: ${err.trim().slice(0, 200)}` : ""}`);
   let h: unknown;

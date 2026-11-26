@@ -14,7 +14,7 @@ import { place, type Place, type Rule, type Want } from "./placement.ts";
 import { groupOf, hostGroups, plainAlias, SSH_BASE, SSH_ONE_SHOT, sshProgram, type HostGroup } from "./sshconfig.ts";
 import { loginCommand, parseProbe, PROBE_SCRIPT, SshLink } from "./sshlink.ts";
 import { join } from "node:path";
-import { chunks, readText } from "../core/proc.ts";
+import { chunks, readText, outputOf } from "../core/proc.ts";
 
 export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
 
@@ -386,7 +386,7 @@ export class Fleet {
     }
     const script = `p=${m.daemon_port}; hp=$(printf ':%04X' "$p"); for t in /proc/net/tcp /proc/net/tcp6; do [ -r "$t" ] && awk -v p="$hp" '$4=="0A" && substr($2, length($2)-4)==p {print "uid=" $8}' "$t"; done; command -v lsof >/dev/null 2>&1 && [ ! -r /proc/net/tcp ] && lsof -nP -iTCP:$p -sTCP:LISTEN -Fu 2>/dev/null | sed -n 's/^u/uid=/p'; echo "me=$(id -u)"`;
     const proc = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, m.ssh_host!, script], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-    const [out, code] = await Promise.all([readText(proc.stdout), proc.exited]);
+    const { out, code } = await outputOf(proc);
     if (code !== 0) return `cannot read the listeners on ${m.ssh_host}`;
     const me = out.match(/me=(\d+)/)?.[1];
     const uids = [...out.matchAll(/uid=(\d+)/g)].map((x) => x[1]);
@@ -512,7 +512,7 @@ export class Fleet {
     for (const route of g.routes) {
       const p = Bun.spawn([sshProgram(), ...SSH_ONE_SHOT, route, loginCommand(PROBE_SCRIPT)], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
       const timer = setTimeout(() => p.kill(), 15_000);
-      const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+      const { out, err, code } = await outputOf(p);
       clearTimeout(timer);
       if (code === 0 && /^os=/m.test(out)) {
         const { platform: _p, ...facts } = parseProbe(out);

@@ -9,7 +9,7 @@
 import { existsSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import type { Providers } from "../providers/registry.ts";
 import { EndpointProvider } from "../providers/endpoint.ts";
 import { CodexProvider } from "../providers/codex.ts";
@@ -160,7 +160,7 @@ async function probe(argv: string[], ms: number): Promise<{ ok: boolean; said: s
   let timedOut = false;
   const t = setTimeout(() => { timedOut = true; p.kill(); }, ms);
   try {
-    const [code, err] = await Promise.all([p.exited, readText(p.stderr, "health probe")]);
+    const { code, err } = await outputOf(p, { where: "health probe" });
     return { ok: code === 0 && !timedOut, said: err.trim().slice(0, 300), timedOut };
   } finally { clearTimeout(t); }
 }

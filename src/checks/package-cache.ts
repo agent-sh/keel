@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync, symlinkSync, unlinkSync
 import { readdir, readlink, rename, rm, symlink, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import type { Store } from "../core/store.ts";
 
 export const CACHE_DIR = ["checks", "packages"] as const;
@@ -212,8 +212,7 @@ async function relinkAll(real: string, was: string, p: Parameters<typeof relinkO
 async function sizeOf(p: string): Promise<number> {
   try {
     const du = Bun.spawn(["du", "-sk", p], { stdout: "pipe", stderr: "ignore" });
-    const out = await readText(du.stdout, "du");
-    await du.exited;
+    const { out } = await outputOf(du, { where: "du" });
     const kb = Number(out.split(/\s/)[0]);
     return Number.isFinite(kb) ? kb * 1024 : 0;
   } catch { return 0; } // no du here: the entry counts as nothing against the budget

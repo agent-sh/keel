@@ -7,7 +7,7 @@
 // string matched without case; every later word reads only the files that
 // held the words before it.
 import { setPriority } from "node:os";
-import { readText } from "../../core/proc.ts";
+import { outputOf } from "../../core/proc.ts";
 
 // How many files one search process is given, and how many run at once: a
 // search may read every transcript of every other harness (gigabytes), so it
@@ -22,7 +22,7 @@ let tool: Tool | null | undefined;
 async function run(cmd: string[], signal?: AbortSignal): Promise<{ out: string; code: number }> {
   const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore", stdin: "ignore", signal });
   try { setPriority(p.pid, NICE); } catch {} // (a process that ended already)
-  const [out, code] = await Promise.all([readText(p.stdout, "import search"), p.exited]);
+  const { out, code } = await outputOf(p, { where: "import search" });
   return { out, code };
 }
 

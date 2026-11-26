@@ -23,7 +23,7 @@ import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { DEFAULT_RETENTION, retained } from "./retain.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
-import { pumpLines, readText } from "../core/proc.ts";
+import { pumpLines, readText, outputOf } from "../core/proc.ts";
 import { readsOf } from "../server/reads.ts";
 import { timed } from "./stall.ts";
 
@@ -62,8 +62,7 @@ export const REPORT_MAX_AGE_MS = 60_000;
 // copy in a backup) is counted once, where du met it first.
 async function duTop(dir: string): Promise<{ total: number; dirs: Map<string, number> }> {
   const p = Bun.spawn(["du", "-b", "-d1", "--", dir], { stdout: "pipe", stderr: "ignore" });
-  const text = await readText(p.stdout);
-  await p.exited;
+  const { out: text } = await outputOf(p);
   const dirs = new Map<string, number>();
   let total = 0;
   for (const line of text.split("\n")) {
@@ -80,8 +79,7 @@ async function du(paths: string[]): Promise<Map<string, number>> {
   const have = paths.filter((p) => existsSync(p));
   if (!have.length) return out;
   const p = Bun.spawn(["du", "-sb", "--", ...have], { stdout: "pipe", stderr: "ignore" });
-  const text = await readText(p.stdout);
-  await p.exited;
+  const { out: text } = await outputOf(p);
   for (const line of text.split("\n")) {
     const m = /^(\d+)\t(.+)$/.exec(line);
     if (m) out.set(m[2]!, Number(m[1]));

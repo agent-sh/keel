@@ -18,7 +18,7 @@
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pidHolds } from "../core/pid.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
 import { agyHome, agySessions, readAgy } from "../integrations/import/agy.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "../integrations/import/claude.ts";
@@ -110,8 +110,8 @@ async function find(harness: Here, id: string): Promise<Found | undefined> {
 
 export async function processTable(): Promise<Proc[]> {
   const p = Bun.spawn(["ps", "-axo", "pid=,ppid=,pgid=,lstart=,args="], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, LC_ALL: "C" } });
-  const out = await readText(p.stdout);
-  if (await p.exited !== 0) throw new Error("Could not read the process table. The original was not stopped.");
+  const { out, code } = await outputOf(p);
+  if (code !== 0) throw new Error("Could not read the process table. The original was not stopped.");
   const rows: Proc[] = [];
   for (const l of out.split("\n")) {
     const m = l.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/);
@@ -131,7 +131,7 @@ function claudeListed(): Promise<Listed[]> {
   const rows = (async () => {
     try {
       const p = Bun.spawn(["claude", "agents", "--json"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 5000 });
-      const list = JSON.parse(await readText(p.stdout));
+      const list = JSON.parse((await outputOf(p)).out);
       return (Array.isArray(list) ? list : []).filter((r) => typeof r?.pid === "number" && typeof r.sessionId === "string").map((r) => ({ pid: r.pid, sessionId: r.sessionId, status: r.status, waitingFor: r.waitingFor }) as Listed);
     } catch { return []; }
   })();
@@ -191,8 +191,7 @@ async function openFilesOf(pids: number[]): Promise<Map<number, Set<string>> | u
   if (!pids.length || existsSync("/proc/self/fd") || !Bun.which("lsof")) return undefined;
   try {
     const p = Bun.spawn(["lsof", "-nP", "-w", "-Fpn", "-p", pids.join(",")], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 5000 });
-    const out = await readText(p.stdout);
-    await p.exited; // (it exits 1 when one of the processes is gone: what it printed still counts)
+    const { out } = await outputOf(p); // (it exits 1 when one of the processes is gone: what it printed still counts)
     return parseLsof(out);
   } catch { return undefined; }
 }

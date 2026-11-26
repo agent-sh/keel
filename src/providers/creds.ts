@@ -5,7 +5,7 @@
 // A key is never logged, never written, never put in an error.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { homeDir } from "../core/paths";
 
 const TTL = 5 * 60_000;
@@ -92,10 +92,9 @@ async function helper(name: string): Promise<string> {
   if (bin === "cred-get" && !Bun.which("cred-get")) return "";
   const p = Bun.spawn([bin, name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homeDir() });
   const timer = setTimeout(() => p.kill(), locked.has(name) ? KEYRING_WAIT_MS : 20_000);
-  const out = (await readText(p.stdout)).split("\n")[0]!.trim();
+  const { out } = await outputOf(p);
   clearTimeout(timer);
-  await p.exited;
-  return out;
+  return out.split("\n")[0]!.trim();
 }
 
 // The key, or null when no source holds one: the variable, else the keyring

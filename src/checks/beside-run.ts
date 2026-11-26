@@ -19,7 +19,7 @@ import { settings } from "../admin/settings.ts";
 import { localTime } from "../core/clock.ts";
 import { git } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
@@ -502,9 +502,7 @@ async function changesOf(repo: Repo, tree: string, head: string | null, scratch:
 const SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
 async function sshOut(host: string, script: string, timeout: number): Promise<string> {
   const p = Bun.spawn(["ssh", ...SSH, host, script], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout, killSignal: "SIGKILL" });
-  const out = await readText(p.stdout as ReadableStream<Uint8Array>, "ssh");
-  await p.exited;
-  return out;
+  return (await outputOf(p, { where: "ssh" })).out;
 }
 // The copy sent to the host (its installed packages left there), the lockfile's install run there when the
 // lockfile changed, then the check, at a low priority. The host's own folder for the agent is under its
@@ -515,8 +513,8 @@ async function onHost(cfg: Setting, id: string, scratch: string, check: Check, c
   const started = performance.now();
   // (The links to this machine's packages are not sent: the host installs its own, and keeps them.)
   const sync = Bun.spawn(["rsync", "-a", "--delete", "--exclude=/.git", "--exclude=/node_modules", "--exclude=/.keel-lock", ...links.map((l) => `--exclude=/${l}`), "-e", `ssh ${SSH.join(" ")}`, `${scratch}/`, `${host}:${rdir}/`], { stdin: "ignore", stdout: "ignore", stderr: "pipe", timeout: 300_000, killSignal: "SIGKILL" });
-  const err = await readText(sync.stderr as ReadableStream<Uint8Array>, "rsync");
-  if ((await sync.exited) !== 0) return { error: `rsync to ${host}: ${err.trim().split("\n").at(-1) ?? ""}` };
+  const { err, code: synced } = await outputOf(sync, { where: "rsync" });
+  if (synced !== 0) return { error: `rsync to ${host}: ${err.trim().split("\n").at(-1) ?? ""}` };
   const lock = LOCKS.find((l) => existsSync(join(scratch, l.file)));
   const mark = lock ? Bun.hash(readFileSync(join(scratch, lock.file))).toString(36) : "";
   const path = cfg.host_path.map((p) => p.replace(/^~(?=\/|$)/, "$HOME")).join(":");
@@ -524,7 +522,7 @@ async function onHost(cfg: Setting, id: string, scratch: string, check: Check, c
   const cd = check.dir === "." ? "" : `cd ${quote(check.dir)} && `;
   const script = `${path ? `PATH="${path}:$PATH"; ` : ""}cd ${quote(rdir)} && ${install}${cd}CI=1 nice -n 10 bash -c ${quote(command)} 2>&1`;
   const p = Bun.spawn(["ssh", ...SSH, host, script], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: limitMs, killSignal: "SIGKILL" });
-  const [out, errOut, code] = await Promise.all([readText(p.stdout as ReadableStream<Uint8Array>, "ssh"), readText(p.stderr as ReadableStream<Uint8Array>, "ssh"), p.exited]);
+  const { out, err: errOut, code } = await outputOf(p, { where: "ssh", cap: 256 * 1024, keep: "tail" });
   const ms = Math.round(performance.now() - started);
   const timedOut = p.signalCode === "SIGKILL" && ms >= limitMs;
   // (ssh's own 255: the host could not be reached, or the link broke.)

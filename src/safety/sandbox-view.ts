@@ -48,7 +48,7 @@ import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { gitSync, gitViewsDir, locate } from "../core/git.ts";
 import { contains, realOf, homeDir } from "../core/paths.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { configDir } from "../providers/config.ts";
 import { sandboxRoot, sandboxScope, SCOPE_ORIGIN, scopeDir } from "./sandbox-scope.ts";
 import { HIDDEN } from "./credentials.ts";
@@ -350,8 +350,7 @@ export async function tendSandboxes(all = false): Promise<void> {
 export async function sandboxBytes(): Promise<number> {
   try {
     const p = Bun.spawn(["du", "-sb", sandboxRoot()], { stdout: "pipe", stderr: "ignore" });
-    const out = await readText(p.stdout, "du");
-    await p.exited;
+    const { out } = await outputOf(p, { where: "du" });
     return Number(out.split(/\s/)[0]) || 0;
   } catch {
     return 0;

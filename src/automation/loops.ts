@@ -3,7 +3,7 @@ import { conceal } from "../core/conceal.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homeDir } from "../core/paths.ts";
-import { chunks } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { join } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
 import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw, stopperOf } from "./core.ts";
@@ -731,15 +731,6 @@ const READ_MAX = 64 * 1024;
 // The time a gate command has (a test lowers it).
 export const gateLimit = { ms: GATE_TIMEOUT_MS };
 
-async function readCapped(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const parts: Uint8Array[] = [];
-  let n = 0;
-  try {
-    for await (const value of chunks(stream)) if (n < READ_MAX) { parts.push(value.subarray(0, READ_MAX - n)); n += Math.min(value.length, READ_MAX - n); }
-  } catch {} // the pipe closed under the read
-  return Buffer.concat(parts).toString("utf8");
-}
-
 // The gate command, in the session's folder and inside its sandbox, wrapped as a Bash call of the session is (the
 // permission gate's own wrapper: write scope, held branches, folder pin, credential folders). At the time limit the command's whole process group is killed: nothing of it stays
 // running, and no session is told.
@@ -756,14 +747,8 @@ async function execGate(l: LoopRecord, timeoutMs = gateLimit.ms): Promise<GateRu
     const proc = Bun.spawn(how.wrap(argv), { cwd: s.workspace, env: { ...toolEnv(s.id), ...how.env, CI: "1", KEEL_LOOP: l.id }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
     pid = proc.pid;
     gateGroups.set(l.id, pid);
-    let late = false;
-    const timer = setTimeout(() => { late = true; killGroup(pid); }, timeoutMs);
-    const out = readCapped(proc.stdout as ReadableStream<Uint8Array>);
-    const err = readCapped(proc.stderr as ReadableStream<Uint8Array>);
-    const code = await proc.exited;
-    clearTimeout(timer);
-    killGroup(pid); // what it left running goes with it, so its pipes close
-    const [stdout, stderr] = await Promise.all([out, err]);
+    // (What it left running goes with it at its end, so its pipes close.)
+    const { out: stdout, err: stderr, code, timedOut: late } = await outputOf(proc, { where: "loop gate", timeoutMs, kill: () => killGroup(pid), exited: () => killGroup(pid), cap: READ_MAX });
     // Standard output is the data; a failing command's own words are on standard error.
     return { exit: late || proc.signalCode ? null : code, timedOut: late, signal: proc.signalCode ? String(proc.signalCode) : null, output: conceal(cleanTerm(code === 0 ? stdout : stderr || stdout), s.id) };
   } catch (e) {

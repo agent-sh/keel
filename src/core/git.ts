@@ -728,7 +728,7 @@ export async function gitEach(dir: string, args: string[], o: GitOpts, each: (en
   } catch (e) {
     return { code: 127, err: `git could not start: ${(e as Error).message}` };
   }
-  const err = readText(proc.stderr as ReadableStream<Uint8Array>);
+  // (Its error output is read once it has ended, as git()'s is.)
   const text = new TextDecoder();
   let rest = "", stopped = false, read = false;
   try {
@@ -746,13 +746,10 @@ export async function gitEach(dir: string, args: string[], o: GitOpts, each: (en
     read = !stopped;
   } finally {
     // Stopped, or `each` threw: git would wait on a full pipe until its timeout.
-    if (!read) {
-      try { proc.kill("SIGKILL"); } catch { /* gone already */ }
-      err.catch(() => {});
-    }
+    if (!read) try { proc.kill("SIGKILL"); } catch { /* gone already */ }
   }
   const code = await proc.exited;
-  const e = await err;
+  const e = await readText(proc.stderr as ReadableStream<Uint8Array>);
   if (stopped) return { code: 0, err: e, stopped: true };
   return { code: proc.signalCode ? -1 : code, err: e };
 }

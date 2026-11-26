@@ -5,7 +5,7 @@ import { D, attr, capture, deliver, emit, familyOf, inert, isPending, withdraw }
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { readStat } from "../core/pid.ts";
-import { pumpText, readText } from "../core/proc.ts";
+import { pumpText, outputOf } from "../core/proc.ts";
 import { lastDown, lateWords, LATE_MS, span } from "../core/late.ts";
 import { sayAt, waitEndLine, waitSetLine } from "../admin/daemon-log.ts";
 import { timed } from "../admin/stall.ts";
@@ -1008,7 +1008,7 @@ async function prChecks(w: WaitRecord, s: Extract<WaitSpec, { kind: "pr_checks" 
   if (signal.aborted) stop();
   else signal.addEventListener("abort", stop, { once: true });
   try {
-    const [out, err, code] = await Promise.all([readText(p.stdout, "gh pr view"), readText(p.stderr, "gh pr view"), p.exited]);
+    const { out, err, code } = await outputOf(p, { where: "gh pr view" });
     if (code !== 0) throw new Error(`gh pr view failed: ${err.trim().slice(0, 300)}`);
     setError(w.id, null);
     return prChecksVerdict(JSON.parse(out), s.repo, s.pr_number, Date.now() - w.created >= EMPTY_CHECKS_GRACE);

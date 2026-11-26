@@ -8,7 +8,7 @@
 // is held in memory only, never logged, never put in an error or a command line.
 import { key } from "../providers/creds.ts";
 import { gitEnv } from "../core/git.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 
 export const TOKEN_CRED = "github-token";
 // GitHub Enterprise Server's API is at https://HOST/api/v3; a spec's stand-in names its own.
@@ -27,7 +27,7 @@ async function ghToken(): Promise<string | null> {
   try {
     // (gh runs git by itself: outside any repository, with the daemon's keys.)
     const p = Bun.spawn([gh, "auth", "token", "--hostname", host === "127.0.0.1" || host === "localhost" ? "github.com" : host], { cwd: "/", env: { ...gitEnv("/"), GH_PROMPT_DISABLED: "1" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 20_000 });
-    const [out, code] = await Promise.all([readText(p.stdout, "gh auth token"), p.exited]);
+    const { out, code } = await outputOf(p, { where: "gh auth token" });
     return code === 0 ? out.trim().split("\n")[0]!.trim() || null : null;
   } catch {
     return null;

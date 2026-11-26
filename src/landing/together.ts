@@ -38,7 +38,7 @@ import { overlay, parseChecks, readChecks, type Check } from "../checks/named.ts
 import { release } from "../checks/package-cache.ts";
 import { flakyOn } from "../checks/words.ts";
 import { git } from "../core/git.ts";
-import { cpuMsOf, readText } from "../core/proc.ts";
+import { cpuMsOf, readText, outputOf } from "../core/proc.ts";
 import type { Store } from "../core/store.ts";
 import { pool } from "../tools/heavy.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
@@ -672,8 +672,8 @@ const SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
 async function hostRoom(host: string, share: number): Promise<boolean> {
   try {
     const p = Bun.spawn(["ssh", ...SSH, host, "cat /proc/loadavg; nproc"], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 20_000 });
-    const out = await readText(p.stdout, "pair host room");
-    if ((await p.exited) !== 0) return false;
+    const { out, code } = await outputOf(p, { where: "pair host room" });
+    if (code !== 0) return false;
     const [load, , , , , cores] = out.split(/\s+/).map(Number);
     return Number.isFinite(load) && Number.isFinite(cores) && cores! > 0 && load! < share * cores!;
   } catch { return false; }
@@ -728,8 +728,7 @@ class HostRunner implements Runner {
     const out: Ran[] = steps.map((s) => ({ check: s.check.name, exit: null, names: [], ms: 0 }));
     const t0 = Date.now();
     const p = Bun.spawn(["ssh", ...SSH, this.cfg.host!, "bash -s"], { env: process.env, stdin: new TextEncoder().encode(lines.join("\n") + "\n"), stdout: "pipe", stderr: "ignore", timeout: this.j.timeoutMs * (steps.length + 1) + 120_000 });
-    const text = await readText(p.stdout, "pair host run");
-    await p.exited;
+    const { out: text } = await outputOf(p, { where: "pair host run" });
     const setupFail = /^@@keel-pair setup (\d+)$/m.exec(text);
     if (setupFail) throw Object.assign(new Error(`the setup on ${this.cfg.host} (together.host_setup, else land.setup) failed: exit ${setupFail[1]}`), { setup: true });
     for (const m of text.matchAll(/^@@keel-pair (\d+) (\d+)\n([\s\S]*?)^@@keel-pair-end \1$/gm)) {

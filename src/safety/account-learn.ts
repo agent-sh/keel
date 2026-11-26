@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { hostnameOf, remotesIn } from "./looked.ts";
 import { parseNamespace, repoOf, say } from "./accounts.ts";
 import { homeDir } from "../core/paths";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 
 export type Candidate = { namespace: string; why: string; count?: number };
 
@@ -107,7 +107,7 @@ export const runGh: GhRun = async (args, env) => {
   try {
     const p = Bun.spawn(["gh", ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...env, GH_HOST: undefined, GH_REPO: undefined, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" } });
     const timer = setTimeout(() => p.kill(), GH_MS);
-    const [out, err, code] = await Promise.all([readText(p.stdout, "gh api"), readText(p.stderr, "gh api"), p.exited]);
+    const { out, err, code } = await outputOf(p, { where: "gh api" });
     clearTimeout(timer);
     return code === 0 ? { out: out.slice(0, 1_048_576) } : { error: err.trim().split("\n")[0]?.slice(0, 160) || `gh exited with ${code}` };
   } catch {

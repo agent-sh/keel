@@ -4,7 +4,7 @@
 // has write access, and the log of a failed check. It writes nothing: the
 // session's own turn pushes, with its own commands, through the gate.
 import { gitEnv } from "../core/git.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { runOf, tail } from "./rules.ts";
 
 const bin = () => process.env.KEEL_GH_BIN || "gh";
@@ -17,7 +17,7 @@ async function run(args: string[], cwd = "/", signal?: AbortSignal): Promise<{ o
   if (signal?.aborted) stop();
   else signal?.addEventListener("abort", stop, { once: true });
   try {
-    const [out, err, code] = await Promise.all([readText(p.stdout, "gh"), readText(p.stderr, "gh"), p.exited]);
+    const { out, err, code } = await outputOf(p, { where: "gh" });
     return { out, err, code };
   } finally {
     signal?.removeEventListener("abort", stop);

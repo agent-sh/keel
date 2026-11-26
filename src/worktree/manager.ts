@@ -8,7 +8,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { Shadow, type DiffResult } from "../safety/shadow.ts";
 import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, type GitFetch } from "../core/git.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { prTarget, type Host } from "./pr-head.ts";
 import { dropSetup, has as hasSetup, headHeld, HEAD_HELD, runSetup, setupDir, setupHook, SetupPins, type SetupOutcome } from "./setup.ts";
@@ -131,7 +131,7 @@ async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, 
 async function run(cwd: string, argv: string[]): Promise<{ out: string; err: string; code: number }> {
   // (gh runs git by itself: its calls read the repository as the daemon's do.)
   const p = Bun.spawn(argv, { cwd, env: { ...gitEnv(cwd), GH_PROMPT_DISABLED: "1" }, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 120_000 });
-  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+  const { out, err, code } = await outputOf(p);
   return { out, err, code };
 }
 

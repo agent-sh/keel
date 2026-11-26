@@ -26,7 +26,7 @@ import { clientsOf, portsOf } from "../fleet/portal.ts";
 import { allJobs, findJob, jobsIn, jobsOf, processesOf, scopeHoldsSelf, stopJob, type Job } from "../tools/jobs.ts";
 import type { Worktree, Worktrees } from "../worktree/manager.ts";
 import { readsOf } from "../server/reads.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import * as rules from "./leftover-rules.ts";
 import * as scopes from "./scopes.ts";
 import { HOLDS_SELF } from "./foreign-scopes.ts";
@@ -666,10 +666,8 @@ async function sizeOf(path: string, head: string): Promise<number | undefined> {
   if (k && Date.now() - k.at < 600_000) return k.bytes;
   try {
     const p = Bun.spawn(["du", "-sbx", path], { stdout: "pipe", stderr: "ignore" });
-    const t = setTimeout(() => p.kill(), 60_000);
-    const out = await readText(p.stdout, "du");
-    clearTimeout(t);
-    if ((await p.exited) !== 0 && !out) return undefined;
+    const { out, code } = await outputOf(p, { where: "du", timeoutMs: 60_000, kill: () => p.kill() });
+    if (code !== 0 && !out) return undefined;
     const bytes = Number(out.split(/\s/)[0]);
     if (!Number.isFinite(bytes)) return undefined;
     if (sizes.size > 4096) sizes.clear();

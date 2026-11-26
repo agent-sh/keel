@@ -5,7 +5,7 @@ import { arch, cpus, freemem, hostname, loadavg, platform, totalmem } from "node
 import { sandboxStatus } from "../safety/sandbox.ts";
 import pkg from "../../package.json";
 import type { Facts } from "./db.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 
 export const VERSION: string = (pkg as any).version ?? "dev";
 
@@ -20,7 +20,7 @@ async function gpuName(): Promise<string | undefined> {
     try {
       const p = Bun.spawn(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], { stdout: "pipe", stderr: "ignore" });
       const t = setTimeout(() => p.kill(), 3000);
-      const out = await readText(p.stdout);
+      const { out } = await outputOf(p);
       clearTimeout(t);
       value = out.trim().split("\n").filter(Boolean).join("; ") || undefined;
     } catch {}

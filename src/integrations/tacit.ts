@@ -55,7 +55,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { importOf, personTyped } from "../safety/imported.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, namedPrograms, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered, tacitToolCall } from "./tacit-tools.ts";
@@ -93,7 +93,7 @@ async function runBoundedResult(argv: string[], stdin: string, ms: number): Prom
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; kill(); }, ms);
   try {
-    const [out, code] = await Promise.all([readText(p.stdout, "tacit").catch(() => null), p.exited]);
+    const { out, code } = await outputOf(p, { where: "tacit" }).catch(() => ({ out: null, code: -1 }));
     if (timedOut) return { outcome: "timeout", text: null };
     if (code !== 0 || out === null) return { outcome: "failure", text: null };
     return { outcome: "ok", text: out.trim() || null };

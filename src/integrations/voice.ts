@@ -31,7 +31,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { McpManager } from "../mcp/manager.ts";
 import type { McpTool } from "../mcp/client.ts";
 import shipped from "./parlar_tools.json" with { type: "json" };
-import { pumpLines, readText } from "../core/proc.ts";
+import { pumpLines, readText, outputOf } from "../core/proc.ts";
 
 export const PARLAR_SERVER = "parlar";
 // parlar's Codex mode: the session id on every call and hook, speech as plain `[voice uN]` lines.
@@ -61,7 +61,6 @@ export function discoverParlar(home: string, env: (k: string) => string | undefi
 
 type Ran = { code: number | null; stdout: string; stderr: string };
 
-const readAll = (s: ReadableStream<Uint8Array>) => readText(s, "parlar").catch(() => "");
 
 export type VoiceState = { available: boolean; running?: boolean; on?: boolean; here?: boolean; mic_muted?: boolean; phase?: string; listening?: boolean };
 
@@ -94,11 +93,11 @@ export class Voice {
       const timer = setTimeout(() => { kill(); resolve(null); }, ms);
       const onStop = () => { kill(); clearTimeout(timer); resolve(null); };
       stop?.addEventListener("abort", onStop, { once: true });
-      Promise.all([readAll(p.stdout as ReadableStream<Uint8Array>), readAll(p.stderr as ReadableStream<Uint8Array>), p.exited]).then(([stdout, stderr, code]) => {
+      outputOf(p, { where: "parlar" }).then(({ out: stdout, err: stderr, code }) => {
         clearTimeout(timer);
         stop?.removeEventListener("abort", onStop);
         resolve(stop?.aborted ? null : { code, stdout, stderr });
-      });
+      }, () => { clearTimeout(timer); stop?.removeEventListener("abort", onStop); resolve(null); });
     });
   }
 

@@ -108,9 +108,127 @@ export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: strin
   }, where).then(() => { if (skipped) over(skipped, head); else if (buf) onLine(buf); });
 }
 
-// stdout, stderr and the exit code of a spawned process, read together.
-export async function collect(p: { stdout: Pipe; stderr?: Pipe; exited: Promise<number> }, where?: string) {
-  const [out, err, code] = await Promise.all([readText(p.stdout, where), readText(p.stderr, where), p.exited]);
+// A child whose output is read whole: what a Bun.spawn result has of it.
+export type Child = {
+  stdout?: unknown;
+  stderr?: unknown;
+  exited: Promise<number>;
+  signalCode?: string | number | null;
+  kill(signal?: number | NodeJS.Signals): void;
+};
+export type Ended = {
+  code: number;
+  out: string;
+  err: string;
+  // The signal that ended the child, when one did.
+  signal: string | null;
+  // Ended by `timeoutMs` or by `signal`: the output is what it wrote before.
+  timedOut: boolean;
+  aborted: boolean;
+  // `cap` dropped some of the output, or `graceMs` ended a read before its pipe did.
+  cut: boolean;
+};
+export type EndedOpts = {
+  where?: string;
+  // The child is stopped by `kill` after this long, or when `signal` aborts.
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  // How it is stopped (default SIGKILL to the child; a caller that started a group stops the group).
+  kill?: () => void;
+  // Runs once the child has ended, before its pipes are read to their end: a caller stops what it left
+  // running (a process of its group that holds a pipe open), so the read is not held by it.
+  exited?: () => void | Promise<void>;
+  // After the end (and `exited`), the pipes are read for this long at most: a process that left the group
+  // and holds a pipe open is not waited for. Without it a pipe is read to its end.
+  graceMs?: number;
+  // The most characters kept of each pipe, its head (default) or its tail. A capped pipe is read while the
+  // child runs, so a long output is never held whole: use it where the output has no bound of its own.
+  cap?: number;
+  keep?: "head" | "tail";
+};
+
+// The whole output of a child and its exit code. The pipes are read once the child has ended: the runtime
+// drains a child's pipes by itself (a long output never fills one), and a read that waits on an open pipe
+// gets a buffer of its own, about 130 KB for one that ends empty, which is dropped at once. Read after the
+// end, a pipe costs nothing but its text. A child stopped by the time limit or the signal gives what it
+// wrote until then. Reads that must follow the output as it comes (a live display, a protocol, a watch)
+// use pump, pumpLines or chunks instead.
+export async function outputOf(p: Child, o: EndedOpts = {}): Promise<Ended> {
+  let timedOut = false, aborted = false;
+  const kill = o.kill ?? (() => { try { p.kill("SIGKILL"); } catch { /* gone already */ } });
+  const timer = o.timeoutMs !== undefined && Number.isFinite(o.timeoutMs) ? setTimeout(() => { timedOut = true; kill(); }, o.timeoutMs) : undefined;
+  const onAbort = () => { aborted = true; kill(); };
+  if (o.signal?.aborted) onAbort();
+  else o.signal?.addEventListener("abort", onAbort, { once: true });
+  let stop: (() => void) | undefined;
+  const stopped = o.graceMs === undefined ? undefined : new Promise<void>((r) => (stop = r));
+  const read = (pipe: unknown) => keptText(pipe as Pipe, o, stopped);
+  const capped = o.cap !== undefined ? [read(p.stdout), read(p.stderr)] : undefined;
+  // (A capped read that fails is told after the end, as an uncapped one is.)
+  capped?.forEach((c) => c.catch(() => {}));
+  let code: number;
+  try {
+    code = await p.exited;
+  } finally {
+    if (timer) clearTimeout(timer);
+    o.signal?.removeEventListener("abort", onAbort);
+  }
+  let grace: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await o.exited?.();
+    if (stop) grace = setTimeout(stop, o.graceMs);
+    const [a, b] = await Promise.all(capped ?? [read(p.stdout), read(p.stderr)]);
+    return { code, out: a!.text, err: b!.text, signal: p.signalCode == null ? null : String(p.signalCode), timedOut, aborted, cut: a!.cut || b!.cut };
+  } finally {
+    if (grace) clearTimeout(grace);
+    stop?.();
+  }
+}
+
+// A pipe's text, keeping at most `o.cap` characters of it (its head, or its tail), until it ends or `stop` settles.
+async function keptText(pipe: Pipe, o: EndedOpts, stop?: Promise<void>): Promise<{ text: string; cut: boolean }> {
+  if (!pipe || typeof pipe === "number") return { text: "", cut: false };
+  const cap = o.cap ?? Infinity, tail = o.keep === "tail";
+  const dec = new TextDecoder();
+  let text = "", cut = false, ended = false;
+  const keep = (t: string) => {
+    if (!t) return;
+    if (!tail) {
+      if (text.length >= cap) { cut = true; return; }
+      if (text.length + t.length > cap) { cut = true; text += t.slice(0, cap - text.length); } else text += t;
+      return;
+    }
+    text += t;
+    // (Cut when it is twice the cap, so a chatty child is not sliced at every chunk.)
+    if (text.length > 2 * cap) { cut = true; text = text.slice(-cap); }
+  };
+  try {
+    if (stop) {
+      const r = pipe.getReader();
+      let over = false;
+      const onStop = () => { over = true; if (!ended) r.cancel().catch(() => {}); };
+      stop.then(onStop, onStop);
+      for (;;) {
+        if (over) break;
+        const { done, value } = await r.read();
+        if (done) { ended = !over; break; }
+        if (value) keep(dec.decode(value, { stream: true }));
+      }
+      if (!ended) cut = true;
+    } else {
+      for await (const c of chunks(pipe)) keep(dec.decode(c, { stream: true }));
+    }
+    keep(dec.decode());
+  } catch (e) {
+    throw Object.assign(e instanceof Error ? e : new Error(String(e)), { where: o.where ?? "child pipe" });
+  }
+  if (text.length > cap) { cut = true; text = tail ? text.slice(-cap) : text.slice(0, cap); }
+  return { text, cut };
+}
+
+// stdout, stderr and the exit code of a spawned process, read once it has ended.
+export async function collect(p: Child, where?: string) {
+  const { out, err, code } = await outputOf(p, { where });
   return { out, err, code };
 }
 

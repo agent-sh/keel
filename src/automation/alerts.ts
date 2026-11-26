@@ -8,7 +8,7 @@ import { spelled } from "../safety/chars.ts";
 import { QUESTION_CUT } from "../core/stops.ts";
 import { planWaits, plansWaiting } from "../server/routes/plan.ts";
 import { sessionState } from "./state.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { plainLine } from "../core/plain.ts";
 import { lockedDaemon } from "../core/daemon-lock.ts";
 import { openUrl } from "../cli/client.ts";
@@ -1336,7 +1336,7 @@ registerChannel({
       `{'suppress-sound': <${!sound}>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
       "int32 -1",
     ], { stdout: "pipe", stderr: "pipe" });
-    const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+    const { out, err, code } = await outputOf(p);
     if (code !== 0) throw new Error(`gdbus Notify failed: ${err.trim()}`);
     const m = out.match(/uint32 (\d+)/);
     if (m) shown.set(key, Number(m[1]));
@@ -1367,7 +1367,7 @@ registerChannel({
   async deliver(a) {
     const argv = process.env.KEEL_NOTIFY_COMMAND!.trim().split(/\s+/);
     const p = Bun.spawn([...argv, JSON.stringify(a)], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-    const [err, code] = await Promise.all([readText(p.stderr), p.exited]);
+    const { err, code } = await outputOf(p);
     if (code !== 0) throw new Error(`KEEL_NOTIFY_COMMAND exited ${code}: ${err.trim().slice(0, 300)}`);
   },
 });

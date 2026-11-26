@@ -12,7 +12,7 @@ import type { ToolContext } from "./types.ts";
 import type { ImageBlock } from "../core/types.ts";
 import { bodyKind, plain, saveBlob, sizeWords, type BodyKind, type SavedFile } from "./blob.ts";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
-import { chunks, readText } from "../core/proc.ts";
+import { chunks, readText, outputOf } from "../core/proc.ts";
 import { privateHost } from "../core/hosts.ts";
 import { noteOutward } from "../safety/egress.ts";
 import { vettedFetch, viaProxy } from "./pinned.ts";
@@ -44,7 +44,7 @@ async function rpc(bin: string, method: string, params: unknown, session: unknow
   const proc = Bun.spawn([bin], { stdin: "pipe", stdout: "pipe", stderr: "pipe", signal, timeout: 90_000 });
   proc.stdin.write(JSON.stringify({ id: 1, method, params: { params, session } }) + "\n");
   proc.stdin.end();
-  const [out, err] = await Promise.all([readText(proc.stdout), readText(proc.stderr), proc.exited]);
+  const { out, err } = await outputOf(proc);
   const line = out.split("\n").find((l) => l.trim());
   if (!line) throw new Error(`${method}: no answer from ${bin}: ${err.slice(0, 300)}`);
   const d = JSON.parse(line);

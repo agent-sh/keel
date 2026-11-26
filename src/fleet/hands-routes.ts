@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { git, gitEnv, innerWork } from "../core/git.ts";
 import { dirname, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { vault } from "../safety/secrets.ts";
 import { listJobs, logPath, moveOne, ownerRun, readJobLog, stopOne, waitOne } from "../tools/terminal.ts";
 import type { ToolOutput } from "../tools/types.ts";
@@ -226,7 +226,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
             cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: scrubbedEnv(process.env, PROXY_NAMES, { ...(b.view === true ? gitEnv(cwd, b.fetch === "any" || b.fetch === "public" ? b.fetch : undefined) : {}), GIT_TERMINAL_PROMPT: "0", ...named.env }), signal: req.signal,
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });
-          const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+          const { out, err, code } = await outputOf(p, { cap: 200_000, keep: "tail" });
           return { code, out: waitedLine(slot) + vault.mask((out + err).slice(-200_000)) };
           } finally { slot?.release(); }
         });

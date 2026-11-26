@@ -12,7 +12,7 @@ import { rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
 import { tempEnv } from "../core/temp.ts";
-import { chunksUntil, readText } from "../core/proc.ts";
+import { chunksUntil, outputOf } from "../core/proc.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { sandboxStatus, scopeHead } from "../safety/sandbox.ts";
@@ -89,8 +89,7 @@ export function bindBefore(deps: Deps): Promise<void> {
 async function stopLeftScopes() {
   if (!sandboxStatus().scope || !Bun.which("systemctl")) return;
   const ls = Bun.spawn(["systemctl", "--user", "list-units", "--plain", "--no-legend", "--all", "keel-before-*.scope", "keel-beside-*.scope"], { stdout: "pipe", stderr: "ignore" });
-  const out = await readText(ls.stdout, "systemctl list-units");
-  await ls.exited;
+  const { out } = await outputOf(ls, { where: "systemctl list-units" });
   const units = leftScopes(out, (pid) => pid === process.pid || alive(pid));
   for (const u of units) await Bun.spawn(["systemctl", "--user", "stop", u], { stdout: "ignore", stderr: "ignore" }).exited.catch(() => {});
 }

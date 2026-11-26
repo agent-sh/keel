@@ -12,7 +12,7 @@
 // then for the author's permission on the base repository. Pure parts are exported for the tests.
 import type { Store } from "../core/store.ts";
 import { git, gitEnv } from "../core/git.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { isInstructionPath } from "./instruction-files.ts";
 import type { Host } from "../worktree/pr-head.ts";
 
@@ -119,7 +119,7 @@ export async function whoWroteHead(run: Run, o: { host: Host; named: string; cwd
 export const runTool: Run = async (bin, args, cwd) => {
   try {
     const p = Bun.spawn([bin, ...args], { cwd, env: { ...gitEnv(cwd), GH_PROMPT_DISABLED: "1", GLAB_NO_PROMPT: "1", NO_COLOR: "1" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 20_000 });
-    const [out, code] = await Promise.all([readText(p.stdout, bin), p.exited]);
+    const { out, code } = await outputOf(p, { where: bin });
     return { code, out };
   } catch {
     return { code: 127, out: "" };

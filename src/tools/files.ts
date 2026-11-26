@@ -11,7 +11,7 @@ import { notFound } from "./missing.ts";
 import { mtimes } from "./fs-bound.ts";
 import type { ToolContext } from "./types.ts";
 import { removedNote } from "./spill.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 import { credentialAt, homeOf, placesOf, storesUnder } from "../safety/credentials.ts";
 import { CLAUDE_RAW, edited, editGuard, knownOf, pageOf, sawText, throughReader, type RawForm } from "./reading.ts";
@@ -486,7 +486,7 @@ function pageRange(spec: string, count: number): [number, number] | string {
 
 async function run(argv: string[]): Promise<{ out: string; err: string; code: number }> {
   const p = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+  const { out, err, code } = await outputOf(p);
   return { out, err, code };
 }
 
@@ -868,7 +868,7 @@ export async function ripgrep(o: RgOpts, ctx: ToolContext): Promise<{ text: stri
   }
   args.push("--", o.pattern, target);
   const proc = Bun.spawn(ctx.wrapSpawn ? ctx.wrapSpawn(args) : args, { cwd: ctx.cwd, stdout: "pipe", stderr: "pipe", signal: ctx.signal });
-  const [out, err, code] = await Promise.all([readText(proc.stdout), readText(proc.stderr), proc.exited]);
+  const { out, err, code } = await outputOf(proc);
   if (code === 1 && !err.trim()) return { text: mode === "count" ? "No matches. Total: 0" : "No matches found." };
   if (code !== 0 && code !== 1) return { text: `ripgrep refused the search: ${err.trim() || `exit ${code}`}`, error: true };
   const rel = (l: string) => (l.startsWith(ctx.cwd + "/") ? l.slice(ctx.cwd.length + 1) : l);

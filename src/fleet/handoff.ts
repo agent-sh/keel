@@ -36,7 +36,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { MachineRow } from "./db.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 import { PROXY_NAMES, scrubbedEnv } from "../safety/env-secret.ts";
 
 export type StepName = "interrupt" | "snapshot" | "transfer" | "worktree" | "switch";
@@ -264,7 +264,7 @@ export class Handoffs {
     script = `${GIT_SHELL_ENV}\n${script}`;
     if (!machine) {
       const p = Bun.spawn(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: scrubbedEnv(process.env, PROXY_NAMES, { ...(view ? gitEnv(cwd, fetch) : {}), GIT_TERMINAL_PROMPT: "0" }) });
-      const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+      const { out, err, code } = await outputOf(p);
       return { code, out: out + err };
     }
     const r = await this.fleet.hands(machine.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: machine.workspace_root, ...(view ? { view: true } : {}), ...(view && fetch ? { fetch } : {}) }), timeout: 11 * 60_000 });

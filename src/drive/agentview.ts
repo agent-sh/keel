@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { readText } from "../core/proc.ts";
+import { outputOf } from "../core/proc.ts";
 
 export const KINDS = ["claude", "codex", "agy"] as const;
 export type Raw = Record<string, any>;
@@ -51,7 +51,7 @@ async function run(args: string[], stdin?: string, signal?: AbortSignal): Promis
   const timer = setTimeout(kill, LIMIT_MS);
   signal?.addEventListener("abort", kill, { once: true });
   try {
-    const [out, err, code] = await Promise.all([readText(proc.stdout), readText(proc.stderr), proc.exited]);
+    const { out, err, code } = await outputOf(proc);
     if (signal?.aborted) throw new Error("the call was stopped");
     if (code !== 0) {
       const line = err.split("\n").map((l) => l.trim()).filter(Boolean).pop();
