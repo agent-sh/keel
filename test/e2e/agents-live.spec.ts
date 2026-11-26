@@ -1,5 +1,5 @@
 import { expect, test, type Route } from "./isolate.ts";
-import { inHead, openPanel, shoot } from "./shots.ts";
+import { openPanel, shoot } from "./shots.ts";
 
 // Feature: a panel that lists a session's agents shows what is live (working, needs the owner, waits, queued)
 // and what ended lately or since the owner looked, then one row, "N earlier", that opens the rest a page at a
@@ -59,9 +59,10 @@ test("a coordinator's agents list shows what is live and recent, and folds the r
 
     // Elsewhere: the coordinator's row is in the list but not in view, so its failure stays unseen.
     await page.goto(`/s/${other.id}`);
-    const kids = page.locator(`[data-testid="session-row"][data-session="${parent}"]`).locator("xpath=..").getByTestId("session-children");
-    const toggle = kids.getByTestId("children-toggle");
-    await expect(toggle).toHaveAccessibleName("43 agents: 2 failed, 3 working, 38 done", { timeout: 60_000 });
+    const row = page.locator(`[data-testid="session-row"][data-session="${parent}"]`);
+    const kids = row.locator("xpath=..").getByTestId("session-children");
+    const toggle = row.getByTestId("children-toggle");
+    await expect(toggle).toHaveAccessibleName("Hide agents", { timeout: 60_000 });
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await shoot(page, "agents-live-01-open");
 
@@ -75,8 +76,6 @@ test("a coordinator's agents list shows what is live and recent, and folds the r
     const earlier = kids.getByTestId("agents-earlier");
     await expect(earlier).toHaveAttribute("data-count", "37");
     await expect(earlier).toContainText("37 earlier");
-    // The counts stay whole.
-    expect(await kids.getByTestId("children-total").innerText()).toContain("43");
     await shoot(page, "agents-live-02-folded");
 
     // A page of the earlier ones at a time, the newest first.
@@ -108,7 +107,9 @@ test("a coordinator's agents list shows what is live and recent, and folds the r
 
     // The session's own view: its Background popover and the work board fold the same way.
     await page.goto(`/s/${parent}`);
-    await (await inHead(page, "background-button")).click();
+    const tally = page.getByTestId("dock-agents");
+    await expect(tally).toHaveAccessibleName("Agents: 43 agents: 2 failed, 3 working, 38 done");
+    await tally.click();
     const bg = page.getByTestId("background-popup");
     await expect.poll(() => bg.getByTestId("bg-agent").count()).toBe(5); // (the failure is seen now: this session is in view)
     await expect(bg.getByTestId("bg-agents-earlier")).toHaveAttribute("data-count", "38");
