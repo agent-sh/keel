@@ -152,7 +152,7 @@ export function AdminBand() {
         <RotateCw className="size-3.5 shrink-0 text-faint" />
         <span className="truncate text-muted">{waitWords(waiting, (ms) => clock(ms))}</span>
         <button type="button" data-testid="restart-waiting-now" className="k-btn shrink-0" onClick={() => void api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, now: true, reason: "the waiting restart, asked now from the page" }) }).catch(reportError)}>Restart now</button>
-        <button type="button" data-testid="restart-waiting-off" className="k-btn shrink-0" onClick={() => void api("/api/drain/waiting", { method: "DELETE" }).catch(reportError)}>Not now</button>
+        <button type="button" data-testid="restart-waiting-off" className="k-btn shrink-0" data-quiet="" onClick={() => void api("/api/drain/waiting", { method: "DELETE" }).catch(reportError)}>Not now</button>
       </div>
     );
   }

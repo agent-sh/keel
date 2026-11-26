@@ -23,6 +23,8 @@ test("a restart asked while you are at a page waits for you, joined into one, an
   const band = page.getByTestId("restart-waiting");
   await expect(band).toContainText("A restart waits until you step away, by ");
   await expect(band).toContainText("2 restarts joined into one");
+  // One thing to press is drawn as a button; calling the wait off is plain words beside it.
+  expect(await band.evaluate((el) => ["restart-waiting-now", "restart-waiting-off"].map((id) => getComputedStyle(el.querySelector(`[data-testid="${id}"]`)!).boxShadow !== "none"))).toEqual([true, false]);
   await shoot(page, "restart-wait-01-band");
 
   // Not now: the wait is called off, and nothing restarts.
