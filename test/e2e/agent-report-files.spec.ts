@@ -4,6 +4,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
+test.use({ hasTouch: true });
+
 // Feature: a file an agent's report names opens in the coordinator's Files panel from the agent's own
 // worktree, not the coordinator's folder (both hold a file of that name here). Once the worktree is gone,
 // the report says so where the path stands.
@@ -28,21 +30,29 @@ test("a file an agent's report names opens from its worktree", async ({ page, re
     const mine = ((await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as { session_id: string; worktree?: string; title: string }[])[0]!;
     expect(mine.worktree).toBeTruthy();
 
-    // The turn the report started is folded into one line of the conversation: opened, then the report.
+    // The report itself is collapsed in the transcript.
     const openReport = async () => {
-      const run = page.locator(`[data-station="${id}"]`).getByTestId("lens-run").last();
-      await expect(run).toBeVisible({ timeout: 30_000 });
-      if ((await run.getAttribute("data-open")) === null) await run.getByTestId("lens-run-toggle").click();
+      const stream = page.getByTestId("lens-to-stream");
       const r = page.locator(`[data-station="${id}"]`).getByTestId("agent-report").last();
-      await expect(r).toBeVisible();
-      await r.getByRole("button").first().click();
+      await expect(stream.or(r)).toBeVisible({ timeout: 15_000 });
+      if (await stream.isVisible()) await stream.tap();
+      await expect(r).toBeVisible({ timeout: 15_000 });
+      await r.getByRole("button").first().tap();
       return r;
     };
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${id}`);
+    // The link works even if the browser has no idle time to enhance the report.
+    const idle = await page.evaluateHandle(() => window.requestIdleCallback);
+    await page.evaluate(() => { window.requestIdleCallback = () => 0; });
     const report = await openReport();
-    const link = report.locator("code.k-fileref", { hasText: "plan.md" });
-    await expect(link).toHaveAttribute("data-rel", "plan.md");
-    await link.click();
+    const link = report.getByRole("link", { name: "plan.md" }).first();
+    await expect(link).toBeVisible({ timeout: 5000 });
+    const lookup = page.waitForRequest((r) => r.url().endsWith(`/api/sessions/${mine.session_id}/files/exist`));
+    await link.tap();
+    expect((await lookup).postDataJSON()).toEqual({ paths: ["plan.md"] });
+    await page.evaluate((restore) => { window.requestIdleCallback = restore; }, idle);
+    await idle.dispose();
     const view = page.getByTestId("file-view");
     await expect(view).toHaveAttribute("data-of", mine.session_id);
     await expect(view).toContainText("The agent plan");
@@ -50,6 +60,13 @@ test("a file an agent's report names opens from its worktree", async ({ page, re
     await expect(view.getByTestId("file-of")).toContainText("worktree");
     // Still the coordinator's own view.
     await expect(page).toHaveURL(new RegExp(`/s/${id}$`));
+    await shoot(page, "agent-report-files-01-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.reload();
+    const desktop = await openReport();
+    await desktop.getByRole("link", { name: "plan.md" }).first().press("Enter");
+    await expect(view).toHaveAttribute("data-of", mine.session_id);
+    await expect(view).toContainText("The agent plan");
     await shoot(page, "agent-report-files-01-open");
     await page.setViewportSize({ width: 1320, height: 860 });
     await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "0.9"));
@@ -61,7 +78,8 @@ test("a file an agent's report names opens from its worktree", async ({ page, re
     git("worktree", "remove", "--force", mine.worktree!);
     await page.reload();
     const again = await openReport();
-    const gone = again.locator("code.k-fileref", { hasText: "plan.md" });
+    const gone = again.locator("code.k-fileref", { hasText: "plan.md" }).first();
+    await gone.click();
     await expect(gone).toHaveAttribute("data-gone", "1");
     await expect(gone).toHaveAttribute("title", /worktree is gone/);
     await expect(gone).not.toHaveAttribute("data-rel");

@@ -24,7 +24,7 @@ md.use({ extensions: mathExtensions });
 md.use({
   renderer: {
     codespan({ text }) {
-      // A file the reply names: linked once the daemon says it is in the session's folder.
+      // A file the reply names: resolved in the session's folder.
       const ref = pathRef(text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'"));
       if (!ref) return `<code>${text}</code>`;
       return `<code class="k-fileref" data-path="${esc(ref.path)}"${ref.line ? ` data-line="${ref.line}"` : ""}${ref.end ? ` data-end="${ref.end}"` : ""}>${text}</code>`;
@@ -97,22 +97,17 @@ const known = new Map<string, Map<string, string | null>>();
 const asking = new Map<string, Set<HTMLElement>>();
 const RETRY_MS = 2000;
 const RETRY_MAX_MS = 60_000;
-// Sessions whose folder is gone (an agent's worktree removed after it landed): their paths say so.
-const goneFolders = new Set<string>();
-function markPath(el: HTMLElement, have: Map<string, string | null>, sessionId: string) {
+const lookupPaths = (sessionId: string, paths: string[]) =>
+  api<{ files: Record<string, string>; gone?: boolean }>(`/api/sessions/${sessionId}/files/exist`, { method: "POST", body: JSON.stringify({ paths }) });
+function markPath(el: HTMLElement, have: Map<string, string | null>) {
   const rel = have.get(el.dataset.path!);
   if (rel === undefined) return false;
   el.dataset.checked = "1";
-  // A report of another session's work names files of that session's folder (an agent's worktree).
-  const theirs = el.closest("[data-files-of]") ? " from the agent's worktree" : "";
   if (rel !== null) {
     el.dataset.rel = rel;
     el.setAttribute("role", "link");
     el.tabIndex = 0;
-    el.title = `Open ${rel}${el.dataset.line ? ` at line ${el.dataset.line}` : ""}${theirs} in Files`;
-  } else if (theirs && goneFolders.has(sessionId)) {
-    el.dataset.gone = "1";
-    el.title = "Not there any more: the agent's worktree is gone";
+    el.title = `Open ${rel}${el.dataset.line ? ` at line ${el.dataset.line}` : ""} in Files`;
   }
   return true;
 }
@@ -121,15 +116,14 @@ function askPaths(sessionId: string, els: Set<HTMLElement>, wait: number, failur
   asking.set(sessionId, els);
   setTimeout(() => {
     // What joined the batch while it waited is asked with it; what left the page is dropped.
-    const batch = [...els].filter((el) => el.isConnected && !markPath(el, have, sessionId));
+    const batch = [...els].filter((el) => el.isConnected && !markPath(el, have));
     const paths = [...new Set(batch.map((el) => el.dataset.path!))];
     if (!paths.length) return void asking.delete(sessionId);
-    api<{ files: Record<string, string>; gone?: boolean }>(`/api/sessions/${sessionId}/files/exist`, { method: "POST", body: JSON.stringify({ paths }) }).then(
+    lookupPaths(sessionId, paths).then(
       (r) => {
-        if (r.gone) goneFolders.add(sessionId);
         for (const p of paths) have.set(p, r.files[p] ?? null);
         // A path that joined while the request was out is asked next.
-        const rest = new Set([...els].filter((el) => el.isConnected && !markPath(el, have, sessionId)));
+        const rest = new Set([...els].filter((el) => el.isConnected && !markPath(el, have)));
         if (rest.size) askPaths(sessionId, rest, 30);
         else asking.delete(sessionId);
       },
@@ -137,7 +131,7 @@ function askPaths(sessionId: string, els: Set<HTMLElement>, wait: number, failur
         // The session is gone: nothing of it links.
         if ((e as { status?: number }).status === 404) {
           for (const p of paths) have.set(p, null);
-          els.forEach((el) => markPath(el, have, sessionId));
+          els.forEach((el) => markPath(el, have));
           return void asking.delete(sessionId);
         }
         reportError(e, { kind: "file-links" });
@@ -151,7 +145,7 @@ function pathsIn(root: Element, sessionId?: string) {
   const els = [...root.querySelectorAll<HTMLElement>("code.k-fileref:not([data-checked])")];
   if (!els.length) return;
   const have = known.get(sessionId) ?? known.set(sessionId, new Map()).get(sessionId)!;
-  const fresh = els.filter((el) => !markPath(el, have, sessionId));
+  const fresh = els.filter((el) => !markPath(el, have));
   if (!fresh.length) return;
   const wait = asking.get(sessionId);
   if (wait) fresh.forEach((el) => wait.add(el));
@@ -163,11 +157,38 @@ const enhance = (root: Element, sessionId?: string) => { const done = [highlight
 
 // Opens a linked file in the session's Files panel, at its lines. `openIn`: the session whose panel
 // shows it, when the file is of another one (an agent's report shown in its coordinator's view).
-function openLinked(el: HTMLElement, sessionId: string, openIn = sessionId) {
+function openLinked(el: HTMLElement, path: string, sessionId: string, openIn = sessionId) {
   const r = getUI().route;
   if (r.name !== "session" || r.id !== openIn) navigate({ name: "session", id: openIn });
-  setUI({ fileAt: { session: openIn, ...(openIn !== sessionId ? { of: sessionId } : {}), path: el.dataset.rel!, line: el.dataset.line ? Number(el.dataset.line) : undefined, end: el.dataset.end ? Number(el.dataset.end) : undefined, n: Date.now() } });
+  setUI({ fileAt: { session: openIn, ...(openIn !== sessionId ? { of: sessionId } : {}), path, line: el.dataset.line ? Number(el.dataset.line) : undefined, end: el.dataset.end ? Number(el.dataset.end) : undefined, n: Date.now() } });
   savePref("panel", "files");
+}
+
+// A report path is interactive as soon as the report opens. Resolve it only on activation:
+// the worktree may have been removed since the agent wrote the report.
+const openingPaths = new WeakSet<HTMLElement>();
+async function openReportPath(el: HTMLElement, sessionId: string, openIn: string) {
+  if (openingPaths.has(el)) return;
+  openingPaths.add(el);
+  const path = el.dataset.path!;
+  const route = getUI().route;
+  const stillHere = () => el.isConnected && !el.closest("[hidden], [inert]") && getUI().route === route;
+  try {
+    const { files, gone } = await lookupPaths(sessionId, [path]);
+    if (!stillHere()) return;
+    const rel = files[path];
+    if (rel) return openLinked(el, rel, sessionId, openIn);
+    if (gone) {
+      el.removeAttribute("role");
+      el.removeAttribute("tabindex");
+      el.dataset.gone = "1";
+      el.title = "Not there any more: the agent's worktree is gone";
+    }
+    announce(gone ? el.title : `File not found: ${path}`, "alert");
+  } catch (e) {
+    if (stillHere()) announce(`Could not open ${path}`, "alert");
+    if ((e as { status?: number }).status !== 404) reportError(e, { kind: "file-links" });
+  } finally { openingPaths.delete(el); }
 }
 
 // Code is colored when it comes near the view, not when the reply mounts: a
@@ -211,11 +232,12 @@ function localImages(root: Element, sessionId?: string) {
 const imageSizes = new Map<string, { w: number; h: number }>();
 
 const onClick = (sessionId?: string, openIn?: string) => (e: React.MouseEvent | React.KeyboardEvent) => {
-  const link = (e.target as HTMLElement).closest<HTMLElement>("code.k-fileref[data-rel]");
+  const link = (e.target as HTMLElement).closest<HTMLElement>('code.k-fileref[role="link"]');
   if (link && sessionId) {
     if ("key" in e && e.key !== "Enter") return;
     e.preventDefault();
-    return openLinked(link, sessionId, openIn);
+    if (link.dataset.rel) return openLinked(link, link.dataset.rel, sessionId, openIn);
+    if (openIn && openIn !== sessionId) return void openReportPath(link, sessionId, openIn);
   }
   if ("key" in e) return;
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".code-copy");
@@ -284,14 +306,23 @@ function StoredMarkdown({ text, sessionId, openIn }: { text: string; sessionId?:
   const html = useMemo(() => md.parse(text, { async: false }) as string, [text]);
   const ref = useRef<HTMLDivElement>(null);
   const near = useContext(NearView);
+  const of = openIn && openIn !== sessionId ? sessionId : undefined;
+  useLayoutEffect(() => {
+    if (!of) return;
+    ref.current?.querySelectorAll<HTMLElement>("code.k-fileref:not([data-gone])").forEach((el) => {
+      el.setAttribute("role", "link");
+      el.tabIndex = 0;
+      el.title = `Open ${el.dataset.path}${el.dataset.line ? ` at line ${el.dataset.line}` : ""} from the agent's worktree in Files`;
+    });
+  }, [html, of]);
   useEffect(() => { if (ref.current) localImages(ref.current, sessionId); }, [html, sessionId]);
   useEffect(() => {
     const el = ref.current;
-    if (!el || !el.querySelector("code[data-lang]:not([data-hl]), .math:not([data-done]), code.k-fileref:not([data-checked])")) return;
-    if (!near) return watch(el, sessionId);
-    whenIdle(() => { if (el.isConnected) void enhance(el, sessionId).then(near); }, 400);
-  }, [html, sessionId, near]);
+    const pathsOf = of ? undefined : sessionId;
+    if (!el || !el.querySelector(`code[data-lang]:not([data-hl]), .math:not([data-done])${pathsOf ? ", code.k-fileref:not([data-checked])" : ""}`)) return;
+    if (!near) return watch(el, pathsOf);
+    whenIdle(() => { if (el.isConnected) void enhance(el, pathsOf).then(near); }, 400);
+  }, [html, of, sessionId, near]);
   const click = onClick(sessionId, openIn);
-  const of = openIn && openIn !== sessionId ? sessionId : undefined;
   return <div ref={ref} className="prose-keel" data-files-of={of} dangerouslySetInnerHTML={{ __html: html }} onClick={click} onKeyDown={click} />;
 }

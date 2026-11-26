@@ -734,9 +734,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
 .prose-keel img { max-width: 100%; border-radius: var(--radius-md); }
 /* A file the reply names, linked once the daemon found it: opens in Files at its lines. */
-.prose-keel code.k-fileref[data-rel] { cursor: pointer; color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 40%, transparent); text-underline-offset: 0.1875rem; }
-.prose-keel code.k-fileref[data-rel]:hover { text-decoration-color: var(--accent); }
-.prose-keel code.k-fileref[data-rel]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.prose-keel code.k-fileref[role="link"] { cursor: pointer; color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 40%, transparent); text-underline-offset: 0.1875rem; }
+.prose-keel code.k-fileref[role="link"]:hover { text-decoration-color: var(--accent); }
+.prose-keel code.k-fileref[role="link"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* A path of a folder that is gone (an agent's removed worktree): struck through, quiet. */
 .prose-keel code.k-fileref[data-gone] { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line-strong); cursor: help; }
 /* TeX as MathML, drawn by the browser; the source shows until it is converted. */
