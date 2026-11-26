@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Archive, ArchiveRestore, Eye, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, reportError, failed, useStore } from "../lib/store.ts";
+import { api, reportError, reportUnlessGone, failed, useStore } from "../lib/store.ts";
 import { busyWords, workingIn } from "../lib/folder-busy.ts";
 import { useSessionStates } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
@@ -73,7 +73,7 @@ export function WorktreeChip({ session }: { session: Session }) {
   // Fresh counts when the popup opens and after each turn.
   useEffect(() => {
     if (!(open || session.phase === "idle")) return;
-    loadWorktree(session.id, true).catch(reportError);
+    loadWorktree(session.id, true).catch(reportUnlessGone);
     loadOverlap(session.id).catch(reportError);
   }, [open, session.phase]);
   useEffect(() => {

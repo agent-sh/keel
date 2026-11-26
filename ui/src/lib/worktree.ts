@@ -42,7 +42,7 @@ export function loadWorktree(id: string, shared = false): Promise<void> {
 }
 
 export function useWorktree(id: string): WorktreeStatus | null | undefined {
-  useEffect(() => { if (!(id in byId)) loadWorktree(id, true).catch(reportError); }, [id]);
+  useEffect(() => { if (!(id in byId)) loadWorktree(id, true).catch(reportUnlessGone); }, [id]);
   return useSyncExternalStore(subscribe, () => byId[id]);
 }
 
@@ -86,7 +86,7 @@ export const isGitFolder = (dir: string) => {
 
 onFeature({
   frame(f) {
-    if (f.name === "worktree" && f.session_id) loadWorktree(f.session_id).catch(reportError);
+    if (f.name === "worktree" && f.session_id) loadWorktree(f.session_id).catch(reportUnlessGone);
   },
   reconnect() {
     for (const id of Object.keys(byId)) loadWorktree(id).catch(reportUnlessGone);

@@ -366,7 +366,9 @@ test("a part that does not load says so and can be asked for again", async ({ pa
     // The session is deleted while the socket is cut off. Hold the side reads until the deletion
     // so they find the session gone too, instead of racing the deletion.
     live.down = true;
-    const sideReads = ["secrets", "blocked"].map((name) => `/api/sessions/${id}/${name}`);
+    // The workbench reads the worktree for its header.
+    await page.evaluate(() => localStorage.setItem("keel.workbench", "true"));
+    const sideReads = ["secrets", "blocked", "worktree"].map((name) => `/api/sessions/${id}/${name}`);
     let release = () => {};
     const pending = new Promise<void>((r) => (release = r));
     const sides = new Set<string>();
