@@ -1,11 +1,21 @@
 // Whether a long file a model reads comes back as a small model's compiled
 // reading of it (src/tools/reading.ts): one switch for the sessions the owner
 // talks to (`sessions.read_through`) and one for agents (`agents.read_through`,
-// off until its trial under Usage ends with Keep).
+// off until its trial under Usage ends with Keep). The switch is Base UI's own
+// here: the surfaces kit's Toggle would bring that kit and what it imports into
+// the Settings chunk, and the page's start names every chunk that makes.
+import { Switch } from "@base-ui/react/switch";
 import { reportError } from "../lib/store.ts";
 import { SettingRow } from "./settings/kit.tsx";
 import { useSettings } from "./StoragePanel.tsx";
-import { Toggle } from "./surfaces/kit.tsx";
+
+function Toggle({ on, onChange, label, testid }: { on: boolean; onChange: (on: boolean) => void; label: string; testid: string }) {
+  return (
+    <Switch.Root checked={on} onCheckedChange={onChange} aria-label={label} data-testid={testid} className="k-switch">
+      <Switch.Thumb className="k-switch-thumb" />
+    </Switch.Root>
+  );
+}
 
 export function ReadThrough() {
   const [settings, patch] = useSettings();
