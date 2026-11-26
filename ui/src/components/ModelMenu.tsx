@@ -159,13 +159,20 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
     if (gone) setHint("The highlighted model left the listing. Nothing is highlighted: move with the arrows to choose.");
   }, [all]);
   const release = () => { if (held) setHeld(null); };
-  const choose = (i: Item, compactFirst?: boolean) => { notePick(i.value); onChange(i.value, compactFirst ? { ...pickOf(i), compactFirst } : pickOf(i)); setOpen(false); setQuery(""); };
+  // A menu that closes stays where it closed and no longer follows its trigger. A session box's + takes the
+  // trigger's box away when it closes (its pickers stay mounted, hidden), often at the press that closes this
+  // menu too. A menu still following then measured nothing, turned to its other side, and the new side's size
+  // observer started inside the old one's call: the browser reports that as a resize loop.
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [stays, setStays] = useState<{ getBoundingClientRect: () => DOMRect }>();
+  const shut = () => { const at = trigger.current?.getBoundingClientRect(); setStays(at && { getBoundingClientRect: () => at }); setOpen(false); setQuery(""); };
+  const choose = (i: Item, compactFirst?: boolean) => { notePick(i.value); onChange(i.value, compactFirst ? { ...pickOf(i), compactFirst } : pickOf(i)); shut(); };
   const canCompact = (i: Item) => !!facts?.can_compact && !!lossOf(i);
 
   return (
     <Combobox.Root
       open={open}
-      onOpenChange={(o) => { setOpen(o); setHint(null); setHeld(null); setEfforts({}); if (!o) setQuery(""); }}
+      onOpenChange={(o) => { if (o) setOpen(true); else shut(); setHint(null); setHeld(null); setEfforts({}); }}
       items={groups}
       filteredItems={groups}
       filter={null}
@@ -187,11 +194,11 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
     >
       {/* (Named for a screen reader: a combobox is not named by what it shows, and a phone's row
           shows only its mark while a turn runs.) */}
-      <Combobox.Trigger data-testid="model-picker" className={triggerClass(compact)} aria-label={`Model: ${shown ?? (value || placeholder || "none chosen")}`}>
+      <Combobox.Trigger ref={trigger} data-testid="model-picker" className={triggerClass(compact)} aria-label={`Model: ${shown ?? (value || placeholder || "none chosen")}`}>
         <TriggerLabel label={shown} any={all.length > 0} value={value} placeholder={placeholder} />
       </Combobox.Trigger>
       <Combobox.Portal>
-        <Combobox.Positioner align="start" sideOffset={6} className={cn("z-50 outline-none", SHEET.place)}>
+        <Combobox.Positioner anchor={open ? undefined : stays} align="start" sideOffset={6} className={cn("z-50 outline-none", SHEET.place)}>
           <Combobox.Popup
             aria-label="Choose a model"
             data-testid="model-popup"
