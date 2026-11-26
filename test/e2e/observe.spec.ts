@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "./isolate.ts";
-import { openPanel, shoot } from "./shots.ts";
+import { openPanel, shoot, turnEnds } from "./shots.ts";
 
 // Feature: observability built for fixing. A failed request becomes an error
 // row that names the exact request (route, attempt, class), opens the turn's
@@ -129,8 +129,8 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await page.goto(`/s/${lead.id}`);
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "child work\nscript:calls []", isolation: "none" } }])}`);
     await page.getByTestId("composer").press("Enter");
-    // (The page folds a turn the agent's report woke with the one before it, so the end is read from the session.)
-    await expect.poll(async () => (await (await request.get(`/api/sessions/${lead.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 20_000 }).toBe(true);
+    // The Conversation lens can fold the turn footer; wait for the stored end.
+    await expect.poll(() => turnEnds(page), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
     const spawned = async () => {
       const first = (await (await request.get(`/api/debug/traces?session_id=${lead.id}`)).json()).traces.at(-1);
       const spans = first ? (await (await request.get(`/api/debug/traces/${first.trace_id}`)).json()).spans : [];
