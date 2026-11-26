@@ -869,40 +869,34 @@ test("the answers of one step's reads each get a block of their own; a line long
   // store that answers after the reads are done: none is in a result.
   st.set("len", 6000);
   st.set("mode", "lagtool");
-  const from = w.asked.filter((r) => r.session === s).length;
-  const calls = () => w.tacit.stats().hooks["pre-tool"];
-  const ended = () => Object.values(calls().outcomes).reduce((a, b) => a + b, 0);
-  const [endedBefore, lateBefore] = [ended(), calls().late];
-  await w.say(s, "reads tools=r1+r2+r3");
-  st.set("mode", "ok");
-  // The store's three answers are in. (The request after the reads waits for each as long as a tool call is
-  // waited for and goes on; three store processes at once on a loaded machine can take longer than that, and
-  // the last answer then comes after the turn: it is waited for here, not assumed to have come.)
-  for (const t0 = performance.now(); ended() < endedBefore + 3 && performance.now() - t0 < 30_000;) await Bun.sleep(10);
-  expect(ended()).toBe(endedBefore + 3);
-  const next = w.asked.filter((r) => r.session === s)[from + 1]!.messages;
   const rules = ["rule-kw1", "rule-kw2", "rule-kw3"];
+  const owed = w.store.db.query<{ line: string }, [string]>("SELECT line FROM memory_owed WHERE session_id = ?");
+  const accountedFor = (name: string) => w.names(w.last(s)).includes(name) || owed.all(s).some(({ line }) => line.startsWith(`- ${name}:`));
+  await w.say(s, "reads tools=r1+r2+r3");
+  // Hook outcome counters say when a child exited, not when its answer was queued
+  // or included in a request. Wait for each answer at one of those destinations.
+  await until(() => rules.every(accountedFor), 30_000);
+  st.set("mode", "ok");
   expect(w.store.events(s).filter((e) => e.kind === "tool_result").some((e) => JSON.stringify(e.data.results).includes("rule-kw"))).toBe(false);
-  // Answered within the wait, all three are in the request after the reads. One that came later is owed:
-  // it is in that request or waits for the next one, never lost.
-  if (calls().late === lateBefore) {
-    expect(w.names(next)).toEqual(expect.arrayContaining(rules));
-    expect(w.tacit.owed(s)).toBe(0);
-  } else if (!rules.every((r) => w.names(next).includes(r))) expect(w.tacit.owed(s)).toBeGreaterThan(0);
-  // A fact of 25,000 characters: its start in the prompt's block, the rest with the next requests, all of it.
+
+  // Leave the first long recall's continuation owed. The next one answers
+  // after its request, so a nonempty owed queue alone does not prove it arrived.
   st.set("len", 25000);
+  await w.say(s, "long kw8");
+  await until(() => accountedFor("fact-kw8"), 30_000);
+  expect(w.tacit.owed(s)).toBeGreaterThan(0);
+  st.set("slow-once", "prompt");
   await w.say(s, "long kw9");
-  // The store builds 25,000 characters in a program of its own: slower than the request holds for the recall
-  // of a typed prompt (the hold's fraction of a second here), so the answer is in that request or comes after
-  // it and is owed. Either way it is here before the rest is asked for.
-  await until(() => w.last(s).includes("fact-kw9") || w.tacit.owed(s) > 0, 30_000);
+  await until(() => accountedFor("fact-kw9"), 30_000);
   for (let i = 0; i < 6 && w.tacit.owed(s); i++) await w.say(s, "go on");
   expect(w.tacit.owed(s)).toBe(0);
-  // Each rule reached the model, once.
+  // Each rule reached the model once and in a block of its own.
   expect(w.names(w.last(s))).toEqual(expect.arrayContaining(rules));
   for (const r of rules) expect(w.copies(s, r)).toBe(1);
+  const blocks = [...w.last(s).matchAll(/<memory[^>]*>(.*?)<\/memory>/g)].map((m) => w.names(m[1]!));
+  expect(blocks.filter((names) => names.some((name) => rules.includes(name)))).toEqual(expect.arrayContaining(rules.map((rule) => [rule])));
   const xs = (w.last(s).match(/x{100,}/g) ?? []).reduce((n, m) => n + m.length, 0);
-  expect(xs).toBe(3 * 6000 + 25000);
+  expect(xs).toBe(3 * 6000 + 2 * 25000);
 }), 60_000);
 
 // A store that is late now and then never misses twice in a row. It is said
