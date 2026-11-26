@@ -13,6 +13,7 @@
 // - a step's tool calls, until each has ended or is a command running in front of its turn: a command has
 //   its own wait after this one (src/admin/drain-commands.ts), and a call whose command has not started yet
 //   would otherwise be cut before it began. Most calls end in milliseconds.
+// - work between those parts of a step: preparing a request, processing its reply, or finishing the step.
 //
 // It does not wait for a turn that is already stopped at its boundary, one that waits on the owner (its
 // card is put back by the next daemon), one that waits for a provider or a retry (nothing is on its way),
@@ -28,7 +29,7 @@ import type { TurnStatus } from "../core/types.ts";
 // of the turn. `onAgents`: every call blocks on agents, and none of them is waited for.
 export type DrainTurn = {
   atBoundary: boolean; waitsOnOwner: boolean; providerWaiting: boolean; status: TurnStatus;
-  requestOut: boolean; callsOut: number; inFront: boolean; onAgents?: boolean;
+  requestOut: boolean; betweenParts: boolean; callsOut: number; inFront: boolean; onAgents?: boolean;
 };
 
 export function drainWaitsFor(t: DrainTurn): boolean {
@@ -36,7 +37,8 @@ export function drainWaitsFor(t: DrainTurn): boolean {
   const s = t.status;
   if (s.kind === "compacting") return true;
   // A request held in its account's line (or by the spend window), or between retries, has nothing on its way.
-  if (t.requestOut) return !(s.kind === "model" && s.limit) && s.kind !== "retry";
+  const held = (s.kind === "model" && s.limit) || s.kind === "retry";
+  if (t.requestOut) return !held;
   if (t.callsOut > 0) return !t.inFront && !t.onAgents;
-  return false;
+  return t.betweenParts && !held;
 }

@@ -1,6 +1,6 @@
 // The daemon's drain as the page last heard it: from the stop signal or the
 // restart the owner asked for until the process ends, the daemon takes no new
-// work and lets its running turns finish. The page says so at once and the
+// work and waits for running turns to reach their next step boundary. The page says so at once and the
 // whole time, in one sentence (the band across the top, the logo's word):
 // a daemon that is going is not "Connected".
 import { useSyncExternalStore } from "react";

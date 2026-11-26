@@ -2,7 +2,7 @@
 // the request on its way is finished, the next one is not sent, and the park loses nothing. Called
 // off, the stopped turn goes on.
 import { afterAll, expect, test } from "bun:test";
-import { allHooks } from "./hooks.ts";
+import { allHooks, type TurnHooks } from "./hooks.ts";
 
 const hooksAtStart = allHooks().length;
 afterAll(() => { allHooks().length = hooksAtStart; });
@@ -102,6 +102,49 @@ const held = (req: any) => {
   req.signal.addEventListener("abort", () => w.resolve(), { once: true });
   return w;
 };
+
+for (const part of ["before the request goes out", "after the reply ends"] as const) {
+  test(`a drain waits for an active step ${part}`, async () => {
+    const release = Promise.withResolvers<void>();
+    const arrived = Promise.withResolvers<void>();
+    const { store, engine, asked, dir } = await fixture(async () => ({
+      blocks: [{ type: "tool_use", id: "drain-call", name: "drain_probe", input: {} }], usage, stop: "tool_use", model: "m",
+    }));
+    const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
+    const hold = async (session: { id: string }) => {
+      if (session.id !== s.id) return;
+      arrived.resolve();
+      await release.promise;
+    };
+    const hook: TurnHooks = part === "before the request goes out"
+      ? { beforeRequest: async (session, req) => { if (req.purpose === "turn") await hold(session); return req; } }
+      : { afterResponse: hold };
+    const { registerSessionTools } = await import("../tools/registry.ts");
+    registerSessionTools("drain-parts-test", (sid) => sid !== s.id ? [] : [{
+      name: "drain_probe", description: "Reports when the reply's call ran.",
+      input_schema: { type: "object", properties: {} }, readOnly: true, run: async () => ({ content: "call saved" }),
+    }]);
+    allHooks().push(hook);
+    try {
+      engine.send(s.id, "ask for the probe");
+      await arrived.promise;
+      expect(asked.get("other") ?? 0).toBe(part === "before the request goes out" ? 0 : 1);
+      let done = false;
+      const settled = engine.settle(10_000).then(() => { done = true; });
+      await Promise.resolve(); // a settle that found nothing to wait for has returned
+      expect(done).toBe(false);
+      release.resolve();
+      await settled;
+      expect(asked.get("other")).toBe(1);
+      expect(store.events(s.id).find((e) => e.kind === "tool_result")?.data.results).toMatchObject([{ tool_use_id: "drain-call", content: "call saved" }]);
+    } finally {
+      release.resolve();
+      await engine.park();
+      allHooks().splice(allHooks().indexOf(hook), 1);
+      registerSessionTools("drain-parts-test", () => []);
+    }
+  });
+}
 
 // The status says idle from a reply's first output, while the reply still streams: the drain decides from the
 // request the turn has on its way, so a reply that began to stream is not cut and paid again.

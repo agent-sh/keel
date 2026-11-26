@@ -529,7 +529,8 @@ export function sessionParts(cwd: string, created: number, window?: number, mark
 }
 
 // `atBoundary`: stopped at its next step boundary by a drain (Engine.atBoundary), its next request not sent.
-type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean; providerWaitMs?: number; atBoundary?: boolean };
+// `betweenParts`: already past that boundary, still working even if no request or calls are out yet.
+type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean; providerWaitMs?: number; atBoundary?: boolean; betweenParts?: boolean };
 // `native`: the request carries deferred tools (src/tools/defer.ts), refreshed per request.
 // A transcript request the provider refused as too long is built again at
 // these shares of the room (OpenCode's ladder), then the failure stands.
@@ -3282,6 +3283,7 @@ export class Engine {
         if (signal.aborted) throw signal.reason;
       }
       let retaken = 0;
+      const running = this.running.get(id);
       for (;;) {
         // (What the step had stored when a write of it was refused: see the catch at the loop's end.)
         const head0 = this.store.session(id)?.head, steps0 = steps;
@@ -3317,6 +3319,7 @@ export class Engine {
         // not sent yet, so the park that follows loses nothing (src/engine/drain-wait.ts).
         if (this.draining && !signal.aborted) await this.atBoundary(id, signal);
         if (signal.aborted) throw abortError();
+        if (running) running.betweenParts = true;
         // The daemon's spend cap over a window: a step of a turn the owner did not start waits until the
         // window rolls under it; the owner's own turn goes on with a note, once.
         if (!signal.aborted) windowNoted = await this.holdForSpend(id, st.info.name, signal, windowNoted);
@@ -3574,6 +3577,8 @@ export class Engine {
           if (!(refusedWrite(e) || diskFull(e)) || signal.aborted || !this.store.pacing?.() || this.store.session(id)?.head !== head0 || ++retaken > 3) throw e;
           steps = steps0;
           await this.store.clear(signal);
+        } finally {
+          if (running) running.betweenParts = false;
         }
       }
     } catch (e) {
@@ -4724,7 +4729,7 @@ export class Engine {
       const calls = this.inflight.get(id);
       const t: DrainTurn = {
         atBoundary: !!r.atBoundary, waitsOnOwner: this.waitsOnOwner(id), providerWaiting: !!r.providerWaiting, status: this.statusOf(id),
-        requestOut: this.wires.has(id), callsOut: calls?.size ?? 0,
+        requestOut: this.wires.has(id), betweenParts: !!r.betweenParts, callsOut: calls?.size ?? 0,
         inFront: !!calls?.size && !!front && [...calls.keys()].every((c) => front(id, c)),
       };
       return { id, t, on: blockedOn(id) };
@@ -4740,7 +4745,7 @@ export class Engine {
 
   // The first half of a drain: no new turn starts, and each running turn stops
   // at its next step boundary, its next request not sent. The drain waits up to
-  // `ms` only for the model requests on their way (src/engine/drain-wait.ts).
+  // `ms` for work already in a step (src/engine/drain-wait.ts).
   // Nothing is cut yet, so the drain can still be called off (undrain: the
   // stopped turns go on). A turn that only waits on the owner (a question, a
   // plan, an approval card) is not waited for: it is parked with its card open,
@@ -4762,8 +4767,7 @@ export class Engine {
     const deadline = Date.now() + ms;
     for (;;) {
       // (Nor is a turn that only waits for a provider it cannot reach: it is parked and waits on in the next daemon.)
-      // A turn is waited for only while it has a model request on its way (src/engine/drain-wait.ts):
-      // the others stop at their next step boundary, or are cut where a resumed turn makes the call again.
+      // Wait for work inside a step. Other turns stop at their boundary, or are parked so they can resume a wait.
       const busy = this.drainWaited(o.inFront).map((id) => this.running.get(id)!.done);
       const left = deadline - Date.now();
       if (!this.draining || (!busy.length && !moving) || left <= 0) return;
