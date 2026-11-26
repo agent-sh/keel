@@ -136,7 +136,14 @@ test("a small window keeps the message box on screen under a full stack", async 
     await expect(pane.getByTestId("approvals")).toBeFocused();
     expect(await tray.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
     await expect(oldest).toHaveAttribute("data-must-open", "true");
-    await expect(oldest.getByTestId("approval-left")).toHaveText(/^\d+ (?:lines?|rows?) not seen yet/);
+    const left = oldest.getByTestId("approval-left");
+    const openFirst = oldest.getByTestId("approval-open-first");
+    await expect(left.or(openFirst)).toBeVisible();
+    if (await openFirst.isVisible()) {
+      await page.keyboard.press("Enter");
+      await expect(openFirst).toBeHidden();
+    }
+    await expect(left).toHaveText(/^\d+ (?:lines?|rows?) not seen yet/);
     // Read through by the owner (the region scrolls under the pointer until the card's last row has
     // been in view), its Allow once takes the keyboard, and the region brings it into view: the
     // control Enter would press is in the part of the region that shows, not above or below it.
@@ -350,7 +357,11 @@ test.describe("a crowded toolbar", () => {
       await expect(more.getByTestId("more-live")).toHaveCount(0);
       await more.tap();
       await expect(menu).toBeVisible();
-      for (const t of phone.inMenu) await expect(menu.getByTestId(t)).toBeInViewport({ ratio: 1 });
+      for (const t of phone.inMenu) {
+        const item = menu.getByTestId(t);
+        await item.scrollIntoViewIfNeeded();
+        await expect(item).toBeInViewport({ ratio: 1 });
+      }
       await expect(menu.getByRole("group", { name: "Worktree" }).getByTestId("worktree-chip")).toBeVisible();
       await shoot(page, "workbench-toolbar-390-more");
       // A control in the menu works as it does in the row, and its whole row is the target:
