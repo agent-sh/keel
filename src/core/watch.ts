@@ -134,6 +134,8 @@ export type WatchFacts = {
   status?: TurnStatus; turn?: number; output?: number;
   // The tool step in words, when the caller can read the call ("Running bun test").
   step?: string;
+  // A call of the step waits in the heavy-command line (src/tools/heavy.ts): the step waits for the machine.
+  machine?: boolean;
   // What the agents that run are, when the session's own turn ended: "Agent Scout", "Checking that the goal is met".
   running?: string;
   // The failure the last turn ended in: its class, its first line, when.
@@ -285,9 +287,13 @@ export function span(ms: number): string {
 function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "until"> {
   const st = f.status;
   const since = (t: number | undefined) => (t ? { since: t } : {});
+  // A step that waits for the machine (a call in the heavy-command line, a step the load hold holds) waits, and
+  // goes on by itself: it is not the owner's to answer and not work being done.
+  if (st?.kind === "tool" && f.machine) return { why: "machine", text: f.step || "Waits for a heavy-command slot", ...since(st.since) };
   if (st?.kind === "tool") return { why: "tool", text: f.step || `Running ${st.names.slice(0, 3).join(", ")}${st.names.length > 3 ? ` and ${st.names.length - 3} more` : ""}`, ...since(st.since) };
   if (st?.kind === "model") {
     // Held in the account's line while its limit holds requests (src/providers/admission.ts).
+    if (st.limit?.spend === "load") return { why: "machine", text: waitWord(st.limit.spend, st.limit.why), ...since(st.since) };
     if (st.limit) return { why: "limit", text: waitWord(st.limit.spend, st.limit.why), ...since(st.since), ...(st.limit.until ? { until: st.limit.until } : {}) };
     if (st.quiet) return { why: "stalled", text: "The model is answering, no output", ...since(st.quiet) };
     // The provider answered and the model has said nothing yet: it is answering. Before that the request is on its way
@@ -427,7 +433,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   const parked = f.parked ? { parked: Math.min(agents, f.parked) } : {};
   // Its turn runs and can do nothing until its provider answers: it waits, and goes on by itself.
   if (w === "work" && f.outage) return { watch: "wait", agents, ...parked, why: "unreachable", text: f.outage.agents ? agentsWait(f.outage.agents) : UNREACHABLE, since: f.outage.since };
-  if (w === "work") return { watch: "work", agents, ...parked, ...(f.status || f.turn ? doing(f) : {}) };
+  if (w === "work") { const d = f.status || f.turn ? doing(f) : {}; return { watch: d.why === "machine" ? "wait" : "work", agents, ...parked, ...d }; }
   // Agents that run keep it working, whatever its own last turn came to.
   if (agents - (f.parked ?? 0) > 0) return { watch: "work", agents, ...parked, ...(f.running ? { why: "agents", text: f.running } : {}) };
   // A failure says what kind it was and what the provider said.

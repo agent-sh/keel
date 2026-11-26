@@ -36,14 +36,20 @@ test("a loop run waits while the machine is over its line, the rail and Health s
 
     await page.goto(`/s/${looped}`);
     await expect(page.getByTestId("dock-action-text")).toContainText("Waits for the machine: load", { timeout: 30_000 });
-    // The rail's line is read whole (its words are not cut), and its tooltip has the sentence.
-    await expect(page.getByTestId("load-hold").locator(".k-load-line-what")).toHaveText("1 agent tree waits");
-    await expect(page.getByTestId("load-hold")).toHaveAttribute("title", /^1 agent tree waits for the machine: load \d+ on [\d.]+ threads\. Your own turns go on\./);
+    await expect(page.getByTestId("dock-now")).toHaveAttribute("data-why", "machine");
+    // The rail's line is read whole (its words are not cut), with the quiet grey mark of a wait for the machine,
+    // never the owner's; its tooltip names the oldest wait, what lets it go, and that nothing is his to do.
+    await expect(page.getByTestId("load-hold").locator(".k-load-line-what")).toHaveText("1 tree waits for the machine");
+    await expect(page.getByTestId("load-hold").locator('.k-mark[data-watch="wait"][data-on="machine"]')).toHaveCount(1);
+    await expect(page.getByTestId("load-hold")).toHaveAttribute("title", /^1 tree waits for the machine \(load \d+ on [\d.]+ threads\)\.\nThe oldest: Load hold: loop, \d+s for the load; it goes on as the load falls, the oldest first\.\nNothing for you to do for the machine/);
+    // The session's own mark says it waits for the machine, in grey.
+    await expect.poll(() => page.locator('.k-mark[data-on="machine"]').count(), { timeout: 15_000 }).toBeGreaterThan(1);
+    expect(await page.locator('.k-mark[data-watch="need"]').count()).toBe(0);
     expect(await page.getByTestId("load-hold").locator(".k-load-line-what").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     await shoot(page, "load-hold-00-held");
     await page.getByTestId("load-hold").click();
     await expect(page.getByTestId("health-panel")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
-    const row = page.locator('[data-testid="health-row"]').filter({ hasText: "1 agent tree waits for the machine" });
+    const row = page.locator('[data-testid="health-row"]').filter({ hasText: "1 tree waits for the machine" });
     await row.scrollIntoViewIfNeeded();
     await expect(row).toBeVisible();
     await shoot(page, "load-hold-01-health");

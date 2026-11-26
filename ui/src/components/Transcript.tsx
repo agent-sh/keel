@@ -648,12 +648,14 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const needs = st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
   // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
   // A request held in its account's line says so, with how long the account said the wait lasts.
+  const machine = !needs && st?.kind === "model" && st.limit?.spend === "load";
   const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" && st.limit ? limitText(st.limit.until, liveNow(), st.limit.spend, st.limit.why) : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (
     <div className="flex min-h-[1.875rem] items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
         {/* Waiting on the owner is their color and does not pulse: nothing runs until they answer. */}
-        {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : "bg-st-work animate-pulse-dot")} style={needs ? undefined : { animationDelay: `${i * 160}ms` }} />)}
+        {/* Waiting for the machine is quiet grey and still: it goes on by itself, nothing of the owner's is asked. */}
+        {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : machine ? "bg-st-idle" : "bg-st-work animate-pulse-dot")} style={needs || machine ? undefined : { animationDelay: `${i * 160}ms` }} />)}
       </span>
       <span data-testid="working-what" title={st?.kind === "model" ? st.limit?.why : undefined}>{what}</span>
       {s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}

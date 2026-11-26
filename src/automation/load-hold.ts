@@ -1,7 +1,8 @@
 import { registerSettings, settings } from "../admin/settings.ts";
 import type { Row } from "../admin/health-rows.ts";
 import type { Session } from "../core/types.ts";
-import { machine } from "../tools/heavy.ts";
+import { machine, pool } from "../tools/heavy.ts";
+import { account as machineAccount, type Account, type Wait } from "./machine-waits.ts";
 import type { WaitShape } from "../engine/cache-plan.ts";
 import { capture, D } from "./core.ts";
 import * as failures from "./failures.ts";
@@ -39,6 +40,27 @@ let waited: Waited[] = [];
 const overByHour = new Map<number, number>();
 const DAY = 86_400_000;
 let printed = "";
+// What waits for the machine, read at each pass: the held trees and the calls in the heavy-command line.
+let waits: Wait[] = [];
+let asking = new Set<string>();
+function readWaits(now: number) {
+  try {
+    const { store, engine } = D();
+    const out: Wait[] = st.held.map((k) => ({ tree: k, title: known.get(k)?.title ?? "an agent", since: heldAt.get(k) ?? now, cause: "load" as const }));
+    const ask = new Set<string>();
+    const line = pool.line;
+    const why = line.length ? pool.room().why : undefined;
+    for (const e of line) {
+      const s = store.session(e.session);
+      const tree = s ? treeOf(s) : e.session;
+      const root = s ? (tree === s.id ? s : store.session(tree)) : undefined;
+      out.push({ tree, title: root?.title || (e.who === "beside" ? "Keel's checks" : e.who === "background" ? "Keel's pictures" : "an agent"), since: e.at, cause: "heavy", ...(why ? { why } : {}) });
+      if (s && engine.waitsOnOwner?.(s.id)) ask.add(tree);
+    }
+    waits = out;
+    asking = ask;
+  } catch (e) { capture(e, { at: "load hold: what waits for the machine" }); }
+}
 
 // The day's account is kept in the store: a restart (several an hour on a busy day) left "the last day" at
 // what this daemon had seen since it started. Read at the first pass, written when a tree let go or, for the
@@ -172,7 +194,7 @@ export function tick(now = Date.now()) {
   lastAt = now;
   try {
     const c = conf();
-    if (!c.on) { if (st.held.length) settle(IDLE, now); readings = []; tell(); return; }
+    if (!c.on) { if (st.held.length) settle(IDLE, now); readings = []; readWaits(now); tell(); return; }
     const m = machine.read();
     // The pressure's lines are measured against the machine's own thread count: a line the owner set
     // (load_hold.threads) is his, and the load alone is read against it.
@@ -189,6 +211,7 @@ export function tick(now = Date.now()) {
     settle(next, now);
     for (const k of next.capped) toldCap(k, r);
     keep(now, waited[0] !== had);
+    readWaits(now);
     tell();
   } catch (e) { capture(e, { at: "load hold" }); }
 }
@@ -205,6 +228,8 @@ export type LoadHoldView = {
   // The last day: minutes over the line, and the trees that waited and let go.
   over_min_day: number;
   waited: { title: string; from: number; ms: number }[];
+  // Everything that waits for the machine now, each tree once (src/automation/machine-waits.ts).
+  machine: Account;
 };
 
 export function state(now = Date.now()): LoadHoldView {
@@ -222,13 +247,15 @@ export function state(now = Date.now()): LoadHoldView {
     held: st.held.map((k) => ({ key: k, title: known.get(k)?.title ?? "an agent", since: heldAt.get(k) ?? now })),
     over_min_day: Math.round(overMs / 60_000),
     waited: waited.filter((w) => now - w.from < DAY).map(({ title, from, ms }) => ({ title, from, ms })),
+    machine: machineAccount(waits, asking, now),
   };
 }
 
 // Every page hears a change of what is held, and of the load while anything is held.
 function tell() {
   const v = state();
-  const print = JSON.stringify([v.held.map((h) => h.key), v.held.length ? Math.round(v.load1 ?? 0) : 0, v.on]);
+  const m = v.machine;
+  const print = JSON.stringify([v.held.map((h) => h.key), v.held.length ? Math.round(v.load1 ?? 0) : 0, v.on, m.trees, m.heavy, m.asking, m.oldest?.since ?? 0]);
   if (print === printed) return;
   printed = print;
   try { D().bus.emit({ t: "feature", name: "load_hold", data: v }); } catch (e) { capture(e, { at: "load hold" }); }
@@ -268,17 +295,26 @@ const min = (ms: number) => `${Math.max(1, Math.round(ms / 60_000))} min`;
 // Settings > Health: whether trees wait for the machine now, and the day's account.
 export function healthRows(now = Date.now()): Row[] {
   const v = state(now);
-  const how = v.pressure ? "read every five seconds: the 1-minute load against the thread count, and beside it the share of the last ten seconds tasks waited for a processor, the machine's and the unattended jobs'" : "read the 1-minute load average every five seconds against the thread count (this kernel reports no pressure)";
-  if (!v.on) return [{ id: "machine:load", group: "machine", level: "ok", title: "agent trees do not wait for the machine", detail: "the load hold is off (load_hold.on)" }];
+  const how = conf().threads !== null ? "read the 1-minute load average every five seconds against the thread count set in load_hold.threads (the pressure's lines are for the machine's own count)" : v.pressure ? "read every five seconds: the 1-minute load against the thread count, and beside it the share of the last ten seconds tasks waited for a processor, the machine's and the unattended jobs'" : "read the 1-minute load average every five seconds against the thread count (this kernel reports no pressure)";
+  const m = v.machine;
+  const oldest = m.oldest ? `the oldest: ${m.oldest.title}, ${min(now - m.oldest.since)} for ${m.oldest.cause === "load" ? "the load" : "a heavy-command slot"}, ${m.oldest.releases}` : "";
+  const asks = m.asking ? `; ${m.asking} of them also ${m.asking === 1 ? "asks" : "ask"} you something, in Inbox` : "";
+  const fix = `nothing to do for the machine: ${m.held ? "held trees go on as the load falls, the oldest first" : "calls go on as heavy-command slots free"}${asks}`;
+  // A wait for the machine asks nothing of the owner: the row is no warning unless a tree that waits also asks him.
+  const waitsRow = (detail: string): Row => ({ id: "machine:load", group: "machine", level: m.asking ? "warning" : "ok", title: `${m.trees} ${m.trees === 1 ? "tree waits" : "trees wait"} for the machine${m.held && m.heavy ? ` (${m.held} held by the load, ${m.heavy} for a heavy-command slot)` : m.heavy ? " (for a heavy-command slot)" : ""}`, ...(m.asking ? { detail, fix } : { detail: `${detail}; ${fix}` }), how });
+  if (!v.on) {
+    if (m.trees) return [waitsRow(`${oldest}; the load hold is off (load_hold.on)`)];
+    return [{ id: "machine:load", group: "machine", level: "ok", title: "agent trees do not wait for the machine", detail: "the load hold is off (load_hold.on)" }];
+  }
   const day = `over the line ${v.over_min_day} min in the last day${v.waited.length ? `; ${v.waited.length} ${v.waited.length === 1 ? "tree" : "trees"} waited, the longest ${min(Math.max(...v.waited.map((w) => w.ms)))}` : ""}`;
   const psi = v.pressure ? `, processors waited ${Math.round(v.pressure.cpu)}% of the last 10 s${v.pressure.unattended_cpu !== null ? ` (unattended jobs ${Math.round(v.pressure.unattended_cpu)}%)` : ""}${v.pressure.memory !== null && v.pressure.memory >= 1 ? `, memory ${Math.round(v.pressure.memory)}%` : ""}` : "";
   const load = v.load1 === null ? "no reading yet" : `load ${v.load1} on ${v.threads} threads${psi}`;
-  if (v.held.length) {
+  if (m.trees) {
     const names = v.held.slice(0, 5).map((h) => `${h.title} (${min(now - h.since)})`).join(", ");
-    return [{ id: "machine:load", group: "machine", level: "warning", title: `${v.held.length} agent ${v.held.length === 1 ? "tree waits" : "trees wait"} for the machine`, detail: `${load}; waiting: ${names}${v.held.length > 5 ? ` and ${v.held.length - 5} more` : ""}; ${day}`, fix: "nothing to do: they go on as the load falls, the oldest first", how }];
+    return [waitsRow(`${load}; ${oldest}${names && m.trees > 1 ? `; held: ${names}${v.held.length > 5 ? ` and ${v.held.length - 5} more` : ""}` : ""}; ${day}`)];
   }
   return [{ id: "machine:load", group: "machine", level: "ok", title: v.load1 === null ? "the machine's load is not read yet" : `the machine has room: ${load}`, detail: day, how }];
 }
 
 // For a test: nothing held, nothing read.
-export function reset() { releaseAll(); readings = []; st = IDLE; lastAt = 0; known = new Map(); heldAt.clear(); capTold.clear(); waited = []; overByHour.clear(); printed = ""; loaded = false; keptPrint = ""; keptAt = 0; }
+export function reset() { releaseAll(); readings = []; st = IDLE; lastAt = 0; known = new Map(); heldAt.clear(); capTold.clear(); waited = []; overByHour.clear(); printed = ""; waits = []; asking = new Set(); loaded = false; keptPrint = ""; keptAt = 0; }

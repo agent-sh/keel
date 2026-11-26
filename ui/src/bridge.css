@@ -24,6 +24,9 @@
 .k-mark[data-watch="stop"] { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 2px var(--st-idle); }
 .k-mark[data-watch="resume"] { background: transparent; border: 2px solid var(--st-idle); border-right-color: transparent; }
 .k-mark[data-watch="wait"] { background: linear-gradient(to top, var(--dot-work) 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px var(--dot-work); }
+/* A wait for the machine (the load hold, the heavy-command line) is quiet grey: it goes on by itself, and it is
+   never the owner's colour. */
+.k-mark[data-watch="wait"][data-on="machine"] { background: linear-gradient(to top, var(--st-idle) 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px var(--st-idle); }
 .k-mark[data-watch="work"] { background: var(--dot-work); }
 .k-mark[data-watch="work"]::after { content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none; will-change: opacity; box-shadow: 0 0 0.4375rem 0.125rem color-mix(in oklch, var(--dot-work) 75%, transparent); animation: k-dot-breathe 3.4s ease-in-out infinite; }
 @keyframes k-dot-breathe { 0%, 100% { opacity: 0.3; transform: scale(0.92); } 50% { opacity: 1; transform: scale(1.08); } }

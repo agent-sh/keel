@@ -198,3 +198,14 @@ test("the bar's reason is the kind and the thing, short: the tool's name is the 
   expect(of({ asks: [{ kind: "approval" }] })).toBe("approve");
   expect(of({})).toBe("");
 });
+
+test("a step held for the machine (the load hold, the heavy-command line) waits for the machine, never for the owner", () => {
+  const on = s({ phase: "working" });
+  const held = stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m", limit: { why: "the machine is busy: load 40 on 32 threads", spend: "load" } }, turn: 1 });
+  expect(held).toEqual({ watch: "wait", agents: 0, why: "machine", text: "Waits for the machine: load 40 on 32 threads", since: 9 });
+  expect(stateWords(held).phrase).toBe("Waiting for the machine");
+  const line = "Waiting for a heavy-command slot: next in line, held by tsc (an agent); every slot is taken";
+  expect(stateOf(on, undefined, { status: { kind: "tool", since: 7, names: ["Bash"] }, turn: 1, step: line, machine: true })).toEqual({ watch: "wait", agents: 0, why: "machine", text: line, since: 7 });
+  // An account's limit is still the account's wait inside a working turn.
+  expect(stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m", limit: { why: "429" } }, turn: 1 }).watch).toBe("work");
+});

@@ -193,7 +193,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? (working && stand.full) || told : offline ? OFFLINE : stateWords(st).word}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? (working && stand.full) || told : offline ? OFFLINE : stateWords(st).word}><Mark w={w} why={st.why} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
           {/* At work the step's clock is the line over the box's (DockNow.tsx): one clock for one step. */}
           {timed(st) && !offline && !working && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why ?? (last ? "result" : undefined)} title={offline ? lastTold(stateLabel(st), st.text) : stand.full || told}>{why}</span>}
@@ -353,7 +353,7 @@ function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looki
             <span className="k-look-holds" title={`This pane holds ${title}${state ? `, ${state}` : ""}`}>
               <span className="k-look-lead">This pane holds </span>
               <span className="k-look-own" data-state={state ? w : undefined}>
-                <Mark w={w} /><b className="k-look-title" data-testid="look-title"><bdi>{title}</bdi>{state ? "," : "."}</b>{state && " "}{state && <span className="k-look-state" data-testid="look-state">{state}.</span>}
+                <Mark w={w} why={st.why} /><b className="k-look-title" data-testid="look-title"><bdi>{title}</bdi>{state ? "," : "."}</b>{state && " "}{state && <span className="k-look-state" data-testid="look-state">{state}.</span>}
               </span>
             </span>
           </>

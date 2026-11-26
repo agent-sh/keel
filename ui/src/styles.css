@@ -290,6 +290,7 @@
   --color-st-fail: var(--st-fail);
   --text-color-st-fail: var(--st-fail-ink);
   --color-st-done: var(--st-done);
+  --color-st-idle: var(--st-idle);
   --text-color-st-done: var(--st-done-ink);
   --shadow-1: var(--shadow-1);
   --shadow-2: var(--shadow-2);
@@ -973,6 +974,8 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-moment[data-moment="acting"] > i:nth-child(2) { height: 0.625rem; }
 .k-moment[data-moment="acting"] > i:nth-child(3) { height: 0.5rem; }
 .k-moment[data-moment="waiting"] { color: var(--st-wait); }
+/* A wait for the machine is quiet grey, never the owner's colour (src/automation/machine-waits.ts). */
+.k-now[data-why="machine"] .k-moment[data-moment="waiting"] { color: var(--st-idle); }
 .k-moment[data-moment="waiting"] > i { width: 0.5625rem; height: 0.5625rem; border-radius: 50%; background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; animation: k-moment-fade 2.6s ease-in-out infinite; }
 .k-moment[data-moment="waiting"] > i:nth-child(n + 2) { display: none; }
 .k-moment[data-moment="need"] { color: var(--st-need); }

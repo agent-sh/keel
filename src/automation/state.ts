@@ -242,7 +242,7 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   const down = pending.filter((p) => p.kind === "unreachable");
   const blocked = !own && status?.kind === "tool" && status.names.every((n) => WAITING_TOOLS.has(n)) && down.length > 0 && down.length === (l.kids.get(s.id)?.length ?? 0);
   const outage = own ? { since: own.since, message: own.message } : blocked ? { since: Math.min(...down.map((p) => p.since ?? Date.now())), agents: down.length } : undefined;
-  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: pool.lineOf(s.id) ?? stepOf(l.d.store, s, status.names) } : {}), ...(outage ? { outage } : {}) } : {};
+  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: pool.lineOf(s.id) ?? stepOf(l.d.store, s, status.names), ...(pool.waits(s.id) ? { machine: true } : {}) } : {}), ...(outage ? { outage } : {}) } : {};
   // Its agents that run, when one of them says more than a count: a goal's check.
   const runs = (l.kids.get(s.id) ?? []).filter((k) => k.status === "running");
   const running = runs.length && runs.every((k) => k.type === "verifier") ? { running: "Checking that the goal is met" } : {};
@@ -289,10 +289,10 @@ export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null 
   }
   if (st.kind !== "tool") return null;
   if ((f.agents ?? 0) > 0 || st.names.every((n) => WAITING_TOOLS.has(n))) return null;
-  // A call that waits in the heavy-command line waits for the machine; a wait past the tool's limit
-  // is flagged as a long step, since what holds the slots (named in its line) may never end.
-  const inLine = pool.waitingSince(s.id);
-  if (inLine !== undefined) return { what: "step", text: pool.lineOf(s.id) ?? "Waiting for a heavy-command slot", since: inLine };
+  // A call that waits in the heavy-command line waits for the machine: not stuck. A slot whose command went
+  // quiet goes back by itself (src/tools/heavy-pool.ts, nextQuiet), and the commands that hold the slots have
+  // their own progress; the wait is said on the session's row and the rail's machine line.
+  if (pool.waits(s.id)) return null;
   const text = f.step || `Running ${st.names.slice(0, 3).join(", ")}`;
   // A command says it is alive by writing: its log's last change is its last progress.
   const jobs = jobsOf(s.id).filter((j) => !j.background && running(j) && j.started >= st.since - 1000);
