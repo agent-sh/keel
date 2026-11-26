@@ -4,6 +4,8 @@
 // until it is sent. Nothing here sends anything.
 import type { RouteModule } from "../app.ts";
 import type { Store } from "../../core/store.ts";
+import type { Typing } from "../../engine/steer-gather.ts";
+import { registerHooks } from "../../engine/hooks.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS drafts (session_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', origin TEXT, updated_ms INTEGER NOT NULL);
@@ -38,6 +40,19 @@ const bad = (error: string, status = 400) => json({ error }, status);
 // cancel the first one's message).
 const DRAFT_BEAT_MS = 30_000; // the page's beat (ui/src/lib/drafts.ts)
 const typed = new Map<string, Map<string, number>>(); // session -> page -> last claim
+// When a key last went into each page's box, and when a box of the session last emptied (a send, or cleared):
+// a turn's step that would take the owner's steer waits while he types the next (src/engine/steer-gather.ts).
+const keyed = new Map<string, Map<string, number>>(); // session -> page -> last key
+const emptied = new Map<string, number>();
+
+// The owner's typing in this session's boxes: the newest key into a box that holds a message now, and when one emptied.
+export function ownerTyping(id: string, now = Date.now()): Typing | undefined {
+  const pages = typed.get(id), keys = keyed.get(id);
+  let last = 0;
+  for (const [p, t] of keys ?? []) if (t > last && now - (pages?.get(p) ?? -Infinity) <= 3 * DRAFT_BEAT_MS) last = t;
+  const e = emptied.get(id) ?? 0;
+  return last || e ? { typed: last, emptied: e } : undefined;
+}
 
 // Whether the owner has a message not yet sent in this session: one in an open
 // page's box, or text or images kept in the session's draft on the daemon.
@@ -54,8 +69,10 @@ export function draftPresent(store: Store, id: string): boolean {
   }
 }
 
+let hooked = false;
 export const draftRoutes: RouteModule = ({ store, bus }) => {
   store.migrate(SCHEMA);
+  if (!hooked) { hooked = true; registerHooks({ ownerTyping: (s) => ownerTyping(s.id) }); }
   const db = store.db;
 
   const draft = (id: string): Draft => {
@@ -165,14 +182,24 @@ export const draftRoutes: RouteModule = ({ store, bus }) => {
         if (!store.session(req.params.id)) return bad("no such session", 404);
         // A page that reloads mid-request aborts the body; Bun can raise that past
         // req.json().catch, so the body is read as text inside one try.
-        let b: { draft?: unknown; page?: unknown } | null = null;
+        let b: { draft?: unknown; page?: unknown; typed?: unknown } | null = null;
         try { b = JSON.parse(await req.text()); } catch {}
         const page = typeof b?.page === "string" ? b.page.slice(0, 64) : "";
-        if (b?.draft === true) {
-          const pages = typed.get(req.params.id) ?? new Map<string, number>();
+        const id = req.params.id as string;
+        if (b?.draft === true || b?.typed === true) {
+          const pages = typed.get(id) ?? new Map<string, number>();
           pages.set(page, Date.now());
-          typed.set(req.params.id, pages);
-        } else if (b?.draft === false) typed.get(req.params.id)?.delete(page);
+          typed.set(id, pages);
+        } else if (b?.draft === false) {
+          typed.get(id)?.delete(page);
+          keyed.get(id)?.delete(page);
+          emptied.set(id, Date.now());
+        }
+        if (b?.typed === true) {
+          const keys = keyed.get(id) ?? new Map<string, number>();
+          keys.set(page, Date.now());
+          keyed.set(id, keys);
+        }
         touch(req.params.id);
         return json({ ok: true });
       },

@@ -61,13 +61,16 @@ export const clearDraft = (sid: string) => api(base(sid), { method: "DELETE" }).
 // it is still that write (a newer one stays for the next take).
 export const textTaken = (sid: string, at: number) => api(base(sid), { method: "POST", body: JSON.stringify({ text: "", taken: at, origin: "page" }) }).catch((e) => reportError(e, { at: "draft take" }));
 
-// The owner is typing here: a capture without a session comes to this one.
+// The owner is typing here: a capture without a session comes to this one, and a step of the session's turn
+// that would take his steer waits while he types the next (src/engine/steer-gather.ts: still for 3 s). So a
+// key is said at most once a TYPED_MS, well inside those 3 s; only that a key went in, never the text.
+const TYPED_MS = 1000;
 const lastPing = new Map<string, number>();
 export function typing(sid: string) {
   const now = Date.now();
-  if (now - (lastPing.get(sid) ?? 0) < 10_000) return;
+  if (now - (lastPing.get(sid) ?? 0) < TYPED_MS) return;
   lastPing.set(sid, now);
-  says(`/api/sessions/${sid}/presence`);
+  says(`/api/sessions/${sid}/presence`, { typed: true, page });
 }
 
 // Whether this page's box holds an unsent message (text or images), said when

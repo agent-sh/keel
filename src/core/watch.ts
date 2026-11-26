@@ -309,12 +309,15 @@ export const SPEND_WAIT = "Waits for the spend window";
 export const PAUSE_WAIT = "Waits for the fleet to resume";
 export const LOAD_WAIT = "Waits for the machine";
 // `spend`: the hold is the daemon's (the spend window, "pause": the fleet pause, "load": the machine is over its
-// thread count), not the account's. A load hold says the load it waits on (its `why`).
-const waitWord = (spend?: boolean | "pause" | "load", why?: string) => {
+// thread count), not the account's, or "typing": a step that waits for the steer the owner is typing
+// (src/engine/steer-gather.ts). A load hold says the load it waits on (its `why`).
+export const TYPING_WAIT = "Waits for the message you are typing";
+const waitWord = (spend?: boolean | "pause" | "load" | "typing", why?: string) => {
+  if (spend === "typing") return TYPING_WAIT;
   if (spend === "load") { const load = why?.split(": ")[1]; return load ? `${LOAD_WAIT}: ${load}` : LOAD_WAIT; }
   return spend === "pause" ? PAUSE_WAIT : spend ? SPEND_WAIT : LIMIT_WAIT;
 };
-export const limitText = (until: number | undefined, now: number, spend?: boolean | "pause" | "load", why?: string) => { const w = waitWord(spend, why); return until && until > now ? `${w}, about ${span(until - now)}` : w; };
+export const limitText = (until: number | undefined, now: number, spend?: boolean | "pause" | "load" | "typing", why?: string) => { const w = waitWord(spend, why); return until && until > now ? `${w}, about ${span(until - now)}` : w; };
 
 // A retry of the model request in words, with the class of the failure it follows when it has one.
 export function retryText(st: { attempt: number; max: number; message?: string }): string {

@@ -74,6 +74,7 @@ import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys, oldestFor
 import { oldestResultsForSize, shortenResults } from "./size-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
+import { GATHER_MAX_MS, gatherWait } from "./steer-gather.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
 import { settings as ownerSettings } from "../admin/settings.ts";
@@ -87,7 +88,7 @@ import { reportedUsage } from "../providers/reported.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 import { homeDir, withheldHome } from "../core/paths";
-import { outsideRefusal } from "../core/watch.ts";
+import { outsideRefusal, TYPING_WAIT } from "../core/watch.ts";
 import { DECISION_AHEAD, firstPos, nextBlocked } from "./queue-first.ts";
 import { drainWaitsFor, type DrainTurn } from "./drain-wait.ts";
 
@@ -923,6 +924,31 @@ export class Engine {
     if (took.some((t) => t.owner)) this.steerDone(id);
     const note = replyFirst(took);
     if (note) this.append(id, "note", { kind: REPLY_FIRST, model: true, system: true, text: note });
+  }
+
+  // A step that would take the owner's steer waits while he types the next one, at most GATHER_MAX_MS
+  // (src/engine/steer-gather.ts), with that in its status. An agent's or a peer's message waits for nothing.
+  private async gatherSteers(id: string, st: Step, signal: AbortSignal) {
+    const owned = () => this.liveSteers(id).filter((q) => ownersMeta(q.meta)).length;
+    const had = owned();
+    if (!had) return;
+    const typing = () => {
+      const s = this.store.session(id);
+      for (const h of allHooks()) {
+        if (!h.ownerTyping || !s) continue;
+        try { const t = h.ownerTyping(s); if (t) return t; } catch (e) { this.errors.capture("server", e, { hook: "ownerTyping", session: id }); }
+      }
+      return undefined;
+    };
+    const since = Date.now();
+    let told = false;
+    for (;;) {
+      const wait = gatherWait(typing(), Date.now(), since, owned() > had);
+      if (!wait || signal.aborted) break;
+      if (!told) { told = true; this.status(id, { kind: "model", since, model: st.info.name, limit: { until: since + GATHER_MAX_MS, why: TYPING_WAIT, spend: "typing" } }); }
+      await sleep(Math.min(wait, 250), signal).catch(() => {});
+    }
+    if (told && !signal.aborted) this.status(id, { kind: "idle" });
   }
 
   // A queued prompt leaves the queue and enters the history in one write: a
@@ -3357,6 +3383,8 @@ export class Engine {
         // The owner's own words (a steer with no meta) release a held queue, as
         // a prompt typed while idle does: the turn they joined may be one a wait
         // or a loop started in a session the owner had stopped.
+        // While the owner types the next steer in this session's box, the step that would take his steer waits for it.
+        await this.gatherSteers(id, st, signal);
         this.takeSteers(id);
         // Tool, approval and provider waits can outlive the bodies. Read
         // them again once any owner steer has joined this step.

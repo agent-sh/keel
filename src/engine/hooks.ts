@@ -4,6 +4,7 @@ import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/ty
 import type { Tool, ToolContext } from "../tools/types.ts";
 import type { Crossing } from "../safety/route-rule.ts";
 import type { WaitShape } from "./cache-plan.ts";
+import type { Typing } from "./steer-gather.ts";
 
 // One tool call as the turn is about to run it.
 // `hook`: what the owner's PreToolUse hooks did to the call before any gate saw
@@ -171,6 +172,9 @@ export type TurnHooks = {
   // too: the step does not start until the wait settles, and `why` says why in the turn's status.
   // `shape`: the wait as the cache plan reads it (a long wait the session set), so the held step keeps its cache by its plan.
   stepHold?: (s: Session, byOwner: () => boolean) => { why: string; kind?: "pause" | "load"; until?: number; note?: string; shape?: WaitShape; wait?: (signal: AbortSignal) => Promise<void> } | undefined;
+  // The owner's typing in the session's message boxes (src/server/routes/drafts.ts): a step that would take his
+  // steer waits while he types the next one (src/engine/steer-gather.ts).
+  ownerTyping?: (s: Session) => Typing | undefined;
   // An input from another session (kind "peer") that must wait for a reason the hook keeps (a reached
   // dollar cap): stored in the session's queue, and not started while this says so. Asked when the
   // input comes to an idle session and again when the queue would start it; the owner's own words
