@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { openFolds, shoot } from "./shots.ts";
 
 // Feature: an agent's budget. An agent given 3 steps works three steps with
 // tools; at the limit it gets one more step in which no call runs, writes its
@@ -45,6 +45,7 @@ test("an agent's budget ends it with a report, and a message continues it", asyn
 
     // Its card says why it ended.
     await page.goto(`/s/${id}`);
+    await page.getByTestId("lens-to-stream").click();
     const card = page.getByTestId("agent-call").first();
     await expect(card.getByTestId("agent-call-status")).toContainText("budget");
     await expect(card.getByTestId("agent-call-why")).toContainText("Out of its budget");
@@ -66,6 +67,8 @@ test("an agent's budget ends it with a report, and a message continues it", asyn
     await expect.poll(async () => JSON.stringify((await events(id)).filter((e) => e.kind === "user").map((e) => e.data)).includes("it ran out of its budget (2 steps)"), { timeout: 30_000 }).toBe(true);
     await expect.poll(() => idle(id), { timeout: 30_000 }).toBe(true);
     await page.reload();
+    await expect(page.getByTestId("work-fold").first()).toBeVisible();
+    await openFolds(page);
     await expect(page.getByTestId("agent-call").first().getByTestId("agent-call-why")).toContainText("Out of its budget");
     await shoot(page, "agent-budget-02-again");
 

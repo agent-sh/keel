@@ -31,6 +31,7 @@ test("agents are named by their task's title, not their message's first 80 chara
     await expect.poll(titles, { timeout: 30_000 }).toEqual(names);
 
     // The step's line names the three, each card by its title.
+    await page.getByTestId("lens-to-stream").click();
     const step = page.locator('[data-testid="work-step"][data-family="agents"]').first();
     await expect(step).toBeVisible({ timeout: 30_000 });
     for (const n of names) await expect(step).toContainText(n);

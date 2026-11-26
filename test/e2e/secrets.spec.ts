@@ -135,6 +135,7 @@ test("a secret that is an ordinary word stays out of the model's own words", asy
   const prompt = child.find((e: any) => e.kind === "user");
   expect(JSON.stringify(prompt.data)).toContain(`The ${word} notes are fine.`);
   expect(JSON.stringify(child.filter((e: any) => e.kind === "assistant"))).toContain(`The ${word} notes are fine.`);
+  await page.getByTestId("lens-to-stream").click();
   await expect(page.getByTestId("agent-call").first()).toContainText(`Read the ${word} notes`);
   // What the command printed hides the word where it stands whole, and only there.
   const printed = JSON.stringify(events.filter((e: any) => e.kind === "tool_result").map((e: any) => e.data.results));

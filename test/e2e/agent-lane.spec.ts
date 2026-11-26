@@ -104,6 +104,9 @@ test("an agent's lane: doing, waits for, went wrong, changed and next, for each 
     await shoot(page, "agent-lane-01-tree");
 
     // The card in the coordinator: its lane comes first when it opens.
+    // The question can cover the conversation's own switch at the foot of the page.
+    await page.getByTestId("session-menu").click();
+    await page.getByTestId("menu-stream").click();
     const group = page.locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
     await expect(group).toBeVisible({ timeout: 30_000 });
     await group.click();
@@ -122,6 +125,9 @@ test("an agent's lane: doing, waits for, went wrong, changed and next, for each 
     try {
       const phone = await ctx.newPage();
       await phone.goto(`/s/${id}`);
+      await phone.getByTestId("lens").waitFor();
+      await phone.getByTestId("session-menu").tap();
+      await phone.getByTestId("menu-stream").tap();
       const g = phone.locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
       // (The group stands far above the end, where the question card above the message box takes the room: a block
       // far from the view is held, not drawn. The view goes up to it by the reader's own scroll.)

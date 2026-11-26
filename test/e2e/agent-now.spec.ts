@@ -46,6 +46,9 @@ test("each agent's line says what it is doing now", async ({ page, request }) =>
 
     // The three lines, each from what its agent does.
     await expect.poll(async () => (await nowOf(id)).lines.length, { timeout: 30_000 }).toBe(3);
+    await page.getByTestId("lens").waitFor();
+    await page.getByTestId("session-menu").click();
+    await page.getByTestId("menu-stream").click();
     const started = page.locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
     await expect(started).toBeVisible({ timeout: 30_000 });
     await started.click();

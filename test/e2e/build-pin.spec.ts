@@ -340,6 +340,7 @@ test("an edited instruction file reaches a warm session at its tail and is folde
     // The owner sees the note in the conversation and the state in the context popup.
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${id}`);
+    await page.getByTestId("lens-to-stream").click();
     await expect(page.getByTestId("note").filter({ hasText: "Told the model what changed in its prompt (instruction files)" })).toBeVisible();
     await (await boxTools(page)).getByTestId("context-meter").click();
     await expect(page.getByTestId("build-pin-told")).toContainText("Your change to the prompt (instruction files) was told to the model at the end of its context, so it applies now.");

@@ -45,6 +45,7 @@ test("under the step that started them, a line per agent of the whole tree", asy
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${id}`);
   const t = await tree(request, id);
+  await page.getByTestId("lens-to-stream").click();
   const step = page.locator('[data-testid="work-step"][data-family="agents"]').first();
   const lines = step.getByTestId("agent-lines").getByTestId("agent-line");
   // The whole tree, in its order: each agent's own agents right under it, a level further in.

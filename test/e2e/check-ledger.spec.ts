@@ -83,6 +83,7 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
   const agentsOf = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents;
   await expect.poll(async () => (await agentsOf())[0]?.status, { timeout: 90_000 }).toBe("completed");
   // Its report wakes this session, and is shown where it arrived.
+  await page.getByTestId("lens-to-stream").click();
   const report = page.getByTestId("agent-report").first();
   await expect(report).toBeVisible({ timeout: 60_000 });
   await expect.poll(() => idle(), { timeout: 60_000 }).toBe(true);

@@ -228,6 +228,7 @@ test("fails before: each new test on the base, on the report and in Review", asy
   expect(agent.result).toContain("fix.test.sh fails before: yes (1 of 1 failed)");
   expect(agent.result).toContain("weak.test.sh passes without the change");
   expect(agent.result).toContain("tools/ok.test.sh could not run (its command's script tools/run.sh is not on the base)");
+  await page.getByTestId("lens-to-stream").click();
   const report = page.getByTestId("agent-report").first();
   await expect(report).toBeVisible({ timeout: 60_000 });
   await report.getByRole("button").first().click();
