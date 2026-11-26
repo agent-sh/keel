@@ -39,6 +39,7 @@ import { SUMMARY_LIMIT, shownInPart, type AskedPart } from "./summary.ts";
 import { agoSaid, answerSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { localPlace, ownerClass, type CardFacts, type Held as HeldBy } from "./delegate.ts";
 import { SCRIPT_MAX, target, type RiskRule } from "./risk-words.ts";
+import { UNSPLIT } from "./risk.ts";
 import { onlyScript } from "./nested-shell.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
@@ -2244,11 +2245,14 @@ export class Gate {
     // A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`. The script is all that runs, so
     // it is judged as the plain line it is (its variables written out, whatever its length), and the line as it is
     // too, by the rules that read a script a line hands a shell for Keel's own calls (nested-shell.ts): the worse
-    // of the two. (A script past what those rules read through is only the first: the second would say its length.)
+    // of the two. (A script past what those rules read through is only the first: the second would say its length.
+    // And the line as it is, when all it says is that a script does not split: the script split as the plain line,
+    // and what did not is a piece of its text the wrapping's quotes cut, which the rules for arithmetic took up.)
     const script = c.kind === "shell" ? onlyScript(c.command) : undefined;
     const lines = script === undefined ? [undefined] : script.length > SCRIPT_MAX ? [script] : [script, undefined];
     for (const command of lines) {
       const d = this.evaluate(session, call.tool.name, c.kind === "shell" ? { ...c, ...(command === undefined ? {} : { command }), unconfined: true } : c, undefined, undefined, undefined, "ask", true);
+      if (script !== undefined && command === undefined && "ask" in d && d.ask.why === `the command ${UNSPLIT}`) continue;
       if ("deny" in d) return { risk: "high", why: d.deny };
       if ("ask" in d && d.ask.risk === "high") return { risk: "high", why: d.ask.why };
     }

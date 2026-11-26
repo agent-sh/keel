@@ -268,6 +268,11 @@ describe("a Codex session answered in place", () => {
       for (const c of [`/bin/bash -lc '${"echo a line of the build\n".repeat(250)}make test'`, `/bin/bash -lc "cat > notes.md <<'EOF'\n${"a line of notes\n".repeat(300)}EOF"`, `/bin/bash -lc "python3 - <<'PY'\n${"print(1)\n".repeat(500)}PY"`,
         "/bin/bash -lc 'V=status; git $V --short'"])
         expect([c.slice(0, 80), (await command(c)).risk]).toEqual([c.slice(0, 80), "low"]);
+      // Text of the script that the wrapping's quotes cut is no script of the line: code in a here-document with
+      // (( and a backtick near a quote reads low, as the script by itself does.
+      const code = "python3 - <<'PY'\nx = ((1,\n# it's a `b` thing, \"q\"\n2))\nPY";
+      for (const c of [code, `/bin/bash -lc '${code.replace(/'/g, `'"'"'`)}'`]) expect([c, (await command(c)).risk]).toEqual([c, "low"]);
+      expect((await command(`/bin/bash -lc 'echo $(( x[$(rm -rf ~/projects)] ))'`)).risk).toBe("high");
       expect((await command("/bin/bash -lc 'make test'")).risk).toBe("low");
       expect((await command(`bash -lc "bash -lc 'make test'"`)).risk).toBe("low");
       expect((await command("make test")).risk).toBe("low");

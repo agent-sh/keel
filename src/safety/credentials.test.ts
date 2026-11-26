@@ -100,7 +100,12 @@ test("a client told to print the credential it holds and a loop over a store are
   // Asked for its help it prints none, and one whose output goes nowhere only says whether there is one.
   for (const c of ["aws configure export-credentials --help", "gcloud auth print-access-token --help", "aws configure export-credentials help", "secret-tool lookup service x >/dev/null 2>&1; echo $?", "gh auth token > /dev/null && echo signed-in", "gh auth token &>/dev/null"])
     expect([c, shell(c)]).toEqual([c, null]);
+  for (const c of ["aws help configure export-credentials", "gcloud help auth print-access-token", "gh auth token > t.txt > /dev/null", "gh auth token 2>&1 >/dev/null", "gh auth token >>/dev/null", "gh auth token 3>&1 >/dev/null 2>t.txt"]) expect([c, shell(c)]).toEqual([c, null]);
   for (const c of ["gh auth token -h github.com", "gh auth token 2>/dev/null", "gh auth token > t.txt", "secret-tool lookup service '>/dev/null'"]) expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
+  // The last place the output is sent wins, and a help that is an option's value is none.
+  for (const c of ["gh auth token > /dev/null > t.txt", "gh auth token >/dev/null>t.txt", "gh auth token > /dev/null >&2", "gh auth token >/dev/null 1>&2", "gh auth token >/dev/null > >(cat)", "gh auth token # > /dev/null", "aws --profile help configure export-credentials", "aws configure export-credentials --profile help",
+    "gh auth token --hostname --help"])
+    expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
   for (const c of ["for f in ~/.ssh/*; do cat $f; done", "for f in ~/.aws/credentials notes.txt; do head -3 \"$f\"; done", "for k in $HOME/.ssh/id_*; do base64 ${k}; done"])
     expect([c, shell(c)]).toEqual([c, "the command reads in a loop"]);
   for (const c of ["for f in src/*.ts; do cat $f; done", "for f in ~/.ssh/*; do ls -l $f; done", "for h in a b; do ssh $h uptime; done"]) expect([c, shell(c)]).toEqual([c, null]);

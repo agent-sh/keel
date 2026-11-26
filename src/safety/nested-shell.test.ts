@@ -1,7 +1,7 @@
 // A script the line hands a shell it starts is judged as the plain line it is: each form of handing one over
 // gives the plain line's verdict, in every mode, and the script is found the same way by every rule.
 import { expect, test } from "bun:test";
-import { innerLines, onlyScript } from "./nested-shell.ts";
+import { NESTED_MAX, innerLines, onlyScript } from "./nested-shell.ts";
 import { decide, type Mode } from "./policy.ts";
 import { shellReaches } from "./provenance.ts";
 import { laid } from "./risk.ts";
@@ -152,6 +152,23 @@ test("$'...' is the text bash hands on", () => {
   for (const c of ["bash -c $'rm\\x20-rf\\x20~'", "bash -c $'cat \\x7e/.ssh/id_ed25519'", "bash -c $'echo \\'hi\\'; cat ~/.ssh/id_ed25519'"]) expect([c, verdict(c)]).toEqual([c, "owner"]);
   // A word with an escape stays one the line makes: a program named so is still not read as written out.
   expect(verdict("$'\\x63at' README.md")).toBe("asks high");
+  // \cX: of two backslashes after it bash takes both as the one character, and what follows is read on (an x00
+  // there is three plain characters, no NUL that cuts the script before what runs); \c? is DEL.
+  expect(ansiC("true \\c\\\\x00; S")).toBe("true \x1cx00; S");
+  expect(ansiC("true \\c\\\\\\x00; S")).toBe("true \x1c");
+  expect(ansiC("true \\c\\x00; S")).toBe("true \x1cx00; S");
+  expect(ansiC("a\\c\\nb")).toBe("a\x1cnb");
+  expect(ansiC("a\\c?b\\cAc")).toBe("a\x7fb\x01c");
+  // \x{H...} is one byte, the last of its digits, 0 with none; a brace that never closes still ends at the digits.
+  expect(ansiC("\\x{72}m \\x{4172}f")).toBe("rm rf");
+  expect(ansiC("a\\x{}b")).toBe("a");
+  expect(ansiC("a\\x{41b")).toBe("a\x1b");
+  // Of a character that is not ASCII \c takes the first byte: a NUL for U+0800 to U+0FFF, which cuts the text.
+  expect(ansiC("a\\c\u0801b")).toBe("a");
+  expect(ansiC("a\\c\u00e9b")).toBe("a\x03\ufffdb");
+  for (const c of ["bash -c $'true \\c\\\\x00; git push --force origin main'", "bash -c $'true \\c\\\\x00; rm -rf ~'", "eval $'true \\c\\\\x00; git push --force origin main'", "bash -c $'\\x{67}it push --force origin main'"])
+    expect([c, verdict(c, "full-auto")]).toEqual([c, "asks high"]);
+  for (const c of ["bash -c $'true \\c\\\\x00; cat ~/.ssh/id_ed25519'", "bash <<< $'true \\c\\\\x00; echo x >> ~/.bashrc'", "bash -c $'\\x{63}at ~/.ssh/id_ed25519'"]) expect([c, verdict(c)]).toEqual([c, "owner"]);
 });
 
 test("the script a shell is given is found by its options as the shell reads them", () => {
@@ -189,6 +206,23 @@ test("the script a shell is given is found by its options as the shell reads the
   expect(given("zsh -oerrexit -c S")).toBe("S");
   expect(given("fish -d 3 -c S")).toBe("S");
   expect(given("bash run.sh -c S")).toBe("S");
+  // A `--` ends the options only when every word before it was read for sure: after a word the line's shell writes,
+  // or an option that may take the `--` as its value, the cluster with c behind it still names the script.
+  expect(given("bash $X -- -c S")).toBe("S");
+  expect(given("bash $X - -c S")).toBe("S");
+  expect(given("bash --rcfile $X -- -c S")).toBe("S");
+  expect(given("bash -o $X -- -c S")).toBe("S");
+  expect(given("bash --$X -- -c S")).toBe("S");
+  expect(given("bash `opts` -- -c S")).toBe("S");
+  expect(given("fish -d -- -c S")).toBe("S");
+  expect(given("fish --profile -- -c S")).toBe("S");
+  expect(given("ksh -R -- -c S")).toBe("S");
+  expect(given("mksh -xT -- -c S")).toBe("S");
+  expect(given("bash -c -o $X S")).toBe("S");
+  expect(given("bash --rcfile f -- -c S")).toBe("<file -c>");
+  expect(given("bash --login -x -- -c S")).toBe("<file -c>");
+  expect(given("bash -eu -o pipefail -- run.sh")).toBe("<file run.sh>");
+  expect(given("bash -s -- -c S")).toBe("<input>");
   expect(shellGiven(["$OPTS", "-xc", "S", "zero"])).toEqual({ c: true, script: "S", at: 2, rest: ["zero"], input: false });
   expect(shellGiven(["-lc", "S", "zero", "one"])).toEqual({ c: true, script: "S", at: 1, rest: ["zero", "one"], input: false });
 });
@@ -218,7 +252,7 @@ test("a script and its written-out form are each read once however deep they nes
   const parts = splitCommand(x)!;
   expect(innerLines(parts, laid(parts, ws, home), home).length).toBeLessThanOrEqual(16);
   expect(verdict(x)).toBe("asks low");
-  // Many such chains in one line: more nested text than a few times the line's length is not read through, and asks.
+  // Many such chains in one line: more nested text than the bound is not read through, and asks.
   const chain = (tag: number) => { let c = "f=~/x; echo $f\n".repeat(240); for (let i = 1; i <= 8; i++) c = `v${i}=~/y${tag}; echo $v${i}\nbash <<'E${i}'\n${c}\nE${i}`; return c; };
   const many = Array.from({ length: 25 }, (_, i) => chain(i)).join("\n");
   const unread: { at: number; why: string }[] = [];
@@ -226,6 +260,17 @@ test("a script and its written-out form are each read once however deep they nes
   innerLines(all, laid(all, ws, home), home, 0, unread);
   expect(unread.map((u) => u.why)).toEqual(["nests more script text than the rules read through: put it in a file"]);
   expect(verdict(many)).toBe("asks high");
+  // The bound is the same for a short line: one of a few thousand characters whose levels each set a variable the
+  // innermost uses (so each level's text is another text written out) has no more read than a long one, and asks.
+  let far = `${"echo a\n".repeat(430)}echo ${Array.from({ length: 8 }, (_, i) => `$v${i + 1}`).join(" ")}`;
+  for (let i = 1; i <= 8; i++) far = `v${i}=~/y${i}; true\nbash <<'E${i}'\n${far}\nE${i}`;
+  expect(far.length).toBeLessThan(4000);
+  const few = splitCommand(far)!, said: { at: number; why: string }[] = [];
+  const got = innerLines(few, laid(few, ws, home), home, 0, said);
+  // (The line's own here-document is read as it stands and written out beside the bound, which holds the rest.)
+  expect(got.reduce((n, l) => n + l.parts.reduce((k, p) => k + p.text.length + 1, 0), 0)).toBeLessThanOrEqual(NESTED_MAX + 2 * far.length);
+  expect(said.map((u) => u.why)).toEqual(["nests more script text than the rules read through: put it in a file"]);
+  expect(verdict(far)).toBe("asks high");
 });
 
 test("the rules that read a script themselves find it the same way: -c in a cluster, options after it", () => {
@@ -240,6 +285,12 @@ test("the rules that read a script themselves find it the same way: -c in a clus
     "eval -- 'git push --force origin main'", "rbash -c 'git push --force origin main'", "bash /dev/stdin <<< 'git push --force origin main'", "echo 'git push --force origin main' | bash /dev/stdin", "bash <(echo 'git push --force origin main')",
     "flock /tmp/l -c 'git push --force origin main'", "watch 'git push --force origin main'", "env -S 'bash -c \"git push --force origin main\"'", "bash -c $'echo hi\\ngit push --force origin main'"])
     expect([c, verdict(c)]).toEqual([c, "asks high"]);
+  // Behind a word the line's shell writes, a `--` may be an option's value and the script still runs.
+  for (const c of ["X='-c $2'; bash $X -- -c 'git push --force origin main'", "bash $OPTS -- -c 'git push --force origin main'", "bash \"$@\" -- -c 'git push --force origin main'", "bash $X - -c 'git push --force origin main'",
+    "bash --rcfile $X -- -c 'git push --force origin main'", "env -i bash $X -- -c 'rm -rf ~'", "bash -lc \"bash \\$X -- -c 'rm -rf ~'\""])
+    expect([c, verdict(c, "full-auto")]).toEqual([c, "asks high"]);
+  for (const c of ["bash $X -- -c 'cat ~/.ssh/id_ed25519'", "bash --init-file $X -- -c 'echo x >> ~/.bashrc'"]) expect([c, verdict(c)]).toEqual([c, "owner"]);
+  for (const c of ["bash $X -- -c 'gh pr merge 12'", "bash --rcfile $X -- -c 'gh pr merge 12'"]) expect([c, unstartedAct(splitCommand(c)) !== null]).toEqual([c, true]);
   // A wrapper's own option value with a space in it is no command line, and a wait on a script in a variable asks nothing more.
   for (const c of ["/usr/bin/time -f '%e s' sqlite3 x.db 'select count(*) from t'", "S=~/scratch; waitfor --until \"$S/check.sh done\" --timeout 30s", "timeout -s 'TERM ' 5 make"])
     expect([c, verdict(c)]).toEqual([c, "asks low"]);

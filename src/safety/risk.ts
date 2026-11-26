@@ -962,7 +962,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     if (depth >= DEPTH) { out.push({ rule: "hidden", why: "nests scripts deeper than the rules read" }); return; }
     if (text.length > SCRIPT_MAX) { out.push({ rule: "hidden", why: `runs a nested script of ${text.length} characters, longer than the rules read through: put it in a file` }); return; }
     const inner = splitCommand(text);
-    if (!inner) { out.push({ rule: "hidden", why: "runs a script the rules cannot split into its commands" }); return; }
+    if (!inner) { out.push({ rule: "hidden", why: UNSPLIT }); return; }
     const r = analyse(inner, { ...w0, cwd: dir ?? w0.cwd, ...(dir ? {} : { lost: true as const }), ...(sure && !w0.shaky ? {} : { shaky: true as const }) }, depth + 1);
     for (const one of r.per.values()) out.push(...one);
     out.push(...r.line);
@@ -1420,6 +1420,8 @@ function contained(args: string[], dir: string, home: string): { command: string
 }
 const OLD = (why: string): RiskRule => (/^runs as root|^stops the machine/.test(why) ? "machine" : /remote/.test(why) ? "remote" : /downloaded/.test(why) ? "hidden" : "destroys");
 
+// (Said of a nested script, and of text the line's own rules read as one: a quoted word inside what looks like arithmetic.)
+export const UNSPLIT = "runs a script the rules cannot split into its commands";
 // What stands between each `((` and the next `))`, the same as /\(\(([^]*?)\)\)/g finds, in one pass: that pattern
 // reads to the end of the text from every `((` that never closes, and a line of them is quadratic.
 function arithmeticTexts(text: string): string[] {

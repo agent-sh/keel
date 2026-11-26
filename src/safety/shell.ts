@@ -60,8 +60,10 @@ const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/
 const SINK = /^\/dev\/null$/;
 type Redirect = ">" | ">&" | "<" | "<&" | "<<<" | "<<" | "<<-";
 
-// The text of $'...' as bash hands it on: its escapes read (\n, \t, \\, \', \", \NNN, \xHH, \uHHHH, \UHHHHHHHH,
-// \cX), an escape bash does not know left as written, and the text cut at a NUL as bash cuts it.
+// The text of $'...' as bash hands it on: its escapes read (\n, \t, \\, \', \", \NNN, \xHH, \x{H...}, \uHHHH,
+// \UHHHHHHHH, \cX), an escape bash does not know left as written, and the text cut at a NUL as bash cuts it (a
+// NUL an escape makes: \0, \x{}, \c@, \400). What is no ASCII character is not followed to the byte: a code past
+// Unicode's last, or the bytes left of a character \c took the first byte of, stand as U+FFFD.
 const ANSI_NAMED: Record<string, string> = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
 export function ansiC(body: string): string {
   let out = "";
@@ -70,13 +72,29 @@ export function ansiC(body: string): string {
     if (c !== "\\" || i + 1 >= body.length) { out += c; continue; }
     const rest = body.slice(i + 1, i + 10);
     const named = ANSI_NAMED[rest[0]!];
-    const m = named !== undefined ? null : /^(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/.exec(rest);
     let ch: string;
     if (named !== undefined) { ch = named; i++; }
-    else if (m) { const code = m[1] !== undefined ? parseInt(m[1], 8) & 0xff : parseInt(m[2] ?? m[3] ?? m[4]!, 16); ch = code > 0x10ffff ? "" : String.fromCodePoint(code); i += m[0].length; }
-    else if (rest[0] === "c" && rest.length > 1) { ch = String.fromCharCode(rest.charCodeAt(1) & 0x1f); i += 2; }
-    else { out += c; continue; }
-    if (ch === "\0") return out;
+    else if (rest.startsWith("x{")) {
+      // (\x{H...}: every hex digit to the brace, which may be missing; the character is the last byte, 0 with none.)
+      let k = i + 3;
+      while (k < body.length && /[0-9a-fA-F]/.test(body[k]!)) k++;
+      ch = String.fromCharCode(parseInt(body.slice(Math.max(i + 3, k - 2), k) || "0", 16));
+      i = body[k] === "}" ? k : k - 1;
+    } else if (rest[0] === "c" && rest.length > 1) {
+      // (\cX is control-X, \c? is DEL; of two backslashes after \c bash takes both as the one character. Of a
+      // character that is not ASCII bash takes its first byte.)
+      const cp = body.codePointAt(i + 2)!;
+      const first = cp < 0x80 ? cp : cp < 0x800 ? 0xc0 | (cp >> 6) : cp < 0x10000 ? 0xe0 | (cp >> 12) : 0xf0 | (cp >> 18);
+      ch = rest[1] === "?" ? "\x7f" : String.fromCharCode(first & 0x1f) + (cp < 0x80 || !(first & 0x1f) ? "" : "\ufffd");
+      i += rest[1] === "\\" && rest[2] === "\\" ? 3 : cp > 0xffff ? 3 : 2;
+    } else {
+      const m = /^(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/.exec(rest);
+      if (!m) { out += c; continue; }
+      const code = m[1] !== undefined ? parseInt(m[1], 8) & 0xff : parseInt(m[2] ?? m[3] ?? m[4]!, 16);
+      ch = code > 0x10ffff ? "\ufffd" : String.fromCodePoint(code);
+      i += m[0].length;
+    }
+    if (ch[0] === "\0") return out;
     out += ch;
   }
   return out;

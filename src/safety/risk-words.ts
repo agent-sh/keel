@@ -44,10 +44,14 @@ export const SCRIPT_MAX = 4_000;
 export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash|rbash|rzsh|rksh|mksh|ksh93|yash|csh|tcsh)$/;
 // A client told to print the credential it holds, as the store under the home it keeps it in, else null: gh auth
 // token, gcloud auth print-access-token, aws configure export-credentials, git credential fill, secret-tool lookup.
-// Its output is the credential, as a read of the store's file is. (Asked for its help it prints none.)
+// Its output is the credential, as a read of the store's file is. Asked for its help it prints none: --help where
+// it is no option's value, `aws help` and `gcloud help` as the first word, aws's help as the last (`aws --profile
+// help configure export-credentials` names a profile).
 export function printsHeld(words: string[]): string | null {
   const p = name(words[0]);
-  if (words.includes("--help") || ((p === "aws" || p === "gcloud") && words.includes("help"))) return null;
+  const free = (k: number) => k > 0 && !words[k - 1]!.startsWith("-");
+  if (words.some((a, k) => a === "--help" && free(k))) return null;
+  if ((p === "aws" || p === "gcloud") && (words[1] === "help" || (p === "aws" && words.at(-1) === "help" && free(words.length - 1)))) return null;
   if (p === "gh") return words[1] === "auth" && (words[2] === "token" || (words[2] === "status" && words.some((a) => a === "--show-token" || /^-[a-zA-Z]*t/.test(a)))) ? ".config/gh" : null;
   if (p === "gcloud") return words.includes("auth") && words.some((a) => /^print-(access|identity)-token$/.test(a)) ? ".config/gcloud" : null;
   if (p === "aws") return words.includes("export-credentials") ? ".aws" : null;
@@ -65,28 +69,37 @@ export function printsHeld(words: string[]): string | null {
 // words after it are its $0 and arguments.
 // Options that cannot be read so (a variable that may hold some, `bash $OPTS -c`; another shell's option with a
 // value, `zsh --emulate sh -c`, `zsh -oerrexit -c`, `fish -d 3 -c`) end the reading with no -c found. Then the
-// first word before a `--` that is a cluster with c names the script, read on from there: a script too many is
-// read (`sh run.sh -c x`), never one too few.
+// first word that is a cluster with c names the script, read on from there: a script too many is read (`sh run.sh
+// -c x`), never one too few. A `--` or `-` ends the options, and what follows is a script file and its words
+// (`bash -- -c x` runs a file named -c), only when every word before it was read for sure: a word the line's
+// shell writes (`$X`, a substitution, a pattern) may be nothing, an option or an option with its value, and a
+// long option or a letter that takes a value in one of the shells (fish's -d, ksh's -R, mksh's -T) may take the
+// `--` as its value (`X='-c $2'; bash $X -- -c 'script'`, `bash --rcfile $X -- -c 'script'`, `fish -d -- -c 'script'`).
 // `at`: where the script stands in `args`, -1 with none. `input`: no -c and no script file, -s, or its own input
 // named as the file (/dev/stdin): it reads its commands from its input. A script file it names is `rest[0]`, and
 // is not read. Every rule that reads the script a shell is given finds it here.
 export type Given = { c: boolean; script?: string; at: number; rest: string[]; input: boolean };
-const CLUSTER = /^[-+][a-zA-Z0-9]+$/, VALUED_LONG = /^--(rcfile|init-file|emulate)$/;
+const CLUSTER = /^[-+][a-zA-Z0-9]+$/, VALUED_LONG = /^--(rcfile|init-file|emulate)$/, BUILT = /[$`*?[{]/;
+// (The long options and the letters that take no value in any of the shells; -o and -O take one, read as it stands.)
+const PLAIN_LONG = /^--(login|norc|noprofile|posix|restricted|verbose|noediting|debugger|interactive|private|no-config|no-execute)$/, PLAIN = /^[-+][aehiklmnorstuvxBEHOPc]+$/;
 export const STDIN_FILE = /^\/(dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/;
 export function shellGiven(args: string[]): Given {
-  let c = false, s = false, i = 0;
+  // (`sure`: every word so far is an option whose value, if it takes one, is known in every shell.)
+  let c = false, s = false, i = 0, sure = true, ended = false;
   for (; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--" || a === "-") { i++; break; }
+    if (a === "--" || a === "-") { i++; ended = sure; break; }
+    if (BUILT.test(a)) break;
+    let values = 0;
     // (fish: --command and --init-command take a script as -c does.)
-    if (a.startsWith("--")) { if (a === "--command" || a === "--init-command") c = true; else if (VALUED_LONG.test(a)) i++; continue; }
-    if (!CLUSTER.test(a)) break;
-    c ||= a.includes("c"); s ||= a.includes("s");
-    for (let k = 1; k < a.length; k++) if (a[k] === "o" || a[k] === "O") i++;
+    if (a.startsWith("--")) { if (a === "--command" || a === "--init-command") c = true; else if (VALUED_LONG.test(a)) values = 1; else if (!PLAIN_LONG.test(a)) sure = false; }
+    else if (!CLUSTER.test(a)) break;
+    else { c ||= a.includes("c"); s ||= a.includes("s"); if (!PLAIN.test(a)) sure = false; for (let k = 1; k < a.length; k++) if (a[k] === "o" || a[k] === "O") values++; }
+    if (args.slice(i + 1, i + 1 + values).some((v) => BUILT.test(v))) { if (!c) break; sure = false; }
+    i += values;
   }
-  if (!c) {
-    const end = args.findIndex((a) => a === "--" || a === "-");
-    const k = args.findIndex((a, j) => (end < 0 || j < end) && CLUSTER.test(a) && a.includes("c"));
+  if (!c && !ended) {
+    const k = args.findIndex((a) => CLUSTER.test(a) && a.includes("c"));
     if (k >= 0) { const later = shellGiven(args.slice(k)); if (later.c) return { ...later, at: later.at < 0 ? -1 : later.at + k }; }
   }
   const rest = args.slice(i);

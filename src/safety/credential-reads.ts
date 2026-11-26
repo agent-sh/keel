@@ -15,8 +15,27 @@ import { codeGiven, laid, type Laid } from "./risk.ts";
 import { INTERPRETERS, name as baseName, printsHeld } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
 
-// A part whose output is sent to nothing: > /dev/null, &> /dev/null, 1> /dev/null (in its text with the quoted strings out).
-const SUNK = /(?:^|\s)(?:1|&)?>>?\s*\/dev\/null(?=[\s;&|)]|$)/;
+// A part whose output is sent to nothing: the last place its text (the quoted strings out, a comment cut off) sends
+// its standard output is /dev/null (> /dev/null, &> /dev/null, 1>> /dev/null). A later one wins, as in the shell:
+// `> /dev/null > t.txt` writes the file, `> /dev/null >&2` prints. (A number is a descriptor only as a word of
+// its own: `x2> f` sends standard output.)
+function sunk(text: string): boolean {
+  const t = text.replace(/(^|\s)#.*/s, "$1");
+  let last: string | undefined;
+  for (let i = t.indexOf(">"); i >= 0; i = t.indexOf(">", i)) {
+    let k = i;
+    while (k > 0 && /\d/.test(t[k - 1]!)) k--;
+    const fd = k < i && (k === 0 || /[\s;&|()<>]/.test(t[k - 1]!)) ? t.slice(k, i) : "1";
+    const both = k === i && t[i - 1] === "&";
+    const rw = k === i && t[i - 1] === "<";
+    i++;
+    if (t[i] === "(") return false;
+    if (t[i] === ">" || t[i] === "|") i++;
+    const target = /^\s*(&?[^\s;&|()<>]*)/.exec(t.slice(i))![1]!;
+    if (!rw && (both || fd === "1")) last = target;
+  }
+  return last === "/dev/null";
+}
 // Programs whose file operands are read for their content (a command of the shell's allow-list prints them, or
 // what they hold). A program that names files only (ls, stat, test, find, wc, a checksum) reads no credential.
 const CONTENT_READERS = new Set(["cat", "tac", "head", "tail", "less", "more", "most", "nl", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "sed", "awk", "gawk", "mawk", "nawk",
@@ -311,7 +330,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     // A client told to print the credential it holds (gh auth token, git credential fill): a read of its store.
     // (One whose output goes nowhere, `secret-tool lookup ... >/dev/null`, only says whether there is one.)
     const held = printsHeld(run.words);
-    if (held && !SUNK.test(part.text.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''"))) note(join(home, held), "the command prints a credential kept in");
+    if (held && !sunk(part.text.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''"))) note(join(home, held), "the command prints a credential kept in");
     if (code && INTERPRETERS.test(prog)) {
       const by = `the command gives ${prog} code that names`;
       const given = codeGiven(run);

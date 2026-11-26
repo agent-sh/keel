@@ -56,18 +56,17 @@ function positional(script: string, rest: string[], home: string): string | unde
 }
 
 // What one line's reading has read so far: each script once in a folder (a script and its written-out form hold
-// the same scripts inside them, which are read once, not once for each), and no more nested text in all than `left`
-// (the line's own here-documents are not counted: each is read once as it stands and once written out).
+// the same scripts inside them, which are read once, not once for each), and no more nested text in all than
+// NESTED_MAX, whatever the line's length (the line's own here-documents are not counted: each is read once as it
+// stands and once written out). A line that hands shells more than that asks, as one nested too deep does.
 type Read = { seen: Set<string>; left: number };
+// (A script at the bound with one as long inside it, each as it stands and written out.)
+export const NESTED_MAX = 4 * SCRIPT_MAX;
 
 export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, unread?: Unread[], state?: Read): Inner[] {
   const out: Inner[] = [];
   if (depth >= DEPTH) return out;
-  // (The nested text a line may have read in all: a few times its own length. A line built to be read more often
-  // than that is said, as one nested too deep is.)
-  let size = 0;
-  if (!state) for (const p of parts) size += p.text.length;
-  const st = state ?? { seen: new Set<string>(), left: 4 * size + 65_536 };
+  const st = state ?? { seen: new Set<string>(), left: NESTED_MAX };
   const keyOf = (text: string, i: number) => `${pre.dirs[i] ?? ""}\0${pre.firm[i] === true}\0${text}`;
   const read = (text: string, i: number, free: boolean) => {
     const key = keyOf(text, i);
