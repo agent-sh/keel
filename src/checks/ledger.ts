@@ -20,7 +20,7 @@
 // checks.keep_runs). That holds weeks of a busy day's runs, and the base's
 // recent commits it is asked about.
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { settings } from "../admin/settings.ts";
 import { addAll, git, locate } from "../core/git.ts";
@@ -28,6 +28,7 @@ import type { Store } from "../core/store.ts";
 import { headHold } from "../safety/head-trust.ts";
 import { sandboxScope } from "../safety/sandbox-scope.ts";
 import { FILE, normDir, overlay, parseChecks, readChecks, type Named as NamedChecks } from "./named.ts";
+import { cacheId, pruneCheckFiles } from "./retention.ts";
 import type { Result, Run } from "./words.ts";
 
 export const KEEP = 20_000;
@@ -77,6 +78,7 @@ CREATE INDEX IF NOT EXISTS check_runs_head ON check_runs(head, session_id, ended
 
 let store: Store | undefined;
 let keep = KEEP;
+let stopRetention: (() => void) | undefined;
 export function bindLedger(s: Store) {
   store = s;
   s.migrate(SCHEMA);
@@ -86,9 +88,21 @@ export function bindLedger(s: Store) {
   // What a restart left owed is kept a week; a mark to run anyway, a day.
   s.db.query("DELETE FROM check_pending WHERE created < ?").run(Date.now() - 7 * 86400_000);
   s.db.query("DELETE FROM check_anyway WHERE created < ?").run(Date.now() - 86400_000);
+  stopRetention?.();
+  const dir = join(s.stateDir, "checks");
+  const stop = new AbortController();
+  let running: Promise<void> | undefined;
+  const sweep = () => running ??= pruneCheckFiles(dir, stop.signal, sweepIdle)
+    .catch(() => {}) // A scratch sweep is best effort; the next pass retries.
+    .finally(() => { running = undefined; });
+  // A daemon need not restart to give back scratch files.
+  const timer = setInterval(() => void sweep(), 3600_000);
+  timer.unref?.();
+  stopRetention = () => { clearInterval(timer); stop.abort(); };
+  return sweep();
 }
 // (A test that bound a store of its own lets go of it: the ledger is process-wide.)
-export const unbindLedger = () => { store = undefined; };
+export const unbindLedger = () => { stopRetention?.(); stopRetention = undefined; store = undefined; };
 // The passes and failures of every check on one tree, newest first (an agent's work note, src/automation/leftovers.ts).
 export const decidedOn = (tree: string, limit = 200): Run[] =>
   !tree ? [] : db()?.query<Run, [string, number]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_tree WHERE tree = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT ?`).all(tree, limit) ?? [];
@@ -153,22 +167,45 @@ export function fromTop(repo: Repo, folder: string): string | undefined {
 // --- the tree
 
 const indexes = new Map<string, Promise<unknown>>();
+const readers = new Map<string, number>();
+function queueIndex<T>(index: string, use: () => Promise<T>): Promise<T> {
+  const prev = indexes.get(index) ?? Promise.resolve();
+  const run = prev.then(use);
+  const tail = run.catch(() => {});
+  indexes.set(index, tail);
+  void tail.then(() => { if (indexes.get(index) === tail) indexes.delete(index); });
+  return run;
+}
+const sweepIdle = (index: string, sweep: () => Promise<void>) =>
+  indexes.has(index) || readers.has(index) ? undefined : queueIndex(index, sweep);
+// A beside run can still be reading a tree after the look that wrote it ended.
+export function holdCheckCache(repo: Repo): () => void {
+  if (!store) return () => {};
+  const index = join(store.stateDir, "checks", `index-${cacheId(repo.gitDir)}`);
+  readers.set(index, (readers.get(index) ?? 0) + 1);
+  return () => {
+    const left = (readers.get(index) ?? 1) - 1;
+    if (left) readers.set(index, left); else readers.delete(index);
+  };
+}
 // Keel's own object folder for a repository's looks: the blobs of new and changed files and the trees a look
 // writes (a copy of the files is checked out from it and the repository's own objects: src/checks/beside-run.ts).
-export const objectsOf = (repo: Repo): string | undefined => store && join(store.stateDir, "checks", `objects-${createHash("sha256").update(repo.gitDir).digest("hex").slice(0, 20)}`);
+export const objectsOf = (repo: Repo): string | undefined => store && join(store.stateDir, "checks", `objects-${cacheId(repo.gitDir)}`);
 export type Look = { tree: string; head: string | null } | { tree: null; head: string | null; why: string };
 // The tree of the work tree as it is now, and the commit it has out; `tree` null with why when it was not read.
 export async function treeOf(repo: Repo): Promise<Look | undefined> {
   if (!store) return undefined;
   const dir = join(store.stateDir, "checks");
-  const id = createHash("sha256").update(repo.gitDir).digest("hex").slice(0, 20);
+  const id = cacheId(repo.gitDir);
   const index = join(dir, `index-${id}`);
-  const objects = objectsOf(repo)!;
+  const objects = join(dir, `objects-${id}`);
   const written = `${objects}.bytes`;
   // One look at a time per index: two at once would write it under each other.
-  const prev = indexes.get(index) ?? Promise.resolve();
-  const run = prev.then(async (): Promise<Look> => {
+  const run = queueIndex(index, async (): Promise<Look> => {
     mkdirSync(join(objects, "info"), { recursive: true });
+    // An atomic name for the git directory, independent of the index's mtime.
+    // A filesystem that cannot make the link still uses the unmarked cache.
+    try { symlinkSync(repo.gitDir, `${index}.gitdir`); } catch {}
     const real = join(repo.gitDir, "index");
     const mark = `${index}.from`;
     let st = "";
@@ -214,9 +251,6 @@ export async function treeOf(repo: Repo): Promise<Look | undefined> {
     const tree = (await call(["write-tree"])).trim();
     return { tree, head: await headOf() };
   });
-  const tail = run.catch(() => {});
-  indexes.set(index, tail);
-  void tail.then(() => { if (indexes.get(index) === tail) indexes.delete(index); });
   try { return await run; } catch { return undefined; }
 }
 

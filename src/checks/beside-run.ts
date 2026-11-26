@@ -33,7 +33,7 @@ import { timed } from "../admin/stall.ts";
 import { BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, hostLoadOf, limitOf, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
 import { countsOf } from "./counts.ts";
 import { baseFor, inFlight } from "./runs.ts";
-import { baseOf, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
+import { baseOf, holdCheckCache, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
 import type { Check } from "./named.ts";
 
 type Deps = {
@@ -93,8 +93,6 @@ export function bindBeside(deps: Deps) {
   timers.clear();
   // (A lane that was running belongs to a module loaded before: its run still ends it.)
   try { for (const n of readdirSync(dir())) if (![...lanes.keys()].some((id) => n.startsWith(scratchName(id)))) rmSync(join(dir(), n), { recursive: true, force: true }); } catch {} // none yet
-  // Logs a week old go.
-  try { for (const n of readdirSync(join(dir(), "..", "beside-logs"))) { const p = join(dir(), "..", "beside-logs", n); if (Date.now() - statSync(p).mtimeMs > 7 * 86400_000) rmSync(p, { force: true }); } } catch {} // none yet
 }
 
 // The checks beside a session's agent, when its repository names any.
@@ -211,7 +209,10 @@ async function runIn(id: string, held: string[]): Promise<Done> {
   if (toWhom(d!.agentOf(id)) === "none") return { tree: null };
   const named = namedBeside(s);
   if (!named) return { tree: null };
-  const { repo, checks } = named;
+  const release = holdCheckCache(named.repo);
+  try { return await runOnTree(id, s, named, held); } finally { release(); }
+}
+async function runOnTree(id: string, s: Session, { repo, checks }: { repo: Repo; checks: Check[] }, held: string[]): Promise<Done> {
   const lane = lanes.get(id)!;
   const look = await treeOf(repo);
   if (!look?.tree) return { tree: null };
