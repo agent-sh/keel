@@ -1063,14 +1063,17 @@ function decideBoth(command: string, written: string, f: Facts, cwd: string, int
 // word is a path the command does not spell out: high risk, with the path to write into the command, as a delete
 // through such a name is. A name with nothing protected in sight asks nobody.
 // The reading is bounded for the whole line, the scripts it hands a shell included: each candidate path is a look
-// at the disk, so at most `PATHS` of them are tried, and a word longer than a path can be (`WORD`) is not read.
-// A line past either is not known to name nothing protected: it asks as high risk, as a command with more files
-// than the rules read does.
+// at the disk, so at most `PATHS` different ones are looked at (and ten times as many spelled), and a word or a
+// candidate longer than a path can be (`WORD`) is not read. Nothing is cut short within the bound: a name stands
+// for every value the line shows it given, and a word for every way its names combine, so no number of other
+// values hides one. A line past a bound is not known to name nothing protected: it asks as high risk, as a
+// command with more files than the rules read does.
 // (`memo`: what each name may stand for, worked out once; `busy`: the names being worked out, each with what is
-// found for it so far, so one set from itself (`D=$D/sub`) reads what the line gave it before; `left`: the names one
-// line is followed through; `given`: where the line's words give each name a value; `cost`: what is left of the bound.)
-type Cost = { paths: number; over: boolean };
-type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; left: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string }[]>; from?: { scope: Line; at: number } };
+// found for it so far, so one set from itself (`D=$D/sub`) reads what the line gave it before; `deep`: how many
+// names deep the reading is; `given` and `looped`: where the line's words give each name a value, and the loops
+// that take it through their words; `cost`: what is left of the bound, and what each path looked at came to.)
+type Cost = { paths: number; tries: number; over: boolean; wrote: Map<string, OwnerOnly | null>; read: Map<string, Credential | null> };
+type Line = { parts: Simple[]; pre: Laid; vals: Values; sets: Set<string>; memo: Map<string, string[]>; busy: Map<string, string[]>; deep: number; cost: Cost; given?: Map<string, { at: number; k: number; op: string; value: string }[]>; looped?: Map<string, number[]>; from?: { scope: Line; at: number } };
 // (`shown`: every part of the path is in the line's words, with what the written-out line would be told of it.)
 type Unspelt = { word: string; path: string; rule: string; reads?: true; shown?: { why: string; by?: string; api?: string } };
 // (A value the words do not show: a candidate that starts with it stands in some folder.)
@@ -1079,7 +1082,7 @@ const SOMEWHERE = "\0";
 const ANY = "\x01", LOOSE = "\x02";
 const whole = (c: string) => !/[\0\x01\x02]/.test(c);
 const ROOTED = /^(\/|~(\/|$))/;
-const CANDIDATES = 8, NAMES = 256, PATHS = 2_000, WORD = 4_096, STEPS = 32;
+const DEEP = 256, PATHS = 2_000, WORD = 4_096, STEPS = 32;
 // An expansion in a word: `${NAME...}`, any other `${...}`, `$NAME`, `$(...)`, a special parameter, a backtick pair.
 // (Each form closes within a few hundred characters or is not read as one: a run of unclosed `${` costs no more than its length.)
 const EXPANSION = /\$\{([#!]?)([A-Za-z_][A-Za-z0-9_]*)([^}]{0,256})\}|\$\{[^}]{0,256}\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$\([^)]{0,256}\)|\$[^\s\/]|`[^`]{0,256}`/g;
@@ -1089,14 +1092,16 @@ const UP = /(^|\/)\.\.(\/|$)/;
 const clean = (c: string) => c.replace(/["'\x02]/g, "").replace(/[*?[\]{}\x01]/g, "_");
 function scopeOf(parts: Simple[], pre: Laid, home: string, cost: Cost, from?: Line["from"]): Line {
   const sets = new Set<string>();
-  return { parts, pre, vals: valuesOf(parts, pre.runs, home, undefined, sets), sets, memo: new Map(), busy: new Map(), left: NAMES, cost, ...(from ? { from } : {}) };
+  return { parts, pre, vals: valuesOf(parts, pre.runs, home, undefined, sets), sets, memo: new Map(), busy: new Map(), deep: 0, cost, ...(from ? { from } : {}) };
 }
 // Where the words of a line give each name a value, read once.
 function givenOf(s: Line): NonNullable<Line["given"]> {
   if (s.given) return s.given;
-  const given: NonNullable<Line["given"]> = new Map();
+  const given: NonNullable<Line["given"]> = new Map(), looped: NonNullable<Line["looped"]> = new Map();
+  s.looped = looped;
   s.parts.forEach((q, at) => {
     if (q.heredoc) return;
+    if (q.loop) { const l = looped.get(q.loop.name); if (l) l.push(at); else looped.set(q.loop.name, [at]); }
     q.words.forEach((w, k) => {
       const m = w.length > WORD ? /^([A-Za-z_][A-Za-z0-9_]*)(\+?=|\[)/.exec(w) : SETS_NAME.exec(w);
       if (!m) return;
@@ -1106,7 +1111,8 @@ function givenOf(s: Line): NonNullable<Line["given"]> {
   });
   return (s.given = given);
 }
-const few = (all: string[]) => { const out = [...new Set(all)]; return out.length > CANDIDATES ? [...out.slice(0, CANDIDATES - 1), SOMEWHERE] : out; };
+// Every different candidate, counted against the line's bound: more of them than it looks at paths is more than is read.
+const each = (all: string[], s: Line) => { const out = [...new Set(all)]; if (out.length > PATHS || (s.cost.tries -= out.length) < 0) { s.cost.over = true; return []; } return out; };
 // Whether a word holds a name this line, or the line that hands it its script, sets.
 function namesSet(word: string, s: Line): boolean {
   if (!word.includes("$")) return false;
@@ -1126,11 +1132,14 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
   if (kept) return kept;
   const sofar = s.busy.get(n);
   if (sofar) return sofar.length ? [...sofar] : [SOMEWHERE];
-  if (s.left-- <= 0) return [SOMEWHERE];
+  // (Names set from names, deeper than a line goes: not followed, and not known to lead nowhere protected.)
+  if (s.deep >= DEEP) { s.cost.over = true; return []; }
   const out: string[] = [];
   s.busy.set(n, out);
-  s.parts.forEach((q, j) => { if (!q.heredoc && q.loop?.name === n) for (const item of q.loop.items) out.push(...wordStands(item, j, s, home)); });
-  for (const { at: j, k, op, value } of givenOf(s).get(n) ?? []) {
+  s.deep++;
+  const given = givenOf(s).get(n) ?? [];
+  for (const j of s.looped!.get(n) ?? []) for (const item of s.parts[j]!.loop!.items) out.push(...wordStands(item, j, s, home));
+  for (const { at: j, k, op, value } of given) {
     const q = s.parts[j]!;
     // (An array, an addition, or a word that only starts like an assignment: a script handed to ssh, `X=1; cmd` in quotes.)
     if (op !== "=" || value.startsWith("(") || (value.length <= WORD && /[\s;&|<>()]/.test(value.replace(/\$\(\.\.\.\)|`\.\.\.`/g, "")))) { out.push(SOMEWHERE); continue; }
@@ -1140,7 +1149,8 @@ function nameStands(n: string, i: number, s: Line, home: string): string[] {
     for (const c of q.how?.[q.dyn?.indexOf(k) ?? -1]?.subs.flat() ?? []) if (PRINTS.test(baseName(c.words[0]))) for (const a of c.words.slice(1)) if (!a.startsWith("-")) out.push(...wordStands(a, j, s, home).map(loose));
   }
   // (A name a builtin reads a value into, or a loop over words the parser did not keep.)
-  const all = few(out.length ? out : [SOMEWHERE]);
+  const all = each(out.length || s.cost.over ? out : [SOMEWHERE], s);
+  s.deep--;
   s.busy.delete(n);
   s.memo.set(n, all);
   return all;
@@ -1158,7 +1168,10 @@ function wordStands(word: string, i: number, s: Line, home: string): string[] {
     const vs = n === undefined ? [SOMEWHERE] : plain ? nameStands(n, i, s, home) : [...nameStands(n, i, s, home).map(loose), SOMEWHERE];
     // (A value the words do not show stands in some folder when the word starts with it. After words that are
     // shown it is also one name there, as a wildcard is: `~/.ssh/$y` is a file of that folder.)
-    outs = few(vs.flatMap((v) => (v.startsWith(SOMEWHERE) ? [v, ...outs.filter((o) => o + lit !== "" && o + lit !== SOMEWHERE).map((o) => o + lit + ANY + v.slice(1))] : outs.map((o) => o + lit + v))));
+    // (Before the product is made: more ways than the bound has paths, or a candidate no path is as long as.)
+    if (vs.length * outs.length > 2 * PATHS || vs.some((v) => v.length > WORD) || outs.some((o) => o.length > WORD)) { s.cost.over = true; return []; }
+    outs = each(vs.flatMap((v) => (v.startsWith(SOMEWHERE) ? [v, ...outs.filter((o) => o + lit !== "" && o + lit !== SOMEWHERE).map((o) => o + lit + ANY + v.slice(1))] : outs.map((o) => o + lit + v))), s);
+    if (s.cost.over) return [];
   }
   return outs.map((o) => o + word.slice(at));
 }
@@ -1167,7 +1180,7 @@ function unspelt(command: string, f: Facts, cwd: string, all?: string[]): Unspel
   if (!parts) return null;
   const home = f.home ?? homeOf();
   const pre = laid(parts, cwd, home);
-  const cost: Cost = { paths: PATHS, over: false };
+  const cost: Cost = { paths: PATHS, tries: 10 * PATHS, over: false, wrote: new Map(), read: new Map() };
   const top = scopeOf(parts, pre, home, cost);
   let hit = top.sets.size ? unspeltIn(top, f, cwd, home, all) : null;
   // (A script the line hands a shell: its own names, and the line's where its text holds them.)
@@ -1233,7 +1246,7 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
         const text = clean(c);
         add(spelled(text, from ?? cwd, home), whole(c) && (from !== null || ROOTED.test(text)));
       }
-      led.set(cd.key, to = [...dirs].slice(0, CANDIDATES).map(([dir, shown]) => ({ dir, shown })));
+      led.set(cd.key, to = [...dirs].map(([dir, shown]) => ({ dir, shown })));
     }
     return to;
   };
@@ -1249,7 +1262,7 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
     const stem = !some && c.includes(ANY) && !/[\0\x02]/.test(c) ? clean(c.slice(0, c.indexOf(ANY))) : null;
     for (const { dir, shown } of some ? usual(i) : ROOTED.test(text) ? [{ dir: "/", shown: true }] : folders(i)) {
       for (const t of some && UP.test(text) ? [text, text.replace(/(^|\/)\.\.(?=\/|$)/g, "$1.")] : [text]) {
-        if (s.cost.paths-- <= 0) { s.cost.over = true; return out; }
+        if (s.cost.tries-- <= 0) { s.cost.over = true; return out; }
         const p = spelled(t, dir, home);
         const within = p && shown && stem ? spelled(stem.endsWith("/") ? stem : dirname(`${stem}_`), dir, home) : null;
         if (p) out.push({ path: p, shown: shown && !some && whole(c), ...(within ? { within } : {}) });
@@ -1257,13 +1270,22 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
     }
     return out;
   };
+  // What a path is, looked at once for the line: a path looked at before costs nothing.
+  const looked = <T,>(kept: Map<string, T | null>, path: string, look: () => T | null): T | null => {
+    const got = kept.get(path);
+    if (got !== undefined) return got;
+    if (s.cost.paths-- <= 0) { s.cost.over = true; return null; }
+    const it = look();
+    kept.set(path, it);
+    return it;
+  };
   const tilded = (p: string) => (contains(home, p) && p !== home ? `~/${relative(home, p)}` : p);
   // (`found`: the first path that may be protected; a path the line shows whole ends the reading.)
   let found: Unspelt | null = null;
   const writes = (word: string, i: number): Unspelt | null => {
     for (const c of wordStands(word, i, s, home)) for (const { path, shown } of s.cost.over ? [] : pathsOf(c, i)) {
       // (Not left to the sandbox: a path nobody spelled is not surely the one the sandbox holds.)
-      const o = ownerOnlyNamed(path, "/", f, "writes");
+      const o = looked(s.cost.wrote, path, () => ownerOnlyNamed(path, "/", f, "writes"));
       if (!o) continue;
       // (A path shown whole is the written-out line's: the owner's, unless the sandbox is what stops that write.)
       if (shown && ownerOnlyNamed(path, "/", f, "writes", true)) return { word, path: tilded(path), rule: o.rule, shown: { why: o.why } };
@@ -1273,7 +1295,7 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
   };
   const reads = (word: string, i: number, by: string): Unspelt | null => {
     for (const c of wordStands(word, i, s, home)) for (const { path, shown, within } of s.cost.over ? [] : pathsOf(c, i)) {
-      const cred = credentialOf(path, f);
+      const cred = looked(s.cost.read, path, () => credentialOf(path, f));
       if (!cred) continue;
       if (all) { all.push(cred.path); continue; }
       // (As a written-out read is judged: in the sandbox only one it shows, outside the session's folder, to an agent.)

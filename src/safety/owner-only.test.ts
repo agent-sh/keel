@@ -209,6 +209,23 @@ test("a line that names files through its names in more ways than the rules read
   expect(judged(`for f in ${rep(300, (i) => `a${i} `)}; do cat $f; done`, "full-auto")[0]).toBe("allow");
 });
 
+test("no number of other values or names hides the one that leads to a protected file", () => {
+  const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  for (const command of [
+    // A ninth value, a ninth folder a `cd` may lead to, and a name after hundreds of others.
+    "for D in 1 2 3 4 5 6 7 8 /home/u/.config/gh; do cat $D/hosts.yml; done", "D=1; D=2; D=3; D=4; D=5; D=6; D=7; D=8; p=/home/u/.aws; D=$p; cat $D/credentials",
+    "for A in 1 2 3 4 5 6 7 8 /home/u/.ssh; do cd $A; cat id_rsa; done", `for D in ${rep(40, (i) => `d${i} `)}/home/u/own; do echo x > $D/.git/config; done`,
+    `${rep(300, (i) => `n${i}=$(pwd); `)}p=/home/u/own/.git; q=$p; K=$q; cat ${rep(300, (i) => `$n${i}/f `)}> $K/config`,
+  ]) expect([command.slice(0, 80), shell(command), shell(command, "full-auto")]).toEqual([command.slice(0, 80), "owner", "ask-high"]);
+  // A value that doubles at each step is not built: past the length of a path it is more than is read.
+  const doubling = `a0=x; true && a0=y; ${rep(20, (i) => `a${i + 1}=$a${i}$a${i}; `)}cat $a20/f`;
+  expect([shell(doubling), shell(doubling, "full-auto")]).toEqual(["ask-high", "ask-high"]);
+  // Many values with nothing protected among them run as they did.
+  const many = `for f in ${rep(800, (i) => `src/f${i}.ts `)}; do wc -l $f; grep -c x $f; cat $f > /dev/null; done`;
+  expect([shell(many), shell(many, "full-auto")]).toEqual(["allow", "allow"]);
+});
+
 test("a tool given an owner-only file's path is the owner's; other paths and text are not paths", () => {
   expect(pathsNamed({ path: "~/.bashrc", content: "x", nested: { files: ["/etc/hosts", "relative/a.txt"] }, note: "see /home/u/.bashrc for more" })).toEqual(["~/.bashrc", "/etc/hosts"]);
   const tool = (input: unknown, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "other", paths: pathsNamed(input) }, facts(mode, more)));
