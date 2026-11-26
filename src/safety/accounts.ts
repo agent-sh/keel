@@ -468,25 +468,50 @@ function resolveHost(w: Write, env: Env): Write {
 // git [-C dir] push ...: the folder of a -C is the one asked about. It is handed on as written, from the folder the
 // command runs in: git changes folder through the disk, where a `..` after a link leaves the link's target, so the
 // disk resolves it (src/core/git.ts realDir), not the text.
-function gitWrites(words: string[], env: Env): Write[] {
-  let i = 1, dir = env.dir, moved = env.moved;
-  const gitDir = (p: string | undefined) => {
-    moved = true;
-    if (p === undefined || dynamic(p) || !/(^|\/)\.git\/?$/.test(p)) { dir = null; return; }
-    const base = p.replace(/\/?\.git\/?$/, "");
-    dir = base.startsWith("/") ? base : p.startsWith("/") ? "/" : base === "" ? env.dir : env.dir === null ? null : `${env.dir}/${base}`;
-  };
+// --git-dir names the repository itself, whatever folder a -C before or after it leaves git in: a relative one is read
+// from that folder, one written from the root stands as it is.
+const GIT_TAKES = new Set(["-c", "--config-env", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--attr-source"]);
+function gitAt(words: string[], env: Env): { at: number; dir: string | null; moved?: true } {
+  let i = 1, cwd = env.dir, moved = env.moved;
+  let gitDir: string | null | undefined; // as given; null: not one the rules read
+  const given = (p: string | undefined) => { gitDir = p === undefined || dynamic(p) || !/(^|\/)\.git\/?$/.test(p) ? null : p; };
   while (i < words.length && words[i]!.startsWith("-")) {
     const o = words[i]!;
-    if (o === "-C") { moved = true; const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : `${dir}/${p}`; }
-    else if (o === "--git-dir") gitDir(words[++i]);
-    else if (o.startsWith("--git-dir=")) gitDir(o.slice(10));
-    else if (o === "-c" || o === "--config-env" || o === "--work-tree" || o === "--namespace" || o === "--exec-path" || o === "--super-prefix" || o === "--attr-source") i++;
+    if (o === "-C") { moved = true; const p = words[++i]; cwd = p === undefined || dynamic(p) || cwd === null ? null : p.startsWith("/") ? p : `${cwd}/${p}`; }
+    else if (o === "--git-dir") given(words[++i]);
+    else if (o.startsWith("--git-dir=")) given(o.slice(10));
+    else if (GIT_TAKES.has(o)) i++;
     i++;
   }
-  if (words[i] !== "push") return [];
+  let dir = cwd;
+  if (gitDir !== undefined) {
+    moved = true;
+    const base = gitDir === null ? null : gitDir.replace(/\/?\.git\/?$/, "");
+    dir = base === null ? null : base.startsWith("/") ? base : gitDir!.startsWith("/") ? "/" : base === "" ? cwd : cwd === null ? null : `${cwd}/${base}`;
+  }
+  return { at: i, dir, ...(moved ? { moved } : {}) };
+}
+function gitWrites(words: string[], env: Env): Write[] {
+  const g = gitAt(words, env);
+  if (words[g.at] !== "push") return [];
   if (env.rebinds) return rebound("git push", env);
-  return gitPush(words.slice(i + 1), { ...env, dir, ...(moved ? { moved } : {}) });
+  return gitPush(words.slice(g.at + 1), { ...env, dir: g.dir, ...(g.moved ? { moved: g.moved } : {}) });
+}
+
+// The writes of a command whose last words another command's output supplies (xargs, parallel): they can name another
+// remote, repository or package than the words the line spells, so none of them is placed. A git whose own command is
+// among the words supplied may be a push.
+export function writesFed(words: string[], env: Env): Write[] {
+  const first = words[0]?.slice(words[0].lastIndexOf("/") + 1);
+  if (!first) return [];
+  const why = "its last words come from another command's output (xargs), which can name another remote, repository or package";
+  const unread = (does: string): Write[] => [{ does, account: null, why: `the ${does} command it runs comes from another command's output (xargs)` }];
+  if (first === "git") {
+    const at = gitAt(words, env).at;
+    return at >= words.length ? unread("git") : words[at] === "push" ? [{ does: "git push", account: null, why }] : [];
+  }
+  if ((first === "gh" || first === "glab") && words.length === 1) return unread(first);
+  return writesOf(words, env).map((w) => ({ does: w.does, account: null, why }));
 }
 
 // The first write in a line the owner has no namespace for, or null. `unsure`: writes the rules could not place.

@@ -2,7 +2,7 @@
 // standing answers that apply. Pure: the gate supplies the facts.
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accountFacts, foreign, foreignAll, namedOwners, namespaceOf, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
+import { accountFacts, foreign, foreignAll, namedOwners, namespaceOf, ownsOwner, say, whyForeign, writesFed, writesOf as writesPlain, type Env as AccountEnv, type Namespace, type Write } from "./accounts.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
 import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
@@ -889,7 +889,10 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
     if (part.heredoc) return;
     const run = pre.runs[i]!;
     const kept = [...scope.exported].filter((k) => scope.vars.has(k)).map((k) => `${k}=${scope.vars.get(k)}`);
-    const dir = pre.dirs[i] ?? null;
+    // (find -execdir runs its command in the folder of each file it found, not where the line is.)
+    const dir = run.fed === "find" && part.words.some((x) => x === "-execdir" || x === "-okdir") ? null : pre.dirs[i] ?? null;
+    // A command xargs or parallel hands its last words to is not placed by the words the line spells.
+    const writesToAccounts = (words: string[], e: AccountEnv) => (run.fed === "xargs" ? writesFed(words, e) : writesPlain(words, e));
     const others = from?.unsure && !or[i]!.includes(null) ? [...or[i]!, null] : or[i]!;
     const base = { set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}),
       ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}),

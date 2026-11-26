@@ -459,6 +459,38 @@ test("a folder with a .. in it is asked of the disk as written, and not followed
   expect(where("bash -c 'cd /w/own && git push'", "/w/clone")).toBeNull();
 });
 
+// --git-dir names the repository itself: a -C before or after it changes the folder a relative one is read from, not the
+// repository. A command xargs or parallel feeds takes its last words from another command's output, and find -execdir
+// runs its command in the folder of what it found: neither is placed by the words the line spells.
+test("--git-dir stands whatever -C says, and a write another command's output feeds is not placed", () => {
+  const where = (command: string, cwd = "/w/own") => {
+    const d = run(command, cwd, "ask");
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  const rows: [string, string | null, string?][] = [
+    ["git --git-dir=/w/clone/.git -C /w/own push", "github.com/them/lib"],
+    ["git --git-dir /w/clone/.git -C /w/own push origin main", "github.com/them/lib"],
+    ["git -C /w/own --git-dir=/w/clone/.git push", "github.com/them/lib", "/w/fork"],
+    ["git --git-dir=.git -C /w/clone push", "github.com/them/lib"],
+    ["git -C /w --git-dir clone/.git push", "github.com/them/lib"],
+    ["git --git-dir=/w/own/.git -C /w/clone push", null, "/w/clone"],
+    ["git --git-dir=$D/.git -C /w/own push", "unplaced"],
+    ["echo x | xargs git push", "unplaced"],
+    ["echo x | xargs git -C /w/own push origin", "unplaced"],
+    ["echo push | xargs git", "unplaced"],
+    ["echo x | xargs -I{} git push {} main", "unplaced"],
+    ["echo x | parallel git push", "unplaced"],
+    ["echo 5 | xargs gh pr comment -b hi", "unplaced"],
+    ["echo pkg | xargs npm publish", "unplaced"],
+    ["git ls-files | xargs git add", null],
+    ["ls | xargs npm test", null],
+    ["find /w/clone -maxdepth 0 -execdir git push \\;", "unplaced"],
+    ["find . -maxdepth 0 -exec git push \\;", null],
+  ];
+  for (const [command, want, cwd] of rows) expect([command, where(command, cwd)]).toEqual([command, want]);
+  expect((run("echo x | xargs git push", "/w/own", "ask") as { ask: { why: string } }).ask.why).toContain("another command's output");
+});
+
 // A config file the line has git read, a setting it takes from the environment, and the keys that pick the remote of a
 // push by default: each can send a push by name or by default somewhere the repository's remotes do not say.
 test("a line that has git read another config file, or sets which remote a push goes to, is not placed by the remotes on disk", () => {
