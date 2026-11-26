@@ -20,12 +20,14 @@ const WIRE: Record<string, string> = {
   gemini_generate_content: "Gemini",
 };
 
+// A provider's mark. One that is well asks nothing: its dot is grey, as a well row of Health is. One that is not set up
+// is a ring (its line says how to set it up; not having it is no warning). The colour is what is wrong.
 function Dot({ tone }: { tone: "ok" | "warn" | "danger" | "off" }) {
-  return <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", { ok: "bg-ok", warn: "bg-warn", danger: "bg-danger", off: "bg-line-strong" }[tone])} />;
+  return <span className="k-set-dot mt-1.5" data-tone={tone} data-testid="provider-mark" />;
 }
 
 function tone(p: Row): "ok" | "warn" | "danger" | "off" {
-  if (!p.available) return p.sign_in ? "warn" : "off";
+  if (!p.available) return "off";
   if (p.problem) return p.problem.kind === "billing" ? "warn" : "danger";
   if (p.routes?.some((r) => !r.open)) return "warn";
   if (p.listing.state === "failed") return p.listing.models ? "warn" : "danger";
@@ -110,7 +112,7 @@ function ProviderRow({ p }: { p: Row }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="k-truncate text-base font-medium">{p.label}</span>
-          <span className="rounded-xs bg-sunken px-1.5 text-micro text-faint">{WIRE[p.wire] ?? p.wire}</span>
+          <span className="text-micro text-faint" data-testid="provider-wire">{WIRE[p.wire] ?? p.wire}</span>
           {p.kind !== "builtin" && <span className="text-micro text-faint">{p.server ?? p.kind}</span>}
           {p.source === "providers.toml" && <span className="text-micro text-faint">providers.toml</span>}
           {p.source === "providers.toml" && p.kind === "endpoint" && <MoveOut id={p.id} />}

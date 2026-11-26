@@ -330,3 +330,15 @@ test("the Permissions page is made of the Settings kit: every group is named in 
   expect(new Set(edges).size, `the boxes' right edges ${edges}`).toBe(1);
   await shoot(page, "quiet-14-permissions");
 });
+
+test("a provider that is well or not set up asks nothing: its mark is grey, and the colour is what is wrong", async ({ page }) => {
+  await page.goto("/settings/providers");
+  const rows = page.getByTestId("provider-row");
+  await expect(rows.first()).toBeVisible();
+  const marks = await rows.evaluateAll((els) => els.map((el) => { const m = el.querySelector<HTMLElement>('[data-testid="provider-mark"]')!, s = getComputedStyle(m); return { tone: m.dataset.tone, chroma: Math.max(...[s.backgroundColor, s.boxShadow].flatMap((c) => [...c.matchAll(/oklch\(([\d.]+) ([\d.]+)/g)].map((x) => Number(x[2])))) }; }));
+  expect(marks.some((m) => m.tone === "off"), "a provider that is not set up is listed").toBe(true);
+  for (const m of marks) if (m.tone === "ok" || m.tone === "off") expect(m.chroma, `a ${m.tone} mark is grey`).toBeLessThan(0.03);
+  // The wire a provider speaks is a word beside its name, not a chip.
+  expect(await page.getByTestId("provider-wire").first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  await shoot(page, "quiet-15-providers");
+});

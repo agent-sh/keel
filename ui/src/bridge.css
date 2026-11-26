@@ -1643,6 +1643,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-column > * { max-width: 52rem; }
 /* (A group that is a table of figures takes the page's width: in the column its box counts as narrow and drops columns.) */
 .k-set-column > .k-set-wide { max-width: none; }
+/* The mark of a row in Settings that has a state (a provider, the helper's mail): grey when it is well, a ring when it
+   is not set up, a colour only when something is wrong with one that is. */
+.k-set-dot { flex-shrink: 0; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--st-idle); }
+.k-set-dot[data-tone="off"] { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.k-set-dot[data-tone="warn"] { background: var(--warn); }
+.k-set-dot[data-tone="danger"] { background: var(--danger); }
 /* An offer at the top of a group's box (read my words, not wanted): a line and its answers, ruled off from the form. */
 .k-tiers-offer { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); line-height: 1.55; color: var(--muted); }
 
