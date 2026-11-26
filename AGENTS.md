@@ -481,7 +481,12 @@ under `~/.cache/keel-work/bun/research/`.
   with `-`, `_` or `.`. What could not be read (a failed or cut log, a missing body file, a text past the limit) holds
   the call too, with what was not read. The text is scanned in slices with the loop free between. A hit holds the call
   in every mode, full auto included (as the provenance rule does): the owner's card quotes it and allows once, an agent
-  is refused with the same words.
+  is refused with the same words. What he allowed is his answer for the same words there until the session ends
+  (`src/safety/public-allowed.ts`): a finding his card quoted, with the same repositories, file, kind, word and line,
+  whatever commit carries it, is not asked about again, and the card says so. A new one, another repository, one the
+  card only counted, a secret (its line is hidden, so nothing tells it from another), a line too long to show whole,
+  a sentence of his that runs past the line quoted (the card does not show all of it) and whatever could not be read
+  ask as before, and the card lists only what is new.
 - A turn nobody started (a loop run, a wake, a monitor's batch, a watch, an agent's report to an idle
   parent, a goal's later turn) merges, approves, turns on auto-merge, force-pushes and deletes a remote
   branch or tag nothing, in every mode (`src/safety/unstarted.ts`; the owner's message to the session lifts

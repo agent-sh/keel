@@ -19,6 +19,7 @@ import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
 import { accountNames } from "./account-settings.ts";
 import { ghOwnLogin } from "./account-learn.ts";
 import { askVisibility, held as publicHeld, heldRefusal, heldWhy, learner, type Deps as PublicDeps, type Held } from "./public-send.ts";
+import { PublicAllowed, remembered } from "./public-allowed.ts";
 import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
@@ -1923,6 +1924,8 @@ export class Gate {
     let words: Held | null = null;
     if (cls.kind === "shell" && !session.machine && /\b(push|gh)\b/.test(cls.command)) {
       words = await this.privateWords(session, cls.command, cwdOf(call) ?? call.ctx.cwd);
+      // (The words the owner allowed to go there earlier in this session are not asked about again: public-allowed.ts.)
+      if (words) words = (this.wordsAllowed ??= new PublicAllowed(this.store)).left(session.id, words);
       // A line the owner would be asked about because it spells where it goes or what it sends with a variable goes back
       // once to be written out (written-out.ts): the line that comes back is read exactly, and asks only for what it does.
       // A card already parked for this call (a restart while it waited) is taken back, never sent back: the owner's
@@ -1942,11 +1945,14 @@ export class Gate {
       const now = Date.now();
       if (provHeld.hits.length && session.parent_id) return { deny: provRefusal(provHeld.hits, now) };
       const rest = [provHeld.hits.length ? provReason(provHeld.hits, now) : undefined, "ask" in d && (provHeld.hits.length || d.ask.ownerOnly) ? d.ask.why : undefined].filter(Boolean).join("; and ");
-      const why = words ? `${heldWhy(words)}${rest ? `\nAlso: ${rest}` : ""}` : rest;
+      // (The card says what of his answer is kept: public-allowed.ts.)
+      const kept = words ? remembered(words) : "";
+      const why = words ? `${heldWhy(words)}${kept ? `\n${kept}` : ""}${rest ? `\nAlso: ${rest}` : ""}` : rest;
       const out = await this.askOnce(session, call, name, why, words ? "words" : "provenance");
       if (out) return out;
-      // Answered: the owner has said these targets (they are theirs from here on in this session).
+      // Answered: the owner has said these targets (they are theirs from here on in this session), and these words there.
       if (provHeld.hits.length) this.provenance.clear(provHeld.ids, provHeld.hits);
+      if (words) (this.wordsAllowed ??= new PublicAllowed(this.store)).allow(session.id, words);
       return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     }
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
@@ -2013,6 +2019,7 @@ export class Gate {
   // The private words a command sends to a public place, or null: none, a private repository, or a check that could
   // not run (the rules then stand as they were; the error is not the call's).
   publicSend?: PublicDeps;
+  private wordsAllowed?: PublicAllowed;
   private async privateWords(session: Session, command: string, cwd: string): Promise<Held | null> {
     try {
       this.publicSend ??= { visibility: askVisibility, words: learner(this.store) };

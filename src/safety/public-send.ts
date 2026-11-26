@@ -47,7 +47,9 @@ export type Deps = {
 };
 // `mine`: names that are the owner's own and public by being his (his login, his accounts' owners): never private words.
 export type Learned = { words: Words; folders: ReadonlyMap<string, string[]>; mine?: readonly string[] };
-export type Held = { found: Finding[]; acts: string[]; unread: string[] };
+// `to`: the repositories it goes to, when every send of it names one. `again`: findings left out because the owner
+// allowed the same words to the same place earlier in the session (public-allowed.ts).
+export type Held = { found: Finding[]; acts: string[]; unread: string[]; to?: string[]; again?: number };
 
 // Text read per call, in characters: past it the rest of a very large push is not read (and the hold says so).
 const READ_MAX = 8_000_000;
@@ -907,6 +909,8 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
   const said: string[] = [], unread: string[] = [];
   const targets: Repo[] = [];
   let sends = false, pushes = false, firstBase: Base | undefined, rewritten: boolean | "late" | undefined;
+  // (Whether every send names the repository it goes to.)
+  let placed = true;
   // The repository each send goes to, and whether it is public (once for each).
   const vis = new Map<string, Promise<Visibility>>();
   const publicly = async (repo: Repo | null): Promise<boolean> => {
@@ -957,6 +961,7 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
       if (!t.del && !(t.refs.length && !t.wide.length && t.refs.every((x) => x.startsWith(":")))) pushes = true;
       for (const x of [goes ? t.repo : null, other ? t.also : null]) if (x) targets.push(x);
       const to = goes ? t.repo : t.also;
+      if (!to) placed = false;
       said.push(`git push${to ? ` to ${to.host}/${to.path.join("/")}` : ""}`);
       const base = baseOf(a.dir, t);
       firstBase ??= base;
@@ -981,7 +986,7 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
     const r = await ghUnits(a);
     if (send.group === "api" && !r.units.length && !r.unread.length) continue; // (a read)
     sends = true;
-    if (repo) targets.push(repo);
+    if (repo) targets.push(repo); else placed = false;
     said.push(`gh ${send.group}${send.verb ? ` ${send.verb}` : ""}${repo ? ` on ${repo.host}/${repo.path.join("/")}` : ""}`);
     units.push(...r.units); unread.push(...r.unread);
   }
@@ -1029,7 +1034,7 @@ export async function held(command: string, cwd: string, deps: Deps, session: st
     }
     if (!settled.get(name)) keep.push(plain);
   }
-  return keep.length || unread.length ? { found: keep, acts: said, unread } : null;
+  return keep.length || unread.length ? { found: keep, acts: said, unread, ...(placed && targets.length ? { to: [...new Set(targets.map((t) => `${t.host}/${t.path.join("/")}`))] } : {}) } : null;
 }
 
 // The words of a hold, for the card and for an agent: what was found, quoted with its place, and what was not read.
@@ -1037,6 +1042,7 @@ export function heldWhy(h: Held): string {
   const head = `This goes to a public place under your name (${h.acts.join("; ") || "a public send"})`;
   const out = [h.found.length ? `${head} and holds private words:\n${say(h.found)}` : `${head}.`];
   if (h.unread.length) out.push(`Part of it could not be read for private words:\n${h.unread.slice(0, 6).join("\n")}${h.unread.length > 6 ? `\nand ${h.unread.length - 6} more` : ""}`);
+  if (h.again) out.push(`Not listed again: ${h.again} more that you allowed to go there earlier in this session.`);
   return out.join("\n");
 }
 // What an agent is told: the same words, and what to do.

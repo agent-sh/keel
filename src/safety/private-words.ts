@@ -27,7 +27,8 @@ export type Words = {
   // Whether a word is one of ordinary text (the dictionary's): such a word is read with the strict edge of a short one.
   common?: (word: string) => boolean;
 };
-export type Finding = { kind: Kind; word: string; where: string; line: number; text: string; known?: (line: string) => Promise<boolean> };
+// `past`: the words found run past the line quoted (a sentence that wraps), so `text` does not show all of them.
+export type Finding = { kind: Kind; word: string; where: string; line: number; text: string; past?: true; known?: (line: string) => Promise<boolean> };
 // One piece of text with its place: its lines are numbered from `first`. `known` (a list of names) says whether the place
 // the text goes to already has one of its lines.
 export type Unit = { where: string; first: number; text: string; known?: (line: string) => Promise<boolean> };
@@ -102,7 +103,7 @@ export function matcher(words: Words): Matcher {
 
   return (units) => {
     const out: Finding[] = [];
-    const seen = new Set<string>();
+    const seen = new Map<string, Finding>();
     for (const u of units) {
       const text = u.text;
       if (!text.trim()) continue;
@@ -114,17 +115,21 @@ export function matcher(words: Words): Matcher {
         while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid]! <= off) lo = mid; else hi = mid - 1; }
         return lo;
       };
-      const add = (kind: Kind, word: string, off: number, mask?: [number, number], shown?: string) => {
+      const add = (kind: Kind, word: string, off: number, mask?: [number, number], shown?: string, end = off) => {
         const n = lineOf(off);
+        const past = lineOf(end) !== n;
         const from = starts[n]!, to = n + 1 < starts.length ? starts[n + 1]! - 1 : text.length;
         let line = shown ?? text.slice(from, to);
         if (mask && shown === undefined) line = line.slice(0, Math.max(0, mask[0] - from)) + "[hidden]" + line.slice(Math.max(0, mask[1] - from));
         line = line.trim();
         if (line.length > LINE_SHOWN) line = `${line.slice(0, LINE_SHOWN)}...`;
         const key = `${kind}\0${word}\0${u.where}\0${u.first + n}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        out.push({ kind, word, where: u.where, line: u.first + n, text: line });
+        // (One finding a line for a word. Two sentences that open alike on one line are one finding: past, when either is.)
+        const had = seen.get(key);
+        if (had) { if (past) had.past = true; return; }
+        const found: Finding = { kind, word, where: u.where, line: u.first + n, text: line, ...(past ? { past } : {}) };
+        seen.set(key, found);
+        out.push(found);
       };
       if (termRe) for (const m of text.matchAll(termRe)) if (fits(text, m)) add("host", m[0], m.index);
       if (projRe) for (const m of text.matchAll(projRe)) if (fits(text, m)) add("project", m[0], m.index);
@@ -138,7 +143,7 @@ export function matcher(words: Words): Matcher {
             if (i + c.length > w.length) continue;
             let same = true;
             for (let k = KEY_LEN; k < c.length; k++) if (w[i + k] !== c[k]) { same = false; break; }
-            if (same) add("quote", `${c.slice(0, 6).join(" ")} ...`, at[i]!);
+            if (same) add("quote", `${c.slice(0, 6).join(" ")} ...`, at[i]!, undefined, undefined, at[i + c.length - 1]!);
           }
         }
       }
@@ -157,8 +162,10 @@ const SAYS: Record<Kind, string> = {
   secret: "a secret",
 };
 
+// How many findings a card or a refusal quotes.
+export const SHOWN = 6;
 // The findings, said with the place and the line of each (at most `shown`).
-export function say(found: readonly Finding[], shown = 6): string {
+export function say(found: readonly Finding[], shown = SHOWN): string {
   const lines = found.slice(0, shown).map((f) => `${f.where}:${f.line}: ${SAYS[f.kind]} (${f.word}): ${f.text}`);
   if (found.length > shown) lines.push(`and ${found.length - shown} more`);
   return lines.join("\n");
