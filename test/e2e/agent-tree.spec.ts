@@ -64,8 +64,14 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
     // The message between siblings is stored in the sibling's queue, named with its sender.
     await expect.poll(async () => (await api(`/api/sessions/${coord.session_id}`)).events.some((e: any) => e.kind === "tool_result" && JSON.stringify(e.data).includes("delivery")), { timeout: 30_000 }).toBe(true);
 
-    // A crash while the tree works: the coordinator, its worker and the sibling are all mid-command.
-    await page.waitForTimeout(1_500);
+    // Crash after all three are mid-command, not merely after the coordinator sent its message.
+    const running = (id: string, command: string) => api(`/api/sessions/${id}/jobs`).then((r) =>
+      r.jobs.some((j: { command: string; running: boolean }) => j.command === command && j.running));
+    await expect.poll(() => Promise.all([
+      running(coord.session_id, "sleep 6; echo coordinated"),
+      running(work.session_id, "sleep 5; echo first"),
+      running(sib.session_id, "sleep 8; echo sibling"),
+    ]), { timeout: 15_000 }).toEqual([true, true, true]);
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     d = await daemon(state);
@@ -94,12 +100,15 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
 
     // The session list shows the tree: each agent's own under it, a step further in.
     await page.goto(`${d.url}/s/${session.id}`);
+    await page.getByTestId("focus-leave").click();
     const wrap = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..");
     const kids = wrap.getByTestId("session-children");
     // The session says how many agents it has (its dock), and the row's head counts the same: the tree, not the root's own two.
     await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^Agents: 4 agents:/);
     expect((await api("/api/state")).states[session.id]).toMatchObject({ agents_total: 4 });
-    await wrap.getByTestId("children-toggle").click();
+    const toggle = wrap.getByTestId("children-toggle");
+    await expect(toggle).toBeVisible();
+    if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
     const rows = kids.getByTestId("child-row");
     await expect(rows).toHaveCount(4);
     await expect(rows.nth(0)).toHaveAttribute("data-depth", "1");
@@ -124,7 +133,8 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
     // Held as the owner's: a message from the agent that started the worker waits in its queue and starts nothing.
     const sent = await api(`/api/sessions/${coord.session_id}/agents/${work.id}/message`, { message: "go on" });
     expect(sent.held).toBe(true);
-    await page.waitForTimeout(1_000);
+    const queued = (await api(`/api/sessions/${work.session_id}/queue`)).queue as { text: string }[];
+    expect(queued.some((q) => q.text.includes("go on"))).toBe(true);
     expect((await node("Worker")).status).toBe("stopped");
     expect((await api(`/api/sessions/${work.session_id}`)).running).toBe(false);
     // The root hears of it from the coordinator, and of its sibling's own work.
