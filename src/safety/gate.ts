@@ -57,6 +57,7 @@ import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, pla
 import { webShape } from "./web-shape.ts";
 import { helperDenial, ownerDenial } from "../core/stops.ts";
 import { unwritten, writeOutRefusal } from "./written-out.ts";
+import { landBack as landBackText, landPushOf, landUnstarted, type LandPush } from "./land-push.ts";
 // The lines of one turn the gate sends back to be written out before it lets the owner's card open instead.
 export const WRITE_OUT_MAX = 3;
 // What a card a hook asked for says before the hook's reason.
@@ -1929,6 +1930,13 @@ export class Gate {
     // refused with the same words.
     let words: Held | null = null;
     if (cls.kind === "shell" && !session.machine && /\b(push|gh)\b/.test(cls.command)) {
+      // A push by hand to the base of a repository that lands through its queue (land-push.ts), before what it sends is
+      // read: a turn nobody started is refused; any other goes back once with the queue call to make, and the same line
+      // again is judged as it is.
+      if (!this.parked.has(callKey(session.id, call.id))) {
+        const back = await this.landBack(session, cls.command, cls.cwd ?? cwdOf(call) ?? call.ctx.cwd);
+        if (back) return { deny: back };
+      }
       words = await this.privateWords(session, cls.command, cwdOf(call) ?? call.ctx.cwd);
       // (The words the owner allowed to go there earlier in this session are not asked about again: public-allowed.ts.)
       if (words) words = (this.wordsAllowed ??= new PublicAllowed(this.store)).left(session.id, words);
@@ -2020,6 +2028,24 @@ export class Gate {
     if (!this.sentBack.has(session.id) && this.sentBack.size >= 1024) this.sentBack.delete(this.sentBack.keys().next().value!);
     this.sentBack.set(session.id, had);
     return writeOutRefusal(u);
+  }
+
+  // A hand landing (land-push.ts) sent back once a line in a session; one nobody started is refused every time.
+  private landSent = new Map<string, Set<string>>();
+  private async landBack(session: Session, command: string, cwd: string): Promise<string | null> {
+    if (!/\bgit\b/.test(command) || !/\bpush\b/.test(command)) return null;
+    let l: LandPush | null;
+    try { l = await landPushOf(command, cwd, homeDir(), session.workspace); } catch (e) { console.error(`land push check failed: ${(e as Error).message}`); return null; }
+    if (!l) return null;
+    if (this.byOwner && !this.byOwner(session.id)) return landUnstarted(l);
+    const had = this.landSent.get(session.id) ?? new Set<string>();
+    const key = Bun.hash(command).toString(36);
+    if (had.has(key)) return null;
+    if (had.size >= 256) had.delete(had.values().next().value!);
+    had.add(key);
+    if (!this.landSent.has(session.id) && this.landSent.size >= 1024) this.landSent.delete(this.landSent.keys().next().value!);
+    this.landSent.set(session.id, had);
+    return landBackText(l, !!session.parent_id);
   }
 
   // The private words a command sends to a public place, or null: none, a private repository, or a check that could

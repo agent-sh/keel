@@ -516,6 +516,12 @@ under `~/.cache/keel-work/bun/research/`.
   expansion names). What
   the owner alone can allow for one call (private words, a target outside content named, an account beyond his) is
   said on one card.
+- A repository with a land block lands through its queue, not by hand (`src/safety/land-push.ts`, the gate's
+  `landBack`). A model's `git push` that moves the base of the session's own repository (a commit, a branch or HEAD to
+  `main`, `--all`) goes back to the model once with the `keel__landing_queue` call to make and the branches at that
+  commit, before what it sends is read; the same line again is judged as it is. A turn nobody started is refused it every
+  time, as a merge is. A push of the commit the base already is here (the queue landed it and its push did not go) is no
+  landing, and the owner's own terminal is never judged.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
