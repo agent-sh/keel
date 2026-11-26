@@ -298,10 +298,11 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
     </button>
   ) : null;
   // Inputs nobody sent that wait for the session's pace (src/automation/pace.ts): one quiet line while they wait,
-  // which opens the pace's dialog.
+  // which opens the pace's dialog. In the faint ink: it comes after nearly every report of a busy tree and asks
+  // nothing of the owner, so it stays under the plan and the agents beside it.
   const paced = usePace(sessionId);
   const paceEl = paced && paced.waiting > 0 && paced.at ? (
-    <button type="button" className="k-docket-line k-docket-asks" onClick={() => void import("./PaceDialog.tsx").then((m) => m.openPace(sessionId), reportError)} data-testid="dock-pace" title="Inputs nobody sent wait for the session's pace and go as one">
+    <button type="button" className="k-docket-line k-docket-pace" onClick={() => void import("./PaceDialog.tsx").then((m) => m.openPace(sessionId), reportError)} data-testid="dock-pace" title="Inputs nobody sent wait for the session's pace and go as one">
       <Hourglass className="k-docket-glyph" />
       <span>{paced.waiting === 1 ? "One input waits" : `${paced.waiting} inputs wait`} until {clockOf(paced.at)}</span>
     </button>

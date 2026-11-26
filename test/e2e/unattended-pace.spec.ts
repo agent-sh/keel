@@ -25,6 +25,8 @@ test("an unattended input waits for the session's pace, the dock says until when
     await page.goto(`/s/${id}`);
     const line = page.getByTestId("dock-pace");
     await expect(line).toContainText(/^One input waits until \d\d:\d\d$/);
+    // In the faint ink: it comes after nearly every report of a busy tree and asks nothing of the owner.
+    expect(await line.evaluate((el) => { const p = document.createElement("i"); p.style.color = "var(--faint)"; document.body.append(p); const faint = getComputedStyle(p).color; p.remove(); return getComputedStyle(el).color === faint; })).toBe(true);
     await shoot(page, "unattended-pace-01-waits");
 
     await line.click();
