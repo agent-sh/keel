@@ -124,7 +124,7 @@ export const surfaceRoutes: RouteModule = (deps) => {
     const named = shown ? (await deps.providers.models().catch(() => [])).find((m) => m.id === shown.model) : undefined;
     const target = s ? { model: model?.name ?? s.model, window: model && !model.context_assumed ? model.context : undefined } : { model: named?.name ?? shown?.model ?? null, window: shown?.window };
     const where = s?.workspace ?? cwd;
-    const report = chainReport(instructionsMade(where, target.window), { model: target.model, prediction: !s });
+    const report = chainReport(instructionsMade(where, target.window, undefined, true), { model: target.model, prediction: !s });
     const byPath = new Map(report.files.map((f) => [f.path, f]));
     const files = instructionPaths(where).map(({ path, scope }) => {
       const t = read(path) ?? "";
@@ -266,19 +266,20 @@ export const surfaceRoutes: RouteModule = (deps) => {
 
     "/api/instructions": {
       GET: async (req: Request) => json(await instructionView(cwdOf(req), new URL(req.url).searchParams.get("session"))),
-      // { cwd, path, text }: a file the session loads, or the one place a new one goes.
+      // { cwd, path, text, session? }: a file the session loads, or the one place a new one goes.
       PUT: (req: Request) => attempt(async () => {
         const guard = needs(req);
         if (guard) return guard;
         const b = await body(req);
         const cwd = cwdOf(req, b);
-        const v = await instructionView(cwd);
+        const sid = typeof b.session === "string" ? b.session : null;
+        const v = await instructionView(cwd, sid);
         const path = String(b.path ?? "");
         const hit = v.files.find((f) => f.path === path) ?? v.create.find((f) => f.path === path);
         if (!hit) return bad("that file is not one this folder's sessions load", 404);
         write(path, text(b));
         if (hit.scope !== "owner") pin(cwd, path);
-        return json(await instructionView(cwd));
+        return json(await instructionView(cwd, sid));
       }),
     },
 

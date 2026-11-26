@@ -10,6 +10,7 @@ import { Store } from "../../core/store.ts";
 import { instructionFilter, instructionsMade } from "../../engine/turn.ts";
 import { PromptStore } from "../../engine/prompt-store.ts";
 import { surfaceRoutes } from "./surfaces.ts";
+import { Trust } from "../../safety/trust.ts";
 import { profileRoutes } from "./profile.ts";
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `instructions-loaded-${process.pid}`);
@@ -78,4 +79,28 @@ test("the profile reports the chain on the session's window, with its cuts", asy
   prompts.put(s.id, { text: "x", split: 0, blocks: [{ name: "instruction files", hash: "h", bytes: 1 }], model: null });
   const q = await (await profile["/api/sessions/:id/profile"].GET(Object.assign(new Request("http://x"), { params: { id: s.id } }))).json();
   expect(q.instructions.stored).toBe("earlier");
+});
+
+// A view says what a start would load; only a start pins a file it sees first.
+test("the views pin no file a start has not loaded yet", async () => {
+  const repo = join(root, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  writeFileSync(join(repo, "AGENTS.md"), "# Repo\n\n- REPO-RULE: new here.\n");
+  const trust = new Trust(store);
+  const was = instructionFilter.file;
+  instructionFilter.file = (p, t, look) => trust.instructionText(p, t, look);
+  const pins = () => store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM trust_pins WHERE path = ?").get(join(repo, "AGENTS.md"))!.n;
+  try {
+    const v = await view(`cwd=${encodeURIComponent(repo)}`);
+    expect(fileOf(v, join(repo, "AGENTS.md")).loaded).toContain("REPO-RULE");
+    const s = store.createSession({ workspace: repo, model: "s:big", title: "repo" });
+    expect((await view(`session=${s.id}`)).files.length).toBeGreaterThan(0);
+    await profile["/api/sessions/:id/profile"].GET(Object.assign(new Request("http://x"), { params: { id: s.id } }));
+    expect(pins()).toBe(0);
+    // A start's render pins it, as before.
+    expect(instructionsMade(repo, 1_000_000).text).toContain("REPO-RULE");
+    expect(pins()).toBe(1);
+  } finally {
+    instructionFilter.file = was;
+  }
 });

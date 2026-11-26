@@ -266,11 +266,13 @@ export class Trust {
     return out;
   }
 
-  // One file against its pin, as it is now. First sight pins what may be pinned then.
-  private check(path: string, kind: TrustKind, digest: string, content: string | null): "trusted" | "new" | "changed" {
+  // One file against its pin, as it is now. First sight pins what may be pinned then (`look`: a view's read,
+  // which pins nothing and says what a start would load).
+  private check(path: string, kind: TrustKind, digest: string, content: string | null, look = false): "trusted" | "new" | "changed" {
     const p = this.pin(path);
     if (p) return p.sha === digest ? "trusted" : "changed";
     if (this.newFiles() === "auto") {
+      if (look) return "trusted";
       this.setPin({ path, kind, root: rootOf(dirname(path)) ?? dirname(path) }, digest, content, true);
       return "trusted";
     }
@@ -279,13 +281,13 @@ export class Trust {
 
   // What an instruction file contributes: its text when trusted, the text last
   // trusted when it changed, nothing when it is new and waits for the owner.
-  instructionText(path: string, text: string): string | null {
+  instructionText(path: string, text: string, look = false): string | null {
     const root = rootOf(dirname(path));
     if (!root || !path.startsWith(root + "/")) return text; // the owner's own files, outside any repository
     // The head of a pull request nobody vouched for: the base branch's file of that name, never the head's own.
     const head = headHold.of?.(path);
     if (head) return head.base(path);
-    const st = this.check(path, "instructions", sha(text), text);
+    const st = this.check(path, "instructions", sha(text), text, look);
     if (st === "trusted") return text;
     if (st === "changed") return this.pin(path)?.content ?? null;
     return null;

@@ -27,7 +27,7 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 // (engine/nested.ts), each bounded by the same window.
 function instructions(store: Store, s: Session, info: ModelInfo | undefined, nested: Iterable<string> = []) {
   const window = info && !info.context_assumed ? info.context : undefined;
-  const made = instructionsMade(s.workspace, window);
+  const made = instructionsMade(s.workspace, window, undefined, true);
   const report = chainReport(made, { model: info?.name ?? s.model, prediction: false });
   const size = (p: string) => { try { return statSync(p).size; } catch { return 0; } };
   const files: { path: string; scope: string; bytes: number; included_bytes: number; truncated: boolean; state?: string; trust?: string | null; note?: string | null }[] =

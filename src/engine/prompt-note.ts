@@ -26,7 +26,8 @@ export const NOTE_KIND = "prompt_update";
 
 export type Rendered = { text: string; blocks: PromptBlock[] };
 // What a note said a block is from then on: its fingerprints and its text.
-export type Told = { hash: string; data?: string; text: string };
+// `moved`: told by a move's note (src/server/routes/places.ts) as the new folder renders it.
+export type Told = { hash: string; data?: string; text: string; moved?: true };
 
 // Each block's text, cut from the prompt by the blocks' byte lengths (two
 // blocks of one name are one text); undefined when they do not add up to the
@@ -49,7 +50,8 @@ export function toldOf(events: readonly StoredEvent[], from = 0): Map<string, To
   const out = new Map<string, Told>();
   for (let i = events.length - 1; i >= from; i--) {
     const e = events[i]!;
-    if (e.kind !== "note" || e.data.kind !== NOTE_KIND) continue;
+    // (A move's note tells the new folder's blocks too: src/server/routes/places.ts.)
+    if (e.kind !== "note" || (e.data.kind !== NOTE_KIND && e.data.kind !== "folder")) continue;
     for (const [name, t] of Object.entries((e.data.blocks ?? {}) as Record<string, Told>)) if (!out.has(name)) out.set(name, t);
   }
   return out;
@@ -147,6 +149,8 @@ export function promptNote(sent: Rendered, latest: Rendered, told: Map<string, T
     // A block the newest render no longer has is the build's change: it waits for the fold.
     if (!after) continue;
     const t = told.get(name);
+    // A move told the new folder's block; a render that is still the prompt sent (made before the move) is no change of it.
+    if (t?.moved && fingerprint(sent.blocks, name)?.hash === after.hash) continue;
     const before = t ?? { ...fingerprint(sent.blocks, name), text: was?.get(name) ?? "" };
     if (before.hash === after.hash || (before.data !== undefined && before.data === after.data && t)) continue;
     const text = now.get(name) ?? "";

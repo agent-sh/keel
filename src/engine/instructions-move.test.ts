@@ -83,3 +83,28 @@ test("this repository's AGENTS.md is never cut silently on a move", () => {
     }
   }
 });
+
+// A file is named after another only when the model holds that other's text as it is on disk.
+test("a file the same as one held back or loaded as last trusted is carried itself", () => {
+  const was = instructionFilter.file;
+  for (const [name, f] of [["held", () => null], ["old", () => "# Rules\n\n- OLDRULE: the version last trusted.\n"]] as const) {
+    const { top, one, two } = checkouts(`same-${name}`);
+    writeFileSync(join(two, "AGENTS.md"), readFileSync(join(one, "AGENTS.md")));
+    const F = join(one, "AGENTS.md");
+    instructionFilter.file = (p, t) => (p === F ? f() : t);
+    try {
+      // On a move: the old folder's file never reached the model as it reads.
+      const m = instructionsMoved(two, one, 200_000);
+      expect(m.text).toContain("LOCAL-OLD");
+      expect(m.text).not.toContain("(The same as");
+      // Within one chain: a folder above holds the held file, the folder below the same text.
+      writeFileSync(join(top, "AGENTS.md"), readFileSync(F));
+      instructionFilter.file = (p, t) => (p === join(top, "AGENTS.md") ? f() : t);
+      const c = instructionsMade(one, 200_000);
+      expect(c.text).toContain("LOCAL-OLD");
+      expect(c.files.find((x) => x.path === F)?.state).toBe("whole");
+    } finally {
+      instructionFilter.file = was;
+    }
+  }
+});

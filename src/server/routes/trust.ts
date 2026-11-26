@@ -54,7 +54,7 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   // A fork head the owner has not trusted runs no setup (src/worktree/setup.ts); the owner's trust runs it, once.
   headHeld.of = (p) => { const h = heads.held(p); return h ? { why: h.why } : undefined; };
   const quarantine = new Quarantine(store, join(store.stateDir, "quarantine"));
-  instructionFilter.file = (path, text) => trust.instructionText(path, text);
+  instructionFilter.file = (path, text, look) => trust.instructionText(path, text, look);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);
   skillFilter.held = (dir) => trust.skillHeld(dir);
   skillFilter.ownerTrusted = (dir) => trust.skillOwnerTrusted(dir);

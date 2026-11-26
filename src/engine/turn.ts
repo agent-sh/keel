@@ -20,7 +20,7 @@ import { conceal } from "../core/conceal.ts";
 import { ownerPrompt, ownersMeta } from "../core/owner.ts";
 import { movesFor, REPLY_FIRST, replyFirst, STEER_MOVE_MS } from "./reply-first.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
-import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
+import { NOTE_KIND, promptNote, toldOf, type Rendered, type Told } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
 import { instructionChain, nativeContext, nativeMemory, nativeRoots, OnceSet, withoutPorted, type Native, type Same } from "./native-memory.ts";
@@ -314,7 +314,8 @@ export function withPending(messages: Message[], pending: { id: string; text: st
 
 // A feature may hold back or replace a file's text (a repository's changed
 // instruction file loads as last trusted); null leaves the file out.
-export const instructionFilter: { file?: (path: string, text: string) => string | null } = {};
+// `look`: a view's read (Settings' As loaded, the profile), which decides as a start would and pins nothing.
+export const instructionFilter: { file?: (path: string, text: string, look?: boolean) => string | null } = {};
 
 // The instruction files a session in `cwd` loads, outermost first, the same
 // for every model: the owner's own (<config>/AGENTS.md, for every folder), then
@@ -455,8 +456,8 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
 // what says the block changed (src/engine/prompt-store.ts): a change of how it is rendered alone (a
 // new way of leaving out what repeats) waits for the session's cold point. `files`: what became of
 // each file (InstructionFact), for the views that say what a session was given.
-export function instructionsMade(cwd: string, window?: number, marks?: Marks): ChainMade {
-  return madeChain(cwd, window, marks, {});
+export function instructionsMade(cwd: string, window?: number, marks?: Marks, look = false): ChainMade {
+  return madeChain(cwd, window, marks, { look });
 }
 
 // What the chain did with one file. `state`: whole, cut at the window's bound (`at` of `chars`), not
@@ -477,7 +478,9 @@ export type ChainMade = { text: string; data: string; files: InstructionFact[]; 
 // `once`: the chain's set, shared with a render before (a move's: what the session holds); `used`: filled
 // with the room each file took, by its real path; `held`: files already in the prompt, by real path, with
 // the room they took there: they take it again and are not carried.
-function madeChain(cwd: string, window: number | undefined, marks: Marks | undefined, o: { once?: OnceSet; used?: Map<string, number>; held?: Map<string, number> }): ChainMade {
+// `whole`: filled with the files the prompt carries as they are on disk (as trusted as they read: the owner's, or a
+// repository file its pin trusts; whole or cut with its pointer), the only ones a later file the same as them may be named after.
+function madeChain(cwd: string, window: number | undefined, marks: Marks | undefined, o: { once?: OnceSet; used?: Map<string, number>; held?: Map<string, number>; whole?: Set<string>; look?: boolean }): ChainMade {
   const whole = instructionLimit(window);
   const bound = chainLimit(window);
   let room = bound;
@@ -485,6 +488,7 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
   const made: string[] = [];
   const facts: InstructionFact[] = [];
   const once = o.once ?? new OnceSet();
+  const asRead = o.whole ?? new Set<string>();
   const files = instructionPaths(cwd, marks, { covered: true, once });
   const seen = new Set(files.filter((f) => f.same === undefined).map((f) => real(f.path)));
   // A harness's user file that is read has no use for the copy Keel's import made of it in the owner's file.
@@ -502,7 +506,11 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
       fact({ state: "had", trust: null, chars: 0, carried: had, left_out: 0 });
       continue;
     }
-    if (same !== undefined) {
+    // The chain names a file after another by the texts on disk; the model holds the other's disk text only when
+    // it was carried and trusted (one held back, loaded as last trusted or not loaded is not it), so
+    // the file is rendered itself then, the sections said above left out as for any file.
+    if (same !== undefined && same.of.split(", ").every((f) => asRead.has(f))) {
+      asRead.add(p);
       made.push(`${p}\0same ${same.imports ? "imports" : "as"} ${same.of}`);
       parts.push(`# ${p}\n\n(${same.imports ? "It only imports" : "The same as"} ${same.of}, above.)`);
       fact({ state: "same", trust: null, chars: 0, carried: 0, left_out: 0, same_of: same.of, imports: same.imports });
@@ -532,7 +540,7 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
     const raw = mapped?.text ?? read;
     // An imported file's text is the file's too.
     if (raw !== read) made.push(`${p}\0with its imports\0${raw}`);
-    const filtered = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
+    const filtered = instructionFilter.file ? instructionFilter.file(p, raw, o.look) : raw;
     // What the trust pins let through is part of what the block is made from.
     if (filtered === null) {
       made.push(`${p}\0held`);
@@ -546,6 +554,7 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
     // file that says it again keeps it.
     const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined, { record: false });
     if (!fresh.text.trim()) {
+      if (trusted) asRead.add(p);
       fact({ state: "repeats", trust, chars: filtered.length, carried: 0, left_out: fresh.left, imports: raw !== read });
       continue;
     }
@@ -555,6 +564,8 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
     const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
     const took = Math.min(fresh.text.length, limit);
     room -= took;
+    // (A cut one too: a file of the same text is cut where it is, and its cut line says where the rest is.)
+    if (trusted) asRead.add(p);
     parts.push(`# ${p}\n\n${body}`);
     fact({ state: at < fresh.text.length ? "cut" : "whole", trust, chars: filtered.length, carried: at, left_out: fresh.left, imports: raw !== read, text: body, ...(at < fresh.text.length && { at }) }, took);
   }
@@ -570,8 +581,19 @@ function madeChain(cwd: string, window: number | undefined, marks: Marks | undef
 export function instructionsMoved(to: string, from: string, window?: number, marks?: Marks): ChainMade {
   const once = new OnceSet();
   const used = new Map<string, number>();
-  madeChain(from, window, marks, { once, used });
-  return madeChain(to, window, marks, { once: new OnceSet(once), held: used });
+  const whole = new Set<string>();
+  madeChain(from, window, marks, { once, used, whole });
+  return madeChain(to, window, marks, { once: new OnceSet(once), held: used, whole });
+}
+
+// What a move's note tells the model of the place and instruction blocks a render in `cwd` makes (their
+// fingerprints and texts, as the kept prompt would hold them): a later render there that matches is held
+// already, so a restart that renders the prompt from the new folder tells it nothing again (tellPrompt).
+export function movedBlocks(cwd: string, created: number, sessionId: string, window?: number): Record<string, Told> {
+  const parts = sessionParts(cwd, created, window).parts.filter((p) => p.name !== "native memory")
+    .map((p) => ({ name: p.name, text: conceal(p.text, sessionId, "own"), ...(p.data !== undefined && { data: conceal(p.data, sessionId, "own") }) }));
+  const blocks = blocksOf(parts);
+  return Object.fromEntries(parts.map((p, i) => [p.name, { hash: blocks[i]!.hash, ...(blocks[i]!.data !== undefined && { data: blocks[i]!.data }), text: p.text, moved: true as const }]));
 }
 
 // Frozen per session: nothing in it changes between turns (no clock), so the

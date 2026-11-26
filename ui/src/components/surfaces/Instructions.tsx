@@ -1,8 +1,8 @@
 // Customize > Instructions: the files a session's prompt carries, in the order
 // it reads them, the ones not written yet, each one editable.
 import { useCallback, useEffect, useState } from "react";
-import { api, reportError } from "../../lib/store.ts";
-import { navigate } from "../../lib/ui.ts";
+import { api, reportError, useStore } from "../../lib/store.ts";
+import { navigate, sessionLeft, useUI } from "../../lib/ui.ts";
 import { fmtSize } from "../../lib/utils.ts";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, Seg, tilde, tok, useFolder, type Mark } from "./kit.tsx";
 
@@ -50,13 +50,16 @@ export default function Instructions() {
   const [v, setV] = useState<View | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const [as, setAs] = useState<"file" | "loaded">("file");
-  const load = useCallback(() => (cwd ? api<View>(`/api/instructions?cwd=${encodeURIComponent(cwd)}`).then(setV).catch(reportError) : undefined), [cwd]);
+  // The session open (or the one the owner came from) when it works in this folder: the chain on its own model's window.
+  const open = useUI((u) => (u.route.name === "session" ? u.route.id : sessionLeft()));
+  const sid = useStore((s) => (open && s.sessions[open]?.workspace === cwd ? open : undefined));
+  const load = useCallback(() => (cwd ? api<View>(`/api/instructions?cwd=${encodeURIComponent(cwd)}${sid ? `&session=${encodeURIComponent(sid)}` : ""}`).then(setV).catch(reportError) : undefined), [cwd, sid]);
   useEffect(() => { load(); setSel(null); }, [load]);
   useEffect(() => { if (v && !sel) setSel(v.files[0]?.path ?? v.create[0]?.path ?? null); }, [v]);
   const file = v?.files.find((f) => f.path === sel);
   const blank = v?.create.find((f) => f.path === sel);
   const total = v?.files.reduce((n, f) => n + f.loaded_tokens, 0) ?? 0;
-  const save = async (path: string, text: string) => setV(await api<View>("/api/instructions", { method: "PUT", body: JSON.stringify({ cwd, path, text }) }));
+  const save = async (path: string, text: string) => setV(await api<View>("/api/instructions", { method: "PUT", body: JSON.stringify({ cwd, path, text, ...(sid && { session: sid }) }) }));
   const mark = (f: File): Mark => (f.trust === "new" || f.trust === "changed" ? "need" : "on");
 
   return (

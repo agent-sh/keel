@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
 import { ErrorTracker } from "../../core/errors.ts";
 import { Store } from "../../core/store.ts";
-import { toMessages } from "../../engine/turn.ts";
+import { sessionParts, toMessages } from "../../engine/turn.ts";
+import { promptNote, toldOf, type Rendered } from "../../engine/prompt-note.ts";
+import { blocksOf } from "../../engine/prompt-store.ts";
 import { placesRoutes } from "./places.ts";
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `folder-instructions-${process.pid}`);
@@ -67,7 +69,36 @@ test("this repository's AGENTS.md is not cut silently by a move", async () => {
   const s = store.createSession({ workspace: from, model: "s:std", title: "std" });
   expect((await post(routes, "/api/sessions/:id/folder", s.id, { cwd: to })).status).toBe(200);
   const n = folderNote(store, s.id);
-  expect(n.text).toContain("(Cut here:");
-  expect(n.text).toContain(`Read ${join(to, "AGENTS.md")} from line`);
+  const f = n.instructions.find((x: any) => x.path === join(to, "AGENTS.md"));
+  // (Whole while the file fits the window's share, as its twin in engine/instructions-move.test.ts.)
+  if (f.state === "whole") expect(n.text).toContain(readFileSync(join(to, "AGENTS.md"), "utf8").trimEnd().split("\n").at(-1)!);
+  else {
+    expect(f.state).toBe("cut");
+    expect(n.text).toContain("(Cut here:");
+    expect(n.text).toContain(`Read ${join(to, "AGENTS.md")} from line`);
+  }
+  store.db.close();
+});
+
+// The prompt the session holds stays the old folder's; a render made later from the new one (a restart's) is
+// what the move's note told already, so it is not told a second time. A render still of the old folder (no
+// restart yet) tells nothing either.
+test("a restart after a move does not tell the new folder's instructions again", async () => {
+  const { store, routes, from, to } = setup("restart");
+  const s = store.createSession({ workspace: from, model: "s:std", title: "std" });
+  const render = (cwd: string): Rendered => {
+    const parts = sessionParts(cwd, s.created, 200_000).parts;
+    return { text: parts.map((p) => p.text).join(""), blocks: blocksOf(parts) };
+  };
+  const sent = render(from);
+  expect((await post(routes, "/api/sessions/:id/folder", s.id, { cwd: to })).status).toBe(200);
+  const told = toldOf(store.events(s.id));
+  expect(promptNote(sent, render(to), told)).toBeUndefined();
+  expect(promptNote(sent, sent, told)).toBeUndefined();
+  // An edit made after the move is still told, against what the move's note said.
+  writeFileSync(join(to, "AGENTS.md"), "# Local\n\n- EDITED-RULE: after the move.\n");
+  const later = promptNote(sent, render(to), told);
+  expect(later?.names).toEqual(["instruction files"]);
+  expect(later?.text).toContain("EDITED-RULE");
   store.db.close();
 });
