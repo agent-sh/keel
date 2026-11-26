@@ -9,7 +9,7 @@ import { heldFile } from "../../core/store-files.ts";
 import { gitSync } from "../../core/git.ts";
 import { contains, defaultConfigDir, homeDir } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
-import { instructionsMoved, movedBlocks, type InstructionFact } from "../../engine/turn.ts";
+import { instructionsMoved, instructionsOwed, movedBlocks, type InstructionFact } from "../../engine/turn.ts";
 import type { Told } from "../../engine/prompt-note.ts";
 import type { Providers } from "../../providers/registry.ts";
 import { jobsOf, running, toolEnv } from "../../tools/jobs.ts";
@@ -31,9 +31,17 @@ const isRepo = (p: string) => existsSync(join(p, ".git"));
 // where to read it, in its own line. `facts`: each file's fate, kept on the note (no text). `blocks`: the
 // place and instruction blocks a render in `to` makes for `session`, kept on the note as told (prompt-note.ts
 // toldOf), so the prompt rendered there later (a restart) is not told again on a warm cache.
-export function newInstructions(to: string, from: string, window: number | undefined, session: { id: string; created: number }): { text: string; facts: Omit<InstructionFact, "text">[]; blocks: Record<string, Told> } {
+// `held`: the instruction block the model holds (Engine.heldInstructions): an edit of `from`'s files it was
+// not told yet is told first (`owed`), since the move counts what both folders share as had as it is now.
+export function newInstructions(to: string, from: string, window: number | undefined, session: { id: string; created: number }, held?: Told): { text: string; owed: string; facts: Omit<InstructionFact, "text">[]; blocks: Record<string, Told> } {
   const m = instructionsMoved(to, from, window);
-  return { text: m.text, facts: m.files.map(({ text: _t, ...f }) => f), blocks: movedBlocks(to, session.created, session.id, window) };
+  const owed = instructionsOwed(from, session.created, session.id, window, held);
+  return { text: m.text, owed, facts: m.files.map(({ text: _t, ...f }) => f), blocks: movedBlocks(to, session.created, session.id, window) };
+}
+// The note's text after its first words: what was owed of the old folder, then the new folder's files.
+export function instructionsSaid(inst: { text: string; owed: string }, from: string): string {
+  return (inst.owed ? `\n\nThe instruction files of ${from} changed since your system prompt was made, and what follows is in force from before the move:\n${inst.owed}` : "")
+    + (inst.text ? `\n\nInstructions from the owner's files there:\n\n${inst.text}` : "");
 }
 // The session's model's window, when its listing states one (else the chain counts 200K, as a start does).
 export async function windowOf(providers: Pick<Providers, "models"> | undefined, model: string): Promise<number | undefined> {
@@ -171,8 +179,8 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace, provi
     store.copyEvents(c.id, copy);
     if (cwd !== s.workspace || b.worktree) {
       const now = store.session(c.id)!;
-      const inst = newInstructions(now.workspace, s.workspace, await windowOf(providers, now.model), now);
-      note(c.id, { kind: "folder", model: true, system: true, short: `Cloned into ${now.workspace}`, instructions: inst.facts, blocks: inst.blocks, text: `[harness] This session was cloned into ${now.workspace} (the conversation so far ran in ${s.workspace}). Work there now.${inst.text ? `\n\nInstructions from the owner's files there:\n\n${inst.text}` : ""}` });
+      const inst = newInstructions(now.workspace, s.workspace, await windowOf(providers, now.model), now, engine.heldInstructions?.(c.id) ?? engine.heldInstructions?.(s.id));
+      note(c.id, { kind: "folder", model: true, system: true, short: `Cloned into ${now.workspace}`, instructions: inst.facts, blocks: inst.blocks, text: `[harness] This session was cloned into ${now.workspace} (the conversation so far ran in ${s.workspace}). Work there now.${instructionsSaid(inst, s.workspace)}` });
     }
     return { session: emit(c.id)!, events_copied: copy.length };
   };
@@ -215,23 +223,26 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace, provi
           // The agents that share the folder (started with no worktree or place of their own) go with it.
           agents = agentsOfMove(s.id, from);
           store.updateSession(s.id, { workspace: to });
-          const inst = newInstructions(to, from, await windowOf(providers, s.model), s);
+          // (What the model holds is read from its events: in memory first, store.warm.)
+          await store.warm(s.id);
+          const inst = newInstructions(to, from, await windowOf(providers, s.model), s, engine.heldInstructions?.(s.id));
           const names = (l: AgentMove[]) => l.map((a) => `${a.title} (${a.id})`).join(", ");
           const said = (agents.moved.length ? ` Its agents that shared the folder moved with it: ${names(agents.moved)}.` : "") + (agents.stayed.length ? ` Its agents that kept their own folders: ${agents.stayed.map((a) => `${a.title} (${a.id}, ${a.why})`).join(", ")}.` : "");
           const shortSaid = (agents.moved.length ? `, ${agents.moved.length} agent${agents.moved.length > 1 ? "s" : ""} moved with it` : "") + (agents.stayed.length ? `, ${agents.stayed.length} stayed in their own folder${agents.stayed.length > 1 ? "s" : ""}` : "");
           note(s.id, {
             kind: "folder", model: true, system: true, from, to, instructions: inst.facts, blocks: inst.blocks, short: `Moved from ${from} to ${to}${copied ? `, ${copied} files copied` : ""}${b.init_git ? ", made a git repository" : ""}${shortSaid}`,
-            text: `[harness] The owner moved this session from ${from} to ${to}${copied ? `, with ${copied} files copied from there` : ""}. Work in ${to} now: run commands and read and write files there.${said}${inst.text ? `\n\nInstructions from the owner's files there:\n\n${inst.text}` : ""}`,
+            text: `[harness] The owner moved this session from ${from} to ${to}${copied ? `, with ${copied} files copied from there` : ""}. Work in ${to} now: run commands and read and write files there.${said}${instructionsSaid(inst, from)}`,
           });
           for (const a of agents.moved) {
             store.updateSession(a.id, { workspace: to });
             // (An agent on another model has a window of its own.)
             // (Its requests are made from the prompt of the session above it (Engine.latestPrompt), so the blocks told are that one's.)
             const am = store.session(a.id)?.model;
-            const ai = am && am !== s.model ? { ...newInstructions(to, from, await windowOf(providers, am), s), blocks: inst.blocks } : inst;
+            await store.warm(a.id);
+            const ai = am && am !== s.model ? { ...newInstructions(to, from, await windowOf(providers, am), s, engine.heldInstructions?.(a.id)), blocks: inst.blocks } : { ...inst, owed: instructionsOwed(from, s.created, s.id, await windowOf(providers, s.model), engine.heldInstructions?.(a.id)) };
             note(a.id, {
               kind: "folder", model: true, system: true, from, to, instructions: ai.facts, blocks: ai.blocks, short: `Moved from ${from} to ${to}, with the session that started it`,
-              text: `[harness] The owner moved the session that started you from ${from} to ${to}, and you with it. Work in ${to} now: run commands and read and write files there.${ai.text ? `\n\nInstructions from the owner's files there:\n\n${ai.text}` : ""}`,
+              text: `[harness] The owner moved the session that started you from ${from} to ${to}, and you with it. Work in ${to} now: run commands and read and write files there.${instructionsSaid(ai, from)}`,
             });
             emit(a.id);
           }

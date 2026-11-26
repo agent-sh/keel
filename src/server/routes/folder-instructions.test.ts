@@ -8,7 +8,7 @@ import { Bus } from "../../core/bus.ts";
 import { ErrorTracker } from "../../core/errors.ts";
 import { Store } from "../../core/store.ts";
 import { sessionParts, toMessages } from "../../engine/turn.ts";
-import { promptNote, toldOf, type Rendered } from "../../engine/prompt-note.ts";
+import { blockTexts, promptNote, toldOf, type Rendered } from "../../engine/prompt-note.ts";
 import { blocksOf } from "../../engine/prompt-store.ts";
 import { placesRoutes } from "./places.ts";
 
@@ -100,5 +100,30 @@ test("a restart after a move does not tell the new folder's instructions again",
   const later = promptNote(sent, render(to), told);
   expect(later?.names).toEqual(["instruction files"]);
   expect(later?.text).toContain("EDITED-RULE");
+  store.db.close();
+});
+
+test("a shared file edited before a move is told by the move's note, from the prompt the model holds", async () => {
+  const { store, from, to } = setup("held");
+  const top = join(root, "held");
+  writeFileSync(join(top, "AGENTS.md"), "# Shared\n\n- OLD-SHARED: the rule the prompt holds.\n");
+  const s = store.createSession({ workspace: from, model: "s:std", title: "std" });
+  const render = (cwd: string): Rendered => {
+    const parts = sessionParts(cwd, s.created, 200_000).parts;
+    return { text: parts.map((p) => p.text).join(""), blocks: blocksOf(parts) };
+  };
+  const sent = render(from);
+  // What the engine reads as held (Engine.heldInstructions): the prompt sent, no note since.
+  const block = sent.blocks.find((b) => b.name === "instruction files")!;
+  const held = { hash: block.hash, data: block.data, text: blockTexts(sent)!.get("instruction files")! };
+  const routes = placesRoutes({ store, bus: new Bus(), errors: new ErrorTracker(store, new Bus()), engine: { isRunning: () => false, heldInstructions: () => held }, workspace: from, providers: { models: async () => [{ id: "s:std", context: 200_000 }] } } as any) as any;
+  // Edited while the session was idle, then the session moves to a folder that shares it.
+  writeFileSync(join(top, "AGENTS.md"), "# Shared\n\n- EDITED-SHARED: the rule as it is now.\n");
+  expect((await post(routes, "/api/sessions/:id/folder", s.id, { cwd: to })).status).toBe(200);
+  const note = folderNote(store, s.id);
+  expect(note.text).toContain("EDITED-SHARED");
+  expect(note.text.indexOf("EDITED-SHARED")).toBeLessThan(note.text.indexOf("Instructions from the owner's files there"));
+  // Told once: the restart's render from the new folder tells nothing again.
+  expect(promptNote(sent, render(to), toldOf(store.events(s.id)))).toBeUndefined();
   store.db.close();
 });

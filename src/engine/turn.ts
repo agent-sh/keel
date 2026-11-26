@@ -20,7 +20,7 @@ import { conceal } from "../core/conceal.ts";
 import { ownerPrompt, ownersMeta } from "../core/owner.ts";
 import { movesFor, REPLY_FIRST, replyFirst, STEER_MOVE_MS } from "./reply-first.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
-import { NOTE_KIND, promptNote, toldOf, type Rendered, type Told } from "./prompt-note.ts";
+import { NOTE_KIND, blockDiff, blockTexts, promptNote, toldOf, type Rendered, type Told } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
 import { instructionChain, nativeContext, nativeMemory, nativeRoots, OnceSet, withoutPorted, type Native, type Same } from "./native-memory.ts";
@@ -594,6 +594,21 @@ export function movedBlocks(cwd: string, created: number, sessionId: string, win
     .map((p) => ({ name: p.name, text: conceal(p.text, sessionId, "own"), ...(p.data !== undefined && { data: conceal(p.data, sessionId, "own") }) }));
   const blocks = blocksOf(parts);
   return Object.fromEntries(parts.map((p, i) => [p.name, { hash: blocks[i]!.hash, ...(blocks[i]!.data !== undefined && { data: blocks[i]!.data }), text: p.text, moved: true as const }]));
+}
+
+// What of the old folder's instruction files the model does not hold yet when the session moves: a file of
+// the chain edited since the prompt it holds (`held`: the newest note's block, else the kept prompt's,
+// Engine.heldInstructions) was rendered or last told. The move leaves out what both folders share as
+// already had, and its note records the new folder's render as told, so a change still owed here would be
+// told by no later note: the move's note tells it first, as a prompt note would (prompt-note.ts blockDiff).
+export function instructionsOwed(from: string, created: number, sessionId: string, window: number | undefined, held: Told | undefined): string {
+  if (!held) return "";
+  const part = sessionParts(from, created, window).parts.find((p) => p.name === "instruction files");
+  if (!part) return "";
+  const now = { name: part.name, text: conceal(part.text, sessionId, "own"), ...(part.data !== undefined && { data: conceal(part.data, sessionId, "own") }) };
+  const b = blocksOf([now])[0]!;
+  if (b.hash === held.hash || (held.data !== undefined && held.data === b.data)) return "";
+  return blockDiff(held.text, now.text);
 }
 
 // Frozen per session: nothing in it changes between turns (no clock), so the
@@ -2431,6 +2446,24 @@ export class Engine {
       x = this.store.session(x.parent_id);
     }
     return undefined;
+  }
+
+  // The instruction files block as the model of `id` holds it: the newest note about it since the context's
+  // checkpoint, else the prompt its requests carry (its own, or the top session's it rides on), kept or in
+  // memory. Undefined when it holds none yet (no request made). The events must be in memory (store.warm).
+  heldInstructions(id: string): Told | undefined {
+    const s = this.store.session(id);
+    if (!s) return undefined;
+    const events = this.lineage(id);
+    const told = toldOf(events, checkpointAt(events).keepFrom).get("instruction files");
+    if (told) return told;
+    const top = this.promptHolder(s) ?? s;
+    const p = this.systems.get(top.id) ?? this.prompts.get(top.id);
+    if (!p?.blocks) return undefined;
+    const text = blockTexts({ text: p.text, blocks: p.blocks })?.get("instruction files");
+    const of = p.blocks.filter((b) => b.name === "instruction files");
+    if (text === undefined || !of.length) return undefined;
+    return { hash: of.map((b) => b.hash).join(","), ...(of.some((b) => b.data !== undefined) && { data: of.map((b) => b.data ?? "").join(",") }), text };
   }
 
   // A change of the owner's side of the prompt that the model does not hold
