@@ -62,7 +62,8 @@ test("keys and drafts per station", async ({ page, request }) => {
   // (The pane worked in carries no line of its own; the card beside its row shows the same line.)
   await expect(page.locator(`section[data-station="${copy.session.id}"]`)).toBeVisible();
   await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${copy.session.id}"]`).hover();
-  await expect(page.getByTestId("rail-card").locator(".k-rail-card-line")).toHaveText("PASS all colored done");
+  // Beside a row, identical state and last-reply text are shown once.
+  await expect(page.getByTestId("rail-card")).toContainText("PASS all colored done");
   await request.delete(`/api/sessions/${copy.session.id}`);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
