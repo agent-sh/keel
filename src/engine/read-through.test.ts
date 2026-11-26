@@ -123,10 +123,36 @@ test("the aim a reader is given: the newest prompt, an agent's task without the 
   expect(aim.length).toBeLessThan(2 * AIM_PART + 120);
   // A reply before the newest prompt is not what it said about this read.
   expect(readAim([...line, ev("user", { text: "Now the tests." })])).toBe("Its task (shortened): Now the tests.");
-  // A message its parent sent while it worked is the newest thing it was given; a report or a wake is not.
   const steered = [...line, ev("user", { kind: "steer", agent_id: "a1", text: "Message from the session that started you:\nAlso cover the jitter." }), ev("user", { kind: "report", text: "An agent reported." })];
-  expect(readAim(steered)).toBe("Its task (shortened): Message from the session that started you: Also cover the jitter.");
+  expect(readAim(steered).split("\n")).toEqual([
+    aim.split("\n")[0]!,
+    "A later message to it: Message from the session that started you: Also cover the jitter.",
+  ]);
   expect(readAim([])).toBe("");
+});
+
+test("a reader keeps the task and the latest parent steer, not a peer's or the harness's words", () => {
+  const ask = (data: Record<string, unknown>) => ({ kind: "user", data }) as StoredEvent;
+  const outside = [
+    ask({ origin: "momentum", text: "Momentum note." }),
+    ask({ origin: "hook", text: "Stop hook note." }),
+    ask({ origin: "harness", text: "Harness note." }),
+    ask({ origin: "restart", text: "Restart note." }),
+    ask({ text: '<external_input source="peer_session" session="s2">Another session.</external_input>' }),
+  ];
+  const own = ask({ origin: "queued", text: "Check the retry backoff." });
+  for (const e of outside) expect(readAim([own, e])).toBe("Its task (shortened): Check the retry backoff.");
+
+  const peer = ask({ kind: "steer", from_agent: "a2", text: "Read peer-notes.json instead." });
+  const agent = [
+    ask({ kind: "task", text: "Agent instructions.\n\nTask:\nFind the retry bug." }),
+    ask({ kind: "steer", text: "Also look at the tests." }),
+    ask({ kind: "steer", text: "Also check jitter." }),
+    peer,
+    ...outside,
+  ];
+  expect(readAim(agent)).toBe("Its task (shortened): Find the retry bug.\nA later message to it: Also check jitter.");
+  expect(readNamed(agent, ["/w/peer-notes.json"])).toBe(true);
 });
 
 test("an agent's task and its parent's messages name files as the owner's prompts do", () => {
