@@ -10,6 +10,8 @@ export type ToolContext = {
   parentId?: string;
   // Whose call it is in the heavy-command line when the parent is not known here (a call another machine sent).
   heavyWho?: "session" | "agent";
+  // A local command entered the heavy-command line. The engine can end the wait for a steer.
+  slotWaiting?: () => void;
   // A question started or stopped waiting for an answer.
   questionChanged?: () => void;
   // Set by the engine: whether this text is in what the model sees now (the

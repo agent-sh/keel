@@ -4,7 +4,7 @@
 // outlives its timeout instead of killing it.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
+import { slotRefusal, startHeld, takeFor, waitedLine } from "./heavy.ts";
 import { backgrounded, moveToBackground, steerDue, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
 import { TRACE_CAP } from "../checks/named.ts";
@@ -101,7 +101,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   const script = `${head}exec 2>&1\n${o.command}`;
   // A heavy command waits here for its slot (src/tools/heavy.ts); its timeout starts once it runs.
   const slot = await takeFor(ctx, o.command);
-  if (slot === "aborted") { if (traceFile) rmSync(traceFile, { force: true }); return { state: "refused", error: ABORTED_TEXT }; }
+  if (typeof slot === "string") { if (traceFile) rmSync(traceFile, { force: true }); return { state: "refused", error: slotRefusal(slot) }; }
   const said = waitedLine(slot);
   const job = startHeld({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,

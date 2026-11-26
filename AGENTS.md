@@ -269,6 +269,10 @@ under `~/.cache/keel-work/bun/research/`.
   session; a message of the owner's that takes the turn's place (an edit, a
   queued prompt sent now) is not a Stop. An abort that is not the turn's own
   (a hook's or a provider's time limit) is a failure of what aborted.
+- A steer to an agent whose remaining calls all wait for local heavy-command slots
+  takes those calls out of the line before any can run (`Pool.steer`, `src/tools/heavy.ts`).
+  The results say they did not run, and the same turn takes the message at its
+  next step. Commands that already started and Keel's automatic checks are not moved.
 - A page costs what it shows. Its socket brings a session's whole stream (its
   events, the reply as it streams, what its turn is doing, its checkpoints)
   only while a view shows the session, and of every other session what a list

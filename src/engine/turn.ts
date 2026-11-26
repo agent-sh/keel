@@ -36,9 +36,10 @@ import { shutWords } from "../providers/account.ts";
 import { EFFORT_LADDER, type Family, type ModelInfo, type Price, type Provider, type ProviderRequest, type ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
-import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
+import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, SLOT_STEERED, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop, stopSays } from "../core/stoppers.ts";
 import { dropCallEnv, moveToBackground, steerWaiting, stopReleased } from "../tools/jobs.ts";
+import { pool as heavyPool } from "../tools/heavy.ts";
 import { runningData } from "./running.ts";
 import { StepOrder } from "./step-order.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
@@ -1612,6 +1613,7 @@ export class Engine {
     if (this.running.has(id) || (mode === "queue" && (this.held.has(id) || this.store.queue(id).length)) || this.inputHeld(id, opts.meta)) {
       const q = this.store.enqueue(id, text, mode !== "queue" && this.running.has(id), opts.images, opts.meta);
       this.emitQueue(id);
+      if (q.steer && ownersMeta(opts.meta)) queueMicrotask(() => this.steerSlotWait(id));
       if (q.steer && ownersMeta(opts.meta) && movesFor(text)) this.steerWaits(id, q.id);
       return { queued: q, steer: q.steer };
     }
@@ -1654,6 +1656,11 @@ export class Engine {
     if (t) clearTimeout(t.timer);
     this.steerTimers.delete(id);
     steerWaiting.delete(id);
+  }
+
+  private steerSlotWait(id: string) {
+    const calls = this.inflight.get(id);
+    if (calls) heavyPool.steer(id, calls, () => this.liveSteers(id).some((q) => ownersMeta(q.meta) || q.meta?.kind === "steer"));
   }
 
   // Whether a hook keeps this input (another session's message) from starting a turn now: it waits in the queue.
@@ -1719,7 +1726,11 @@ export class Engine {
         this.emitQueue(id);
         return { queued: q, steer };
       };
-      if (this.running.has(id)) return wait(true);
+      if (this.running.has(id)) {
+        const sent = wait(true);
+        if (meta.kind === "steer") queueMicrotask(() => this.steerSlotWait(id));
+        return sent;
+      }
       if (!this.releaseHold(id, opts.releases ?? [])) return { ...wait(false), held: true };
       if (this.draining) {
         this.owe(id);
@@ -3367,6 +3378,7 @@ export class Engine {
     const failing = new AbortController();
     const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal: AbortSignal.any([signal, failing.signal]), seen, spillDir: join(this.spillRoot, id),
       parentId: session.parent_id ?? undefined,
+      slotWaiting: session.parent_id ? () => this.steerSlotWait(id) : undefined,
       questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }),
       inContext: async (text) => {
         const line = await this.warmContext(id);
@@ -3860,7 +3872,12 @@ export class Engine {
   private tracked(id: string, u: ToolUseBlock, run: Promise<ToolResultBlock>): Promise<ToolResultBlock> {
     const calls = this.inflight.get(id) ?? new Map<string, ToolUseBlock>();
     this.inflight.set(id, calls.set(u.id, u));
-    return run.finally(() => { calls.delete(u.id); if (!calls.size && this.inflight.get(id) === calls) this.inflight.delete(id); });
+    return run.finally(() => {
+      calls.delete(u.id);
+      if (this.inflight.get(id) !== calls) return;
+      if (!calls.size) this.inflight.delete(id);
+      else if (heavyPool.waits(id)) this.steerSlotWait(id);
+    });
   }
   // Whether a running turn does nothing but wait on the owner: every call it
   // has out is a question, a plan put up for approval, or one whose approval
@@ -4071,7 +4088,7 @@ export class Engine {
       const held = await capResult(out.content, tool.resultCap ?? OUTPUT_CAP, runCtx.dispatch ? undefined : ctx.spillDir, u.name, out.is_error || tool.resultCap !== undefined || runCtx.dispatch ? undefined : ctx.inline);
       result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(held, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
       if (out.shown !== undefined) { const sh = this.shown.get(u.id) as { card?: unknown } | undefined; this.shown.set(u.id, sh?.card && out.shown && typeof out.shown === "object" ? { ...out.shown, card: sh.card } : out.shown); }
-      ran(result, result.is_error ? "error" : "ok");
+      ran(result, out.is_error && out.content === SLOT_STEERED ? "interrupted" : result.is_error ? "error" : "ok");
     } catch (e) {
       if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(true), "interrupted");
       const err = e instanceof Error ? e : new Error(String(e));

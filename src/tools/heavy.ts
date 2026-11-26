@@ -11,6 +11,7 @@
 import { availableParallelism, freemem, loadavg, platform, totalmem } from "node:os";
 import { readFileSync } from "node:fs";
 import { registerSettings, settings } from "../admin/settings.ts";
+import { SLOT_STEERED } from "../core/stops.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { cpuMs, jobScope, jobSlots, running, sliceDir, startJob, type Job, type StartOpts } from "./jobs.ts";
 import { readPressures, type Pressures } from "./pressure.ts";
@@ -62,7 +63,7 @@ const SAMPLE_MS = 1000;
 const WINDOW = 5;
 
 export type Slot = { key: string; pattern: string; waitedMs: number; ahead: number; release: () => void; bind: (job: Job) => void };
-type Entry = { key: string; who: Who; at: number; session: string; call?: string; command: string; pattern: string; cost: Cost; go: (s: Slot) => void; told?: string; ahead0?: number };
+type Entry = { key: string; who: Who; at: number; session: string; call?: string; command: string; pattern: string; cost: Cost; go: (s: Slot) => void; steer?: () => void; told?: string; ahead0?: number };
 type Holder = Held & { session: string; command: string; pattern: string; call?: string; job?: Job; quiet?: Quiet };
 
 // What a change of a held call says (a frame of the session's: its state and its trace read it).
@@ -178,7 +179,7 @@ class Pool {
   // command is not heavy; "aborted" when the call was stopped while it waited.
   // `as`: what a command costs that the patterns may not name (Keel's own heavy work).
   // `since`: when it first asked, for one that asks again after a wait it gave up (it keeps its place in line).
-  async take(o: { session: string; who: Who; command: string; call?: string; signal?: AbortSignal; as?: Cost; since?: number }): Promise<Slot | "aborted" | undefined> {
+  async take(o: { session: string; who: Who; command: string; call?: string; signal?: AbortSignal; as?: Cost; since?: number; onSteered?: () => void; onWait?: () => void }): Promise<Slot | "aborted" | undefined> {
     const m = this.heavy(o.command) ?? (o.as ? { pattern: "keel", cost: o.as, line: o.command.slice(0, 200) } : undefined);
     if (!m) return undefined;
     const key = `${o.session}:${o.call ?? `c${++this.n}`}:${++this.n}`;
@@ -192,19 +193,32 @@ class Pool {
     const at = Math.min(o.since ?? Date.now(), Date.now());
     return await new Promise<Slot | "aborted">((resolve) => {
       const e: Entry = { ...base, at, ahead0: ahead, go: (s) => { o.signal?.removeEventListener("abort", stop); resolve(s); } };
-      const stop = () => {
+      const leave = () => {
         const i = this.line.indexOf(e);
         if (i < 0) return;
+        o.signal?.removeEventListener("abort", stop);
         this.line.splice(i, 1);
         heavyChanged.tell?.({ session_id: e.session, call_id: e.call, key, state: "left", pattern, waited_ms: Date.now() - at });
-        this.pump();
         resolve("aborted");
       };
+      const stop = () => { leave(); this.pump(); };
+      if (o.onSteered) e.steer = () => { o.onSteered!(); leave(); };
       o.signal?.addEventListener("abort", stop, { once: true });
       this.line.push(e);
       this.tick();
       this.pump();
+      if (this.line.includes(e)) o.onWait?.();
     });
+  }
+
+  // Only a step whose remaining calls are all waiting here can give way to a message.
+  // Take them all out before pumping the line again; no sibling command gets the freed place.
+  steer(session: string, calls: ReadonlyMap<string, unknown>, pending: () => boolean) {
+    if (!calls.size) return;
+    const waiting = this.line.filter((e) => e.session === session && e.who === "agent" && e.steer && e.call && calls.has(e.call));
+    if (waiting.length !== calls.size || !pending()) return;
+    for (const e of waiting) e.steer!();
+    this.pump();
   }
 
   // A command that starts without waiting (the owner's own, one a restart left running): it holds a slot while it runs.
@@ -331,11 +345,16 @@ export function startHeld(o: StartOpts, slot: Slot | undefined): Job {
 }
 
 // The slot of a tool call's command: waits in line when the pool is full.
-export const takeFor = (ctx: { sessionId: string; parentId?: string; heavyWho?: Who; callId?: string; signal: AbortSignal }, command: string) =>
-  pool.take({ session: ctx.sessionId, who: whoOf(ctx), command, call: ctx.callId, signal: ctx.signal });
+export async function takeFor(ctx: { sessionId: string; parentId?: string; heavyWho?: Who; callId?: string; signal: AbortSignal; slotWaiting?: () => void }, command: string) {
+  let steered = false;
+  const slot = await pool.take({ session: ctx.sessionId, who: whoOf(ctx), command, call: ctx.callId, signal: ctx.signal,
+    ...(ctx.slotWaiting && { onWait: ctx.slotWaiting, onSteered: () => { steered = true; } }) });
+  return steered ? "steered" as const : slot;
+}
 
 // What a call stopped while it waited answers: nothing ran.
 export const ABORTED_TEXT = "Interrupted while waiting for a heavy-command slot: nothing ran.";
+export const slotRefusal = (why: "aborted" | "steered") => why === "steered" ? SLOT_STEERED : ABORTED_TEXT;
 
 // Who a tool call is for the line: an agent's, or a session's own.
 export const whoOf = (ctx: { parentId?: string; heavyWho?: Who }): Who => ctx.heavyWho ?? (ctx.parentId ? "agent" : "session");

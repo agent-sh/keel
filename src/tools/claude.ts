@@ -23,7 +23,7 @@ const Bash: Tool = {
   name: "Bash",
   // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts); a background
   // command's end starts a turn of its idle session, and an agent waits on one it started.
-  urgent: "command-end-wakes-serve-held",
+  urgent: "command-end-wakes-serve-held,slot-steer",
   readOnly: false,
   kind: "shell",
   cwdOf: shellCwd,

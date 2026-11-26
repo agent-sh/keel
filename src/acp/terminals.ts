@@ -15,7 +15,7 @@ import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { Tool } from "../tools/types.ts";
 import { shellText } from "../safety/policy.ts";
 import { cleanTerm, stopJob, toolEnv, UNREAD_CAP, type Job } from "../tools/jobs.ts";
-import { ABORTED_TEXT, startHeld, takeFor } from "../tools/heavy.ts";
+import { slotRefusal, startHeld, takeFor } from "../tools/heavy.ts";
 import { shq } from "../tools/shell.ts";
 
 type Json = any;
@@ -76,7 +76,7 @@ export class AcpTerminals {
         if (realOf(given) !== cwd || !underRoot()) return { content: `${given} is not the folder that was judged any more: nothing ran.`, is_error: true };
         // A heavy command waits for its slot (src/tools/heavy.ts).
         const slot = await takeFor(ctx, command);
-        if (slot === "aborted") return { content: ABORTED_TEXT, is_error: true };
+        if (typeof slot === "string") return { content: slotRefusal(slot), is_error: true };
         const job = startHeld({ sessionId: s.id, command, cwd, logDir: join(this.stateDir, "spill", s.id, "jobs"), env: toolEnv(s.id), vars: true, wrap: ctx.wrapSpawn, description: "run by the ACP agent" }, slot);
         this.terms.set(id, { job, limit, command });
         return { content: `Started in a terminal of Keel's (${id}).` };

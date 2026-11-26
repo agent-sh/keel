@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { SCRIPTED, shoot } from "./shots.ts";
 
 // Feature: heavy commands take a slot of one daemon-wide pool. With every slot
 // taken, a session's heavy command waits in line: its tool call is held, its
@@ -84,5 +84,54 @@ test("a heavy command waits for a slot, and the owner's does not", async ({ page
   } finally {
     await request.patch("/api/settings", { data: { heavy: { patterns: before.patterns, slots: before.slots } } });
     for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});
+
+test("an agent reads a message without running the command that was still in the slot line", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "needs the scripted provider: the agent calls a known command and answers the message");
+  const before = (await (await request.get("/api/settings")).json()).settings.heavy;
+  const secs = (60 + Math.random()).toFixed(3);
+  const holder = `sleep ${secs}`;
+  const cmd = `${holder}; echo command-started`;
+  const pattern = `sleep ${secs.replace(".", "\\.")}`;
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Slot wait" } })).json();
+  const parent = `/api/sessions/${session.id}`;
+  const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+  const agents = async () => (await (await request.get(`${parent}/agents`)).json()).agents as { id: string; session_id: string }[];
+  const pool = async () => (await (await request.get("/api/resources?history=0")).json()).heavy as { line: { session_id: string }[]; held: { session_id: string }[] };
+  let job: string | undefined;
+  try {
+    expect((await request.patch("/api/settings", { data: { heavy: { patterns: [pattern], slots: 1 } } })).ok()).toBe(true);
+    expect((await request.put(`${parent}/permissions`, { data: { mode: "full-auto" } })).ok()).toBe(true);
+    const started = await request.post(`${parent}/terminal/run`, { data: { command: holder } });
+    expect(started.ok()).toBe(true);
+    job = (await started.json()).job.id;
+    const task = `Check the suite\n${calls([{ name: "Bash", input: { command: cmd } }])}`;
+    await request.post(`${parent}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { isolation: "none", message: task } }]) } });
+    await expect.poll(async () => (await agents())[0]?.session_id).toBeTruthy();
+    const agent = (await agents())[0]!;
+    await expect.poll(async () => (await pool()).line.map((e) => e.session_id)).toContain(agent.session_id);
+    const reply = "I read the instruction to run it elsewhere.";
+    const sent = await request.post(`${parent}/agents/${agent.id}/message`, { data: { message: `Run it on the other machine. script:say ${reply}` } });
+    expect(sent.ok()).toBe(true);
+
+    const events = async () => (await (await request.get(`/api/sessions/${agent.session_id}`)).json()).events as { kind: string; data: any }[];
+    const result = "Not run: a message arrived while this command was waiting for a heavy-command slot.";
+    const results = async () => (await events()).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => r.content);
+    await expect.poll(async () => (await results()).join("\n"), { timeout: 7_000 }).toContain(result);
+    expect((await results()).join("\n")).not.toContain("command-started");
+    expect((await pool()).held.map((e) => e.session_id)).toContain(session.id);
+    expect((await pool()).line.map((e) => e.session_id)).not.toContain(agent.session_id);
+    await expect.poll(async () => (await events()).filter((e) => e.kind === "assistant").map((e) => JSON.stringify(e.data)).join("\n")).toContain(reply);
+    expect((await events()).filter((e) => e.kind === "turn_start")).toHaveLength(1);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${agent.session_id}`);
+    await expect(page.getByTestId("turn-end").last()).toBeVisible();
+    await shoot(page, "heavy-message");
+  } finally {
+    if (job) await request.post(`${parent}/terminal/${job}/stop`);
+    for (const a of await agents()) await request.delete(`/api/sessions/${a.session_id}`);
+    await request.delete(parent);
+    await request.patch("/api/settings", { data: { heavy: { patterns: before.patterns, slots: before.slots } } });
   }
 });

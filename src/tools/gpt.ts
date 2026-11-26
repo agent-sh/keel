@@ -9,7 +9,7 @@ import { hold } from "./files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
-import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
+import { slotRefusal, startHeld, takeFor, waitedLine } from "./heavy.ts";
 import { BASH_PROGRAM, goneCwd, logDir, shellCwd, syntaxBash } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { typedTarget, typedWrite, typedWrote } from "./typed.ts";
@@ -71,7 +71,7 @@ const execShell = (input: any): string => (typeof input?.shell === "string" && i
 
 const exec_command: Tool = {
   name: "exec_command",
-  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
+  urgent: "wait-poll,slot-steer",
   resultCap: EXEC_CAP,
   readOnly: false,
   kind: "shell",
@@ -108,7 +108,7 @@ const exec_command: Tool = {
     const shell = execShell(input);
     // A heavy command waits for its slot first (src/tools/heavy.ts); the yield counts from its start.
     const slot = await takeFor(ctx, cmd);
-    if (slot === "aborted") return fail(`exec_command failed: ${ABORTED_TEXT}`);
+    if (typeof slot === "string") return fail(slot === "steered" ? slotRefusal(slot) : `exec_command failed: ${slotRefusal(slot)}`);
     const t0 = Date.now();
     const job = startHeld({
       sessionId: ctx.sessionId, command: cmd, cwd, logDir: logDir(ctx), pty: !!input.tty,

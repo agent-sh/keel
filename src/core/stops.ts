@@ -74,9 +74,11 @@ export const BUDGET_SPENT = "Not run: the step budget of this turn is spent.";
 export const AGENT_BUDGET_SPENT = "Not run: the agent's budget is spent; this step is for its report.";
 // A call of the step a session's reached dollar cap leaves for its report (src/automation/caps.ts).
 export const CAP_SPENT = "Not run: the dollar cap is reached; this step is for the report.";
-const NOT_RUN: Record<string, string> = { [CUT_CALL]: "cut at the output limit", [BUDGET_SPENT]: "the step budget was spent", [AGENT_BUDGET_SPENT]: "the agent's budget was spent", [CAP_SPENT]: "the dollar cap was reached" };
+export const SLOT_STEERED = "Not run: a message arrived while this command was waiting for a heavy-command slot.";
+const NOT_RUN: Record<string, string> = { [CUT_CALL]: "cut at the output limit", [BUDGET_SPENT]: "the step budget was spent", [AGENT_BUDGET_SPENT]: "the agent's budget was spent", [CAP_SPENT]: "the dollar cap was reached", [SLOT_STEERED]: "a message arrived during the slot wait" };
 // Why the call was not run, in a few words, or nothing when it is not such a call.
-export const notRun = (content: unknown): string | undefined => (typeof content === "string" ? NOT_RUN[content] : undefined);
+export const notRun = (content: unknown): string | undefined =>
+  typeof content === "string" ? NOT_RUN[content] ?? (content.startsWith(`${SLOT_STEERED}\n`) ? NOT_RUN[SLOT_STEERED] : undefined) : undefined;
 
 // What the model gets for a call the owner denied on its card. The page reads
 // it back: a denial is the owner's own act, not a failure of the call, and
