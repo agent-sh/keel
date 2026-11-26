@@ -823,6 +823,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-row { display: flex; align-items: center; gap: 0.75rem; min-height: 1.625rem; }
 .k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 600; font-size: var(--text-caption); letter-spacing: 0; color: var(--st-done-ink); }
 .k-station-word .k-mark { width: 0.5625rem; height: 0.5625rem; }
+/* Over a conversation a finished session's dot has no hue: colour there is for what runs, asks or failed. */
+.k-station-word .k-mark[data-watch="done"] { background: var(--st-idle); }
 .k-station[data-watch="need"] .k-station-word { color: var(--st-need-ink); }
 .k-station[data-watch="work"] .k-station-word { color: var(--st-work-ink); }
 .k-station[data-watch="wait"] .k-station-word { color: var(--st-wait-ink); }
