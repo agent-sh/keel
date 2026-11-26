@@ -267,12 +267,24 @@ test("allow all covers the requests it lists, not an agent's", async ({ page, re
     // A link that names one request (an alert's, a notification's) opens the page with the
     // keyboard on that request, here an agent's, and it is the framed one: no other is.
     const linked = (await theirs.locator('[data-testid="approval"]', { hasText: "c2.txt" }).getAttribute("data-approval-id"))!;
-    await page.goto(`/s/${id}?approval=${linked}`);
-    await expect(theirs.locator(`[data-approval-id="${linked}"]`).getByTestId("allow-once")).toBeFocused();
-    expect(await Promise.all((await pane.getByTestId("approval").all()).map(framed))).toEqual((await pane.getByTestId("approval").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.approvalId))).map((x) => x === linked));
-    await own.getByTestId("approval").first().getByTestId("allow-once").focus();
+    // Open it in a separate tab: the link scrolls to the agent's list, not where the owner was reading.
+    const tab = await page.context().newPage();
+    try {
+      await tab.goto(`/s/${id}?approval=${linked}`);
+      const linkedRows = paneOf(tab, id).getByTestId("approval");
+      await expect(linkedRows).toHaveCount(5);
+      await expect(linkedRows.and(tab.locator(`[data-approval-id="${linked}"]`)).getByTestId("allow-once")).toBeFocused();
+      expect(await frames(tab)).toEqual(await linkedRows.evaluateAll((els, id) => els.map((el) => (el as HTMLElement).dataset.approvalId === id), linked));
+    } finally {
+      await tab.close();
+      await page.bringToFront();
+    }
+    // Let the owner's rows stand before pointing at the action, which keeps its coverage on hover.
+    const ownAll = own.getByTestId("allow-all");
+    await expect(label(ownAll)).toHaveText("Allow all 3 Bash commands");
+    await expect(ownAll).toBeEnabled();
     // The pointer on the action frames the three requests it answers and no request of the agent.
-    await own.getByTestId("allow-all").hover();
+    await ownAll.hover();
     await expect(own.locator('[data-testid="approval"][data-hot]')).toHaveCount(3);
     // The hint is about the pointed action while several rows are framed, not about the row with the keyboard.
     await expect(own.getByTestId("approvals-hint")).toHaveText("A click allows the framed ones once");
@@ -281,7 +293,7 @@ test("allow all covers the requests it lists, not an agent's", async ({ page, re
     await shoot(page, "approvals-batch-1920-pointed");
     const theirId = await theirs.getByTestId("approval").first().getAttribute("data-approval-id");
     const child = (await (await request.get("/api/approvals")).json()).approvals.find((a: { id: string }) => a.id === theirId).session_id as string;
-    await own.getByTestId("allow-all").click();
+    await ownAll.click();
     await expect.poll(() => ["one.txt", "two.txt", "three.txt"].every((f) => existsSync(join(ws, f)))).toBe(true);
     expect((await cards()).map((c) => [c.state, c.choice])).toEqual([["allowed", "once"], ["allowed", "once"], ["allowed", "once"]]);
     // The agent's two still wait, shown under its name, and nothing of theirs ran.
@@ -289,7 +301,10 @@ test("allow all covers the requests it lists, not an agent's", async ({ page, re
     expect((await cards(child)).map((c) => c.state)).toEqual(["pending", "pending"]);
     expect(existsSync(join(ws, "c1.txt"))).toBe(false);
     // Their own action answers them.
-    await theirs.getByTestId("allow-all").click();
+    const theirAll = theirs.getByTestId("allow-all");
+    await expect(label(theirAll)).toHaveText("Allow all 2 Bash commands");
+    await expect(theirAll).toBeEnabled();
+    await theirAll.click();
     await expect(pane.getByTestId("approval")).toHaveCount(0);
     await expect.poll(() => ["c1.txt", "c2.txt"].every((f) => existsSync(join(ws, f)))).toBe(true);
     expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
