@@ -142,7 +142,7 @@ export type Session = {
 // What a list shows of an outside session, from its own records. The rest
 // (its files, its usage by model) is read with GET /api/sessions/:id/outside.
 export type OutsideMark = {
-  harness: "claude" | "codex";
+  harness: "claude" | "codex" | "agy";
   source_id: string;
   state: "working" | "waiting" | "done" | "stale";
   waiting_for?: string;

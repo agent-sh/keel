@@ -1,4 +1,4 @@
-// Sessions the owner runs in Claude Code or Codex on this machine, in Keel's
+// Sessions the owner runs in Claude Code, Codex or Antigravity on this machine, in Keel's
 // record while they run: a session whose transcript grows while Keel watches
 // gets a session here, read-only, in the list and on the home screen as a
 // session of its harness, with the state its own records say (working while
@@ -11,7 +11,8 @@
 // Cost: one inotify watch per folder, and only folders that held a session in
 // the last `days` days (src/integrations/outside/settings.ts): Claude Code's
 // projects folder and each recent project folder, Codex's sessions folder and
-// its recent year, month and day folders, each harness's own folder (its
+// its recent year, month and day folders, each Antigravity store's folder of conversations (brain) and the
+// logs folder of each recent conversation, each harness's own folder (its
 // prompt history, history.jsonl, which names a session that starts or resumes
 // in an older folder) and Claude Code's folder of running sessions. A file is
 // read from its start once, when it is first seen growing, then only by what
@@ -31,14 +32,20 @@ import { priceOf } from "../../providers/pricing.ts";
 import type { Price } from "../../providers/types.ts";
 import { ClaudeChain, ClaudeConvert, claudeFound, claudeRoot } from "../import/claude.ts";
 import { CodexConvert, codexFound, codexHome } from "../import/codex.ts";
+import { AgyConvert, agyFoundAt, agyHome, agyListed, agyPlace, STORES as AGY_STORES } from "../import/agy.ts";
 import { offered } from "../import/offer.ts";
 import { itemsOf, storedData, type Found } from "../import/types.ts";
 import { filesStored } from "../import/service.ts";
-import { aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader } from "./facts.ts";
+import { agyWord, aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader } from "./facts.ts";
 import { excluded, outsideSettings, type OutsideSettings } from "./settings.ts";
 import { claudeHolder, claudeLive, codexHolder, recordHolder, codexKeepsLocks, FREE, readClaudeRecord, readLocks, type Holder, type Lock } from "./writer.ts";
 
-export const LABEL: Record<OutsideHarness, string> = { claude: "Claude Code", codex: "Codex" };
+export const LABEL: Record<OutsideHarness, string> = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" };
+
+// A transcript's conversation as its harness's list names it (null: none yet, looked at again when it grows).
+const foundOf = (h: OutsideHarness, path: string, size: number, mtime: number): Found | null =>
+  h === "claude" ? claudeFound(path, size, mtime) : h === "agy" ? agyFoundAt(path) : codexFound(path, size, mtime);
+const AGY_FILE = "transcript_full.jsonl";
 
 // outside_events: the events a copy stored, in its order, with the hash of each as it was read
 // (a later read compares only what may have changed and appends the rest), and `items`: the blocks
@@ -103,6 +110,7 @@ type Tracked = {
   mark?: string;           // what the row was last told, to write only a change
   aging?: ReturnType<typeof setTimeout>;
   again?: ReturnType<typeof setTimeout>;
+  status?: string;         // Antigravity: the run status its list keeps of the conversation, as last read
 };
 
 // A transcript followed into its session's view: the conversion's state, so a growth converts only
@@ -113,7 +121,7 @@ type Live = {
   rest: string;
   decoder: TextDecoder;
   chain?: ClaudeChain;
-  conv: ClaudeConvert | CodexConvert;
+  conv: ClaudeConvert | CodexConvert | AgyConvert;
   base: number;
   ids: string[];
   hashes: string[];
@@ -178,6 +186,12 @@ function withOwn(t: Tracked, own: Map<string, OwnWord>, keeps: boolean, holder: 
     if (holder.kind !== "free") return { facts, vouched: true };
     return { facts: keeps ? ended(facts) : facts, vouched: false };
   }
+  // Antigravity's run status in its list is its word: idle ends a turn its steps leave open, running holds one its
+  // steps ended (a reply being made). Not a process that vouches: a run killed leaves its status as it was.
+  if (t.harness === "agy") {
+    const w = agyWord(t.status);
+    return { facts: w?.status === "busy" && facts.state === "waiting" ? facts : withOwnWord(facts, w, facts.last_ts || Date.now()), vouched: false };
+  }
   const w = own.get(t.found.id);
   if (w && claudeLive(w)) return { facts: withOwnWord(facts, w), vouched: true };
   return { facts: keeps ? ended(facts) : facts, vouched: false };
@@ -227,7 +241,7 @@ export class Outside {
   // The roots, as this daemon reads them (scratch ones under a test).
   roots() {
     const claude = claudeRoot();
-    return { claude, claudeHome: dirname(claude), claudeRunning: join(dirname(claude), "sessions"), codexHome: codexHome(), codex: join(codexHome(), "sessions") };
+    return { claude, claudeHome: dirname(claude), claudeRunning: join(dirname(claude), "sessions"), codexHome: codexHome(), codex: join(codexHome(), "sessions"), agy: AGY_STORES.map((n) => join(agyHome(), n)) };
   }
 
   start() {
@@ -255,7 +269,11 @@ export class Outside {
     this.root(r.claudeRunning, (dir) => this.runningDir(dir));
     this.root(r.claudeHome, (dir) => this.history(dir, "claude"));
     this.root(r.codexHome, (dir) => this.history(dir, "codex"));
-    this.stats.roots = [{ harness: "claude", path: r.claude, watched: false }, { harness: "codex", path: r.codex, watched: false }];
+    for (const store of r.agy) {
+      this.root(join(store, "brain"), (dir) => this.agyBrain(dir));
+      this.root(store, (dir) => this.agyStore(dir));
+    }
+    this.stats.roots = [{ harness: "claude", path: r.claude, watched: false }, { harness: "codex", path: r.codex, watched: false }, ...r.agy.map((store) => ({ harness: "agy" as const, path: join(store, "brain"), watched: false }))];
     // A folder that held its last session more than `days` ago is let go (once a day).
     this.prune = setInterval(() => void this.pruneOld(), DAY);
     (this.prune as any).unref?.();
@@ -318,6 +336,7 @@ export class Outside {
     const r = this.roots();
     if (this.heard.has(r.claude)) this.claudeWalk(r.claude);
     if (this.heard.has(r.codex)) this.codexWalk(r.codex, 0);
+    for (const store of r.agy) if (this.heard.has(join(store, "brain"))) this.agyWalk(join(store, "brain"));
   }
 
   status(): OutsideStatus {
@@ -503,6 +522,71 @@ export class Outside {
     return [String(cut.getFullYear()), `${cut.getFullYear()}-${pad(cut.getMonth() + 1)}`, `${cut.getFullYear()}-${pad(cut.getMonth() + 1)}-${pad(cut.getDate())}`][depth - 1]!;
   }
 
+  // Antigravity: <store>/brain/<conversation>/.system_generated/logs/transcript_full.jsonl. A conversation made now
+  // is new: its logs folder is waited for and watched; of the ones there, those whose transcript changed within the
+  // days.
+  private agyBrain(brain: string) {
+    if (!this.once(brain)) return;
+    this.watchDir(brain, (_e, name) => {
+      if (name.includes(".")) return;
+      if (isDir(join(brain, name))) this.agyConversation(join(brain, name), true);
+      else this.gone(join(brain, name, ".system_generated", "logs"));
+    });
+    this.agyWalk(brain);
+  }
+
+  private agyWalk(brain: string) {
+    void (async () => {
+      let names: string[] = [];
+      try { names = await readdir(brain); } catch {}
+      const since = this.cutoff();
+      for (const n of names) {
+        if (n.includes(".") || !this.on) continue;
+        try { if ((await stat(join(brain, n, ".system_generated", "logs", AGY_FILE))).mtimeMs >= since) this.agyConversation(join(brain, n), false); } catch {}
+      }
+    })().catch((e) => this.d.trouble?.(e, "walking another harness's folders"));
+  }
+
+  // A conversation's logs folder, watched while its transcript is recent (`made`: the conversation is new, and its
+  // transcript is read once its folder comes, as its first steps may be written before the watch).
+  private agyConversation(conv: string, made: boolean) {
+    const logs = join(conv, ".system_generated", "logs");
+    this.root(logs, (dir) => {
+      this.keep(dir, () => this.freshIn(dir, (x) => x === AGY_FILE), () => this.watchDir(dir, (_e, name) => { if (name === AGY_FILE) this.schedule(join(dir, name), "agy"); }));
+      if (made && existsSync(join(dir, AGY_FILE))) this.schedule(join(dir, AGY_FILE), "agy");
+    });
+  }
+
+  // A store's list (conversation_summaries.db and its log) changed: the run status of its conversations shown
+  // here is read again, in one look a moment after the burst of writes.
+  private agyLook?: ReturnType<typeof setTimeout>;
+  private agyStores = new Set<string>();
+  private agyStore(store: string) {
+    if (!this.once(`${store}#list`)) return;
+    this.watchDir(store, (_e, name) => {
+      if (!name.startsWith("conversation_summaries.db")) return;
+      this.agyStores.add(store);
+      if (this.agyLook) return;
+      this.agyLook = setTimeout(() => { this.agyLook = undefined; this.agyStatuses(); }, 250);
+      (this.agyLook as any).unref?.();
+    });
+  }
+
+  private agyStatuses() {
+    const stores = [...this.agyStores];
+    this.agyStores.clear();
+    for (const store of stores) {
+      const ts = [...this.files.values()].filter((t) => t.harness === "agy" && t.found && t.session && agyPlace(t.path)?.store === store);
+      if (!ts.length) continue;
+      const rows = agyListed(store, ts.map((t) => t.found!.id));
+      if (!rows) continue;
+      for (const t of ts) {
+        const status = rows.get(t.found!.id)?.status;
+        if (status !== t.status) { t.status = status; this.tell(t); }
+      }
+    }
+  }
+
   // Each harness's prompt history (history.jsonl in its own folder), read from its end: a prompt names
   // its session, and a session in a folder not watched (older than the days) is found by it.
   private history(home: string, harness: OutsideHarness) {
@@ -645,13 +729,15 @@ export class Outside {
     if (t.ignored) return;
     t.mtime = mtime;
     if (!t.found) {
-      const f = t.harness === "claude" ? claudeFound(t.path, size, mtime) : codexFound(t.path, size, mtime);
+      const f = foundOf(t.harness, t.path, size, mtime);
       // No conversation yet: looked at again when it grows.
       if (!f) return;
       if (f.kind !== "interactive" || !offered(f)) { t.ignored = true; t.reader = readerOf(t.harness); return; }
       t.found = f;
     }
     if (size < t.offset) Object.assign(t, { offset: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness), synced: -1 });
+    // Antigravity's run status, read with what the transcript gained (its list changes with it).
+    if (t.harness === "agy" && t.session) { const at = agyPlace(t.path); const rows = at && agyListed(at.store, [t.found.id]); if (rows) t.status = rows.get(t.found.id)?.status; }
     if (size === t.offset) { this.tell(t); return; }
     const first = t.offset === 0;
     const file = Bun.file(t.path);
@@ -690,6 +776,8 @@ export class Outside {
   private holderOf(t: Tracked, locks?: Lock[]): Holder {
     if (!t.found) return FREE;
     if (t.session && this.d.ours?.(t.session)) return { kind: "keel" };
+    // (Antigravity says nothing of the process that writes a conversation.)
+    if (t.harness === "agy") return FREE;
     if (t.harness === "codex") return codexHolder(this.roots().codexHome, t.found.id, locks ?? this.locks());
     const w = this.own.get(t.found.id);
     return w && claudeLive(w) ? recordHolder(w) : FREE;
@@ -701,6 +789,7 @@ export class Outside {
     const row = this.row(sessionId);
     if (!row) return undefined;
     if (this.d.ours?.(sessionId)) return { kind: "keel" };
+    if (row.harness === "agy") return FREE;
     return row.harness === "codex" ? codexHolder(this.roots().codexHome, row.source_id, this.locks()) : claudeHolder(this.roots().claudeRunning, row.source_id);
   }
 
@@ -860,7 +949,7 @@ export class Outside {
     this.stats.full_copies++;
     const l: Live = {
       offset: 0, rest: "", decoder: new TextDecoder(), base: 0, ids: stored.ids, hashes: stored.hashes, items: stored.items,
-      ...(row.harness === "claude" ? { chain: new ClaudeChain(), conv: new ClaudeConvert() } : { conv: new CodexConvert() }),
+      ...(row.harness === "claude" ? { chain: new ClaudeChain(), conv: new ClaudeConvert() } : row.harness === "agy" ? { conv: new AgyConvert(row.path) } : { conv: new CodexConvert() }),
     };
     // The same records convert to the events stored: what an event held when stored is all it holds.
     l.items.forEach((n, i) => { if (n !== null) l.conv.b.sealed.set(i, n); });
@@ -909,6 +998,15 @@ export class Outside {
       }
       const conv = l.conv;
       if (!(await paced(seg, (r) => conv.push(r, st.mtimeMs), ok))) return;
+    }
+    if (l.conv instanceof AgyConvert) {
+      // A step written again under a number the conversion took (Antigravity went back to it): read again from the
+      // start, and the copy goes on from where the two part, as another branch.
+      if (l.conv.rewound) {
+        this.live.set(sessionId, (l = this.fresh(row, l)));
+        if (!(await this.readInto(l, row.path, st.size, st.mtimeMs, ok))) return;
+      }
+      (l.conv as AgyConvert).settle();
     }
     if (this.live.get(sessionId) !== l) return;
     // While it works, its last event may still grow (a reply's next block, a round's next result): it waits.
@@ -1003,7 +1101,7 @@ export class Outside {
     if (!row) return undefined;
     let st;
     try { st = statSync(row.path); } catch { return undefined; }
-    const f = row.harness === "claude" ? claudeFound(row.path, st.size, st.mtimeMs) : codexFound(row.path, st.size, st.mtimeMs);
+    const f = foundOf(row.harness, row.path, st.size, st.mtimeMs);
     return f?.id === row.source_id ? f : undefined;
   }
 }

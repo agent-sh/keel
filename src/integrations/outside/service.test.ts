@@ -4,6 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { Store } from "../../core/store.ts";
 import { Bus } from "../../core/bus.ts";
 import { ownEnv } from "../../../test/env.ts";
@@ -12,7 +13,7 @@ import { OUTSIDE_DEFAULTS, type OutsideSettings } from "./settings.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-outside-"));
 // Each rig points the readers at its own stores; the file puts the environment back when it ends.
-ownEnv({ KEEL_IMPORT_CLAUDE_DIR: undefined, KEEL_IMPORT_CODEX_DIR: undefined });
+ownEnv({ KEEL_IMPORT_CLAUDE_DIR: undefined, KEEL_IMPORT_CODEX_DIR: undefined, KEEL_IMPORT_AGY_DIR: undefined });
 afterAll(() => rmSync(top, { recursive: true, force: true }));
 
 let k = 0;
@@ -24,12 +25,14 @@ function rig(cfg: Partial<OutsideSettings> = {}, viewed = false) {
   mkdirSync(join(codex, "sessions"), { recursive: true });
   process.env.KEEL_IMPORT_CLAUDE_DIR = claude;
   process.env.KEEL_IMPORT_CODEX_DIR = codex;
+  const agy = join(dir, "gemini");
+  process.env.KEEL_IMPORT_AGY_DIR = agy;
   const store = new Store(join(dir, "state"));
   const settings = { ...OUTSIDE_DEFAULTS, ...cfg };
   const o = new Outside({ store, bus: new Bus(), workspace: dir, settings: () => settings, viewed: () => viewed });
   o.start();
   const done = () => { o.stop(); store.db.close(); };
-  return { dir, claude, codex, store, o, settings, done };
+  return { dir, claude, codex, agy, store, o, settings, done };
 }
 
 const until = async <T>(f: () => T | undefined, ms = 5000): Promise<T> => {
@@ -291,6 +294,67 @@ describe("outside sessions", () => {
       r.settings.enabled = true;
       (r.o as any).settled();
       await until(() => r.o.status().watches > 0);
+    } finally { r.done(); }
+  });
+
+  // Antigravity's command line store as it is laid out: its list with each conversation's run status, a transcript a
+  // step a line under brain/<id>/.system_generated/logs.
+  test("an Antigravity conversation is followed as it runs: its state from its steps and its list, its copy as it grows, a rewind a branch", async () => {
+    const r = rig({}, true);
+    try {
+      const cli = join(r.agy, "antigravity-cli");
+      mkdirSync(join(cli, "brain"), { recursive: true });
+      const db = new Database(join(cli, "conversation_summaries.db"), { create: true });
+      db.exec("CREATE TABLE conversation_summaries (conversation_id text PRIMARY KEY, title text NOT NULL DEFAULT '', preview text NOT NULL DEFAULT '', last_modified_time datetime NOT NULL, workspace_uris text NOT NULL, status text NOT NULL DEFAULT '', parent_conversation_id text NOT NULL DEFAULT '')");
+      const cwd = join(r.dir, "w");
+      mkdirSync(cwd);
+      const id = "aaaa1111-0000-4000-8000-00000000000a", child = "aaaa1111-0000-4000-8000-00000000000b";
+      const listed = (cid: string, status: string, parent = "") => db.query("INSERT OR REPLACE INTO conversation_summaries (conversation_id, title, last_modified_time, workspace_uris, status, parent_conversation_id) VALUES (?, 'Quince notes', ?, ?, ?, ?)").run(cid, new Date().toISOString(), JSON.stringify([`file://${cwd}`]), status, parent);
+      await until(() => (r.o as any).watchers.has(join(cli, "brain")));
+      const logs = (cid: string) => join(cli, "brain", cid, ".system_generated", "logs");
+      const step = (cid: string, x: object) => appendFileSync(join(logs(cid), "transcript_full.jsonl"), JSON.stringify({ status: "DONE", created_at: new Date().toISOString(), ...x }) + "\n");
+      listed(id, "CASCADE_RUN_STATUS_RUNNING");
+      listed(child, "CASCADE_RUN_STATUS_RUNNING", id);
+      mkdirSync(logs(id), { recursive: true });
+      mkdirSync(logs(child), { recursive: true });
+      await until(() => (r.o as any).watchers.has(logs(id)));
+      step(id, { step_index: 0, type: "USER_INPUT", source: "USER_EXPLICIT", content: "<USER_REQUEST>Which fruit is in the notes?</USER_REQUEST>" });
+      step(id, { step_index: 1, type: "PLANNER_RESPONSE", model: "agy-model", input_tokens: 10, output_tokens: 5, cache_read_tokens: 100, tool_calls: [{ name: "run_command", args: { CommandLine: "cat notes.md" } }] });
+      step(child, { step_index: 0, type: "PLANNER_RESPONSE", model: "agy-model", content: "a subagent's own" });
+      const s = await until(() => sessionOf(r.store, id)?.outside?.doing ? sessionOf(r.store, id) : undefined);
+      expect(s.outside).toMatchObject({ harness: "agy", state: "working", doing: { tool: "run_command" }, model: "agy-model" });
+      expect(s.title).toBe("Quince notes");
+      // A subagent's conversation is no session here.
+      expect(sessionOf(r.store, child)).toBeUndefined();
+
+      // The call's result and the answer; the list says the run is idle.
+      step(id, { step_index: 2, type: "RUN_COMMAND", exit_code: 0, content: "quince" });
+      step(id, { step_index: 3, type: "PLANNER_RESPONSE", model: "agy-model", input_tokens: 20, output_tokens: 7, content: "The fruit is quince." });
+      listed(id, "CASCADE_RUN_STATUS_IDLE");
+      await until(() => sessionOf(r.store, id)?.outside?.state === "done");
+      expect(sessionOf(r.store, id)!.usage).toMatchObject({ input: 30, output: 12, cache_read: 100 });
+      await r.o.sync(s.id);
+      const first = stored(r.store, s.id).map((x) => r.store.event(x.event_id)!);
+      expect(first.map((e) => e.kind)).toEqual(["user", "assistant", "tool_result", "assistant"]);
+      expect(first[2]!.data.results[0].content).toBe("quince");
+      expect((await r.o.details(s.id))?.label).toBe("Antigravity");
+      // Antigravity's run status holds a turn its steps ended as one at work.
+      listed(id, "CASCADE_RUN_STATUS_RUNNING");
+      await until(() => sessionOf(r.store, id)?.outside?.state === "working");
+
+      // Antigravity went back to the answer and made another: the copy goes on from there as a branch.
+      step(id, { step_index: 3, type: "PLANNER_RESPONSE", model: "agy-model", content: "Quince, and a pear." });
+      listed(id, "CASCADE_RUN_STATUS_IDLE");
+      await until(() => sessionOf(r.store, id)?.outside?.state === "done");
+      await r.o.sync(s.id);
+      const second = stored(r.store, s.id);
+      expect(second.length).toBe(4);
+      expect(second.slice(0, 3)).toEqual(stored(r.store, s.id).slice(0, 3));
+      expect(second.slice(0, 3).map((x) => x.event_id)).toEqual(first.slice(0, 3).map((e) => e.id));
+      const answer = r.store.event(second[3]!.event_id)!;
+      expect(answer.parent).toBe(first[2]!.id);
+      expect(answer.data.blocks[0].text).toBe("Quince, and a pear.");
+      db.close();
     } finally { r.done(); }
   });
 });

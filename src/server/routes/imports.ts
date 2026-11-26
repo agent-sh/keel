@@ -425,7 +425,7 @@ export const importRoutes: RouteModule = (deps) => {
         // `went_on`: the copy took a turn here (or runs one now), so it no longer takes the original's later turns.
         const went_on = takeover ? takeover.wentOn(l.session_id) : imports.wentOn(l.session_id);
         // The source still at work in its harness (its own records say so), told on the copy in place of a row of its own.
-        const at = !far && (l.harness === "claude" || l.harness === "codex") ? outside?.runningOf(l.harness, l.source_id) : undefined;
+        const at = !far && (l.harness === "claude" || l.harness === "codex" || l.harness === "agy") ? outside?.runningOf(l.harness, l.source_id) : undefined;
         const running = at && (at.state === "working" || at.state === "waiting") ? at : undefined;
         return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), running, machine, went_on }, source });
       },

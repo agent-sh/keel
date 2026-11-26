@@ -10,7 +10,7 @@ import { isAbsolute, resolve } from "node:path";
 import { addUsage, emptyUsage, type Usage } from "../../core/types.ts";
 import { clip } from "../import/types.ts";
 
-export type OutsideHarness = "claude" | "codex";
+export type OutsideHarness = "claude" | "codex" | "agy";
 export type OutsideState = "working" | "waiting" | "done" | "stale";
 export type Failed = { tool: string; kind: "tool" | "provider"; text: string; ts: number };
 
@@ -285,7 +285,90 @@ export function codexReader(): Reader {
   };
 }
 
-export const readerOf = (h: OutsideHarness): Reader => (h === "codex" ? codexReader() : claudeReader());
+// Antigravity (src/integrations/import/agy.ts): a step a line. A prompt opens a turn; a reply with calls works on,
+// and its calls are answered in order by the steps that follow; a reply with none and no call open ends the turn.
+// A call that asks the owner is a wait. Each reply carries its own usage (input without the cached part).
+// Antigravity also keeps a run status of each conversation in its list: withOwnWord takes it as its word.
+const AGY_EDITS = new Set(["edit_file", "write_file", "replace_file_content", "write_to_file", "multi_replace_file_content"]);
+const AGY_ASKS: Record<string, string> = { ask_question: "your answer to a question" };
+const agyTs = (r: any) => {
+  const m = typeof r?.created_at === "string" ? /^(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?/.exec(r.created_at) : null;
+  return m ? Date.parse(`${m[1]}T${m[2]}${m[3] ? m[3].slice(0, 4) : ""}${m[4] ?? "Z"}`) || 0 : 0;
+};
+export function agyReader(): Reader {
+  let state: OutsideState = "done";
+  let since = 0, last = 0;
+  let waiting: string | undefined;
+  let model: string | undefined;
+  const usage: Record<string, Usage> = {};
+  const open: { name: string; path?: string; ts: number }[] = [];
+  const files = new Files();
+  let failures: Failed[] = [];
+  const set = (s: OutsideState, ts: number, w?: string) => {
+    if (s !== state || w !== waiting) since = ts || since;
+    state = s;
+    waiting = w;
+  };
+  const working = (ts: number) => {
+    const asks = open.find((c) => AGY_ASKS[c.name]);
+    set(asks ? "waiting" : "working", ts, asks ? AGY_ASKS[asks.name] : undefined);
+  };
+  return {
+    push(r) {
+      if (!r || typeof r !== "object") return;
+      const ts = agyTs(r);
+      if (ts) last = Math.max(last, ts);
+      const n = (x: any) => (typeof x === "number" && x > 0 ? x : 0);
+      switch (r.type) {
+        case "USER_INPUT":
+          open.length = 0;
+          return working(ts);
+        case "PLANNER_RESPONSE": {
+          if (typeof r.model === "string" && r.model) model = r.model;
+          const by = model ?? "unknown";
+          const u = { input: n(r.input_tokens), output: n(r.output_tokens), cache_read: n(r.cache_read_tokens), cache_write: 0 };
+          if (u.input || u.output || u.cache_read) usage[by] = addUsage(usage[by] ?? emptyUsage(), u);
+          if (r.status === "ERROR" && typeof r.error === "string") failures.push({ tool: "model", kind: "provider", text: clip(r.error, 400), ts });
+          open.length = 0;
+          for (const c of Array.isArray(r.tool_calls) ? r.tool_calls : []) {
+            if (!c?.name) continue;
+            const p = AGY_EDITS.has(c.name) ? c.args?.Path ?? c.args?.TargetFile ?? c.args?.AbsolutePath : undefined;
+            open.push({ name: String(c.name), path: typeof p === "string" ? p : undefined, ts });
+          }
+          if (!open.length && r.status !== "ERROR") return set("done", ts);
+          return working(ts);
+        }
+        case "ERROR_MESSAGE":
+          if (typeof r.error === "string" && r.error.trim()) failures.push({ tool: "model", kind: "provider", text: clip(r.error, 400), ts });
+          return;
+        case "SYSTEM_MESSAGE":
+        case "CHECKPOINT":
+          return;
+        default: {
+          // A step that answers the oldest open call.
+          const call = open.shift();
+          if (!call) return;
+          const failed = r.status === "ERROR" || (r.type === "RUN_COMMAND" && Number.isInteger(r.exit_code) && r.exit_code !== 0);
+          if (failed) failures.push({ tool: call.name, kind: "tool", text: clip(String(r.error || r.content || "the call failed"), 400), ts });
+          else if (call.path) files.add(call.path);
+          return working(ts);
+        }
+      }
+    },
+    facts() {
+      const c = state === "working" ? open[open.length - 1] : undefined;
+      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage: { ...usage }, files: [...files.list], ...(c ? { doing: { tool: c.name, since: c.ts } } : {}) };
+    },
+    takeFailures() { const f = failures; failures = []; return f; },
+  };
+}
+
+export const readerOf = (h: OutsideHarness): Reader => (h === "codex" ? codexReader() : h === "agy" ? agyReader() : claudeReader());
+
+// Antigravity's run status of a conversation (its list's `status`) as the word withOwnWord takes: idle is a turn
+// that ended, running or busy one at work. A word it may add later says nothing.
+export const agyWord = (status: string | undefined): { status?: string } | undefined =>
+  status === "CASCADE_RUN_STATUS_IDLE" ? { status: "idle" } : status === "CASCADE_RUN_STATUS_RUNNING" || status === "CASCADE_RUN_STATUS_BUSY" || status === "CASCADE_RUN_STATUS_CANCELING" ? { status: "busy" } : undefined;
 
 // Claude Code keeps a record of each running session (<config>/sessions/<pid>.json)
 // with its own word for its state: busy, waiting (on a permission prompt or

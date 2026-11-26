@@ -364,7 +364,7 @@ export function stateLine(st: SessionState, now = Date.now()): string {
   return [`${stateLabel(why ? { watch: st.watch } : st).toLowerCase()}${cls}${why ? `: ${why}` : ""}`, time].filter(Boolean).join(", ");
 }
 
-export const OUTSIDE_LABEL: Record<OutsideMark["harness"], string> = { claude: "Claude Code", codex: "Codex" };
+export const OUTSIDE_LABEL: Record<OutsideMark["harness"], string> = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" };
 // Why a session another harness runs refuses what would act on it here (a prompt, a command, a model, a clone).
 export const outsideRefusal = (s: { outside?: OutsideMark }) =>
   `this session runs in ${OUTSIDE_LABEL[s.outside?.harness ?? "claude"]} and is read-only here: copy it into Keel to act on it`;

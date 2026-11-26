@@ -47,6 +47,18 @@ const claudeBin = () => process.env.KEEL_CLAUDE_BIN?.trim() || Bun.which("claude
 // Claude Code's folder for the child, when it is not its default: the folder the mirror reads.
 const claudeConfig = () => (process.env.KEEL_IMPORT_CLAUDE_DIR ? dirname(claudeRoot()) : ownerEnv("CLAUDE_CONFIG_DIR"));
 
+// The driver of a session Keel only reads: nothing is sent, stopped or answered there.
+const READ_ONLY = {
+  route: (_id: string, _holder?: unknown) => "none" as const,
+  running: (_id: string) => false,
+  sends: (_id: string) => [] as never[],
+  notes: (_id: string) => [] as string[],
+  answers: (_id: string) => ({}),
+  send: (_id: string, _text: string, _key: string, _again?: string) => ({ error: "this session is read-only here: copy it into Keel to work on it", status: 409, holder: undefined }),
+  dismiss: (_id: string, _send: string) => false,
+  interrupt: async (_id: string) => false,
+};
+
 export const outsideRoutes: RouteModule = (deps) => {
   const { store, bus, engine, providers, errors } = deps;
   const g = globalThis as any;
@@ -56,7 +68,7 @@ export const outsideRoutes: RouteModule = (deps) => {
   g.__keelClaudeCode?.stop();
   outside = g.__keelOutside = new Outside({
     store, bus, workspace: deps.workspace,
-    price: (model, h) => providers.catalog.lookup(model, h === "claude" ? "anthropic" : "openai")?.price,
+    price: (model, h) => providers.catalog.lookup(model, h === "claude" ? "anthropic" : h === "agy" ? "google" : "openai")?.price,
     viewed: (id) => !!engine.viewed?.(id),
     // The session's failures, grouped by cause as its own would be; nothing is owed to a model (none runs here).
     failed: (id, f) => { record(id, { kind: f.kind, cls: f.kind === "tool" ? f.tool : classOf(f.text), message: f.text }); },
@@ -88,13 +100,13 @@ export const outsideRoutes: RouteModule = (deps) => {
     plan: waitPlan,
     cutAsks: () => void closeAsks("claude-", (id) => isOutside(store.session(id))),
   });
-  sharedImports(store).onCopy("outside", (h, id) => { if (h === "claude" || h === "codex") outside?.copiedNow(h, id); });
+  sharedImports(store).onCopy("outside", (h, id) => { if (h === "claude" || h === "codex" || h === "agy") outside?.copiedNow(h, id); });
   outside.start();
   app.start();
   claude.start();
   const o = outside;
-  // The driver that answers a session in place: its harness's.
-  const driver = (id: string) => (o.row(id)?.harness === "claude" ? claude : app);
+  // The driver that answers a session in place: its harness's. Antigravity has none: Keel only reads its sessions.
+  const driver = (id: string) => { const h = o.row(id)?.harness; return h === "claude" ? claude : h === "agy" ? READ_ONLY : app; };
   // What the bar shows besides the transcript's facts: who holds it, what a send does now, the sends not yet delivered.
   const inPlace = (id: string, base = o.holderNow(id)) => {
     const d = driver(id);
