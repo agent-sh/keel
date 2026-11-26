@@ -29,8 +29,12 @@ test("an agent's report offers its branch's review and its session", async ({ pa
     expect(mine.branch).toBeTruthy();
 
     await page.goto(`/s/${id}`);
+    // The turn the report started is folded into one line of the conversation: it is opened first.
+    const run = page.locator(`[data-station="${id}"]`).getByTestId("lens-run").last();
+    await expect(run).toBeVisible({ timeout: 30_000 });
+    if ((await run.getAttribute("data-open")) === null) await run.getByTestId("lens-run-toggle").click();
     const report = page.locator(`[data-station="${id}"]`).getByTestId("agent-report").last();
-    await expect(report).toBeVisible({ timeout: 30_000 });
+    await expect(report).toBeVisible();
     await report.getByRole("button").first().click();
     const acts = report.getByTestId("agent-report-actions");
     await expect(acts).toContainText(mine.branch!);
