@@ -55,7 +55,8 @@ test("a long session with many agents raises no window error while it streams an
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`/s/${id}`);
     await expect(page.getByTestId("dock-agents")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("turn-end").last()).toBeVisible();
+    // (The conversation is drawn: its last prompt is there. A turn's footer is the full stream's, not the conversation view's.)
+    await expect(page.getByTestId("user-message").last()).toBeVisible();
     await shoot(page, "resize-loops-01-long");
 
     // A reply streams for about ten seconds; the window changes size, and the panels open and close meanwhile.
