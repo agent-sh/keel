@@ -315,6 +315,9 @@ test("a question docks above the message box and is answered from the keyboard",
   await expect(card).toHaveAttribute("data-keys", "ready");
   await expect(card.getByTestId("question-hint")).toHaveText("Up and Down choose, Enter sends");
   await expect(card.getByTestId("question-digit")).toHaveCount(0);
+  // At rest an answer is its words inside a hairline, not a slab of grey: no option has a ground before one is chosen.
+  await page.mouse.move(5, 5);
+  expect(await card.getByTestId("question-option").evaluateAll((els) => [...new Set(els.map((el) => getComputedStyle(el).backgroundColor))])).toEqual(["rgba(0, 0, 0, 0)"]);
   await shoot(page, "answer-keys-02-question-docked");
   // At any scroll position of the conversation the card stays whole in view.
   const whole = () => card.evaluate((el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.height > 0; });

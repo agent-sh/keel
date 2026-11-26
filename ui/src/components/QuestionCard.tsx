@@ -611,7 +611,8 @@ function Docked({ use, sessionId, first, asked, onLater, agent }: { use: ToolUse
                       className={cn(
                         // (Brought into view, it stops over the card's Answer row, not under it.)
                         "k-q-option flex scroll-mb-14 items-start gap-2.5 rounded-md border px-3 py-2 max-md:py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
-                        on ? "border-accent bg-accent-soft" : "border-line bg-sunken hover:border-line-strong",
+                        // (At rest an answer is its words inside a hairline, no slab of grey: the ground is the chosen one's.)
+                        on ? "border-accent bg-accent-soft" : "border-line hover:border-line-strong hover:bg-hover",
                       )}
                     >
                       {/* The key that picks it, drawn only while it does (the numbers are the card's). Else the
