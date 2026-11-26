@@ -84,6 +84,7 @@ test("a waiting agent and a long command keep their prompt cache warm, and the t
 
     // The timeline of the agent says what the wait did with its cache, and the cost.
     await page.goto(`${d.url}/s/${agent.session_id}`);
+    await page.getByTestId("focus-leave").click();
     await openPanel(page, "timeline");
     const row = page.getByTestId("timeline-row").filter({ hasText: "Kept the prompt cache warm" });
     await expect(row).toBeVisible({ timeout: 20_000 });

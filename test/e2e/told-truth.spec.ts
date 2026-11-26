@@ -233,6 +233,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
     await page.goto(`${d.url}/s/${five}`);
+    await page.getByTestId("focus-leave").click();
     await page.getByTestId("panel-menu").click();
     await page.getByTestId("panel-search").fill("timeline");
     await page.getByTestId("panel-pick-timeline").click();
