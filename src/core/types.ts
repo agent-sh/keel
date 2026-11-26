@@ -365,5 +365,5 @@ export type TurnStatus =
   // Told once the silence passes STREAM_QUIET_MS; the next output ends it.
   // `limit`: the request waits in its account's line while the account's limit holds requests
   // (src/providers/admission.ts): until when the account said, and why, in its words.
-  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images"; quiet?: number; limit?: { until?: number; why: string; spend?: true | "pause" } }
+  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images"; quiet?: number; limit?: { until?: number; why: string; spend?: true | "pause" | "load" } }
   | { kind: "tool"; since: number; names: string[] };

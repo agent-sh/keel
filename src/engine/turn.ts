@@ -1072,7 +1072,7 @@ export class Engine {
         told = true;
         this.append(id, "note", { kind: "spend_window", text: held.note ?? held.why });
       }
-      this.status(id, { kind: "model", since: Date.now(), model, limit: { ...(held.until ? { until: held.until } : {}), why: held.why, spend: held.kind === "pause" ? "pause" : true } });
+      this.status(id, { kind: "model", since: Date.now(), model, limit: { ...(held.until ? { until: held.until } : {}), why: held.why, spend: held.kind ?? true } });
       if (running) running.providerWaiting = true;
       // Asked again every few seconds: the owner's own words steered into this turn end its wait.
       const asked = new AbortController();

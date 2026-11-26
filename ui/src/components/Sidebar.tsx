@@ -66,6 +66,7 @@ import { openHelper } from "../lib/helper.ts";
 import { useProjects } from "../lib/projects.ts";
 import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { StuckStrip } from "./Stuck.tsx";
+import { LoadLine } from "./LoadLine.tsx";
 import { selected, selectRange, toggleSelected, useIsSelected } from "../lib/select.ts";
 import { SelectBar } from "./SelectBar.tsx";
 import { calls, useSettled, useSettledState, useSettledStates } from "../lib/settle.ts";
@@ -1477,7 +1478,7 @@ export function Sidebar({ open }: { open: boolean }) {
           <HelperFace size="rail" testid="helper-rail-face" /><span className="k-act-label" data-testid="helper-rail-name">{helperName}</span>{open && <Kbd keys="mod+j" className="k-act-key ml-auto" />}
         </button>
       </div>
-      <div ref={top} className="k-rail-top"><StuckStrip open={open} /></div>
+      <div ref={top} className="k-rail-top"><StuckStrip open={open} /><LoadLine open={open} /></div>
       <CountsKeeper />
       <CardCtx.Provider value={bind}>
         <HandCtx.Provider value={hand}>

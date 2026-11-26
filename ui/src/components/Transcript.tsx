@@ -639,7 +639,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const needs = st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
   // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
   // A request held in its account's line says so, with how long the account said the wait lasts.
-  const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" && st.limit ? limitText(st.limit.until, liveNow(), st.limit.spend) : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
+  const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" && st.limit ? limitText(st.limit.until, liveNow(), st.limit.spend, st.limit.why) : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (
     <div className="flex min-h-[1.875rem] items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
@@ -763,7 +763,7 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   else if (st?.kind === "retry" && st.unreachable) text = `${unreachableSince(hhmm(st.unreachable))}.`;
   else if (st?.kind === "retry") text = `The provider failed: ${st.message}. ${st.limit ? `${LIMIT_WAIT}. ` : ""}Retrying, ${attemptWords(st.attempt, st.max)}.`;
   else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
-  else if (st?.kind === "model" && st.limit) text = `${limitText(undefined, 0, st.limit.spend)}.`;
+  else if (st?.kind === "model" && st.limit) text = `${limitText(undefined, 0, st.limit.spend, st.limit.why)}.`;
   else if (working) text = `${STATE_WORD.work}.`;
   else if (said.current) text = "The turn ended.";
   if (said.current === null && !working && !approving && !asking) text = ""; // opening an idle session announces nothing

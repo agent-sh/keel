@@ -31,6 +31,7 @@ import * as agents from "./agents.ts";
 import * as caps from "./caps.ts";
 import * as windowCap from "./window-cap.ts";
 import * as fleetPause from "./fleet-pause.ts";
+import * as loadHold from "./load-hold.ts";
 import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
@@ -217,7 +218,7 @@ function init(deps: Deps) {
     // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
     // Another session's message to a top session at its reached cap waits for a raise, as a loop run does.
     holdsInput: (s) => caps.held(s.id),
-    stepHold: (s, byOwner) => fleetPause.hold(s, byOwner) ?? windowCap.hold(s, byOwner),
+    stepHold: (s, byOwner) => fleetPause.hold(s, byOwner) ?? loadHold.hold(s, byOwner) ?? windowCap.hold(s, byOwner),
     budget: (s, byOwner) => (s.parent_id ? agents.budgetSpent(s.id, byOwner) : caps.closing(s.id, false, byOwner)),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
@@ -414,6 +415,8 @@ function init(deps: Deps) {
     // The dollar caps' figures: a read every ten seconds while any is set (src/automation/caps.ts).
     caps.pulse();
     windowCap.pulse();
+    // Agent trees wait while the machine is over its thread count (src/automation/load-hold.ts).
+    loadHold.tick();
     // Most passes find nothing active: one indexed query says so and the
     // pass ends there (each step below would find nothing to do).
     if (!busy(deps)) return;
@@ -827,6 +830,10 @@ export const automationRoutes: RouteModule = (deps) => {
         const r = await fleetPause.pause(!!b.stop_running);
         return json({ ...r.state, stopped: r.stopped });
       }),
+    },
+    // Agent trees that wait for the machine (src/automation/load-hold.ts): the load, the line, what waits and the day's account.
+    "/api/load-hold": {
+      GET: () => json(loadHold.state()),
     },
     "/api/sessions/:id/cap": {
       GET: (req: any) => attempt(async () => {
