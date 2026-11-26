@@ -1084,7 +1084,7 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   // Past its time, or when the turn that asked ended, the hook's group is stopped.
   const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
   // Read to the end, kept to a bound: a hook that prints without end fills no memory.
-  const r = await outputOf(p, { where: "hook", timeoutMs: ms, signal, kill: stop, cap: OUT_MAX }).catch(() => null);
+  const r = await outputOf(p, { where: "hook", timeoutMs: ms, signal, kill: stop, cap: OUT_MAX, partial: true }).catch(() => null);
   if (!r) return { code: -1, stdout: "", stderr: "the hook's output could not be read" };
   return { code: r.timedOut ? null : r.code, stdout: r.out, stderr: r.err };
 }

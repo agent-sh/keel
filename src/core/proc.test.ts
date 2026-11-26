@@ -114,3 +114,24 @@ test("with a grace, a pipe that a process outside the group holds open is read n
   expect(r.cut).toBe(true);
   expect(Date.now() - t0).toBeLessThan(5_000);
 });
+
+test("the time limit still stops a group whose background process holds a pipe after the child's end", async () => {
+  const p = Bun.spawn(["sh", "-c", "printf hi; sleep 30 & exit 0"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+  const t0 = Date.now();
+  const r = await outputOf(p, { timeoutMs: 200, kill: () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} } });
+  expect(r.out).toBe("hi");
+  expect(r.code).toBe(0);
+  expect(r.timedOut).toBe(true);
+  expect(Date.now() - t0).toBeLessThan(5_000);
+}, 40_000);
+
+test("an abort still stops a group whose background process holds a pipe after the child's end", async () => {
+  const p = Bun.spawn(["sh", "-c", "printf hi; sleep 30 & exit 0"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 200);
+  const t0 = Date.now();
+  const r = await outputOf(p, { signal: ac.signal, kill: () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} } });
+  expect(r.out).toBe("hi");
+  expect(r.aborted).toBe(true);
+  expect(Date.now() - t0).toBeLessThan(5_000);
+}, 40_000);

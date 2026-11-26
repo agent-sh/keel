@@ -145,6 +145,8 @@ export type EndedOpts = {
   // child runs, so a long output is never held whole: use it where the output has no bound of its own.
   cap?: number;
   keep?: "head" | "tail";
+  // A pipe whose read fails gives what was read of it (and `cut`), with the real exit code, instead of failing the call.
+  partial?: boolean;
 };
 
 // The whole output of a child and its exit code. The pipes are read once the child has ended: the runtime
@@ -166,20 +168,18 @@ export async function outputOf(p: Child, o: EndedOpts = {}): Promise<Ended> {
   const capped = o.cap !== undefined ? [read(p.stdout), read(p.stderr)] : undefined;
   // (A capped read that fails is told after the end, as an uncapped one is.)
   capped?.forEach((c) => c.catch(() => {}));
-  let code: number;
-  try {
-    code = await p.exited;
-  } finally {
-    if (timer) clearTimeout(timer);
-    o.signal?.removeEventListener("abort", onAbort);
-  }
+  // The time limit and the abort hold until the pipes are read too: a process the child left running (`cmd &`
+  // with its output not sent elsewhere) keeps a pipe open after the child's end, and is stopped by them then.
   let grace: ReturnType<typeof setTimeout> | undefined;
   try {
+    const code = await p.exited;
     await o.exited?.();
     if (stop) grace = setTimeout(stop, o.graceMs);
     const [a, b] = await Promise.all(capped ?? [read(p.stdout), read(p.stderr)]);
     return { code, out: a!.text, err: b!.text, signal: p.signalCode == null ? null : String(p.signalCode), timedOut, aborted, cut: a!.cut || b!.cut };
   } finally {
+    if (timer) clearTimeout(timer);
+    o.signal?.removeEventListener("abort", onAbort);
     if (grace) clearTimeout(grace);
     stop?.();
   }
@@ -220,6 +220,7 @@ async function keptText(pipe: Pipe, o: EndedOpts, stop?: Promise<void>): Promise
     }
     keep(dec.decode());
   } catch (e) {
+    if (o.partial) { keep(dec.decode()); return { text: text.length > cap ? (tail ? text.slice(-cap) : text.slice(0, cap)) : text, cut: true }; }
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { where: o.where ?? "child pipe" });
   }
   if (text.length > cap) { cut = true; text = tail ? text.slice(-cap) : text.slice(0, cap); }
