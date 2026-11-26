@@ -271,3 +271,17 @@ test("a finished conversation is one ink: nothing in it is set in a saturated co
   }
   await shoot(page, "quiet-10-calm-prose");
 });
+
+test("a page of buttons is not a page of bold: a button's words are regular, and the weight is the filled one's", async ({ page }) => {
+  const weights = (sel: string) => page.locator(sel).evaluateAll((els) => [...new Set(els.map((el) => getComputedStyle(el).fontWeight))]);
+  for (const path of ["/settings/models", "/settings/health"]) {
+    await page.goto(path);
+    await expect(page.locator(".k-btn:not([data-ink])").first()).toBeVisible();
+    expect(await weights(".k-btn:not([data-ink])"), `plain buttons on ${path}`).toEqual(["400"]);
+    expect((await weights(".k-btn[data-ink]")).filter((w) => w !== "600"), `filled buttons on ${path}`).toEqual([]);
+  }
+  await page.goto("/settings/models");
+  await expect(page.locator(".k-btn").first()).toBeVisible();
+  await shoot(page, "quiet-12-buttons");
+});
+
