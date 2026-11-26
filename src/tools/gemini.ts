@@ -73,7 +73,7 @@ const read_file: Tool = {
     "A long text file is read for you by a reader model and comes back as a compiled reading: what the file is, its parts with their line ranges, what matters for your aim, " +
     "and the file's own lines (as `N<tab>text`) where you need exact text. Say what you want from the file in `for`. Set raw to true to get the file's content itself: " +
     "do that for the lines you will change when the reading does not show them, and for a text you must follow to the letter. " +
-    "Prose and instruction files (.md, .txt, .rst, AGENTS, CLAUDE, GEMINI) and files your task names come back as they are; raw: false asks for a reading of one.",
+    "Prose, instruction files and logs (.md, .txt, .rst, .log, AGENTS, CLAUDE, GEMINI), a saved tool output and files your task names come back as they are; raw: false asks for a reading of one.",
   input_schema: obj({
     file_path: { type: "string", description: "The path to the file to read." },
     start_line: { type: "integer", description: "Optional: the 1-based line number to start reading from." },

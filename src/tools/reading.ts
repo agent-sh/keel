@@ -9,7 +9,7 @@
 // otherwise write to its cache and read again at every later step.
 //
 // The file itself is read when the caller asks for it (`raw` on the read
-// tool), when it is prose or an instruction file or one the session was
+// tool), when it is prose, an instruction file, a log, a saved tool output or one the session was
 // pointed at (its prompts, an agent's task, a message sent to it: a text to
 // follow is read to the letter; `raw: false` asks for a reading of one), when
 // the page is
@@ -382,14 +382,23 @@ export const smallCap = (ctx: Pick<ToolContext, "inline">) => ctx.inline?.cap ??
 const WORTH = 0.6;
 
 // Prose and instruction files: a text a model is to follow, or quote, is read to the letter, and a reader's
-// account of it would stand between the model and what it was told. By the name alone: the markup and plain
-// text extensions, and the instruction files a harness names with no extension.
-const PROSE = new Set([".md", ".mdx", ".mdc", ".markdown", ".txt", ".rst"]);
+// account of it would stand between the model and what it was told. And a log: a record a model reads for
+// what its lines say, each of them evidence. By the name alone: the markup, plain text and log extensions,
+// and the instruction files a harness names with no extension.
+const PROSE = new Set([".md", ".mdx", ".mdc", ".markdown", ".txt", ".rst", ".log"]);
 const INSTRUCTIONS = new Set(["agents", "claude", "gemini"]);
 export function proseFile(p: string): boolean {
   const name = p.slice(p.lastIndexOf("/") + 1).toLowerCase();
   const dot = name.lastIndexOf(".");
   return dot > 0 ? PROSE.has(name.slice(dot)) : INSTRUCTIONS.has(name);
+}
+
+// A file in the session's spill folder is a result of its own tools kept whole (a cut output's full text, a
+// command's log: src/tools/spill.ts): the model opens it for what the tool said, to the letter.
+export function savedOutput(p: string, spillDir: string | undefined): boolean {
+  if (!spillDir) return false;
+  const under = (d: string) => p.startsWith(d.endsWith("/") ? d : `${d}/`);
+  try { return under(spillDir) || under(realOf(spillDir)); } catch { return false; }
 }
 
 export type Through =
@@ -401,10 +410,11 @@ export type Through =
 // reading whatever the file is (false).
 export async function throughReader(p: string, ctx: ToolContext, page: Page, o: { raw?: boolean; aim?: unknown; mtime: number; form?: RawForm }): Promise<Through> {
   if (o.raw || !ctx.readMaterial || ctx.readThrough === false || ctx.nestedIn || page.chars <= smallCap(ctx) || !page.rows.size) return {};
-  // The caller said nothing: prose, an instruction file and a file it was pointed at are read as they are.
+  // The caller said nothing: prose, an instruction file, a log, a saved output of its own tools and a file it
+  // was pointed at are read as they are.
   if (o.raw === undefined) {
     let named = false;
-    try { named = proseFile(p) || !!ctx.named?.(p); } catch {}
+    try { named = proseFile(p) || savedOutput(p, ctx.spillDir) || !!ctx.named?.(p); } catch {}
     if (named) return {};
   }
   const book = bookOf(ctx);

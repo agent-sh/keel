@@ -122,9 +122,9 @@ const Read: Tool = {
     "their line ranges, what matters for your aim, and the file's own lines (numbered) where you need exact text. " +
     "Say what you want from the file in `for`. Pass raw: true to get the file itself (by default up to 2000 lines " +
     "from the start; offset and limit name a range): do that for the lines you will edit when the reading does " +
-    "not show them, and for a text you must follow to the letter. Prose and instruction files (.md, .txt, .rst, " +
-    "AGENTS, CLAUDE, GEMINI) and files your task names come back as they are; raw: false asks for a reading of " +
-    "one. Images (PNG, JPEG, GIF, WebP) come back as images. PDFs: short ones whole as text; for longer " +
+    "not show them, and for a text you must follow to the letter. Prose, instruction files and logs (.md, .txt, " +
+    ".rst, .log, AGENTS, CLAUDE, GEMINI), a saved tool output and files your task names come back as they are; " +
+    "raw: false asks for a reading of one. Images (PNG, JPEG, GIF, WebP) come back as images. PDFs: short ones whole as text; for longer " +
     "ones pass pages, e.g. \"1-5\" (max 20), to see them as page images. Jupyter notebooks come back as cells " +
     "with outputs. Read files, not directories (use ls).",
   input_schema: obj({

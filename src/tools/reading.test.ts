@@ -3,7 +3,7 @@
 // edit change, the fallback when no reading comes back, and the urgent marks.
 // A stand-in takes the reader's place.
 import { afterAll, afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toolMarks } from "../core/build.ts";
@@ -126,6 +126,16 @@ describe("which reads go to the reader", () => {
     expect(text(await Read.run({ file_path: file(LONG, "pointed.ts"), raw: false }, ctx))).toStartWith("[Compiled reading of pointed.ts");
     expect(text(await read_file.run({ file_path: join(dir, "GEMINI.md"), raw: false }, ctx))).toStartWith("[Compiled reading of GEMINI.md");
     expect(asked).toHaveLength(3);
+    // A log, and a result of the session's own tools kept in its spill folder, are read for what they say.
+    const logged = Array.from({ length: 600 }, (_, i) => `12:00:${String(i % 60).padStart(2, "0")} request ${i + 1} served`).join("\n") + "\n";
+    mkdirSync(join(ctx.spillDir, "jobs"), { recursive: true });
+    for (const name of ["server.log", "spill/1795-Bash-ab12.txt", "spill/jobs/b2x.out"]) {
+      expect(text(await Read.run({ file_path: file(logged, name) }, ctx))).toStartWith("1\t12:00:00 request 1 served\n2\t");
+    }
+    expect(asked).toHaveLength(3);
+    expect(text(await Read.run({ file_path: join(dir, "server.log"), raw: false }, ctx))).toStartWith("[Compiled reading of server.log");
+    expect(text(await Read.run({ file_path: file(logged, "spill-notes.out") }, ctx))).toStartWith("[Compiled reading of spill-notes.out");
+    expect(asked).toHaveLength(5);
     // A name that only looks like one of them is a file like any other.
     expect(text(await Read.run({ file_path: file(LONG, "agents.ts") }, ctx))).toStartWith("[Compiled reading of agents.ts");
     expect(text(await Read.run({ file_path: file(LONG, "README") }, ctx))).toStartWith("[Compiled reading of README");
