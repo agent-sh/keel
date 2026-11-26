@@ -114,6 +114,8 @@ test("an agent that messages the session that started it is told that its report
   const r = await tool("SendMessage").run({ to: parent.id, message: "a word" }, { ...ctx, sessionId: a.session_id });
   expect(r.is_error).toBe(true);
   expect(String(r.content)).toContain("is the session that started you, not an agent of this tree");
+  // Named by a word for it, or by its title, it is the same session.
+  for (const to of ["parent", "Parent"]) expect(String((await tool("send_input").run({ target: to, message: "a word" }, { ...ctx, sessionId: a.session_id })).content)).toContain("is the session that started you");
   const other = await tool("SendMessage").run({ to: "no-such-agent", message: "a word" }, { ...ctx, sessionId: a.session_id });
   expect(String(other.content)).toContain("no agent \"no-such-agent\" in this session's tree");
   end(a, "end_turn");
