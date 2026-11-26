@@ -48,9 +48,13 @@ test("a rewind lists the agents its turns started, and stopping ends the one tha
   const before = await tree();
   const finisher = before.find((a) => a.title === "Finisher")!.branch!;
   expect(finisher).toContain("keel/");
+  // The completed agent's report wakes the coordinator. Wait for that turn too
+  // before rewinding the coordinator (the Writer is still running separately).
+  await ended(3);
 
   await page.goto(`/s/${id}`);
   await page.setViewportSize(sizes[0]!);
+  await page.getByTestId("lens-to-stream").click();
   await page.getByTestId("composer").fill("/rewind");
   await page.getByTestId("composer").press("Enter");
   const dialog = page.getByTestId("rewind-dialog");

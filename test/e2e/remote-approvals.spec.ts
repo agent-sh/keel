@@ -381,7 +381,7 @@ test("a tool's name is spelled wherever it is shown, and counts in what a notifi
 // What a notification may allow follows the policy's own answer for the command, read from its
 // card: its risk, and the class of the rule that asked. A delete outside the session's folder
 // after a harmless word is the case: while the policy rates it low and names no class, its
-// 31-character line is a notification's to allow; once the policy rates it high or names it as
+// A short destructive part is a notification's to allow only until the policy rates it high or names it as
 // what destroys, it is held and the notification carries no Allow. This test never allows it.
 test("a short delete outside the session's folder is a notification's to allow only while the policy says so", async ({ request }) => {
   const model = await scripted(request);
@@ -399,7 +399,7 @@ test("a short delete outside the session's folder is a notification's to allow o
   const card = (await (await request.get(`/api/sessions/${id}/approvals/${a.id}`)).json()).card;
   const alert = ((await (await request.get("/api/alerts?limit=200")).json()).alerts as any[]).find((x) => x.data?.approval_id === a.id);
   const { push } = await (await request.get(`/api/mobile/alerts/${alert.id}/push`)).json();
-  expect([card.line, card.line.length]).toEqual([`Bash: ${command}`, 31]);
+  expect(card.line).toBe("Bash: rm -rf ~/projects (part of a longer command)");
   // The policy's answer, as the card keeps it.
   const grave = /\b(destroys|remote|exposes|hidden|machine)\b/.test(a.rule ?? "");
   const mayGlance = a.risk === "low" && !grave;
