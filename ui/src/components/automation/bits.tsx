@@ -1,6 +1,7 @@
-import { Square } from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
+import { FileText, Square } from "lucide-react";
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { auto, autoState, isLive, useAuto, type AgentRecord, type Alert } from "../../lib/automation.ts";
 import { descendants } from "../../../../src/core/agent-tree.ts";
 import { reportError } from "../../lib/store.ts";
@@ -113,6 +114,24 @@ export function AgentNow({ a, className }: { a: AgentRecord; className?: string 
       {line.text && <span className="k-agent-now-text" data-testid="agent-now-text" title={line.text}>{line.text}</span>}
       <span className="k-agent-now-meta" data-testid="agent-now-meta">{nowMeta(line, now)}</span>
     </span>
+  );
+}
+
+// An ended agent's report, a press away from its row: it opens beside the row (ReportPeek.tsx) and the owner stays
+// where he reads. Before, the way to a report was the agent's own session, a page turned and turned back.
+const ReportPeek = lazy(() => import("./ReportPeek.tsx").then((m) => ({ default: m.ReportPeek })));
+export function ReportButton({ a, title, said, side, beside, testid }: { a: AgentRecord; title: string; said: AgentSaid; side: "left" | "right"; beside?: string; testid: string }) {
+  const [open, setOpen] = useState(false);
+  const at = useRef<HTMLButtonElement>(null);
+  if (isLive(a) || !a.report_chars) return null;
+  const words = `Read the report of ${title} here`;
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger ref={at} title={words} aria-label={words} data-testid={testid} onClick={(e) => e.stopPropagation()} className="grid size-6 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg data-[popup-open]:bg-hover data-[popup-open]:text-fg">
+        <FileText className="size-3.5" aria-hidden />
+      </Popover.Trigger>
+      {open && <Suspense fallback={null}><ReportPeek a={a} title={title} said={said} side={side} anchor={beside ? at.current?.closest(beside) : undefined} done={() => setOpen(false)} /></Suspense>}
+    </Popover.Root>
   );
 }
 

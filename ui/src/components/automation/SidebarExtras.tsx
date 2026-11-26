@@ -9,7 +9,7 @@ import { isLive, openSession, snoozeText, useAuto, type AgentRecord } from "../.
 import { COUNTERS, countWord, wentWrongWord } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentMark, agentOn, agentSaid, IconButton, nowMeta, StopAgent } from "./bits.tsx";
+import { AgentMark, agentOn, agentSaid, IconButton, nowMeta, ReportButton, StopAgent } from "./bits.tsx";
 import { ROW_BEAT, timed, useNow as useSecond } from "../Mark.tsx";
 import { beatOf } from "../../lib/clock.ts";
 import { AgentLane } from "./Lane.tsx";
@@ -91,7 +91,7 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
         const news = endedUnseen(a, seen);
         return (
           // The row opens the agent; Stop is a control of its own over the row's end, never inside the open target.
-          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-lane={lanes.has(a.id) || undefined} data-testid="child-row" data-depth={depth} style={depth > 1 ? ({ "--k-indent": `${(depth - 1) * 0.875}rem` } as React.CSSProperties) : undefined}>
+          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-report={(!isLive(a) && !!a.report_chars) || undefined} data-lane={lanes.has(a.id) || undefined} data-testid="child-row" data-depth={depth} style={depth > 1 ? ({ "--k-indent": `${(depth - 1) * 0.875}rem` } as React.CSSProperties) : undefined}>
             <WithNow a={a}>{(tip) => (
             <div
               role="button"
@@ -130,6 +130,7 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
             </div>
             )}</WithNow>
             <span className="k-child-acts">
+              <ReportButton a={a} title={title} said={st} side="right" testid="child-report" />
               <IconButton title={`${lanes.has(a.id) ? "Hide" : "Show"} what ${title} is doing, waits for, got wrong, changed and does next`} onClick={() => foldLane(a.id)} testid="child-lane-fold">
                 <ListCollapse className={cn("size-3.5", lanes.has(a.id) && "text-fg")} aria-hidden />
               </IconButton>

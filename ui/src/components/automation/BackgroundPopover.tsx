@@ -11,7 +11,7 @@ import { listedOnItsOwn, useFold, useNow } from "../../lib/agent-fold.ts";
 import { useAgentsSeen } from "../../lib/agent-seen.ts";
 import { ceilingWords } from "../../../../src/automation/mcp-call-words.ts";
 import { EarlierRow } from "./Earlier.tsx";
-import { AgentMark, agentOn, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
+import { AgentMark, agentOn, agentSaid, Empty, IconButton, ReportButton, SectionTitle, StopAgent } from "./bits.tsx";
 
 export function waitLabel(w: WaitRecord): string {
   const s: any = w.spec;
@@ -158,7 +158,7 @@ export function BackgroundPopup({ sessionId, agents: listed, waits, loops, side 
                     </div>
                     <ExternalLink className="size-3.5 shrink-0 text-faint" />
                   </div>
-                  <span className="grid size-6 shrink-0 place-items-center pointer-coarse:size-auto">{isLive(a) && <StopAgent a={a} title={title} testid="bg-agent-stop" />}</span>
+                  <span className="grid size-6 shrink-0 place-items-center pointer-coarse:size-auto">{isLive(a) ? <StopAgent a={a} title={title} testid="bg-agent-stop" /> : <ReportButton a={a} title={title} said={st} side="left" beside='[data-testid="background-popup"]' testid="bg-agent-report" />}</span>
                 </div>
               );
             })}

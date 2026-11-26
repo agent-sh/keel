@@ -127,3 +127,63 @@ test("reading one agent, what two others ask is answered in four presses and he 
     await expect(others).toHaveCount(0);
   } finally { await stopAll(); }
 });
+
+test("a finished agent's report is read beside its row in one press, without leaving the agent he reads", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await skipless(request);
+  const { session: s } = await (await request.post("/api/sessions", { data: { model: MODEL, title: "Ship the notes" } })).json();
+  const id = s.id as string;
+  const stopAll = async () => { for (const a of await treeOf(request, id)) await request.post(`/api/sessions/${id}/agents/${a.id}/stop`); };
+  try {
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn(`Reader\n${calls([bash("sleep 300; echo read")])}`)])}` } });
+    await expect.poll(async () => (await treeOf(request, id)).map((a) => a.title), { timeout: 30_000 }).toEqual(["Reader"]);
+    const reader = (await treeOf(request, id)).find((a) => a.title === "Reader")!;
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.addInitScript((c) => localStorage.setItem("keel.agentsOpen", JSON.stringify({ [c]: true })), id);
+    await page.goto(`/s/${reader.session_id}`);
+    const row = (name: string) => page.getByTestId("child-row").filter({ has: page.getByTestId("child-title").getByText(name, { exact: true }) });
+    await expect(row("Reader")).toBeVisible({ timeout: 30_000 });
+    // While he reads, another agent ends with a report.
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn(`Scout\n${calls([bash("echo scouted the notes")])}`)])}` } });
+    await expect(row("Scout").getByTestId("child-state")).toHaveText("Done", { timeout: 45_000 });
+    await expect(row("Scout").getByTestId("child-fresh")).toBeVisible();
+    const { c, press } = counter(page);
+    // Before: the report was in the agent's own session: its row (a page turned), then the row of the agent he was
+    // reading to come back: two presses, three with the tree folded. Now it opens beside the row.
+    await row("Scout").hover();
+    await press(row("Scout").getByTestId("child-report"));
+    const peek = page.getByTestId("report-peek");
+    await expect(peek.getByTestId("report-peek-body")).toContainText("scouted the notes", { timeout: 20_000 });
+    await expect(peek.locator(".k-surface-title")).toHaveText("Scout");
+    expect(c).toEqual({ presses: 1, dwells: 0 });
+    // He is where he was, and the report was looked at: its row's mark is gone.
+    await expect(page).toHaveURL(new RegExp(`/s/${reader.session_id}`));
+    await expect(row("Scout").getByTestId("child-fresh")).toHaveCount(0);
+    // It stands beside the list, in the window, and scrolls inside itself.
+    const box = (await peek.boundingBox())!, rail = (await row("Scout").boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(rail.x + rail.width - 40);
+    expect(box.y + box.height).toBeLessThanOrEqual(1040);
+    await shoot(page, "follow-agents-05-report");
+    await page.keyboard.press("Escape");
+    await expect(peek).toHaveCount(0);
+    // An agent at work has no report to read yet.
+    await row("Reader").hover();
+    await expect(row("Reader").getByTestId("child-report")).toHaveCount(0);
+    // From the coordinator: the Agents list, then the report beside the whole list; its head leads into the session.
+    await page.goto(`/s/${id}`);
+    await press(page.getByTestId("dock-agents"));
+    const listed = page.getByTestId("bg-agent").filter({ has: page.getByTestId("bg-agent-title").getByText("Scout", { exact: true }) });
+    await press(listed.getByTestId("bg-agent-report"));
+    await expect(peek.getByTestId("report-peek-body")).toContainText("scouted the notes", { timeout: 20_000 });
+    expect(c).toEqual({ presses: 3, dwells: 0 });
+    // Beside the list, on the side that has the room: it covers none of the list's rows.
+    const list = (await page.getByTestId("background-popup").boundingBox())!, beside = (await peek.boundingBox())!;
+    expect(beside.x + beside.width <= list.x + 1 || beside.x >= list.x + list.width - 1).toBe(true);
+    await shoot(page, "follow-agents-06-report-list");
+    await peek.getByTestId("report-peek-open").click();
+    const scout = (await treeOf(request, id)).find((a) => a.title === "Scout")!;
+    await expect(page).toHaveURL(new RegExp(`/s/${scout.session_id}`));
+    await expect(peek).toHaveCount(0);
+  } finally { await stopAll(); }
+});
