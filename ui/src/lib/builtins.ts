@@ -8,6 +8,7 @@ import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
 import { fuzzy, isMac, registerCommand } from "./keys.ts";
 import { shell } from "./shell.ts";
+import { DESK_QUERY } from "./phone.ts";
 import { getSafetyModes, safety } from "./safety.ts";
 import { archive } from "./sessops.ts";
 import { actions, getState, reportError, ensureModels } from "./store.ts";
@@ -128,6 +129,9 @@ registerCommand(
   { id: "text-reset", label: "Default text size", group: "View", keys: "mod+0", inInput: true, words: "zoom font size reset letters", run: () => setScale(1) },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model effort", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
   { id: "effort-menu", label: "Choose the effort", group: "Session", keys: "alt+e", inInput: true, when: () => !!current(), words: "reasoning effort thinking level", run: () => setUI({ effortMenu: getUI().effortMenu + 1 }) },
+  // The page as a picker: the element clicked goes to the message box by name, source, tokens and picture (lib/point.ts).
+  // It points at a menu or a dialog too, so the key works over one. Not on a phone: there is no pointer to point with.
+  { id: "point", label: "Point at the page", group: "Session", keys: "alt+.", inInput: () => !isMac, over: () => true, when: () => matchMedia(DESK_QUERY).matches, words: "pick element inspect this screenshot feedback ui", run: () => setUI({ pointAsk: getUI().pointAsk + 1 }) },
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => void copyOrSay(() => lastReply(current()!.id)) },
   // A panel lying over the conversation takes Escape first: it closes, and the
   // turn working behind it is not stopped by the same press.

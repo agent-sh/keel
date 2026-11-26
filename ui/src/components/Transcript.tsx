@@ -4,11 +4,12 @@ import { Menu } from "@base-ui/react/menu";
 import { CopyButton, copyWords } from "./CopyButton.tsx";
 import { usePhoneWidth } from "../lib/list-hold.ts";
 import { itemClass, popupClass } from "./ui.tsx";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Ellipsis, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square, Undo2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Ellipsis, FileText, GitBranch, ImageOff, Layers, MousePointerClick, Pencil, Play, RotateCcw, ShieldAlert, Square, Undo2 } from "lucide-react";
 import { undoRewindOrReport } from "../lib/rewind-act.ts";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, Fragment, lazy, memo, Suspense, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { quoteParts } from "../lib/quote.ts";
+import { pointFrom, pointNote, pointPieces } from "../lib/point-note.ts";
 import { flushSync } from "react-dom";
 import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolUseBlock } from "../../../src/core/types.ts";
@@ -259,7 +260,10 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
       >
         {text && (
           <>
-            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{parts.map((p, i) => p.quote ? <blockquote key={i} data-testid="user-quote" className="k-quote my-1.5 text-muted">{p.text}</blockquote> : <Fragment key={i}>{p.text}</Fragment>)}</div>
+            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{parts.map((p, i) => p.quote ? <blockquote key={i} data-testid="user-quote" className="k-quote my-1.5 text-muted">{p.text}</blockquote> : <Fragment key={i}>{pointPieces(p.text).map((x, j) => "name" in x
+              // What the owner pointed at (lib/point.ts): the note the model read is one line here, whole in its tip.
+              ? <div key={j} className="k-pointed" data-testid="user-point" title={pointNote(x)}><MousePointerClick aria-hidden />{x.name}<span>{pointFrom(x)}</span></div>
+              : <Fragment key={j}>{x.text}</Fragment>)}</Fragment>)}</div>
             {long && (
               <button type="button" onClick={() => setFull(!full)} className="k-link mt-1 text-caption font-medium text-accent-ink hover:underline">
                 {full ? "Show less" : "Show all"}

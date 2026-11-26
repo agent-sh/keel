@@ -2163,6 +2163,30 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    is, and so does a menu anchored to one of its rows. */
 .k-box-more-pop { width: 14rem; }
 .k-box-more-pop > button { width: 100%; }
+/* Point (lib/point.ts). Its row in the box's +, a quiet row like the pickers over it. */
+.k-point-ask { display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-ui); text-align: left; color: var(--muted); }
+.k-point-ask:hover { background: var(--hover); color: var(--fg); }
+.k-point-ask > svg { flex: none; color: var(--faint); }
+/* While picking: a clear sheet over the page (nothing under the pointer is lit by it, so an element is read as it
+   rests), the outline of the element under the pointer in the owner's colour, its name beside it, and one line that
+   says how to leave. They lie over everything the page draws, a menu and a dialog included. */
+.k-point-sheet { position: fixed; inset: 0; z-index: 2147483000; cursor: crosshair; }
+.k-point-box { position: fixed; z-index: 2147483001; pointer-events: none; border-radius: 2px; box-shadow: 0 0 0 1.5px var(--ring); background: color-mix(in oklab, var(--ring) 8%, transparent); }
+.k-point-tag { position: fixed; z-index: 2147483002; pointer-events: none; display: flex; gap: 0.5rem; max-width: 30rem; padding: 0.1875rem 0.4375rem; border-radius: var(--radius-sm); font-size: var(--text-micro); line-height: 1.35; white-space: nowrap; color: var(--accent-fg); background: var(--accent); }
+.k-point-tag > span { opacity: 0.7; font-variant-numeric: tabular-nums; }
+.k-point-hint { position: fixed; z-index: 2147483002; top: 0.625rem; left: 50%; transform: translateX(-50%); pointer-events: none; padding: 0.3125rem 0.75rem; border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-caption); white-space: nowrap; color: var(--muted); background: var(--raised); box-shadow: var(--shadow-2); }
+.k-point-probe { position: fixed; top: 0; left: 0; width: 1px; height: 1px; border: 0; visibility: hidden; pointer-events: none; }
+/* What was pointed at, in the box: its picture and three lines, as high as an attached image (Composer.tsx). */
+.k-point-chip { position: relative; display: flex; height: 4rem; max-width: 22rem; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.k-point-chip > img { flex: none; width: auto; min-width: 2.5rem; max-width: 9rem; height: 100%; padding: 0.3125rem; object-fit: contain; border-right: 1px solid var(--line); background: var(--sunken); }
+.k-point-chip-words { display: flex; min-width: 0; flex-direction: column; justify-content: center; padding: 0 1.75rem 0 0.625rem; font-size: var(--text-micro); line-height: 1.4; color: var(--faint); }
+.k-point-chip-words > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-point-chip-words > .k-point-chip-name { font-size: var(--text-ui); color: var(--fg); }
+/* The same in a sent message: one line under the words, its whole note in its tip (Transcript.tsx). */
+.k-pointed { display: flex; align-items: center; gap: 0.375rem; min-width: 0; margin-top: 0.25rem; font-size: var(--text-caption); line-height: 1.4; white-space: nowrap; color: var(--muted); }
+.k-pointed:first-child { margin-top: 0; }
+.k-pointed > svg { flex: none; width: 0.875rem; height: 0.875rem; color: var(--faint); }
+.k-pointed > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
 /* A session's box on a desk is one line in every view too (Composer.tsx): the same line, with the air of a
    pointer's controls: half a rem over and under the text, the tools a hair apart and off the frame, and the plain
    ones lit under the pointer. What else the box holds (attachments, notices) spans the line above or below. */

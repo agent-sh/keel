@@ -1,6 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, MessageSquare, Plus, Slash, SlidersHorizontal, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, MousePointerClick, Paperclip, MessageSquare, Plus, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { lazy, memo, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
@@ -24,6 +24,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
+import { pointFrom, pointNote, pointSize, withPoints, type Point } from "../lib/point-note.ts";
 import { registerBox, withQuote } from "../lib/quote.ts";
 import { registerDictation } from "../lib/dictation.ts";
 import { dictated, type Base } from "../lib/dictated.ts";
@@ -250,6 +251,15 @@ const SessionComposer = memo(function SessionComposer({
   const draft = useRef({ text, images });
   const setText = (next: SetStateAction<string>) => commitText(draft.current.text = typeof next === "function" ? next(draft.current.text) : next);
   const setImages = (next: SetStateAction<Attachment[]>) => commitImages(draft.current.images = typeof next === "function" ? next(draft.current.images) : next);
+  // What the owner pointed at on the page (lib/point.ts): each a chip in the box, with its picture among the
+  // images. They are part of the draft, kept with it across a reload, and go with the message as their notes.
+  const pointsKey = `keel.points.${sid ?? "new"}`;
+  const [points, commitPoints] = useState<Point[]>(() => { try { return JSON.parse(localStorage.getItem(pointsKey) ?? "[]") as Point[]; } catch { return []; } });
+  const pointed = useRef(points);
+  const setPoints = (next: SetStateAction<Point[]>) => {
+    commitPoints(pointed.current = typeof next === "function" ? next(pointed.current) : next);
+    try { if (pointed.current.length) localStorage.setItem(pointsKey, JSON.stringify(pointed.current)); else localStorage.removeItem(pointsKey); } catch { /* a full store keeps them for this page only */ }
+  };
   const mounted = useRef(false);
   useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -300,6 +310,45 @@ const SessionComposer = memo(function SessionComposer({
     if (modeSignal !== lastMode.current && focus) { setTapped(true); setModeOpen((n) => n + 1); }
     lastMode.current = modeSignal;
   }, [modeSignal]);
+  // The Point key turns the page into a picker for the box that has the focus; the row in the box's + does for its own.
+  const pointSignal = useUI((s) => s.pointAsk);
+  const lastPoint = useRef(pointSignal);
+  const pointing = useRef(false);
+  const point = async () => {
+    if (pointing.current && !document.querySelector(".k-point-sheet")) return;
+    pointing.current = true;
+    try {
+      const got = await (await import("../lib/point.ts")).pick();
+      if (!got || !mounted.current) return;
+      let image: string | undefined;
+      if (got.crop && room() > 0) {
+        const a = await toAttachment(got.crop);
+        if (!mounted.current) return;
+        setImages((cur) => [...cur, a]);
+        if (sid) keep(sid, a);
+        image = a.id;
+      }
+      setPoints((cur) => [...cur, { id: crypto.randomUUID(), ...got.point, ...(image && { image }) }]);
+      setTapped(true);
+      ref.current?.focus();
+    } catch (e) {
+      setNotice("The element could not be read.");
+      reportError(e, { kind: "point" });
+    } finally {
+      pointing.current = false;
+    }
+  };
+  useEffect(() => {
+    if (pointSignal !== lastPoint.current && focus) void point();
+    lastPoint.current = pointSignal;
+  }, [pointSignal]);
+  const unpoint = (p: Point) => {
+    setPoints((cur) => cur.filter((x) => x.id !== p.id));
+    const a = draft.current.images.find((x) => x.id === p.image);
+    if (!a) return;
+    setImages((cur) => cur.filter((x) => x.id !== a.id));
+    if (sid) void drop(sid, a);
+  };
   const lastEsc = useRef(0);
   const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
@@ -539,10 +588,10 @@ const SessionComposer = memo(function SessionComposer({
   // next turn runs with (mode, model, effort, context) is behind its +. The start page's box keeps them in sight.
   const desk = useDesk();
   const oneLine = !!session && (desk || phoneLine);
-  const rest = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !working && !notice && synced;
+  const rest = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !points.length && !working && !notice && synced;
   // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
   // one line then, Stop included, until a tap brings its tools (bridge.css).
-  const calm = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !notice;
+  const calm = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !points.length && !notice;
   // Whether the window is low changes with the window and the text size, never with what is
   // typed: it is not asked at every key (the question makes the browser style the whole page
   // on the spot, a reply that streams above included).
@@ -567,7 +616,7 @@ const SessionComposer = memo(function SessionComposer({
     el.style.height = "auto";
     const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
     el.style.height = `${h}px`;
-    const shape = `${resized}|${h}|${width}|${innerHeight}|${!!el.value}|${scale}|${short}|${images.length}|${notice}|${synced}|${info?.id}|${working}|${rest}|${line}`;
+    const shape = `${resized}|${h}|${width}|${innerHeight}|${!!el.value}|${scale}|${short}|${images.length}|${points.length}|${notice}|${synced}|${info?.id}|${working}|${rest}|${line}`;
     if (!resized && shape === shapeAt.current.key) {
       el.style.minHeight = shapeAt.current.least;
       box.style.height = box.style.flex = "";
@@ -605,12 +654,12 @@ const SessionComposer = memo(function SessionComposer({
   const fitSig = useRef("");
   useEffect(() => {
     const el = ref.current;
-    const sig = el ? `${el.value}|${el.placeholder}|${el.clientWidth}|${scale}|${short}|${images.length}|${notice}|${synced}|${rest}|${info?.id ?? ""}` : "";
+    const sig = el ? `${el.value}|${el.placeholder}|${el.clientWidth}|${scale}|${short}|${images.length}|${points.length}|${notice}|${synced}|${rest}|${info?.id ?? ""}` : "";
     if (!el || sig !== fitSig.current) { fitSig.current = sig; fit(); }
     const resized = () => fit(true);
     addEventListener("resize", resized);
     return () => removeEventListener("resize", resized);
-  }, [text, scale, short, images.length, notice, synced, info, busy, rest]);
+  }, [text, scale, short, images.length, points.length, notice, synced, info, busy, rest]);
   // A pane made wider or narrower (its divider, the list, a side panel) wraps the draft and
   // the tools anew with no resize of the window: measured again then, a frame later (a size
   // written inside the observer's own call would loop it), not at the next key.
@@ -956,10 +1005,11 @@ const SessionComposer = memo(function SessionComposer({
   const submit = (queue = false, background = false) => {
     sentHere.current = Date.now();
     const { text, images } = draft.current;
+    const pts = pointed.current;
     const t = text.trim();
-    if (!t && !images.length) return;
+    if (!t && !images.length && !pts.length) return;
     const cmd = t.match(/^\/([\w:.-]+)(?:\s+([\s\S]*))?$/);
-    if (cmd && !images.length) {
+    if (cmd && !images.length && !pts.length) {
       const typed = slashItems.find((i) => i.typed && (i.word ?? i.id) === cmd[1] && (!i.when || i.when(ctx)));
       const item = typed ?? slashItems.find((i) => i.id === cmd[1] && !i.typed);
       if (item && !item.typed) return runSlash(item, (cmd[2] ?? "").trim());
@@ -968,10 +1018,12 @@ const SessionComposer = memo(function SessionComposer({
     if (why) return setNotice(why);
     setText("");
     setImages([]);
+    setPoints([]);
     setMenu(null);
     setNotice(null);
     ref.current?.focus();
-    void attempt({ id: crypto.randomUUID(), text, images, queue, ...(background && { background }), state: "sending" }, true);
+    // (What was pointed at goes as its notes under the words, each naming its picture among the message's images.)
+    void attempt({ id: crypto.randomUUID(), text: withPoints(text, pts, images.filter((a) => !a.file).map((a) => a.id)), images, queue, ...(background && { background }), state: "sending" }, true);
   };
 
   // What the selection bar hands this box (lib/quote.ts): a comment goes at once as the owner's own message,
@@ -1065,7 +1117,7 @@ const SessionComposer = memo(function SessionComposer({
 
   const mentionName = workspace ? `Files in ${workspace.split("/").pop()} and sessions` : "Sessions";
   const open = menu && options.length > 0;
-  const canSend = !!text.trim() || images.length > 0;
+  const canSend = !!text.trim() || images.length > 0 || points.length > 0;
   // What the box says about itself: among the tools, or on a line of its own
   // above a one-row toolbar. Cut where the room ends, whole in its tip.
   const status = notice
@@ -1175,9 +1227,26 @@ const SessionComposer = memo(function SessionComposer({
       )}
 
       <p role="status" className="sr-only" data-testid="saved-status">{said}</p>
-      {images.length > 0 && (
+      {(images.length > 0 || points.length > 0) && (
         <div className="k-attachments k-scroll-more flex max-h-[9.25rem] min-h-[4.75rem] shrink-[99] flex-wrap gap-2 px-3 pt-3" data-testid="attachments">
-          {images.map((a) => (
+          {/* What was pointed at: its name, where it is written and its size, with its picture. The whole note is its tip. */}
+          {points.map((p) => {
+            const a = images.find((x) => x.id === p.image);
+            return (
+              <div key={p.id} className="k-point-chip group/att animate-pop" data-testid="point-chip" title={pointNote(p)}>
+                {a && <img src={a.url} alt="" data-testid="point-crop" />}
+                <span className="k-point-chip-words">
+                  <span className="k-point-chip-name" data-testid="point-name">{p.name}</span>
+                  <span data-testid="point-from">{pointFrom(p)}</span>
+                  <span>{pointSize(p)}</span>
+                </span>
+                <button type="button" aria-label={`Remove ${p.name}`} onClick={() => unpoint(p)} className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-fg/75 text-bg opacity-0 transition-opacity group-hover/att:opacity-100 focus-visible:opacity-100 max-sm:opacity-100">
+                  <X className="size-3" strokeWidth={2.5} />
+                </button>
+              </div>
+            );
+          })}
+          {images.filter((a) => !points.some((p) => p.image === a.id)).map((a) => (
             <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${fmtSize(a.bytes)}`}>
               {a.file ? (
                 <div className="flex size-full flex-col items-center justify-center gap-0.5 px-1 text-center" data-testid="attached-file">
@@ -1345,6 +1414,14 @@ const SessionComposer = memo(function SessionComposer({
                     {sid && <Pickers.Fallback sessionId={sid} />}
                     {model && <Pickers.Limit model={model} />}
                     {sid && <Pickers.Meter sessionId={sid} />}
+                    {/* The page as a picker (lib/point.ts): the row closes the popup and the next click names an element. */}
+                    {!phoneLine && (
+                      <Popover.Close data-testid="point" className="k-point-ask" title="Click an element of the page to name it in your message" onClick={() => void point()}>
+                        <MousePointerClick className="size-4" />
+                        <span>Point at the page</span>
+                        <Kbd keys="alt+." className="ml-auto" />
+                      </Popover.Close>
+                    )}
                   </>
                 )}
               </BoxMore>

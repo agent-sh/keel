@@ -32,6 +32,7 @@ type UIState = {
   modelMenu: number; // bumped to ask the composer's model picker to open
   effortMenu: number; // bumped to ask the composer's effort picker to open
   permMenu: number; // bumped to ask the session header's permission menu to open
+  pointAsk: number; // bumped to ask the message box that has the focus to pick an element of the page (lib/point.ts)
   enterSends: boolean;
   newWorkspace: string; // the folder the start box creates a session in ("" = daemon default)
   newModel: string;
@@ -104,6 +105,7 @@ let state: UIState = {
   modelMenu: 0,
   effortMenu: 0,
   permMenu: 0,
+  pointAsk: 0,
   enterSends: pref("keel.enterSends", true),
   newWorkspace: pref("keel.newWorkspace", ""),
   newModel: "",
