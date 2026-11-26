@@ -267,7 +267,14 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
     expect(b.x + b.width, words).toBeLessThanOrEqual(Math.min(320, c.x + c.width) + 0.5);
     expect(await l.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), words).toBe(true);
   };
-  expect(await card.evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && el.scrollLeft === 0)).toBe(true);
+  const width = await card.evaluate((el) => ({
+    client: el.clientWidth, scroll: el.scrollWidth, left: el.scrollLeft,
+    overflow: [...el.querySelectorAll<HTMLElement>("*")].filter((child) =>
+      child.getBoundingClientRect().right > el.getBoundingClientRect().right + 1)
+      .map((child) => child.dataset.testid ?? child.getAttribute("class") ?? child.tagName),
+  }));
+  expect(width.scroll, JSON.stringify(width)).toBeLessThanOrEqual(width.client + 1);
+  expect(width.left).toBe(0);
   await whole(once, "Allow once");
   await whole(always, "Always allow");
   await whole(deny, "Deny");
