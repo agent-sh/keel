@@ -270,6 +270,7 @@ test("an agent its parent granted reads the daemon's lists, its own agent does n
     await expect.poll(() => out("poll.out").includes("200"), { timeout: 60_000 }).toBe(true);
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${d.url}/s/${id}`);
+    await page.getByTestId("lens-to-stream").click({ timeout: 10_000 });
     const card = page.getByTestId("agent-call").filter({ hasText: "Granted probe" });
     await expect(card.getByTestId("agent-call-api")).toHaveText("reads API");
     await shoot(page, "session-authority-04-granted-line");

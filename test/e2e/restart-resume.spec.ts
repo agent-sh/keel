@@ -39,7 +39,7 @@ function daemon(state: string, extra: Record<string, string> = {}, opts: { bin?:
     proc.stderr!.on("data", on);
   });
 }
-const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
+const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null || p.signalCode !== null ? r() : p.once("exit", () => r())));
 
 const made: string[] = [];
 test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
@@ -53,6 +53,8 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     const post = (url: string, path: string, body: unknown, method = "POST") =>
       fetch(url + path, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json() as any);
     const { session } = await post(d.url, "/api/sessions", { model: "scripted:stand-in" });
+    const view = () => fetch(`${d.url}/api/sessions/${session.id}`).then((r) => r.json() as any);
+    const runningCommand = async () => (await fetch(`${d.url}/api/sessions/${session.id}/jobs`).then((r) => r.json() as any)).jobs.some((j: any) => j.running);
     await post(d.url, `/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
 
     // A crash while the tool runs.
@@ -61,7 +63,7 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("tool-call")).toHaveCount(1, { timeout: 15_000 });
     await expect(page.getByTestId("dock-now")).toHaveAttribute("data-moment", "acting"); // the command runs
-    await page.waitForTimeout(1_000);
+    await expect.poll(runningCommand).toBe(true);
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     d = await daemon(state);
@@ -69,7 +71,6 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await expect(page.getByTestId("turn-end").first()).toContainText("Stopped by a restart", { timeout: 60_000 });
     await expect(page.getByTestId("restart-note")).toHaveCount(1, { timeout: 60_000 });
     await expect(page.getByTestId("assistant-text").last()).toHaveText("Continued after the restart.", { timeout: 15_000 });
-    await expect(page.getByTestId("turn-end")).toHaveCount(2);
     // The call the crash cut reads as cut, not as failed.
     const cutCall = page.getByTestId("tool-call").first();
     await expect(cutCall).toHaveAttribute("data-state", "cut");
@@ -82,25 +83,30 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await expect(page.getByTestId("dock-job").first()).not.toContainText("exit 0");
     await shoot(page, "restart-14-cut-command-went-on");
     await page.keyboard.press("Escape");
+    // The adopted command's end wakes the session once. Let that turn finish
+    // before starting the next command, so its wake cannot race the stop.
+    await expect(page.getByTestId("assistant-text").last()).toHaveText("Took the command's end.", { timeout: 15_000 });
+    await expect.poll(async () => (await view()).running).toBe(false);
 
     // A graceful stop while the tool runs: parked, then continued.
     await page.getByTestId("composer").fill("script:long-tool");
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("tool-call")).toHaveCount(2, { timeout: 15_000 });
-    await page.waitForTimeout(1_000);
+    await expect.poll(runningCommand).toBe(true);
     d.proc.kill("SIGTERM");
     await exited(d.proc);
     d = await daemon(state);
     await page.goto(`${d.url}/s/${session.id}`);
     await expect(page.getByTestId("restart-note")).toHaveCount(2, { timeout: 60_000 });
-    await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 15_000 });
-    await expect(page.getByTestId("assistant-text").last()).toHaveText("Continued after the restart.");
+    await expect(page.getByTestId("assistant-text").last()).toHaveText("Continued after the restart.", { timeout: 15_000 });
+    await expect.poll(async () => (await view()).running).toBe(false);
 
     // The model was told which calls the restarts cut.
-    const ev = await (await fetch(`${d.url}/api/sessions/${session.id}`)).json() as any;
+    const ev = await view();
     const cut = ev.events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).filter((r: any) => /daemon restart/.test(r.content));
     expect(cut).toHaveLength(2);
-    expect(ev.events.filter((e: any) => e.kind === "turn_end").map((e: any) => e.data.reason)).toEqual(["restart", "end_turn", "restart", "end_turn"]);
+    expect(ev.events.filter((e: any) => e.kind === "turn_end").map((e: any) => e.data.reason)).toEqual(["restart", "end_turn", "end_turn", "restart", "end_turn"]);
+    expect(ev.events.filter((e: any) => e.kind === "user" && e.data.job && String(e.data.text).includes("you were running when the daemon restarted has ended"))).toHaveLength(1);
     await page.getByTestId("tool-call").first().click();
     await shoot(page, "restart-02-resumed-after-stop");
   } finally {
@@ -222,6 +228,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     await page.setViewportSize({ width: 1920, height: 1040 });
     await panel.getByTestId("daemon-cut-turn").filter({ hasText: "Cut during a command" }).click();
     await expect(page).toHaveURL(new RegExp(`/s/${ids[0]}$`));
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 });
     await page.getByTestId("inbox-button").click();
     await page.getByTestId("tab-activity").click();
     const row = page.getByTestId("activity-item").filter({ has: page.locator('[data-testid="activity-cut-turn"]') });
@@ -499,20 +506,23 @@ test("a background agent is continued across restarts and its record matches wha
     const child = (await agent()).session_id as string;
     const view = (id: string) => call(`/api/sessions/${id}`, undefined, "GET");
     const holds = async () => ((await view(child)).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).length;
+    const jobsRunning = async () => (await call(`/api/sessions/${child}/jobs`, undefined, "GET")).jobs.filter((j: any) => j.running && !j.background).length;
+    const started = async () => (await call("/api/daemon", undefined, "GET")).last_start?.settled_ms ?? 0;
     const reports = async () => ((await view(session.id)).events as any[]).filter((e) => e.kind === "user" && String(e.data.text).includes("<subagent_result"));
     // The record and the session agree: the agent is live exactly while a turn runs in its session.
     const state_ = async () => [(await agent()).status, (await view(child)).running];
 
     await expect.poll(holds, { timeout: 30_000 }).toBe(1);
     for (const n of [2, 3]) {
-      await page.waitForTimeout(500); // the command runs
+      await expect.poll(jobsRunning).toBe(1);
       await restart(n === 2 ? "SIGTERM" : "SIGKILL"); // a stop that parks the turn, then a crash
       await expect.poll(holds, { timeout: 60_000 }).toBe(n);
       expect(await state_()).toEqual(["running", true]);
       expect(await reports()).toHaveLength(0);
     }
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("agent-call-status").first()).toContainText(/working/i);
+    await page.getByTestId("lens-to-stream").click({ timeout: 10_000 });
+    await expect(page.getByTestId("agent-call").filter({ hasText: "Holder" }).getByTestId("agent-call-status")).toContainText(/working/i);
     await shoot(page, "restart-03-agent-running-after-two");
 
     // Released: its one report, with the real answer, reaches the parent.
@@ -526,7 +536,7 @@ test("a background agent is continued across restarts and its record matches wha
     // A restart with nothing running decides nothing again.
     const before = [await turns(child), await turns(session.id)];
     await restart();
-    await page.waitForTimeout(2_000);
+    await expect.poll(started).toBeGreaterThan(0);
     expect([await turns(child), await turns(session.id)]).toEqual(before);
     expect(await state_()).toEqual(["completed", false]);
     expect(await reports()).toHaveLength(1);
@@ -534,6 +544,7 @@ test("a background agent is continued across restarts and its record matches wha
     // A turn started in the agent's own session: the parent sees it running and can close it.
     await call(`/api/sessions/${child}/messages`, { text: `script:calls ${JSON.stringify([hold])}` });
     await expect.poll(holds, { timeout: 30_000 }).toBe(4);
+    await expect.poll(jobsRunning).toBe(1);
     expect(await state_()).toEqual(["running", true]);
     const id = (await agent()).id;
     await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "close_agent", input: { target: id } }])}` });
@@ -550,7 +561,7 @@ test("a background agent is continued across restarts and its record matches wha
     for (const n of [5, 6, 7, 8]) {
       await expect.poll(holds, { timeout: 60_000 }).toBe(n);
       expect(await state_()).toEqual(["running", true]);
-      await page.waitForTimeout(500);
+      await expect.poll(jobsRunning).toBe(1);
       await restart("SIGKILL");
     }
     await expect.poll(state_, { timeout: 60_000 }).toEqual(["failed", false]);
@@ -558,13 +569,16 @@ test("a background agent is continued across restarts and its record matches wha
     expect((await reports())[2].data.text).toContain("was not resumed again");
     const after = await turns(child);
     await restart();
-    await page.waitForTimeout(2_000);
+    await expect.poll(started).toBeGreaterThan(0);
     expect([await turns(child), await state_()]).toEqual([after, ["failed", false]]);
     const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
     await page.goto(`${d.url}/s/${session.id}`);
-    // (Three reports are counted in the events above; the page draws the newest.)
-    await expect(page.getByTestId("agent-report").last()).toBeVisible({ timeout: 30_000 });
+    // The conversation folds the turn the report started. Open the newest
+    // report's run and check that the page shows the terminal state too.
+    const latest = page.getByTestId("lens-run").filter({ hasText: "1 agent report" }).last();
+    await latest.getByTestId("lens-run-toggle").click({ timeout: 10_000 });
+    await expect(latest.getByTestId("agent-report")).toHaveAttribute("data-status", "failed");
     await shoot(page, "restart-04-agent-reports");
   } finally {
     d.proc.kill("SIGKILL");
@@ -887,6 +901,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     // Nothing but this machine's provider listings reached the Errors panel.
     const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 });
     await page.getByTestId("errors-button").click();
     await expect(page.getByTestId("errors-panel").getByTestId("error-row")).toHaveCount(errs.length);
   } finally {
@@ -952,6 +967,7 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     // The inbox keeps the question as a decision the owner owes; the cut turn is not filed as finished.
     const filed = async (id: string) => ((await call("/api/alerts?with_unread", undefined, "GET")).alerts as any[]).filter((a) => a.session_id === id).map((a) => a.kind);
     expect(await filed(asker)).toEqual(["question"]);
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 });
     await page.getByTestId("inbox-button").click();
     const item = page.getByTestId("inbox-item").filter({ hasText: "Pick an accent color" });
     await expect(item).toHaveCount(1);
@@ -1046,6 +1062,7 @@ test("a message sent while the daemon is down or draining goes out once when it 
     const composer = page.getByTestId("composer");
     const saved = page.getByTestId("saved-draft");
     await page.goto(`${d.url}/s/${sid}`, { waitUntil: "networkidle" }); // every part of the page is loaded before the daemon goes
+    await page.getByTestId("focus-leave").click({ timeout: 10_000 }); // the workbench shows the waiting send on the session's row
     await expect(composer).toBeVisible();
     await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
 

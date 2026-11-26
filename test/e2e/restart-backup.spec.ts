@@ -46,7 +46,7 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
   // Not a blocking spawn: this process is the daemon's parent. The old daemon
   // is not gone until its parent takes its exit, and the new one waits for that.
   const restart = (timeout: number) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
-    const p = spawn("bun", ["src/main.ts", "restart", "--timeout", String(timeout), "--url", d.url], { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("bun", ["src/main.ts", "restart", "--now", "--timeout", String(timeout), "--url", d.url], { env: specEnv(state, {}, join(state, "work")), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     p.stdout!.on("data", (b) => (stdout += b));
     p.stderr!.on("data", (b) => (stderr += b));

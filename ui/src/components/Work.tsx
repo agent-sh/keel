@@ -332,12 +332,13 @@ export function Work({ row, sid, cwd, remote, passed = false }: { row: Row; sid:
   const [kept, setOpened] = useKept(`work:${sid}:${row.id}`);
   const opened = kept ?? false;
   // An agent the run started that still works keeps the run whole: its line under the step is where it is watched.
-  const busy = useAuto((x) => passed && Object.values(x.agents).some((a) => a.parent_id === sid && !!a.call_id && isLive(a) && row.steps!.some((st) => callsOf(st).some((c) => c.id === a.call_id))));
+  const spawnCalls = useMemo(() => new Set(row.steps!.filter((st) => st.family === "agents").flatMap((st) => callsOf(st).map((c) => c.id))), [row.steps]);
+  const busy = useAuto((x) => (calm || passed) && spawnCalls.size > 0 && Object.values(x.agents).some((a) => a.parent_id === sid && !!a.call_id && isLive(a) && spawnCalls.has(a.call_id)));
   // A run that stood on the page when the owner sent their next message stays as it stood: folding it there
   // would drop every line above it while they read. It is the one line when it is drawn anew (the session
   // opened, the page loaded, the run brought back into view from far above).
   const [drawnPassed] = useState(passed);
-  const folded = folds(row.steps!, calm, drawnPassed && passed && !busy);
+  const folded = !busy && folds(row.steps!, calm, drawnPassed && passed);
   const hit = useUI((u) => u.focusCall && row.steps!.some((st) => callsOf(st).some((c) => c.id === u.focusCall?.id)) ? u.focusCall : null);
   useEffect(() => { if (hit && folded && !opened) setOpened(true, hit.byFind); }, [hit]);
   const table = isTable(row.steps!);
