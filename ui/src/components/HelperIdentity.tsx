@@ -83,7 +83,7 @@ function KeelRepoRow() {
     setKeelRepo(to || null).then(load, (e) => setErr(failed(e)));
   };
   return (
-    <SettingRow label="Keel's source" hint="The folder of a Keel checkout the helper starts an agent in when it finds a bug of Keel's. Found by itself where it can; set it when it says it cannot." testid="helper-repo-row">
+    <SettingRow stack label="Keel's source" hint="The folder of a Keel checkout the helper starts an agent in when it finds a bug of Keel's. Found by itself where it can; set it when it says it cannot." testid="helper-repo-row">
       <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
         <input className="k-field w-72 max-w-full" value={dir} placeholder="/path/to/keel" aria-label="Keel source folder" data-testid="helper-repo-input"
           onChange={(e) => setDir(e.target.value)} onBlur={save} onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") e.currentTarget.blur(); }} />

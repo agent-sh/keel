@@ -39,6 +39,9 @@ test("helper: a name and a picture an image model made, shown wherever it speaks
   await page.getByTestId("helper-name").press("Enter");
   // Keel's own source folder is found by itself (this daemon runs from a checkout) and said where it came from.
   await expect(page.getByTestId("helper-repo-found")).toContainText("the checkout this daemon runs from");
+  // The folder's field and the line of where it was found are under the setting's words, as wide as the row: beside
+  // them the long path took the row and left the words a narrow column.
+  expect(await page.getByTestId("helper-repo-row").evaluate((el) => el.firstElementChild!.getBoundingClientRect().width / el.getBoundingClientRect().width)).toBeGreaterThan(0.9);
   await expect(page.getByTestId("helper-rail-name")).toHaveText("Pip");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${helper.session_id}`)).json()).session.title).toBe("Pip");
   await page.getByTestId("helper-avatar-open").click();
