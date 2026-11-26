@@ -1,7 +1,8 @@
 import { ownerAwaySince } from "../admin/away.ts";
 import { type Alert, deliverTo, openAsks, reminderChannels, channelOf } from "./alerts.ts";
+import * as activity from "./activity.ts";
 import { capture, D } from "./core.ts";
-import { reachLine, reminderWords, step } from "./reminder-schedule.ts";
+import { reachLine, reminderWords, step, waited } from "./reminder-schedule.ts";
 
 // A card that waits while the owner is away is told again (src/automation/reminder-schedule.ts says
 // when). One reminder a session: the oldest card's words, the count of the others, on the desktop and
@@ -14,6 +15,7 @@ import { reachLine, reminderWords, step } from "./reminder-schedule.ts";
 
 const LOOK_MS = 30_000;
 let lookedAt = 0;
+const unrouted = new Set<string>(); // the cards whose due reminder had no channel, said once each
 
 export function migrate() {
   D().store.migrate("CREATE TABLE IF NOT EXISTS card_reminders (card TEXT PRIMARY KEY, anchor INTEGER NOT NULL, sent INTEGER NOT NULL)");
@@ -54,11 +56,19 @@ export function tick(now = Date.now(), away: number | null = ownerAwaySince(now)
       }
       const lead = due[0]!.a; // the card that has waited longest of those due (the list is oldest first)
       const to = reminderChannels(lead.kind);
-      if (!to.length) continue;
+      // Each reminder that came due is a row of the activity record (and a line of the daemon's log), sent or
+      // not and where to, so a card that waited long says afterwards whether it was told again.
+      const said = `"${lead.title}" waited ${waited(now - lead.ts)}${cards.length > 1 ? ` with ${cards.length - 1} more` : ""}`;
+      if (!to.length) {
+        if (!unrouted.has(due[0]!.card)) activity.record("alert", "reminder", session, `Not reminded: ${said}, and no channel that interrupts is set up for ${lead.kind} alerts`, { card: due[0]!.card, sent: false });
+        unrouted.add(due[0]!.card);
+        continue;
+      }
       // Stored before it is sent: a restart in between tells once less, never twice.
       for (const x of steps) save(x.card, x.s.anchor, x.s.sent, kept.get(x.card));
       const words = reminderWords(lead.title, lead.body, lead.ts, cards.length - 1, now);
       deliverTo({ ...lead, ...words, data: { ...lead.data, in_place: false, reminder: true } }, to, { reminder: true });
+      activity.record("alert", "reminder", session, `Reminded: ${said} (reminder ${due[0]!.s.sent}, on ${to.join(" and ")})`, { card: due[0]!.card, sent: true, channels: to, n: due[0]!.s.sent });
       told.push(session);
     }
   } catch (e) {

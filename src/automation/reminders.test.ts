@@ -49,6 +49,8 @@ test("an unanswered question is told again while the owner is away, once a sessi
   expect(reminders.tick(t0 + 16 * MIN, input, true)).toEqual([s]);
   await settle();
   expect(sent).toEqual(["again:Still waiting: Question: Build|Waiting 16 min. 1 more card waits in this session."]);
+  // The reminder is a row of the activity record: a card that waited long says afterwards that it was told again.
+  expect(activity.list({}).items.filter((r) => r.sub === "reminder").map((r) => r.text)).toEqual(['Reminded: "Question: Build" waited 16 min with 1 more (reminder 1, on desktop)']);
   expect(reminders.tick(t0 + 17 * MIN, input, true)).toEqual([]);
 
   // The daemon restarts: the same store, nothing in memory. The next reminder is still the hour's, not a new 15 minutes.
@@ -77,6 +79,9 @@ test("no reminder where the owner's routes name no interrupting channel", async 
   void ask({ sessionId: s, callId: "q", signal: new AbortController().signal } as any);
   const a = alerts.raise("question", s, "Q", "Which?", { call_id: "q", open_session: s })!;
   expect(reminders.tick(a.ts + 20 * MIN, a.ts - MIN, true)).toEqual([]);
+  expect(reminders.tick(a.ts + 20 * MIN + 30_000, a.ts - MIN, true)).toEqual([]);
+  // Said once, not at every look: no channel took the reminder that came due.
+  expect(activity.list({}).items.filter((r) => r.sub === "reminder" && r.session_id === s).map((r) => r.text)).toEqual(['Not reminded: "Q" waited 20 min, and no channel that interrupts is set up for question alerts']);
   alerts.saveSettings({ route: { kind: "question", channel: "desktop", on: true } });
   expect(reminders.tick(a.ts + 21 * MIN, a.ts - MIN, true)).toEqual([s]); // the first look after it was routed tells the gap it missed
   await settle();

@@ -1,6 +1,7 @@
 // Agents, waits, loops and alerts on the client: loaded once, then kept live by
 // the `automation` frames.
 import type { NowLine } from "../../../src/automation/now-line.ts";
+import { INPUT_TYPES, ownerInput } from "./owner-input.ts";
 import { useSyncExternalStore } from "react";
 import type { AgentBrief } from "../../../src/automation/agents.ts";
 // An agent as the page holds it: its record without its report, which is read when shown (agentReport).
@@ -487,6 +488,7 @@ addEventListener("pageshow", () => { if (leaving) { leaving = false; presence(tr
 // The first input after a while is the owner coming back: said at once. Any other is said within
 // five seconds, not at the next report, so the daemon knows to within that when they were last there.
 function input(e: Event) {
+  if (!ownerInput(e.type, document.hasFocus())) return; // a pointer crossing a page in the background (owner-input.ts)
   const now = Date.now();
   const back = now - lastInput > 60_000;
   lastInput = now;
@@ -498,7 +500,7 @@ function input(e: Event) {
 }
 // The keyboard going to another pane (a Tab, a press, the page's own focus) changes which pane the owner is at.
 document.addEventListener("focusin", () => lookSoon());
-for (const type of ["keydown", "pointerdown", "pointermove", "wheel", "touchstart", "touchmove"]) addEventListener(type, input, { capture: true, passive: true });
+for (const type of INPUT_TYPES) addEventListener(type, input, { capture: true, passive: true });
 // A press or a key in a session's pane is the owner acting there: what called them in it is read.
 function touched(e: Event) {
   const id = (e.target instanceof Element ? e.target.closest<HTMLElement>("section.k-station[data-station]") : null)?.dataset.station;
