@@ -50,6 +50,7 @@ import { workLine } from "../../../src/board/rules.ts";
 import { auto, useAuto } from "../lib/automation.ts";
 import { setAgentsOpen, useAgentsOpen } from "../lib/agents-open.ts";
 import { isCounted } from "../../../src/core/agent-count.ts";
+import { standLine } from "../../../src/core/stand.ts";
 import { briefText, failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { DRAG, dragSession, PanesButton } from "./Panes.tsx";
@@ -311,6 +312,10 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   // The dot's word a phone shows in the row (bridge.css): what the row does not say in words, apart from a session at rest (done
   // is the dot, one line), and what it waits on in the background.
   const dotWords = !offline && !left && (backgroundOf(st) ? true : !SPELLED.includes(w) && w !== "done" && w !== "idle");
+  // Where it stands in one line of facts (src/core/stand.ts): the reason short in the row, at rest its last result; whole under the pointer.
+  const stand = standLine(st, now);
+  // (Its whole is the card beside the row, RailCard.)
+  const standShown = !offline && !left && (SPELLED.includes(w) ? !!st.text && st.why !== "send" : (w === "done" || w === "idle") && !!stand.brief);
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   // A session of another harness that Keel only shows has no name of Keel's to give.
@@ -422,7 +427,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
           {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
           {!offline && w === "fail" && failWord(st.cls) && !on && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-          {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{briefText(st, now)}</span>}
+          {standShown && <span className="k-row-why" data-testid="row-why" data-why={st.why ?? (st.result ? "result" : undefined)}>{SPELLED.includes(w) ? briefText(st, now) : stand.brief}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
         </span>
       </span>
@@ -994,7 +999,8 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
   const told = useLastLine(s, !events);
   const line = events ? lastLine(branchOf(events, s.head), s.workspace) : told;
   const toldAt = (st as { as_of?: number }).as_of ?? s.updated;
-  const why = offline ? lastTold(stateLabel(st), st.text) : whyText(st, now);
+  // The row's line whole (src/core/stand.ts): the reason with its clock, a wait's deadline, the agents, the last result.
+  const why = offline ? lastTold(stateLabel(st), st.text) : standLine(st, now).full || whyText(st, now);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   // Beside a list row the card adds what the row has no room for and repeats nothing of it:
   // the reason in full, what the session last did, its model, the whole path, the exact time.

@@ -25,7 +25,16 @@ export type Facts = {
   // Usage by the model that spent it, as Keel counts it: `input` without the cached parts.
   usage: Record<string, Usage>;
   files: string[];
+  // The newest tool call still open while it works: its tool's name and since when (a row says "Working in Claude Code: Bash").
+  doing?: { tool: string; since: number };
 };
+
+// The newest call of `open` (a Map keeps the order calls opened in).
+function newest(open: Map<string, { name: string; ts?: number }>): Facts["doing"] {
+  let last: { name: string; ts?: number } | undefined;
+  for (const c of open.values()) last = c;
+  return last ? { tool: last.name, since: last.ts ?? 0 } : undefined;
+}
 
 export type Reader = {
   push(r: any): void;
@@ -95,7 +104,7 @@ export function claudeReader(): Reader {
   let waiting: string | undefined;
   let model: string | undefined;
   let cwd: string | undefined;
-  const open = new Map<string, { name: string; path?: string }>();
+  const open = new Map<string, { name: string; path?: string; ts?: number }>();
   const replies = new Map<string, { model: string; usage: Usage }>();
   const settled: Record<string, Usage> = {};
   const files = new Files();
@@ -153,7 +162,7 @@ export function claudeReader(): Reader {
       const uses = blocks.filter((b) => b?.type === "tool_use" && typeof b.id === "string");
       for (const u of uses) {
         const p = CLAUDE_EDITS.has(u.name) ? u.input?.file_path ?? u.input?.notebook_path : undefined;
-        open.set(u.id, { name: String(u.name ?? "tool"), path: typeof p === "string" ? p : undefined });
+        open.set(u.id, { name: String(u.name ?? "tool"), path: typeof p === "string" ? p : undefined, ts });
       }
       const stop = m.stop_reason;
       if (!uses.length && !open.size && (stop === "end_turn" || stop === "stop_sequence")) set("done", ts);
@@ -162,7 +171,8 @@ export function claudeReader(): Reader {
     facts() {
       const usage: Record<string, Usage> = { ...settled };
       for (const r of replies.values()) usage[r.model] = addUsage(usage[r.model] ?? emptyUsage(), r.usage);
-      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage, files: [...files.list] };
+      const doing = state === "working" ? newest(open) : undefined;
+      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage, files: [...files.list], ...(doing ? { doing } : {}) };
     },
     takeFailures() { const f = failures; failures = []; return f; },
   };
@@ -204,7 +214,7 @@ export function codexReader(): Reader {
   let cwd: string | undefined;
   let total: Usage = emptyUsage();
   const usage: Record<string, Usage> = {};
-  const open = new Map<string, { name: string; paths: string[] }>();
+  const open = new Map<string, { name: string; paths: string[]; ts?: number }>();
   const approvals = new Set<string>();
   const files = new Files();
   let failures: Failed[] = [];
@@ -251,7 +261,7 @@ export function codexReader(): Reader {
         if (typeof input === "string" && p.type === "function_call") { try { input = JSON.parse(input); } catch {} }
         const cmd = Array.isArray(input?.command) ? input.command : Array.isArray(input?.cmd) ? input.cmd : undefined;
         const patch = name === "apply_patch" ? (typeof input === "string" ? input : input?.input ?? input?.patch) : cmd?.[0] === "apply_patch" ? cmd[1] : undefined;
-        if (typeof p.call_id === "string") open.set(p.call_id, { name, paths: typeof patch === "string" ? patchPaths(patch) : [] });
+        if (typeof p.call_id === "string") open.set(p.call_id, { name, paths: typeof patch === "string" ? patchPaths(patch) : [], ts });
         return working(ts);
       }
       if (typeof p.type === "string" && p.type.endsWith("_output") && typeof p.call_id === "string") {
@@ -268,7 +278,8 @@ export function codexReader(): Reader {
       if (p.type === "message" && p.role === "assistant") return working(ts);
     },
     facts() {
-      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage: { ...usage }, files: [...files.list] };
+      const doing = state === "working" ? newest(open) : undefined;
+      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage: { ...usage }, files: [...files.list], ...(doing ? { doing } : {}) };
     },
     takeFailures() { const f = failures; failures = []; return f; },
   };

@@ -769,7 +769,7 @@ export class Outside {
     const mark: OutsideMark = {
       harness: t.harness, source_id: f.id, state: facts.state, ...(facts.waiting_for ? { waiting_for: facts.waiting_for } : {}),
       since: facts.since || Date.now(), ...(facts.model ? { model: facts.model } : {}), files: facts.files.length, failures: t.failures,
-      holder,
+      holder, ...(facts.doing ? { doing: facts.doing } : {}),
     };
     const usage = total(facts.usage, (m) => (u) => priceOf(u, this.d.price?.(m, t.harness)));
     const told = JSON.stringify([mark, usage]);

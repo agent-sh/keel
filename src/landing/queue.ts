@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS landing_queue (
   batch TEXT, owed INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS landing_queue_repo ON landing_queue(repo, state);
+-- The newest change, for a session's last result (src/automation/results.ts): one seek.
+CREATE INDEX IF NOT EXISTS landing_queue_updated ON landing_queue(updated);
 CREATE INDEX IF NOT EXISTS landing_queue_owed ON landing_queue(queued_by) WHERE owed = 1;
 CREATE TABLE IF NOT EXISTS landing_batches (
   id TEXT PRIMARY KEY, repo TEXT NOT NULL, base TEXT NOT NULL, from_sha TEXT NOT NULL, to_sha TEXT,

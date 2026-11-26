@@ -49,6 +49,7 @@ import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
 import { briefText, elapsed, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
+import { standLine } from "../../../src/core/stand.ts";
 import { Crumbs } from "./Crumbs.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -170,7 +171,10 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // Where the bar has no room for it (a phone at a large text size) a working session's step clock is the line over the
   // box's alone, so the title has the width.
   const crowded = useCrowded();
-  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded || working ? "" : st.text ? briefText(st, now) : "";
+  // Where it stands in one line of facts (src/core/stand.ts): at rest the reason's place says its last result; whole under the pointer.
+  const stand = standLine(st, now);
+  const last = !offline && (w === "done" || w === "idle") ? stand.brief : "";
+  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded || working ? "" : st.text ? briefText(st, now) : last;
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
   // a close only empties the pane): they rest only where there are panes to choose between. A pinned session
@@ -189,10 +193,10 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : offline ? OFFLINE : stateWords(st).word}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? (working && stand.full) || told : offline ? OFFLINE : stateWords(st).word}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
           {/* At work the step's clock is the line over the box's (DockNow.tsx): one clock for one step. */}
           {timed(st) && !offline && !working && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
-          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
+          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why ?? (last ? "result" : undefined)} title={offline ? lastTold(stateLabel(st), st.text) : stand.full || told}>{why}</span>}
         </span>
         {/* At rest the bar names the folder (at work the line over the box does): once in the pane. */}
         {!working && <span className="k-station-meta" title={s.workspace} data-ask={ask ? "" : undefined}>

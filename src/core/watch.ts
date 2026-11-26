@@ -65,6 +65,10 @@ export type Ask = { kind: AskKind; text?: string; since?: number; child?: string
 
 // A running step that has made no progress for too long (src/core/stuck.ts).
 // `since`: its last progress, or its start when the step gives no sign of any.
+// A session's last result as facts tell it: a branch that landed or left the landing queue, or a named
+// check that passed or failed (src/checks/named.ts). `what`: the branch or the check's name; `head`: the commit landed.
+export type StandResult = { kind: "landed" | "left" | "check"; what: string; ok: boolean; at: number; head?: string };
+
 export type StuckMark = { what: "stream" | "model" | "tool" | "step"; text: string; since: number };
 
 // The fact. `why` and `text` say what the word stands on (`why` for code,
@@ -93,6 +97,9 @@ export type SessionState = {
   brief?: string;
   since?: number;   // when the reason began (ms)
   until?: number;   // when what it waits for is due: a timer's wake, a retry, a turn that continues by itself
+  deadline?: number; // when the first wait of its own on a condition gives up (its timeout): the session hears by then
+  // Its last result, from facts (a top session's and its agents': a landing, a named check), never a model's words.
+  result?: StandResult;
   cls?: string;     // fail: the failure's class (rate_limit, quota, auth, ...: src/admin/classes.ts), when it has one
   asks?: number;    // how many things wait on the owner here, each counted once
   child?: string;   // the agent session the first of them waits in
@@ -110,7 +117,8 @@ export type SessionState = {
 // `command` for one left running in the background. `agent`: the title of
 // the agent of the session that waits on it. `until`: a timer's wake time.
 // `raw`: `text` is the command itself, not words about it (it was given no description).
-export type Pending = { kind: string; text?: string; since?: number; until?: number; agent?: string; raw?: boolean };
+// `deadline`: when a condition's wait gives up (its own timeout), told then at the latest.
+export type Pending = { kind: string; text?: string; since?: number; until?: number; deadline?: number; agent?: string; raw?: boolean };
 
 // What the caller knows besides the session row: what waits on the owner
 // (its own or an agent's), the agents still at work, and what the session
@@ -358,7 +366,8 @@ export const outsideRefusal = (s: { outside?: OutsideMark }) =>
 function outsideState(o: OutsideMark, agents: number): SessionState {
   const where = OUTSIDE_LABEL[o.harness] ?? o.harness;
   if (o.state === "waiting") return { watch: "need", agents, why: "outside", text: `Waits in ${where} for ${o.waiting_for ?? "your answer"}`, asks: 1, ...(o.since ? { since: o.since } : {}) };
-  if (o.state === "working") return { watch: "work", agents, why: "outside", text: `Working in ${where}`, ...(o.since ? { since: o.since } : {}) };
+  // What it runs now, when a call is open: the tool by its name (a fact of its records, not its model's words), since the call began.
+  if (o.state === "working") return { watch: "work", agents, why: "outside", text: `Working in ${where}${o.doing ? `: ${o.doing.tool}` : ""}`, ...(o.doing?.since ? { since: o.doing.since } : o.since ? { since: o.since } : {}) };
   // No record for a long while and no process that vouches for it: counted as neither working nor waiting.
   if (o.state === "stale") return { watch: "idle", agents, why: "outside", text: `No record from ${where} since then`, ...(o.since ? { since: o.since } : {}) };
   return { watch: "done", agents };
@@ -430,6 +439,9 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
     return { watch: "stop", agents, ...(text ? { why: end === "max_steps" ? "max_steps" : "held", text } : {}), ...(by && end === "interrupted" ? { by } : {}) };
   }
   if (w === "resume" || !f.pending?.length) return { watch: w, agents };
+  // When the first of its own waits on a condition gives up (a command's wait names one).
+  const ends = f.pending.filter((p) => p.agent === undefined && p.deadline).map((p) => p.deadline!);
+  const deadline = ends.length ? { deadline: Math.min(...ends) } : {};
   // A command it left running in the background is work that goes on: working, with the command.
   const commands = f.pending.filter(ownCommand).sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity));
   if (commands.length) {
@@ -439,7 +451,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
     return {
       watch: "work", agents, ...parked, why: "command", text: `${t ? `${lead}: ${t}` : lead}${and}`,
       ...(t && commands[0]!.raw ? { brief: `${lead}${and}` } : {}),
-      ...(commands[0]!.since ? { since: commands[0]!.since } : {}),
+      ...(commands[0]!.since ? { since: commands[0]!.since } : {}), ...deadline,
     };
   }
   // Every agent it still has out waits for a provider that cannot be reached: one line for all of them.
@@ -455,7 +467,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   return {
     watch: "wait", agents, ...parked, why: whyOf(first), ...(whyOf(first) === "wait" && first.kind in WAITS_FOR ? { on: first.kind } : {}), text: `${pendingText(first)}${more ? `, and ${more} more` : ""}`,
     ...(first.raw && first.text ? { brief: `${pendingText(first, true)}${more ? `, and ${more} more` : ""}` } : {}),
-    ...(first.since ? { since: first.since } : {}), ...(first.until ? { until: first.until } : {}),
+    ...(first.since ? { since: first.since } : {}), ...(first.until ? { until: first.until } : {}), ...deadline,
   };
 }
 

@@ -152,6 +152,8 @@ export type OutsideMark = {
   failures: number;
   // Who holds it now, from its harness's own records (src/integrations/outside/writer.ts).
   holder?: Holder;
+  // The newest tool call still open while it works: the tool's name, since when.
+  doing?: { tool: string; since: number };
 };
 
 // The process that writes a session of another harness now. free: none. keel: Keel's own child answers in

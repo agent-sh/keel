@@ -28,6 +28,7 @@ import { errorClass } from "../admin/classes.ts";
 import { toolLine } from "../../ui/src/lib/tools.ts";
 import { D, slotGate } from "./core.ts";
 import { countedSince, countedTree } from "../core/agent-count.ts";
+import { resultOf } from "./results.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
 export type SessionState = State & { label: string; word: string };
@@ -163,10 +164,11 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
   // What will start a session's next turn: its active waits (a timer is due at its wake time) and the commands it left running.
   const pending = new Map<string, Pending[]>();
   if (hasTable(d.store, "waits")) {
-    for (const w of d.store.db.query<{ session_id: string; kind: string; spec: string; note: string; created: number }, []>("SELECT session_id, kind, spec, note, created FROM waits WHERE status = 'active' ORDER BY created").all()) {
+    for (const w of d.store.db.query<{ session_id: string; kind: string; spec: string; note: string; created: number; deadline: number }, []>("SELECT session_id, kind, spec, note, created, deadline FROM waits WHERE status = 'active' ORDER BY created").all()) {
       let until: number | undefined;
       if (w.kind === "timer") try { until = Number(JSON.parse(w.spec).at_ms) || undefined; } catch {}
-      push(pending, w.session_id, { kind: w.kind, text: w.note, since: w.created, ...(until ? { until } : {}) });
+      // (A condition's wait gives up at its deadline: when the session hears of it by then at the latest.)
+      push(pending, w.session_id, { kind: w.kind, text: w.note, since: w.created, ...(until ? { until } : w.deadline > 0 ? { deadline: w.deadline } : {}) });
     }
   }
   for (const j of liveJobs()) if (j.background && running(j)) push(pending, j.sessionId, { kind: "command", text: j.description || j.command, ...(j.description ? {} : { raw: true }), since: j.started });
@@ -376,6 +378,9 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
     if (all.failed) st.agents_failed = all.failed;
     if (facts.parked) st.agents_waiting = facts.parked;
   }
+  // Its last result, for the line a top row says of where it stands (src/core/stand.ts).
+  const result = resultOf(l.d.store, s);
+  if (result) st.result = result;
   return { ...st, label: stateLabel(st), word: stateWord(st) };
 }
 
