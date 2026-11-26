@@ -218,7 +218,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
           const tight = !wide && offers;
           const n = notes[a.id];
           // On a shared line the width goes to what waits on the owner: the title gives way first there.
-          const title = <span dir="auto" className={cn("truncate text-left text-ui", asks ? "font-semibold text-fg" : fresh ? "text-fg" : "text-muted", !alone ? "mb-0.5 block" : asks ? "min-w-0 max-w-[30%] shrink" : "min-w-0 max-w-[46%] shrink")} data-testid="inbox-place">{place}</span>;
+          const title = <span dir="auto" className={cn("truncate text-left text-ui", asks || fresh ? "text-fg" : "text-muted", !alone ? "mb-0.5 block" : asks ? "min-w-0 max-w-[30%] shrink" : "min-w-0 max-w-[46%] shrink")} data-testid="inbox-place">{place}</span>;
           return (
             <li
               key={a.id}
@@ -256,7 +256,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     {a.outcome && <span className={cn("text-micro", wide ? "min-w-0 max-w-[50%] truncate" : "shrink-0", /^denied|^closed/.test(a.outcome) ? "text-faint" : "text-muted", tight && "sr-only")} title={a.outcome} data-testid="inbox-outcome">{cap(wide ? a.outcome : a.outcome.split(" from ")[0]!.replace("closed with no answer", "not answered"))}</span>}
                     {(a.data?.snoozed || a.data?.held) && <span className="shrink-0 text-micro text-faint" aria-hidden>{a.data?.snoozed ? "snoozed" : "held by the snooze"}</span>}
                     {/* What waits on the owner is answered on its card: the row says it opens one. */}
-                    {offers && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{askAction(a)}</span>}
+                    {offers && <span className="shrink-0 text-micro text-accent-ink" data-testid="inbox-opens">{askAction(a)}</span>}
                     <span className={cn("shrink-0 text-micro text-faint tabular-nums", tight && "sr-only")} title={when(a.ts)}>{ago(a.ts)}</span>
                   </span>
                   {/* What the wait costs, under what it is: why it stands where it does in the queue. The agents that
@@ -282,7 +282,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     a.read && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                   )}
                 >
-                  {a.read ? <span className="size-2 rounded-full border border-line-strong" /> : <span className="size-2 rounded-full bg-fg" data-testid="inbox-dot" />}
+                  {a.read ? <span className="size-1.5 rounded-full border border-line-strong" /> : <span className="size-1.5 rounded-full bg-faint" data-testid="inbox-dot" />}
                 </button>
               </div>
               <Failed a={a} />

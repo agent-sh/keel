@@ -212,7 +212,7 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   const all = page.getByTestId("inbox-item");
   await expect(all).toHaveCount(6);
   // A session's only alert takes one line, its title beside it; no mark has a box around it;
-  // weight is on what waits for the owner, not on every unread title.
+  // no title is heavy: what waits for the owner is told by its mark and its ink, not by a column of bold names.
   const lone = page.locator(`[data-testid="inbox-item"]`).filter({ hasText: "Tidy the changelog" });
   await expect(lone.getByTestId("inbox-place")).toHaveText("Tidy the changelog");
   expect((await lone.boundingBox())!.height).toBeLessThanOrEqual(40);
@@ -228,7 +228,7 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   const rows = all.filter({ hasNotText: "Tidy the changelog" }).filter({ hasNotText: "Decide which of the three" });
   await expect(rows).toHaveCount(4);
   expect(await wordX(rows.first())).toBe(await wordX(lone));
-  expect(Number(await rows.first().getByTestId("inbox-place").evaluate((el) => getComputedStyle(el).fontWeight))).toBeGreaterThanOrEqual(600);
+  expect(await all.getByTestId("inbox-place").evaluateAll((els) => els.map((el) => Number(getComputedStyle(el).fontWeight)).filter((w) => w >= 600))).toEqual([]);
   // A row offers the card that answers it only while that card waits (state-words.spec.ts has those): these
   // alerts were raised by the test route with no card behind them, so no row offers one.
   await expect(rows.getByTestId("inbox-opens")).toHaveCount(0);
@@ -260,7 +260,12 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   expect(await first.evaluate((el) => getComputedStyle(el, "::before").content)).toBe("none");
   const unreadFace = await face(first);
   expect(unreadFace).toContain("|none|");
-  expect(await first.getByTestId("inbox-dot").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await rows.getByTestId("inbox-place").first().evaluate((el) => getComputedStyle(el).color));
+  // The unread dot is the quietest ink on the row (its age's), and smaller than the state's mark: a column of them is not a column of black.
+  const inkOf = (v: string) => page.evaluate((v) => { const p = document.body.appendChild(document.createElement("i")); p.style.color = `var(${v})`; const c = getComputedStyle(p).color; p.remove(); return c; }, v);
+  expect(await first.getByTestId("inbox-dot").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await inkOf("--faint"));
+  expect((await first.getByTestId("inbox-dot").boundingBox())!.width).toBeLessThan((await first.getByTestId("alert-icon").locator(".k-mark").boundingBox())!.width + 1);
+  // A finished turn's mark is a small grey dot, not the green of the session's own: the colour in the list is what needs the owner and what failed.
+  expect(await finished.getByTestId("alert-icon").locator(".k-mark").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await inkOf("--st-idle"));
   // What a person or a model wrote reads in its own direction.
   for (const id of ["inbox-place", "inbox-line"]) await expect(rows.getByTestId(id).first()).toHaveAttribute("dir", "auto");
   await shoot(page, "alerts-09-rows");
