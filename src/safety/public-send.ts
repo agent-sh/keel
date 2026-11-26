@@ -322,6 +322,8 @@ async function remotesAt(dir: string | null): Promise<Remotes | null> {
   return r === "late" ? null : r;
 }
 
+// What a repository's settings pick for a push, written as a folder of this machine.
+const PICKED_FOLDER = /^(\.{1,2}|\/.*|\.{1,2}\/.*)$/;
 // Where a `git push` sends: the remote it names (or the one git picks) and the repository that remote is.
 async function pushTarget(dir: string, args: string[]): Promise<Target & { refs: string[]; wide: string[]; local?: true; del?: true }> {
   const pos: string[] = [], wide: string[] = [];
@@ -350,6 +352,11 @@ async function pushTarget(dir: string, args: string[]): Promise<Target & { refs:
   else remote = remotes ? pushRemote(remotes) : undefined;
   // (A remote the repository's settings picked that is no remote's name is an address to git.)
   if (remote && remotes) url = remotes.push[remote]?.[0] ?? remotes.fetch[remote] ?? (/^[a-z][a-z0-9+.-]*:\/\/|@/i.test(remote) ? remote : undefined);
+  // (One they picked that is neither is a folder of this machine only when it is written as one: `.`, as a branch that
+  // follows a local one has it, `..`, or a path that starts with `/`, `./` or `../`. Any other is a place the rules do
+  // not read: a name a url rewrite makes an address of, or one of a file under .git/remotes or .git/branches, which
+  // holds an address. It is taken as public.)
+  if (remote && remotes && url === undefined && named === undefined && PICKED_FOLDER.test(remote) && remote === (remotes.branchPushRemote || remotes.pushDefault || remotes.branchRemote)) return { repo: null, remotes, refs: [], wide: [], local: true };
   return { repo: url ? slug(url) : null, remote, remotes, refs, wide, ...(del ? { del: true as const } : {}) };
 }
 

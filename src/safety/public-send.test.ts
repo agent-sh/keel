@@ -77,6 +77,32 @@ test("a clean push passes, and so does a push to a private repository", async ()
   expect(await held("git push origin main", dirty, deps("unknown"), "s")).not.toBeNull();
 });
 
+// A branch that follows a local one has `.` for its remote: a push with none named goes to the repository itself.
+test("a push with no remote named that the repository's settings send to a folder goes to no public place", async () => {
+  const dir = await repo("Deploy from buildbox");
+  await sh(dir, "checkout", "-q", "-b", "feat", "--track", "main");
+  const d = deps();
+  expect(await held("git push", dir, d, "s")).toBeNull();
+  expect(d.asked).toEqual([]);
+  expect((await held("git push origin feat", dir, deps(), "s"))?.acts).toEqual(["git push to github.com/acme/open"]);
+  // A setting that names an address still goes there.
+  await sh(dir, "config", "branch.feat.remote", "https://github.com/acme/other.git");
+  expect((await held("git push", dir, deps(), "s"))?.acts).toEqual(["git push to github.com/acme/other"]);
+  // A folder only when it is written as one: `.`, `..`, or a path that starts with `/`, `./` or `../`.
+  for (const local of ["..", "../other", "/abs/other", "./x:y/z"]) { await sh(dir, "config", "branch.feat.remote", local); expect([local, await held("git push", dir, deps(), "s")]).toEqual([local, null]); }
+  // Any other is a place the rules do not read, taken as public and read: a name a url rewrite makes an address of
+  // (gh:acme/open.git, pub, work/open.git), an address with no user in front, and a name git reads an address for from
+  // a file under .git/remotes or .git/branches.
+  mkdirSync(join(dir, ".git", "remotes"), { recursive: true }); writeFileSync(join(dir, ".git", "remotes", "old"), "URL: https://github.com/acme/open.git\nPush: refs/heads/*:refs/heads/*\n");
+  mkdirSync(join(dir, ".git", "branches"), { recursive: true }); writeFileSync(join(dir, ".git", "branches", "oldb"), "https://github.com/acme/open.git#main\n");
+  await sh(dir, "config", "url.https://github.com/acme/open.git.insteadOf", "pub");
+  await sh(dir, "config", "url.https://github.com/acme/.insteadOf", "work/");
+  for (const place of ["gh:acme/open.git", "github.com:acme/open.git", "old", "oldb", "pub", "work/open.git"]) { await sh(dir, "config", "branch.feat.remote", place); expect([place, (await held("git push", dir, deps("private"), "s"))?.found[0]?.kind]).toEqual([place, "host"]); }
+  await sh(dir, "config", "branch.feat.remote", ".");
+  await sh(dir, "config", "branch.feat.pushRemote", "gh:acme/open.git");
+  expect(await held("git push", dir, deps("private"), "s")).not.toBeNull();
+});
+
 test("a personal path and a secret are held, and the secret is not repeated", async () => {
   const token = `ghp_${"a1B2c3D4e5".repeat(4).slice(0, 36)}`;
   const dir = await repo("Add notes", "n.md", `see /home/someone/work/x\nTOKEN ${token}\n`);
