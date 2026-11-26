@@ -670,8 +670,13 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
   } catch (e) {
     return { code: 127, out: "", err: `git could not start: ${(e as Error).message}` };
   }
+  // The pipes are read once git has ended. The runtime drains a child's pipes by itself (a long output
+  // never fills one), and a read that waits on an open pipe gets a buffer of its own: about 130 KB for
+  // one that ends empty, as most of git's error output does. Read while git ran, each call made some
+  // 240 KB that was dropped at once; read after its end, nothing but the text.
   const stdout = proc.stdout as ReadableStream<Uint8Array>;
-  const [got, err, code] = await Promise.all([o.raw ? readBytes(stdout) : readText(stdout), readText(proc.stderr as ReadableStream<Uint8Array>), proc.exited]);
+  const code = await proc.exited;
+  const [got, err] = await Promise.all([o.raw ? readBytes(stdout) : readText(stdout), readText(proc.stderr as ReadableStream<Uint8Array>)]);
   const out = typeof got === "string" ? got : "";
   if (typeof got !== "string") return { code: proc.signalCode ? -1 : code, out, err, bytes: got };
   if (p.pushTo) try { pushed?.({ to: p.pushTo, ok: code === 0, err }); } catch {} // a ledger row never fails the push
