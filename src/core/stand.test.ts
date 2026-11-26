@@ -18,6 +18,10 @@ test("at rest the line is the last result, and nothing when there is none", () =
   expect(resultText({ kind: "left", what: "b", ok: false, at: T })).toBe("b left the landing queue");
 });
 
+test("a command that runs keeps its own first letter in the whole line", () => {
+  expect(standLine({ watch: "work", agents: 0, why: "tool", text: "bun test --slow", since: T - 6000 }, T).full).toBe("bun test --slow, for 6s");
+});
+
 test("a wait says when it is due, and a session whose agents work says them", () => {
   expect(standLine({ watch: "wait", agents: 0, why: "timer", text: "Timer: check", since: T - MIN, until: T + 5 * MIN }, T).full).toBe(`Timer: check, due ${hhmm(T + 5 * MIN)}`);
   expect(standLine({ watch: "work", agents: 2, why: "agents" }, T)).toEqual({ brief: "", full: "" });

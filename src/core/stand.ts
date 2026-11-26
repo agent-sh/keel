@@ -27,10 +27,11 @@ export function standLine(st: SessionState, at = Date.now()): Stand {
     const when = st.until
       ? (st.until > now ? `due ${hhmm(st.until)}` : "due now")
       : st.since && st.why !== "stalled" && st.why !== "unreachable" ? `for ${span(now - st.since)}` : "";
+    // (As the reason is worded: a command keeps its own first letter.)
     full.push([whyText(st, at), when].filter(Boolean).join(", "));
   }
   // A wait of its own on a condition gives up at its deadline: when it hears by then at the latest.
-  if (!rest && st.deadline && st.deadline > now) full.push(`its wait gives up at ${hhmm(st.deadline)}`);
+  if (!rest && st.deadline && st.deadline > now) full.push(`Its wait gives up at ${hhmm(st.deadline)}`);
   // Its agents, unless the reason already is them.
   const working = Math.max(0, st.agents - (st.parked ?? 0));
   if (st.why !== "agents" && st.why !== "unreachable") {
@@ -41,7 +42,7 @@ export function standLine(st: SessionState, at = Date.now()): Stand {
   if (st.result) {
     const r = resultText(st.result);
     if (!parts.length) parts.push(r);
-    full.push(`last: ${r} at ${hhmm(st.result.at)}`);
+    full.push(`Last: ${r} at ${hhmm(st.result.at)}`);
   }
-  return { brief: parts.join(" · "), full: full.map((x) => x.charAt(0).toUpperCase() + x.slice(1)).join(". ") };
+  return { brief: parts.join(" · "), full: full.join(". ") };
 }
