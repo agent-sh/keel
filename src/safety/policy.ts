@@ -14,7 +14,7 @@ import type { AskedPart } from "./summary.ts";
 import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
-import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, evalGiven, name as baseName, namesCdpath, shellGiven, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
+import { LEAVES, PARTS_MAX, WORDS_MAX, asksReal, dirsOf, elseOf, evalGiven, name as baseName, namesCdpath, scriptsOf, shellGiven, startsReal, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { follow } from "./line-makes.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
@@ -948,10 +948,10 @@ export function accountWrites(parts: Simple[], pre: Runs, f: Pick<Facts, "looked
     }
     const first = baseName(run.words[0]);
     // sh -c 'git push ...', bash -lc "...", eval '...'
-    let script: string | undefined, shell = -1;
-    if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { const given = shellGiven(run.words.slice(1)); if (given.script !== undefined) { shell = given.at; script = given.script; } }
-    else if (first === "eval") script = evalGiven(run.words.slice(1));
-    if (script !== undefined) {
+    // (`shell`: where the script stands among the shell's words. Every word that may be the script is read.)
+    const scripts = /^(sh|bash|zsh|dash|ksh)$/.test(first) ? scriptsOf(shellGiven(run.words.slice(1))).map((g) => ({ script: g.script, shell: g.at }))
+      : first === "eval" ? [{ script: evalGiven(run.words.slice(1)), shell: -1 }] : [];
+    for (const { script, shell } of scripts) {
       // (A script of more commands than a whole line may hold is not read, as a line of that many is not.)
       const split = depth < 2 ? splitCommand(script) : null;
       const inner = split && split.length <= PARTS_MAX ? split : null;

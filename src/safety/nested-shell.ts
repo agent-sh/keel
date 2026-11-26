@@ -9,8 +9,10 @@
 //   called from, behind what the rules read through (variables set in front, env, sudo, timeout, nice, xargs, find
 //   -exec). The script is the word shellGiven names (risk-words.ts): -c in any cluster (-lc, -xec, +c), other
 //   options before or after it, and behind options that cannot be read (`bash $OPTS -c`) the word after the first
-//   cluster with c. It is the word as the line's own shell hands it over: its quotes taken off, its escapes read
-//   (in `sh -c "cat \"$HOME/.npmrc\""` the script is `cat "$HOME/.npmrc"`, in `bash -c $'a\nb'` two lines). What
+//   cluster with c, with every other word that may be the script instead (`scriptsOf`: `bash -oc $X errexit
+//   'script'`, `X='-c $1'; bash $X -oc 'script'`). It is the word as the line's own shell hands it over: its
+//   quotes taken off, its escapes read (in `sh -c "cat \"$HOME/.npmrc\""` the script is `cat "$HOME/.npmrc"`, in
+//   `bash -c $'a\nb'` two lines). What
 //   that shell would expand in it stays as written: `~` and `$HOME` are read as the home, any other variable is a
 //   path the rules do not know.
 // - a shell that reads its input (no script, -s, or /dev/stdin named as the script): the word of a here-string
@@ -32,7 +34,7 @@
 // than SCRIPT_MAX is not read, and is said (`unread`).
 import { resolvedLine } from "./resolved-line.ts";
 import { laid, type Laid } from "./risk.ts";
-import { DEPTH, PARTS_MAX, PRINTS, SCRIPT_MAX, SHELLS, evalGiven, lineHanded, name, printed, shellGiven, substituted, unwrap } from "./risk-words.ts";
+import { DEPTH, PARTS_MAX, PRINTS, SCRIPT_MAX, SHELLS, evalGiven, lineHanded, name, printed, scriptsOf, shellGiven, substituted, unwrap } from "./risk-words.ts";
 import { docOf, splitCommand, type Simple } from "./shell.ts";
 
 // One script: its commands, where each runs, and the part of the outer line that starts its shell.
@@ -58,17 +60,22 @@ function positional(script: string, rest: string[], home: string): string | unde
 // What one line's reading has read so far: each script once in a folder (a script and its written-out form hold
 // the same scripts inside them, which are read once, not once for each), and no more nested text in all than
 // NESTED_MAX, whatever the line's length (the line's own here-documents are not counted: each is read once as it
-// stands and once written out). A line that hands shells more than that asks, as one nested too deep does.
+// stands and, up to NESTED_MAX characters, once written out; a longer one asks as a script too long does, risk.ts).
+// A line that hands shells more than that asks, as one nested too deep does.
 type Read = { seen: Set<string>; left: number };
 // (A script at the bound with one as long inside it, each as it stands and written out.)
 export const NESTED_MAX = 4 * SCRIPT_MAX;
 
-export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, unread?: Unread[], state?: Read): Inner[] {
+// `written`: the parts are those of a script's written-out form. A script inside one is read in its own
+// written-out form only (the one text with the variables of every level above it and its own written out), and as
+// it stands when it has none: a script inside a script as it stands is read both ways. So a script nested n deep is
+// read in n + 1 forms at most, not in one for every choice of the levels above it.
+export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, unread?: Unread[], state?: Read, written = false): Inner[] {
   const out: Inner[] = [];
   if (depth >= DEPTH) return out;
   const st = state ?? { seen: new Set<string>(), left: NESTED_MAX };
   const keyOf = (text: string, i: number) => `${pre.dirs[i] ?? ""}\0${pre.firm[i] === true}\0${text}`;
-  const read = (text: string, i: number, free: boolean) => {
+  const read = (text: string, i: number, free: boolean, from: boolean) => {
     const key = keyOf(text, i);
     if (st.seen.has(key)) return;
     st.seen.add(key);
@@ -81,17 +88,20 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
     const l = laid(inner, pre.dirs[i] ?? null, home, pre.firm[i] === true);
     out.push({ parts: inner, pre: l, at: i });
     const deeper: Unread[] = [];
-    for (const d of innerLines(inner, l, home, depth + 1, deeper, st)) out.push({ ...d, at: i });
+    for (const d of innerLines(inner, l, home, depth + 1, deeper, st, from)) out.push({ ...d, at: i });
     for (const u of deeper) unread?.push({ ...u, at: i });
   };
   // (A script is read as it stands and, as a plain line is, with the variables it gave a written-out value written
   // out: `f=~/.npmrc; cat $f`. `whole`: a here-document of the line itself, read whatever its length.)
   const add = (text: string | undefined, i: number, whole = false) => {
     if (text === undefined || !/\S/.test(text) || (text.length > SCRIPT_MAX && !whole)) return;
-    if (st.left < 0 || st.seen.has(keyOf(text, i))) return;
-    read(text, i, whole);
-    const written = resolvedLine(text, home);
-    if (written !== null && written !== text && (written.length <= SCRIPT_MAX || whole)) read(written, i, whole);
+    const key = `${written ? "w" : ""}${keyOf(text, i)}`;
+    if (st.left < 0 || st.seen.has(key)) return;
+    if (written) st.seen.add(key);
+    const out = text.length > NESTED_MAX ? null : resolvedLine(text, home);
+    const use = out !== null && out !== text && (out.length <= SCRIPT_MAX || whole) ? out : null;
+    if (!written || use === null) read(text, i, whole, written);
+    if (use !== null) read(use, i, whole, true);
   };
   // Whether the command of a part reads a script from its input: a shell with no script of its own, or one whose
   // -c script starts such a shell (its input is the outer shell's).
@@ -99,9 +109,11 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
     if (!SHELLS.test(name(words[0]))) return false;
     const given = shellGiven(words.slice(1));
     if (given.input) return true;
-    if (given.script === undefined || given.script.length > SCRIPT_MAX || deep >= 2) return false;
-    const inner = splitCommand(given.script);
-    return !!inner && inner.length <= 64 && inner.some((q) => !q.heredoc && takes(unwrap(q.words).words, deep + 1));
+    if (deep >= 2) return false;
+    return scriptsOf(given).some(({ script }) => {
+      const inner = script.length > SCRIPT_MAX ? null : splitCommand(script);
+      return !!inner && inner.length <= 64 && inner.some((q) => !q.heredoc && takes(unwrap(q.words).words, deep + 1));
+    });
   };
   let since = 0, handled = -1;
   for (let i = 0; i < parts.length; i++) {
@@ -115,8 +127,17 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
       // command since the documents before that reads a script from its input: one read too many, never too few.
       let end = i;
       while (end < parts.length && (parts[end]!.heredoc || parts[end]!.nested)) end++;
+      // (A document's own lines are parts too, and a here-document among them carries its text as well: that one
+      // is a script of the document's, found when the document is read, not one of this line's. The parts a
+      // document's lines make are as many as its text splits into.)
       const docs: string[] = [];
-      for (let k = i; k < end; k++) if (parts[k]!.heredoc && parts[k]!.doc !== undefined) docs.push(parts[k]!.doc!);
+      const several = parts.slice(i, end).filter((q) => q.heredoc && q.doc !== undefined).length > 1;
+      for (let k = i; k < end; k++) {
+        const doc = parts[k]!.heredoc ? parts[k]!.doc : undefined;
+        if (doc === undefined) continue;
+        docs.push(doc);
+        if (several) k += Math.max(1, splitCommand(doc)?.length ?? 1) - 1;
+      }
       const owners: number[] = [];
       for (let k = since; k < i; k++) if (!parts[k]!.nested && docOf(parts[k]!) !== "none") owners.push(k);
       const feeds = (k: number): number => {
@@ -154,6 +175,8 @@ export function innerLines(parts: Simple[], pre: Laid, home: string, depth = 0, 
     if (!SHELLS.test(p)) continue;
     const given = shellGiven(run.words.slice(1));
     if (given.script !== undefined) {
+      // (Behind options the rules could not read, the words that may be the script instead.)
+      for (const other of given.also ?? []) add(other.script, i);
       add(given.script, i);
       const placed = positional(given.script, given.rest, home);
       if (placed !== undefined) add(placed, i);
@@ -179,5 +202,5 @@ export function onlyScript(command: string): string | undefined {
   const [sh, ...rest] = p.words;
   if (!sh || !SHELLS.test(name(sh))) return undefined;
   const given = shellGiven(rest);
-  return given.script !== undefined && given.at === rest.length - 1 ? given.script : undefined;
+  return given.script !== undefined && !given.also && given.at === rest.length - 1 ? given.script : undefined;
 }

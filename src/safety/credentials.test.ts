@@ -106,6 +106,12 @@ test("a client told to print the credential it holds and a loop over a store are
   for (const c of ["gh auth token > /dev/null > t.txt", "gh auth token >/dev/null>t.txt", "gh auth token > /dev/null >&2", "gh auth token >/dev/null 1>&2", "gh auth token >/dev/null > >(cat)", "gh auth token # > /dev/null", "aws --profile help configure export-credentials", "aws configure export-credentials --profile help",
     "gh auth token --hostname --help"])
     expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
+  // Each redirection is read with the descriptor it names, and a copy takes what its source has then.
+  for (const c of ["gh auth token >/dev/null 1<>t.txt", "gh auth token > /dev/null 01>t.txt", "gh auth token > /dev/null ${x/ #/} > t.txt", "gh auth token > /dev/null ${x:- #} > t.txt", "gh auth token >/dev/null >|t.txt", "gh auth token 3>&1 >/dev/null >&3",
+    "gh auth token &> /dev/null > t.txt", "gh auth token > /dev/null &> t.txt", "gh auth token \\> /dev/null", "gh auth token --hostname $(echo x > /dev/null)"])
+    expect([c, shell(c)]).toEqual([c, "the command prints a credential kept in"]);
+  for (const c of ["gh auth token >/dev/null 2>&1 >&2", "gh auth token > /dev/null {fd}>t.txt", "gh auth token >/dev/null <>t.txt", "gh auth token > /dev/null 2>t.txt", "aws configure export-credentials --no-cli-pager help", "aws --debug help configure export-credentials"])
+    expect([c, shell(c)]).toEqual([c, null]);
   for (const c of ["for f in ~/.ssh/*; do cat $f; done", "for f in ~/.aws/credentials notes.txt; do head -3 \"$f\"; done", "for k in $HOME/.ssh/id_*; do base64 ${k}; done"])
     expect([c, shell(c)]).toEqual([c, "the command reads in a loop"]);
   for (const c of ["for f in src/*.ts; do cat $f; done", "for f in ~/.ssh/*; do ls -l $f; done", "for h in a b; do ssh $h uptime; done"]) expect([c, shell(c)]).toEqual([c, null]);

@@ -38,7 +38,7 @@ import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
 import { inCopy, ownersImported } from "./imported.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
-import { name as baseName, shellGiven, unwrap, type Run } from "./risk-words.ts";
+import { name as baseName, scriptsOf, shellGiven, unwrap, type Run } from "./risk-words.ts";
 import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
 import { bareFetch } from "./bare-fetch.ts";
 import { familyOf } from "./interp-code.ts";
@@ -466,11 +466,14 @@ function interpreterReaches(parts: Simple[], at: number, run: Run, prog: string,
     // (-c in any cluster, with other options around it: bash -lc, sh -c -x.)
     const given = shellGiven(args);
     if (given.c) {
-      const v = given.at < 0 ? undefined : wordValue(p, idx(given.at), known);
-      if (v === null) unread(p.text);
-      else if (v !== undefined) {
-        const ps = depth < 2 ? splitCommand(v) : null;
-        if (ps) out.push(...reachesOf(resolveVariables(ps), { ...f, cwd: dir }, depth + 1, run.fed === "xargs")); else unread(p.text);
+      // (Every word that may be the script: behind options the rules could not read there may be more than one.)
+      for (const g of scriptsOf(given)) {
+        const v = wordValue(p, idx(g.at), known);
+        if (v === null) unread(p.text);
+        else if (v !== undefined) {
+          const ps = depth < 2 ? splitCommand(v) : null;
+          if (ps) out.push(...reachesOf(resolveVariables(ps), { ...f, cwd: dir }, depth + 1, run.fed === "xargs")); else unread(p.text);
+        }
       }
     } else {
       const { texts, blind } = stdinCode(parts, at, args.some((a) => !a.startsWith("-")), known);

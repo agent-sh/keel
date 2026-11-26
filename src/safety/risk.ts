@@ -39,7 +39,7 @@ export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
 import { awkReads, harmless, runsProgram, sedReads } from "./closed-code.ts";
-import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, evalGiven, lineHanded, untrailed, literal, madeName, name, printsHeld, redirected, rootOf, shellGiven, substituted, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
+import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, evalGiven, lineHanded, untrailed, literal, madeName, name, printsHeld, redirected, rootOf, scriptsOf, shellGiven, substituted, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
 import { outputsOf } from "./outputs.ts";
 import { docOf, docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
@@ -599,12 +599,15 @@ function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts
     // A file handed to the script as $0, $1 or "$@" (sh -c '. "$1"' _ f.sh) is what the script may run.
     if (started.rest.some(hit)) return { how: "handed", by: q };
     // (A script the rules cannot split is high risk on its own. A substitution stands for what its command prints,
-    // and comes after it: source <(cat x.sh).)
-    let printed = false;
-    for (const w of partsOf(given, scripts) ?? []) {
-      const t = takes(w, (a) => hit(a) || (printed && a === "$(...)"), scripts, depth + 1, module);
-      if (t) return t;
-      printed ||= w.slice(1).some(hit);
+    // and comes after it: source <(cat x.sh). Every word that may be the script is read.)
+    for (const one of scriptsOf(started)) {
+      if (one.script.length > SCRIPT_MAX) continue;
+      let printed = false;
+      for (const w of partsOf(one.script, scripts) ?? []) {
+        const t = takes(w, (a) => hit(a) || (printed && a === "$(...)"), scripts, depth + 1, module);
+        if (t) return t;
+        printed ||= w.slice(1).some(hit);
+      }
     }
     return null;
   }
@@ -1160,7 +1163,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       const given = started ? started.script : k >= 0 ? args[k + 1] : undefined;
       // Fed by xargs or find with no script of its own, or with one that is only what it is fed: what runs comes from there.
       if (run.fed && started?.c && (given === undefined || /^\{\}$|^"?\$[@*1]"?$/.test(given.trim()))) out.push({ rule: "hidden", why: `runs in ${x.p} what another command prints: its text is not in the command` });
-      else if (given !== undefined) sub(given, dir, out);
+      else if (given !== undefined) { for (const other of started?.also ?? []) sub(other.script, dir, out); sub(given, dir, out); }
     } else if (x.p === "trap") {
       const action = args.find((a) => !a.startsWith("-"));
       if (action && args.length > 1 && action !== "-") sub(action, dir, out);
@@ -1323,9 +1326,9 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
             // A script given to a shell: its commands run where the shell does.
             if (at && SHELLS.test(q) && deep < DEPTH && !rs[k]!.words.includes("-n")) {
               const a = rs[k]!.words.slice(1);
-              const given = shellGiven(a).script;
-              const inner = given !== undefined && given.length <= SCRIPT_MAX ? splitCommand(given) : null;
-              if (inner) {
+              for (const given of scriptsOf(shellGiven(a))) {
+                const inner = given.script.length <= SCRIPT_MAX ? splitCommand(given.script) : null;
+                if (!inner) continue;
                 const l = laid(inner, at, w.home, false);
                 const found = ahead(inner, l.runs, dirsOf(inner, l.runs, at, w.home, true), 0, deep + 1);
                 if (found) return found;

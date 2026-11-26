@@ -15,26 +15,31 @@ import { codeGiven, laid, type Laid } from "./risk.ts";
 import { INTERPRETERS, name as baseName, printsHeld } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
 
-// A part whose output is sent to nothing: the last place its text (the quoted strings out, a comment cut off) sends
-// its standard output is /dev/null (> /dev/null, &> /dev/null, 1>> /dev/null). A later one wins, as in the shell:
-// `> /dev/null > t.txt` writes the file, `> /dev/null >&2` prints. (A number is a descriptor only as a word of
-// its own: `x2> f` sends standard output.)
+// A part whose output is sent to nothing: its text (the quoted strings out) sends its standard output to /dev/null
+// in the end. Its redirections are read one after another as the shell makes them, each with the descriptor it
+// names (a number that is a word of its own: `1>`, `01>`; `x2> f` sends standard output; `{fd}> f` opens a new
+// one), so a later one wins and a copy takes what its source has then: `> /dev/null > t.txt` and `> /dev/null
+// 1<>t.txt` write the file, `> /dev/null >&2` prints, `> /dev/null 2>&1 >&2` prints nothing. A text with a `#`, an
+// escape or a substitution is not read (one may hide a redirection, or hold one that is not the part's): not sunk.
+const REDIRECT = /(&>>?|>>|>\||>&|>|<>|<<<|<<-?|<&|<)\s*([^\s;&|()<>]*)/g;
 function sunk(text: string): boolean {
-  const t = text.replace(/(^|\s)#.*/s, "$1");
-  let last: string | undefined;
-  for (let i = t.indexOf(">"); i >= 0; i = t.indexOf(">", i)) {
-    let k = i;
-    while (k > 0 && /\d/.test(t[k - 1]!)) k--;
-    const fd = k < i && (k === 0 || /[\s;&|()<>]/.test(t[k - 1]!)) ? t.slice(k, i) : "1";
-    const both = k === i && t[i - 1] === "&";
-    const rw = k === i && t[i - 1] === "<";
-    i++;
-    if (t[i] === "(") return false;
-    if (t[i] === ">" || t[i] === "|") i++;
-    const target = /^\s*(&?[^\s;&|()<>]*)/.exec(t.slice(i))![1]!;
-    if (!rw && (both || fd === "1")) last = target;
+  if (/[#\\`]|\$\(|[<>]\(/.test(text)) return false;
+  const to = new Map<number, string>([[1, "out"], [2, "err"]]);
+  const dest = (target: string) => (target === "/dev/null" ? "null" : "file");
+  const word = (k: number) => k === 0 || /[\s;&|()<>]/.test(text[k - 1]!);
+  for (const m of text.matchAll(REDIRECT)) {
+    const op = m[1]!, target = m[2]!, at = m.index;
+    // (`{name}` in front opens a descriptor of its own.)
+    const lead = text.slice(Math.max(0, at - 67), at), named = /(^|[\s;&|()<>])\{[A-Za-z_]\w{0,63}\}$/.exec(lead);
+    if (named && (named[1] || at === lead.length)) continue;
+    let k = at;
+    while (k > 0 && /\d/.test(text[k - 1]!)) k--;
+    const fd = k < at && word(k) ? Number(text.slice(k, at)) : op[0] === "<" ? 0 : 1;
+    if (op === "&>" || op === "&>>" || (op === ">&" && fd === 1 && !/^(\d+|-)$/.test(target))) { to.set(1, dest(target)); to.set(2, dest(target)); }
+    else if (op === ">&" || op === "<&") to.set(fd, /^\d+$/.test(target) ? to.get(Number(target)) ?? "closed" : "closed");
+    else to.set(fd, op[0] === ">" || op === "<>" ? dest(target) : "input");
   }
-  return last === "/dev/null";
+  return to.get(1) === "null";
 }
 // Programs whose file operands are read for their content (a command of the shell's allow-list prints them, or
 // what they hold). A program that names files only (ls, stat, test, find, wc, a checksum) reads no credential.

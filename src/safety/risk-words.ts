@@ -46,9 +46,11 @@ export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash|rbash|rzsh|rksh|mksh|ksh9
 // token, gcloud auth print-access-token, aws configure export-credentials, git credential fill, secret-tool lookup.
 // Its output is the credential, as a read of the store's file is. Asked for its help it prints none: --help where
 // it is no option's value, `aws help` and `gcloud help` as the first word, aws's help as the last (`aws --profile
-// help configure export-credentials` names a profile).
-export function printsHeld(words: string[]): string | null {
-  const p = name(words[0]);
+// help configure export-credentials` names a profile; aws's options that take no value are not counted as words).
+const AWS_PLAIN = /^--(debug|no-verify-ssl|no-paginate|no-sign-request|no-cli-pager|no-cli-auto-prompt|cli-auto-prompt)$/;
+export function printsHeld(all: string[]): string | null {
+  const p = name(all[0]);
+  const words = p === "aws" ? all.filter((a) => !AWS_PLAIN.test(a)) : all;
   const free = (k: number) => k > 0 && !words[k - 1]!.startsWith("-");
   if (words.some((a, k) => a === "--help" && free(k))) return null;
   if ((p === "aws" || p === "gcloud") && (words[1] === "help" || (p === "aws" && words.at(-1) === "help" && free(words.length - 1)))) return null;
@@ -67,45 +69,97 @@ export function printsHeld(words: string[]): string | null {
 // of a cluster; a long option, `--rcfile FILE`), up to the first word that is none or to `--`. With -c anywhere
 // among them that word is the script, whatever stands between (`bash -c -x 'script'`, `sh -euc 'script'`), and the
 // words after it are its $0 and arguments.
+// A word the line's shell writes (`$X`, a substitution, a pattern) may be nothing, an option or an option with its
+// value. In a value's place it is not skipped as the value: with -c read the reading stops at it and it is handed
+// on as the script, as in `bash -c $X 'script'` (`bash -oc $X errexit 'script'`: with X empty errexit is the value
+// and the script runs). What the reading names when it goes on past such a word may be the script too (`bash -cx
+// $X -c 'script'`, `bash -ooc $X $Y 'script'`), and every word up to there: `also`.
 // Options that cannot be read so (a variable that may hold some, `bash $OPTS -c`; another shell's option with a
 // value, `zsh --emulate sh -c`, `zsh -oerrexit -c`, `fish -d 3 -c`) end the reading with no -c found. Then the
 // first word that is a cluster with c names the script, read on from there: a script too many is read (`sh run.sh
-// -c x`), never one too few. A `--` or `-` ends the options, and what follows is a script file and its words
-// (`bash -- -c x` runs a file named -c), only when every word before it was read for sure: a word the line's
-// shell writes (`$X`, a substitution, a pattern) may be nothing, an option or an option with its value, and a
-// long option or a letter that takes a value in one of the shells (fish's -d, ksh's -R, mksh's -T) may take the
-// `--` as its value (`X='-c $2'; bash $X -- -c 'script'`, `bash --rcfile $X -- -c 'script'`, `fish -d -- -c 'script'`).
+// -c x`), never one too few. Behind unread words that cluster may be no option at all but a word of a script they
+// hold (`X='-c $1'; bash $X -oc 'script'`: -oc is its $0), so every word between it and the script it names, a
+// word in the place of its o's value among them, is in `also`.
+// A `--` or `-` ends the options, and what follows is a script file and its words (`bash -- -c x` runs a file
+// named -c), only when every word before it was read for sure: a word the line's shell writes, and a long option
+// or a letter that takes a value in one of the shells (fish's -d, ksh's -R, mksh's -T) or in only some of them
+// (-O: bash's takes one, zsh's none) may take the `--` as its value or leave it to the next (`X='-c $2'; bash $X
+// -- -c 'script'`, `bash --rcfile $X -- -c 'script'`, `fish -d -- -c 'script'`, `zsh -O -c -- 'script'`).
 // `at`: where the script stands in `args`, -1 with none. `input`: no -c and no script file, -s, or its own input
 // named as the file (/dev/stdin): it reads its commands from its input. A script file it names is `rest[0]`, and
-// is not read. Every rule that reads the script a shell is given finds it here.
-export type Given = { c: boolean; script?: string; at: number; rest: string[]; input: boolean };
+// is not read. Every rule that reads the script a shell is given finds it here, and reads each of `scriptsOf` it.
+export type Given = { c: boolean; script?: string; at: number; rest: string[]; input: boolean; also?: { script: string; at: number }[] };
 const CLUSTER = /^[-+][a-zA-Z0-9]+$/, VALUED_LONG = /^--(rcfile|init-file|emulate)$/, BUILT = /[$`*?[{]/;
-// (The long options and the letters that take no value in any of the shells; -o and -O take one, read as it stands.)
-const PLAIN_LONG = /^--(login|norc|noprofile|posix|restricted|verbose|noediting|debugger|interactive|private|no-config|no-execute)$/, PLAIN = /^[-+][aehiklmnorstuvxBEHOPc]+$/;
+// (The long options and the letters that take no value in any of the shells; -o takes one, read as it stands.)
+const PLAIN_LONG = /^--(login|norc|noprofile|posix|restricted|verbose|noediting|debugger|interactive|private|no-config|no-execute)$/, PLAIN = /^[-+][aehiklmnorstuvxBEHPc]+$/;
+// (A word that is nothing but expansions: `$X`, `${OPTS[@]}`, `$@`, a substitution.)
+const EXPANDS = /^(\$(\(\.\.\.\)|\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[@*0-9])|`\.\.\.`)+$/;
 export const STDIN_FILE = /^\/(dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/;
-export function shellGiven(args: string[]): Given {
-  // (`sure`: every word so far is an option whose value, if it takes one, is known in every shell.)
-  let c = false, s = false, i = 0, sure = true, ended = false;
+// The options from word `i` on, `owed` values of the option before them still to come: where they end (`i`: the
+// script's place, or the script file's). `sure`: every word was an option whose value, if it takes one, is known in
+// every shell. `ended`: by a `--` or `-` read for sure. `held`: at a value's place that holds a word the line's
+// shell writes; with -c read `i` is that word, else the option it is the value of. With -c read by then, `loose`:
+// the first word in the place of an -O's value (bash's takes one, zsh's none: `zsh -Oc 'script'`), -1 with none;
+// `extra`: the options whose value is not known in every shell, each of which may take the word after it.
+function options(args: string[], i: number, owed: number, c: boolean, past?: "nothing" | "value") {
+  let s = false, sure = true, ended = false, held = false, opt = i, loose = -1, extra = 0;
   for (; i < args.length; i++) {
     const a = args[i]!;
+    // (`past`: the reading goes on past the words the line's shell writes, each as nothing, or as the value where
+    // one is due.)
+    if (past && BUILT.test(a)) { if (past === "value" && owed > 0) owed--; continue; }
+    if (owed > 0) { if (BUILT.test(a)) { held = true; if (!c) i = opt; break; } owed--; continue; }
     if (a === "--" || a === "-") { i++; ended = sure; break; }
     if (BUILT.test(a)) break;
-    let values = 0;
+    opt = i;
     // (fish: --command and --init-command take a script as -c does.)
-    if (a.startsWith("--")) { if (a === "--command" || a === "--init-command") c = true; else if (VALUED_LONG.test(a)) values = 1; else if (!PLAIN_LONG.test(a)) sure = false; }
+    if (a.startsWith("--")) { if (a === "--command" || a === "--init-command") c = true; else if (VALUED_LONG.test(a)) owed = 1; else if (!PLAIN_LONG.test(a)) { sure = false; if (c) extra++; } }
     else if (!CLUSTER.test(a)) break;
-    else { c ||= a.includes("c"); s ||= a.includes("s"); if (!PLAIN.test(a)) sure = false; for (let k = 1; k < a.length; k++) if (a[k] === "o" || a[k] === "O") values++; }
-    if (args.slice(i + 1, i + 1 + values).some((v) => BUILT.test(v))) { if (!c) break; sure = false; }
-    i += values;
+    else {
+      c ||= a.includes("c"); s ||= a.includes("s");
+      if (!PLAIN.test(a)) sure = false;
+      for (let k = 1; k < a.length; k++) if (a[k] === "o" || a[k] === "O") owed++;
+      if (c && a.includes("O") && loose < 0) loose = i + 1;
+      if (c && !PLAIN.test(a.replace(/O/g, "c"))) extra++;
+    }
   }
+  return { c, s, i, ended, held, owed, loose, extra };
+}
+export function shellGiven(args: string[]): Given {
+  const { c, s, i, ended, held, owed, loose, extra } = options(args, 0, 0, false);
+  const span = (from: number, to: number) => [...args.entries()].slice(from, to + 1).map(([at, script]) => ({ script, at }));
   if (!c && !ended) {
     const k = args.findIndex((a) => CLUSTER.test(a) && a.includes("c"));
-    if (k >= 0) { const later = shellGiven(args.slice(k)); if (later.c) return { ...later, at: later.at < 0 ? -1 : later.at + k }; }
+    const later = k < 0 ? null : shellGiven(args.slice(k));
+    if (later?.c) {
+      const all = span(k + 1, later.at < 0 ? args.length - 1 : later.at + k).filter((g) => !later.also?.some((o) => o.at + k === g.at));
+      const last = all.pop();
+      const also = [...all, ...(later.also ?? []).map((o) => ({ script: o.script, at: o.at + k }))];
+      return { c: true, ...(last ? { script: last.script, at: last.at } : { at: -1 }), rest: later.at < 0 ? [] : later.rest, input: false, ...(also.length ? { also } : {}) };
+    }
   }
   const rest = args.slice(i);
-  if (c) return { c, ...(rest[0] !== undefined ? { script: rest[0], at: i } : { at: -1 }), rest: rest.slice(1), input: false };
-  return { c, at: -1, rest, input: s || !rest.length || STDIN_FILE.test(rest[0]!) };
+  if (!c) return { c, at: -1, rest, input: s || !rest.length || STDIN_FILE.test(rest[0]!) };
+  // The words that may be the script: from the first in the place of an -O's value to the one the options name,
+  // and past it where it may be an option's value or nothing.
+  let hi = rest[0] === undefined ? args.length - 1 : i;
+  if (rest[0] !== undefined) {
+    // (A word the line's shell writes, in a value's place or as the whole of the script's: the reading goes on
+    // past it and the ones after it, each as nothing and each as the value where one is due, as far as either
+    // goes. A script that only holds a `$` is the script: `sh -c 'echo "$0"' "$f"`.)
+    const on = (how: "nothing" | "value") => options(args, i, held ? owed : 0, true, how).i;
+    if (held || EXPANDS.test(rest[0])) hi = Math.max(on("nothing"), on("value"));
+    hi = Math.min(args.length - 1, hi + extra);
+  }
+  const all = span(loose >= 0 && loose < i ? loose : rest[0] === undefined ? args.length : i, hi);
+  const main = rest[0] !== undefined ? { script: rest[0], at: i } : all.at(-1);
+  if (!main) return { c, at: -1, rest: [], input: false };
+  const also = all.filter((g) => g.at !== main.at);
+  return { c, script: main.script, at: main.at, rest: args.slice(main.at + 1), input: false, ...(also.length ? { also } : {}) };
 }
+// Every word that may be the script a shell is given: the one its options name, and with options the rules could
+// not read the words before it that may be it instead (`Given.also`).
+export const scriptsOf = (given: Given): { script: string; at: number }[] => [...(given.also ?? []), ...(given.script !== undefined ? [{ script: given.script, at: given.at }] : [])];
 // The words a plain echo or printf prints, as the script they are for a shell that is handed them.
 export const PRINTS = /^(echo|printf)$/;
 export const printed = (words: string[]) => words.slice(1).filter((w) => !/^-[neE]+$/.test(w)).join(" ").replace(/\\n/g, "\n");

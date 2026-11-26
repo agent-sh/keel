@@ -218,7 +218,37 @@ test("the script a shell is given is found by its options as the shell reads the
   expect(given("fish --profile -- -c S")).toBe("S");
   expect(given("ksh -R -- -c S")).toBe("S");
   expect(given("mksh -xT -- -c S")).toBe("S");
-  expect(given("bash -c -o $X S")).toBe("S");
+  // A word the line's shell writes in a value's place may be nothing, and the next word the value: with -c read it
+  // is handed on as the script, as in `bash -c $X S`, and every word up to where the reading ends either way too.
+  const all = (line: string) => { const g = shellGiven(line.split(" ").slice(1)); return [...(g.also ?? []).map((o) => o.script), g.script].join(" | "); };
+  expect(all("bash -c -o $X S")).toBe("S | $X");
+  expect(all("bash -oc $X errexit S")).toBe("errexit | S | $X");
+  expect(all("bash -ooc $X pipefail errexit S")).toBe("pipefail | errexit | S | $X");
+  expect(all("bash -oc pipefail $X S")).toBe("S | $X");
+  expect(all("bash -c $X S a")).toBe("S | $X");
+  expect(all("bash -cx $X -c S")).toBe("-c | S | $X");
+  expect(all("bash -ooc $X $Y S")).toBe("$Y | S | $X");
+  expect(all("bash -oc $X -o errexit S")).toBe("-o | errexit | S | $X");
+  expect(all("bash -o $X -c S")).toBe("S");
+  // Behind unread options the cluster with c may be a word of a script they hold: the words in the place of its
+  // o's values may be the script too.
+  expect(all("bash $X -oc S")).toBe("S");
+  expect(all("bash $X _ -oc S")).toBe("S");
+  expect(all("bash $X -oc errexit S")).toBe("errexit | S");
+  expect(all("bash $X -ooc a S")).toBe("a | S");
+  expect(all("bash $X -Oc S")).toBe("S");
+  // (zsh's -O takes no value: the `--` after it is not surely the end of the options.)
+  expect(all("zsh -O -c -- S")).toBe("-- | S");
+  expect(all("bash -O extglob -c S")).toBe("S");
+  // With -c read, the word in the place of an -O's value may be the script (zsh), and an option whose value is not
+  // known in every shell may take the word after it.
+  expect(all("zsh -Oc S")).toBe("S");
+  expect(all("zsh -c -O S")).toBe("S");
+  expect(all("bash -cO extglob S a")).toBe("extglob | S");
+  expect(all("fish -pc S a")).toBe("a | S");
+  expect(all("ksh -c -R f S")).toBe("S | f");
+  // A script that only holds a `$` is the script, and the words after it are its own.
+  expect(shellGiven(["-c", "echo \"$0\"", "$f"])).toEqual({ c: true, script: "echo \"$0\"", at: 1, rest: ["$f"], input: false });
   expect(given("bash --rcfile f -- -c S")).toBe("<file -c>");
   expect(given("bash --login -x -- -c S")).toBe("<file -c>");
   expect(given("bash -eu -o pipefail -- run.sh")).toBe("<file run.sh>");
@@ -252,6 +282,20 @@ test("a script and its written-out form are each read once however deep they nes
   const parts = splitCommand(x)!;
   expect(innerLines(parts, laid(parts, ws, home), home).length).toBeLessThanOrEqual(16);
   expect(verdict(x)).toBe("asks low");
+  // Each level setting a variable the innermost uses: a script n deep is read in n + 1 forms, not in two to the n.
+  let small = `echo ${Array.from({ length: 8 }, (_, i) => `$v${i + 1}`).join(" ")}`;
+  for (let i = 1; i <= 8; i++) small = `v${i}=~/y${i}; true\nbash <<'E${i}'\n${small}\nE${i}`;
+  const levels = splitCommand(small)!;
+  expect(innerLines(levels, laid(levels, ws, home), home).length).toBeLessThanOrEqual(45);
+  expect(verdict(small)).toBe("asks low");
+  // (The innermost is still read with every variable written out.)
+  expect(verdict(small.replace("~/y8", "~/.ssh/id_ed25519").replace("echo $v1", "cat $v1"))).toBe("owner");
+  // A here-document of the line itself past NESTED_MAX is read as it stands and not written out: it asks as a
+  // script too long does. One within it is read both ways.
+  // (A name set twice: the line's own written-out form leaves it, the document's own gives the last value.)
+  const doc = (pad: number) => `bash <<'EOF'\nf=~/x\nf=~/.bashrc\n${"echo a\n".repeat(pad)}echo x >> $f\nEOF`;
+  expect(verdict(doc(700))).toBe("owner");
+  expect(verdict(doc(3000))).toBe("asks high");
   // Many such chains in one line: more nested text than the bound is not read through, and asks.
   const chain = (tag: number) => { let c = "f=~/x; echo $f\n".repeat(240); for (let i = 1; i <= 8; i++) c = `v${i}=~/y${tag}; echo $v${i}\nbash <<'E${i}'\n${c}\nE${i}`; return c; };
   const many = Array.from({ length: 25 }, (_, i) => chain(i)).join("\n");
@@ -274,6 +318,7 @@ test("a script and its written-out form are each read once however deep they nes
 });
 
 test("the rules that read a script themselves find it the same way: -c in a cluster, options after it", () => {
+  const reachOf = (c: string) => shellReaches(c, { cwd: "/w", remoteUrl: () => undefined }).map((r) => `${r.how}:${r.target.key}`);
   // The risk classes.
   for (const c of ["bash -cx 'git push --force origin main'", "bash -c -x 'git push --force origin main'", "sh -xc 'git push --force origin main'", "bash <<< \"git push --force origin main\""])
     expect([c, verdict(c)]).toEqual([c, "asks high"]);
@@ -291,6 +336,17 @@ test("the rules that read a script themselves find it the same way: -c in a clus
     expect([c, verdict(c, "full-auto")]).toEqual([c, "asks high"]);
   for (const c of ["bash $X -- -c 'cat ~/.ssh/id_ed25519'", "bash --init-file $X -- -c 'echo x >> ~/.bashrc'"]) expect([c, verdict(c)]).toEqual([c, "owner"]);
   for (const c of ["bash $X -- -c 'gh pr merge 12'", "bash --rcfile $X -- -c 'gh pr merge 12'"]) expect([c, unstartedAct(splitCommand(c)) !== null]).toEqual([c, true]);
+  // A value the line's shell writes may be nothing: the script behind the next word runs.
+  for (const c of ["bash -oc $X errexit 'git push --force origin main'", "bash -c -o $X errexit 'rm -rf ~'", "sh -oc \"$@\" errexit 'git push --force origin main'", "/bin/bash -lc 'bash -oc $X errexit \"rm -rf ~\"'",
+    "bash -ooc $X pipefail errexit 'git push --force origin main'", "X='-c $1'; bash $X -oc 'git push --force origin main'", "X='-c $2'; bash $X _ -oc 'rm -rf ~'", "X='-c $1'; bash $X -Oc 'rm -rf ~'", "X='-c $2'; bash $X _ -co 'git push --force origin main'",
+    "zsh -O -c -- 'git push --force origin main'", "zsh -Oc 'git push --force origin main'", "zsh -o errexit -Oc 'rm -rf ~'", "zsh -c -O 'git push --force origin main'"])
+    expect([c, verdict(c, "full-auto")]).toEqual([c, "asks high"]);
+  for (const c of ["bash -oc $X errexit 'gh pr merge 12'", "bash -c -o $X 'gh pr merge 12'", "bash -cx $X -c 'gh pr merge 12'", "bash -ooc $X $Y 'gh pr merge 12'", "bash -c $X 'gh pr merge 12'", "X='-c $1'; bash $X -oc 'gh pr merge 12'", "X='-c $2'; bash $X -x -oc 'gh pr merge 12'", "zsh -O -c -- 'gh pr merge 12'", "zsh -Oc 'gh pr merge 12'", "zsh -x -Oc 'gh pr merge 12'"]) expect([c, unstartedAct(splitCommand(c)) !== null]).toEqual([c, true]);
+  for (const c of ["X='-c $1'; bash $X -oc 'cat ~/.ssh/id_ed25519'", "zsh -O -c -- 'cat ~/.ssh/id_ed25519'", "bash $X -ooc a 'echo x >> ~/.bashrc'"]) expect([c, verdict(c)]).toEqual([c, "owner"]);
+  expect(reachOf("bash $X -oc 'curl https://in.example'")).toEqual(["fetch:host:in.example"]);
+  expect(reachOf("bash -oc $X errexit 'curl https://in.example'")).toContain("fetch:host:in.example");
+  // An ordinary script with a variable in it and words after it asks nothing more.
+  for (const c of ["for e in a b; do sh -c 'echo \"$0\"; ls \"$HOME\"' \"$e\"; done", "sh -c 'ls \"$1\"' sh \"$f\""]) expect([c, verdict(c, "full-auto")]).toEqual([c, "runs"]);
   // A wrapper's own option value with a space in it is no command line, and a wait on a script in a variable asks nothing more.
   for (const c of ["/usr/bin/time -f '%e s' sqlite3 x.db 'select count(*) from t'", "S=~/scratch; waitfor --until \"$S/check.sh done\" --timeout 30s", "timeout -s 'TERM ' 5 make"])
     expect([c, verdict(c)]).toEqual([c, "asks low"]);
@@ -302,5 +358,7 @@ test("the rules that read a script themselves find it the same way: -c in a clus
 test("a line that is one shell and its script, as another harness sends it, gives up the script; any other line none", () => {
   expect(onlyScript("/bin/bash -lc 'make test'")).toBe("make test");
   expect(onlyScript("bash -o pipefail -c \"V=push; git \\$V --force\"")).toBe("V=push; git $V --force");
+  // (More than one word may be the script: the line is judged as it stands.)
+  expect(onlyScript("bash $X -oc errexit 'make test'")).toBeUndefined();
   for (const c of ["make test", "bash run.sh", "bash -lc 'make' && ls", "bash -lc 'make' extra", "FOO=1 bash -lc make", "bash -lc \"$SCRIPT\"", "bash -lc 'cat' <<< x", "bash -s <<'EOF'\nmake\nEOF"]) expect([c, onlyScript(c)]).toEqual([c, undefined]);
 });

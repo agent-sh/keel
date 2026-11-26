@@ -32,7 +32,7 @@ import { SHELL_GIT_SETTINGS } from "../core/git.ts";
 import { guardEnv, PAD } from "./ref-guard.ts";
 import { outputsOf } from "./outputs.ts";
 import { laid } from "./risk.ts";
-import { evalGiven, name, redirected, shellGiven, SHELLS, type Run } from "./risk-words.ts";
+import { evalGiven, name, redirected, scriptsOf, shellGiven, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
 
 // One stash entry: its place in the list (stash@{n}), the branch it was made on (null: its subject names none), whether
@@ -616,8 +616,8 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
     // A shell given the line as text: read through, where it starts. One reading its input: the here-string or the
     // words a plain echo gives it.
     if (SHELLS.test(prog)) {
-      const body = shellGiven(words.slice(1)).script;
-      if (body !== undefined) { const why = inner(body, dir); if (why) return why; continue; }
+      const bodies = scriptsOf(shellGiven(words.slice(1)));
+      if (bodies.length) { for (const body of bodies) { const why = inner(body.script, dir); if (why) return why; } continue; }
       if (part.here !== undefined) { const why = inner(part.here, dir); if (why) return why; }
       const prev = i > 0 && !parts[i - 1]!.heredoc && (parts[i - 1]!.sep === "|" || parts[i - 1]!.sep === "|&") ? runs[i - 1]! : undefined;
       if (prev && /^(echo|printf)$/.test(name(prev.words[0])) && !prev.words.slice(1).some(unread)) { const why = inner(prev.words.slice(1).filter((w) => !/^-[neE]+$/.test(w)).join(" ").replace(/\\n/g, "\n"), dir); if (why) return why; }
