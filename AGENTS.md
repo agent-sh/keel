@@ -423,8 +423,11 @@ under `~/.cache/keel-work/bun/research/`.
   through its own queue: the land block runs typecheck, both conventions tests, the touched tests
   (`scripts/touched-tests.ts`) and the scripts stage on the clone's verify host (`git config keel.verifyHost`),
   pushes to origin, and `.keel/land-install.sh` builds the landed commit from a checkout of its own and installs
-  it over the compiled daemon that landed it, through the daemon's own restart (which may wait for the owner to
-  step away); a failed install puts the previous binary back unless a new daemon runs, and is an Errors row. The
+  over the compiled daemon that landed it what changed (`scripts/install-kind.ts`): nothing when no file the
+  binary is compiled from (its import graph, `src/core/api-stamp.ts`), no file of the build and no toolchain file
+  changed and the built page is the one served (by digest); the page alone through `keel ui install`, with no
+  restart, when only the page did; else the binary, through the daemon's own restart (which may wait for the owner to
+  step away). What cannot be compared is the binary's. Its output and receipt say which; a failed install puts the previous binary back unless a new daemon runs, and is an Errors row. The
   work board takes what runs from the daemon's own revision when this repository holds it, never from the step.
 - A plan of lanes is checked before any of its agents starts
   (`src/automation/lane-plans.ts`, the pure part in `src/landing/lanes.ts`):
@@ -843,7 +846,8 @@ bun scripts/release.ts && scripts/release-check.sh   # a release packaged in dis
                                # then verified outside the source tree with no Bun on PATH; nothing is published
 bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
                                # a UI-only change on a running daemon: no restart, turns go on, pages reload;
-                               # refused when src/ differs from the daemon's build (that needs a restart)
+                               # refused when a file the binary is compiled from differs from the daemon's build
+                               # (its import graph: tests, docs and page-only modules do not count; that needs a restart)
 bun scripts/icons.ts             # the icon files from the one mark (the page's icon, the installed page's PNGs, the desktop
                                # app's two icons), after a change of the mark or of the inks it reads from ui/src/styles.css
 desktop/build.sh                # desktop/dist/keel-desktop, the desktop app (install: for this account; deb: a package);

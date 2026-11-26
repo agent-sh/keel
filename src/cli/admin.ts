@@ -476,6 +476,7 @@ const uiCmd = wrap("keel ui [status | install BUNDLE.tar.gz | rollback] [--url U
     out(st, !!v.json, () => [
       `serving  ${st.active.source === "installed" ? `installed ${name({ version: Number(st.active.version) })}` : `embedded ${st.embedded.version}`}`,
       `kept     ${name(st.current)}, before it ${name(st.previous)}`,
+      `page     ${st.active.page ?? "unknown"} from ${st.active.revision ? st.active.revision.slice(0, 12) : "an unknown commit"}`,
       `api      ${st.api}`,
     ].join("\n"));
     return 0;

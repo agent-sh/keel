@@ -2,6 +2,7 @@ import { crossing, crossingIn, routeOfFolder } from "../safety/content-routes.ts
 import { existsSync, rmSync, statSync } from "node:fs";
 import { asAsker } from "../core/asker.ts";
 import { checkpointerOf } from "../core/checkpoint.ts";
+import { buildInfo } from "../core/build.ts";
 import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -27,7 +28,7 @@ import index from "../../ui/index.html";
 import { ModelLookupError, speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch, resolveSwitchModel } from "./switch.ts";
 import { bundleRoutes, codingOf, compressJson } from "./compress.ts";
-import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
+import { daemonApi, embeddedBuilt, embeddedPage, stamp, UiBundles } from "./ui-bundle.ts";
 import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
@@ -299,7 +300,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   // server bundles on request with HMR and serves the files itself.
   const uiError = (e: Error) => errors.capture("server", e, { at: "ui bundle" });
   const built = embeddedBuilt();
-  const ui = new UiBundles(store.stateDir, daemonApi(), { version: built ? String(built) : "dev", built: built || Date.now() }, uiError);
+  const ui = new UiBundles(store.stateDir, daemonApi(), { version: built ? String(built) : "dev", built: built || Date.now(), page: embeddedPage(), revision: built ? buildInfo().revision : undefined }, uiError);
   const embeddedUi = bundleRoutes(index, PAGES, uiError, (h) => stamp(h, ui.embedded.version)) ?? Object.fromEntries(PAGES.map((p) => [p, index]));
   const swapUi = () => {
     server.reload({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } });

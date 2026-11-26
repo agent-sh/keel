@@ -1,7 +1,8 @@
 // The UI without a daemon restart. `bun scripts/build.ts --ui OUT` packs the
 // page as a versioned bundle (a .tar.gz with manifest.json); `keel ui install
 // OUT` sends it to the daemon (POST /api/ui), which checks it was built from
-// the same daemon sources (`api`, a hash of src/), keeps it under
+// the same daemon sources (`api`, a hash of the files the binary is compiled
+// from: src/core/api-stamp.ts), keeps it under
 // <state>/ui/<version>/ with the one before it for `keel ui rollback` (as a
 // transaction: see UiBundles), swaps the served page in place (server.reload: no socket and no turn is cut) and
 // tells every open page over /ws (frame `ui`). A page reloads itself when the
@@ -22,8 +23,12 @@ export { daemonApi, sourceApi };
 
 declare const __KEEL_API__: string | undefined;
 declare const __KEEL_UI_BUILT__: number | undefined;
+declare const __KEEL_PAGE__: string | undefined;
 
-export type UiManifest = { format: 1; version: number; api: string; files: string[] };
+// `page` is the digest of the page's files and `revision` the commit it was built from (bundles made before they
+// were written have neither): a landing installs a page only when the served one differs from it.
+export type UiManifest = { format: 1; version: number; api: string; page?: string; revision?: string; files: string[] };
+type Embedded = { version: string; built: number; page?: string; revision?: string };
 export const UI_PREFIX = "/_ui/";
 
 // The page's version rides in its HTML, so a page always knows which one it loaded.
@@ -43,7 +48,8 @@ export function checkManifest(m: any, api: string, have: Set<string>): UiManifes
     if (!have.has(f)) throw bad(`${f} is listed but missing`);
   }
   if (m.api !== api) throw Object.assign(new Error(`this UI was built from other daemon sources (${m.api}, the daemon is ${api}): it needs a daemon restart onto a new binary`), { status: 409, code: "api_mismatch" });
-  return { format: 1, version: m.version, api: m.api, files: m.files };
+  const opt = (k: "page" | "revision") => (typeof m[k] === "string" ? { [k]: m[k] as string } : {});
+  return { format: 1, version: m.version, api: m.api, ...opt("page"), ...opt("revision"), files: m.files };
 }
 
 // Keep the durable writes on the runtime's file pool, not the daemon's loop.
@@ -80,7 +86,7 @@ export class UiBundles {
   // Which page is served now: an installed version, or the embedded one.
   active: { source: "installed" | "embedded"; version: string } = { source: "embedded", version: "dev" };
 
-  constructor(stateDir: string, private api: string, readonly embedded: { version: string; built: number }, private onError: (e: Error) => void) {
+  constructor(stateDir: string, private api: string, readonly embedded: Embedded, private onError: (e: Error) => void) {
     this.root = join(stateDir, "ui");
     mkdirSync(this.root, { recursive: true });
     try { this.ptr = JSON.parse(readFileSync(join(this.root, "current.json"), "utf8")); } catch {}
@@ -125,7 +131,10 @@ export class UiBundles {
 
   status() {
     const of = (v?: number) => (v && this.held.get(v) ? { version: v, api: this.held.get(v)!.manifest.api } : null);
-    return { active: this.active, api: this.api, embedded: this.embedded, current: of(this.ptr.current), previous: of(this.ptr.previous) };
+    // What is served, by its bytes and its commit: the engine's revision is the daemon's own (/api/daemon).
+    const m = this.active.source === "installed" ? this.held.get(Number(this.active.version))?.manifest : undefined;
+    const served = m ? { page: m.page ?? null, revision: m.revision ?? null } : { page: this.embedded.page ?? null, revision: this.embedded.revision ?? null };
+    return { active: { ...this.active, ...served }, api: this.api, embedded: this.embedded, current: of(this.ptr.current), previous: of(this.ptr.previous) };
   }
 
   // The routes for the page: the active bundle's, else the embedded ones as given.
@@ -245,3 +254,4 @@ export class UiBundles {
 }
 
 export const embeddedBuilt = () => (typeof __KEEL_UI_BUILT__ === "number" ? __KEEL_UI_BUILT__ : 0);
+export const embeddedPage = () => (typeof __KEEL_PAGE__ === "string" ? __KEEL_PAGE__ : undefined);

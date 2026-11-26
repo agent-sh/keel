@@ -2,7 +2,7 @@
 // compiled once per run; the binary embeds its files and the UI bundle packs them.
 //   bun scripts/build.ts [OUT [TARGET]]   the binary (default dist/keel), and OUT-ui.tar.gz beside it
 //   bun scripts/build.ts --ui OUT.tar.gz  only the UI bundle, for `keel ui install OUT.tar.gz`
-//                                         (a running daemon built from the same src/ serves it at once)
+//                                         (a running daemon whose binary was compiled from the same files serves it at once)
 // It runs from any folder: the sources and the default dist/ are the repository's,
 // and an OUT that is given is taken from where the command runs. The build itself
 // runs in the repository, since the styles are made from the files found there.
@@ -11,7 +11,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { graphOf, withPreloads } from "./page-graph.ts";
-import { sourceApi, UI_PREFIX, type UiManifest } from "../src/server/ui-bundle.ts";
+import { UI_PREFIX, type UiManifest } from "../src/server/ui-bundle.ts";
+import { binaryGraph, importGraph, pageDigest, sourceApi } from "../src/core/api-stamp.ts";
 
 const root = resolve(import.meta.dir, "..");
 const outPath = (given: string | undefined, name: string) => (given ? resolve(given) : join(root, "dist", name));
@@ -20,7 +21,9 @@ const out = uiOnly ? outPath(process.argv[3], "keel-ui.tar.gz") : outPath(proces
 process.chdir(root);
 const t0 = performance.now();
 const built = Date.now();
-const api = sourceApi(root);
+// The daemon's sources are its import graph: what the UI bundle is checked against (src/core/api-stamp.ts).
+const graph = binaryGraph(root);
+const api = sourceApi(root, graph);
 // The revision a binary says it is (`keel --version`): the commit, marked when the tree differs from it.
 const git = (...args: string[]) => {
   const r = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "ignore" });
@@ -63,7 +66,7 @@ async function browserGraph(): Promise<Record<string, Uint8Array>> {
 }
 
 async function pack(out: string, files: Record<string, Uint8Array>) {
-  const manifest: UiManifest = { format: 1, version: built, api, files: Object.keys(files).sort() };
+  const manifest: UiManifest = { format: 1, version: built, api, page: pageDigest(files), revision, files: Object.keys(files).sort() };
   mkdirSync(dirname(out), { recursive: true });
   await Bun.Archive.write(out, { ...files, "manifest.json": JSON.stringify(manifest, null, 1) }, { compress: "gzip" });
 }
@@ -79,39 +82,34 @@ if (uiOnly) {
 const target = process.argv[3] as Bun.Build.Target | undefined;
 // The helper an ssh machine runs (src/fleet/sshlink.ts), carried as text: the
 // binary has no source to bundle it from.
-const hands = await Bun.build({ entrypoints: [join(root, "src/fleet/hands-main.ts")], target: "bun", minify: true, define });
-if (!hands.success) fail(hands);
-const handsJs = await hands.outputs[0]!.text();
-// The read thread (src/server/reads.ts), carried as text the same way: a
-// compiled binary starts a thread from a program it holds, not from a file.
-const reads = await Bun.build({ entrypoints: [join(root, "src/server/reads-worker.ts")], target: "bun", minify: true, define });
-if (!reads.success) fail(reads);
-const readsJs = await reads.outputs[0]!.text();
-// The checkpoint thread (src/core/checkpoint.ts), carried the same way.
-const checkpoint = await Bun.build({ entrypoints: [join(root, "src/core/checkpoint-worker.ts")], target: "bun", minify: true, define });
-if (!checkpoint.success) fail(checkpoint);
-const checkpointJs = await checkpoint.outputs[0]!.text();
-// The worker a backup is made in (src/admin/backup-worker.ts), carried the same way:
-// a worker of the binary is started from text, whatever folder the daemon runs in.
-const worker = await Bun.build({ entrypoints: [join(root, "src/admin/backup-worker.ts")], target: "bun", minify: true, define });
-if (!worker.success) fail(worker);
-const workerJs = await worker.outputs[0]!.text();
-// The sandbox proxies' thread (src/safety/net-proxy.ts), carried the same way.
-const netProxy = await Bun.build({ entrypoints: [join(root, "src/safety/net-proxy-worker.ts")], target: "bun", minify: true, define });
-if (!netProxy.success) fail(netProxy);
-const netProxyJs = await netProxy.outputs[0]!.text();
-// The thread a search index made again is filled on (src/server/routes/search-fill.ts), carried the same way.
-const searchFill = await Bun.build({ entrypoints: [join(root, "src/server/routes/search-fill-worker.ts")], target: "bun", minify: true, define });
-if (!searchFill.success) fail(searchFill);
-const searchFillJs = await searchFill.outputs[0]!.text();
-// The thread a branch's pictures are compared on (src/pictures/run.ts), carried the same way.
-const pictures = await Bun.build({ entrypoints: [join(root, "src/pictures/diff-worker.ts")], target: "bun", minify: true, define });
-if (!pictures.success) fail(pictures);
-const picturesJs = await pictures.outputs[0]!.text();
-// The stall watcher's thread (src/admin/stall-watch.ts), carried the same way.
-const stallWatch = await Bun.build({ entrypoints: [join(root, "src/admin/stall-watch-worker.ts")], target: "bun", minify: true, define });
-if (!stallWatch.success) fail(stallWatch);
-const stallWatchJs = await stallWatch.outputs[0]!.text();
+// What the binary's builds read from the repository, checked against the graph its api stamp hashes.
+const read = new Set<string>();
+const note = (res: Bun.BuildOutput) => {
+  for (const i of Object.keys((res as any).metafile?.inputs ?? {})) if (!i.includes("node_modules/") && !i.includes(":") && !i.startsWith("..") && !i.startsWith("/")) read.add(i);
+};
+// A thread the binary carries as text: a compiled binary starts a thread from a program it holds, not from a file.
+const carried = async (entry: string) => {
+  const r = await Bun.build({ entrypoints: [join(root, entry)], target: "bun", minify: true, define, metafile: true });
+  if (!r.success) fail(r);
+  note(r);
+  return r.outputs[0]!.text();
+};
+// The helper an ssh machine runs (src/fleet/sshlink.ts).
+const handsJs = await carried("src/fleet/hands-main.ts");
+// The read thread (src/server/reads.ts).
+const readsJs = await carried("src/server/reads-worker.ts");
+// The checkpoint thread (src/core/checkpoint.ts).
+const checkpointJs = await carried("src/core/checkpoint-worker.ts");
+// The worker a backup is made in (src/admin/backup-worker.ts).
+const workerJs = await carried("src/admin/backup-worker.ts");
+// The sandbox proxies' thread (src/safety/net-proxy.ts).
+const netProxyJs = await carried("src/safety/net-proxy-worker.ts");
+// The thread a search index made again is filled on (src/server/routes/search-fill.ts).
+const searchFillJs = await carried("src/server/routes/search-fill-worker.ts");
+// The thread a branch's pictures are compared on (src/pictures/run.ts).
+const picturesJs = await carried("src/pictures/diff-worker.ts");
+// The stall watcher's thread (src/admin/stall-watch.ts).
+const stallWatchJs = await carried("src/admin/stall-watch-worker.ts");
 
 // In the binary the daemon's import of ui/index.html is the page compiled
 // above, not a second graph: a module that names each file (embedded as it
@@ -147,8 +145,9 @@ try {
     splitting: true,
     sourcemap: "none",
     plugins: [embeddedPage],
+    metafile: true,
     define: {
-      ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs),
+      ...define, __KEEL_API__: JSON.stringify(api), __KEEL_PAGE__: JSON.stringify(pageDigest(files)), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs),
       __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs), __KEEL_STALLWATCH_JS__: JSON.stringify(stallWatchJs), __KEEL_NETPROXY_JS__: JSON.stringify(netProxyJs), __KEEL_SEARCHFILL_JS__: JSON.stringify(searchFillJs), __KEEL_PICTURES_JS__: JSON.stringify(picturesJs),
       __KEEL_REVISION__: JSON.stringify(revision), __KEEL_SOURCE_DIR__: JSON.stringify(root), __KEEL_TARGET__: JSON.stringify((target ?? `bun-${process.platform}-${process.arch}`).replace(/^bun-/, "")),
     },
@@ -158,5 +157,17 @@ try {
   rmSync(embed, { recursive: true, force: true });
 }
 if (!res.success) fail(res);
+note(res);
+// The stamp hashes exactly what was compiled: a file the builds read that the graph misses (or the other way)
+// would let a page bundle in over a daemon change. A new thread is named in BINARY_ENTRIES.
+const missing = [...read].filter((f) => !graph.includes(f));
+const extra = graph.filter((f) => !read.has(f));
+if (missing.length || extra.length) {
+  console.error(`the binary's import graph (src/core/api-stamp.ts) is not what its builds read: not in the graph ${missing.slice(0, 5).join(", ") || "none"}; not read ${extra.slice(0, 5).join(", ") || "none"}`);
+  process.exit(1);
+}
 await pack(`${out}-ui.tar.gz`, files);
+// What the landing install decides by (.keel/land-install.sh, scripts/install-kind.ts): the files the binary is
+// compiled from, the build's own files, the stamp and the page's digest.
+writeFileSync(`${out}.inputs.json`, JSON.stringify({ revision, api, page: pageDigest(files), binary: graph, build: importGraph(root, ["scripts/build.ts"]) }, null, 1));
 console.log(`built ${out} and ${out}-ui.tar.gz (revision ${revision}, api ${api}, UI ${built}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);
