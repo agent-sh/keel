@@ -25,7 +25,7 @@ import { AgentLines } from "./automation/AgentLines.tsx";
 import { treeLines } from "../lib/agent-lines.ts";
 import { countWord } from "../../../src/core/state-words.ts";
 import { useCalm } from "../lib/focus.ts";
-import { foldWords, settled } from "../lib/work-fold.ts";
+import { failedIn, folds, foldWords } from "../lib/work-fold.ts";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
   // What was thought stays open when the thinking ends, as the reader had it, until it has left the
@@ -315,7 +315,8 @@ function BelowOne({ callId, sid }: { callId: string; sid: string }) {
 }
 
 // A run of tool calls: one rail. Shift with a click or a key on a step's line opens or closes every step of the run.
-export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: string; remote: boolean }) {
+// `passed`: the owner sent a message after the run (it is of a turn they moved past).
+export function Work({ row, sid, cwd, remote, passed = false }: { row: Row; sid: string; cwd?: string; remote: boolean; passed?: boolean }) {
   const [all, setAll] = useState<All>({ n: 0, open: false });
   const onAll = (e: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
     const line = (e.target as HTMLElement).closest<HTMLElement>(".k-line[data-all]");
@@ -323,18 +324,27 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
     e.preventDefault();
     setAll((a) => ({ n: a.n + 1, open: line.getAttribute("aria-expanded") !== "true" }));
   };
-  // In Focus a finished run is one quiet line; a press opens it (lib/work-fold.ts), and so does a
-  // search or Find hit on one of its calls (the step and the call take it from there).
+  // A finished run is one quiet line, in Focus at once and in the workbench once the owner moved past its
+  // turn (lib/work-fold.ts); a press opens it, and so does a search or Find hit on one of its calls (the
+  // step and the call take it from there).
   const calm = useCalm();
   const [kept, setOpened] = useKept(`work:${sid}:${row.id}`);
   const opened = kept ?? false;
+  // An agent the run started that still works keeps the run whole: its line under the step is where it is watched.
+  const busy = useAuto((x) => passed && Object.values(x.agents).some((a) => a.parent_id === sid && !!a.call_id && isLive(a) && row.steps!.some((st) => callsOf(st).some((c) => c.id === a.call_id))));
+  // A run that stood on the page when the owner sent their next message stays as it stood: folding it there
+  // would drop every line above it while they read. It is the one line when it is drawn anew (the session
+  // opened, the page loaded, the run brought back into view from far above).
+  const [drawnPassed] = useState(passed);
+  const folded = folds(row.steps!, calm, drawnPassed && passed && !busy);
   const hit = useUI((u) => u.focusCall && row.steps!.some((st) => callsOf(st).some((c) => c.id === u.focusCall?.id)) ? u.focusCall : null);
-  useEffect(() => { if (hit && calm && !opened) setOpened(true, hit.byFind); }, [hit]);
+  useEffect(() => { if (hit && folded && !opened) setOpened(true, hit.byFind); }, [hit]);
   const table = isTable(row.steps!);
-  if (calm && !opened && settled(row.steps!)) {
+  if (folded && !opened) {
+    const failed = failedIn(row.steps!);
     return (
-      <button type="button" className="k-work-fold" data-testid="work-fold" data-run={row.id} aria-expanded={false} onClick={() => setOpened(true)}>
-        {foldWords(row.steps!)}<ChevronDown aria-hidden="true" />
+      <button type="button" className="k-work-fold row-cv" data-testid="work-fold" data-run={row.id} data-failed={failed || undefined} aria-expanded={false} onClick={() => setOpened(true)}>
+        {foldWords(row.steps!)}{failed > 0 && `, ${countWord("fail", failed)}`}<ChevronDown aria-hidden="true" />
       </button>
     );
   }

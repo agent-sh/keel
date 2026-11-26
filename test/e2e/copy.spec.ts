@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot, WORKBENCH } from "./shots.ts";
+import { openFolds, shoot, WORKBENCH } from "./shots.ts";
 
 // Feature: copy. One copy button (CopyButton.tsx) on every message (the raw
 // markdown of a reply, the prompt as typed), every code block, a tool call's
@@ -25,6 +25,8 @@ test("copy what a session shows, also without the async clipboard", async ({ pag
   await page.goto(`/s/${s.id}`);
   const clip = () => page.evaluate(() => navigator.clipboard.readText());
   const calls = page.getByTestId("tool-call");
+  // (The calls are of the turn before the last message: its run is one line, opened here.)
+  await openFolds(page);
   await expect(calls).toHaveCount(2);
 
   // A tool call: the command and its output, the path and the content written.

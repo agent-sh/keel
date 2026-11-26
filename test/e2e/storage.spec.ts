@@ -158,6 +158,8 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   expect(again.at(-1)).toContain("was removed by the storage retention");
   expect(again.at(-1)).toContain("Run the command again to get its output.");
   await page.goto(`/s/${kept.id}`);
+  // (The command is of a turn the owner moved past: its run is one line, opened here.)
+  await page.getByTestId("work-fold").first().click();
   const cutRow = page.getByTestId("tool-call").first();
   await cutRow.getByRole("button").first().click();
   await expect(cutRow.getByTestId("spill-removed")).toHaveText("The full output this result names was removed by the storage retention. Run the command again to get it.");

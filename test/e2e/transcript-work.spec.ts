@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "./isolate.ts";
 import { daemon, exited, ROOT } from "./own-daemon.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, openFolds, shoot } from "./shots.ts";
 
 // Feature: the transcript reads in three voices. The owner's words stand
 // behind their rule with what they attached; the model's reply is plain text;
@@ -324,6 +324,63 @@ const lineShown = (box: ReturnType<Page["locator"]>, needle: string) => box.eval
   return null;
 }, needle);
 
+test("the run of a turn the owner moved past is one line, with what failed in it; the turn they read now stays whole", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1320, height: 860 });
+  const ws = join(ROOT, `passed-run-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: ws } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  const first = [
+    { name: "Bash", input: { command: "echo one > a.txt; ls", description: "List the folder" } },
+    { name: "Bash", input: { command: "echo broken; exit 3", description: "Run the suite" } },
+    { name: "Read", input: { file_path: join(ws, "a.txt") } },
+  ];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `What is in the folder?\nscript:calls ${JSON.stringify(first)}` } });
+  const reply = page.getByTestId("assistant-text").filter({ hasText: "Done with 3 calls" });
+  await expect(reply).toBeVisible({ timeout: 60_000 });
+  // The turn the owner reads now: its run is whole, a line a step, the failed one saying so.
+  const work = page.getByTestId("work");
+  await expect(work).toHaveCount(1);
+  await expect(work.locator('[data-testid="tool-call"][data-state="error"]')).toHaveCount(1);
+  await expect(page.getByTestId("work-fold")).toHaveCount(0);
+  const whole = (await work.boundingBox())!.height;
+  // They send the next message. On the page they have open nothing folds under their eyes: the run stays as it stood.
+  const second = [{ name: "Bash", input: { command: "ls -la", description: "List it again" } }];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `And now?\nscript:calls ${JSON.stringify(second)}` } });
+  await expect(page.getByTestId("assistant-text").filter({ hasText: "Done with 1 call" })).toBeVisible({ timeout: 60_000 });
+  await expect(work).toHaveCount(2);
+  await expect(page.getByTestId("work-fold")).toHaveCount(0);
+  // Drawn anew (the session opened again), the run they moved past is one line that says what was done and that a
+  // call failed, in the fold's own quiet ink; the newest turn's run stays whole under it.
+  await page.reload();
+  const fold = page.getByTestId("work-fold");
+  await expect(fold).toHaveCount(1, { timeout: 30_000 });
+  await expect(fold).toHaveText("Ran commands and looked around, 1 failed");
+  await expect(fold).toHaveAttribute("data-failed", "1");
+  const line = (await fold.boundingBox())!.height;
+  expect(line).toBeLessThan(whole / 2);
+  expect(line).toBeLessThanOrEqual(28);
+  // No red on the line: a failure of a turn they moved past is said in the line's words.
+  const ink = await fold.evaluate((el) => {
+    const probe = document.createElement("i"); probe.style.color = "var(--faint)"; el.append(probe);
+    const faint = getComputedStyle(probe).color; probe.remove();
+    return [getComputedStyle(el).color, faint];
+  });
+  expect(ink[0]).toBe(ink[1]);
+  await expect(work).toHaveCount(1);
+  await expect(work.getByTestId("call-note")).toHaveText("List it again");
+  await expect(reply).toBeVisible();
+  await page.waitForTimeout(300);
+  await shoot(page, "work-21-passed-run-one-line");
+  // A press opens the run as it stood.
+  await fold.click();
+  await expect(page.getByTestId("work-fold")).toHaveCount(0);
+  await expect(work).toHaveCount(2);
+  await expect(work.first().locator('[data-testid="tool-call"][data-state="error"]')).toHaveCount(1);
+});
+
 test("a failed command's output opens at its first error line, and its line quotes it", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
@@ -429,6 +486,9 @@ test("a closed step shows what must be seen: a cut call, each state as what it i
     await expect(page.locator(PROMPTS).first()).toBeAttached({ timeout: 30_000 });
     await toPrompt(page, 0);
     await marksRead;
+    // (The session's earlier turns are ones the owner moved past: their runs are a line each, opened here.)
+    await openFolds(page);
+    await toPrompt(page, 0);
 
     // Eleven commands of one reply, a force push, a delete outside the folder and a download piped into a shell among
     // them, all run without asking: the gate's words are for a call that asks, so nothing of them is on the page,
@@ -1123,6 +1183,9 @@ test("a program's calls stand under its line and mark it, after a reload too", a
   const second = page.locator('[data-testid="tool-call"][data-tool="run_code"]').nth(1);
   // (A program that ran on this page stays open as it stood until it leaves the view; folded, as after a reload:)
   await page.reload();
+  // (The first program is of the turn before this one: its run is one line now, opened here.)
+  await expect(page.getByTestId("work-fold")).toHaveCount(1, { timeout: 30_000 });
+  await openFolds(page);
   await expect(second.getByTestId("code-call-count")).toHaveText("12 calls, 12 failed");
   await expect(second.getByTestId("code-peek").getByTestId("tool-call")).toHaveCount(3);
   await expect(second.getByTestId("code-peek-more")).toHaveText("and 9 more like these: open the program");

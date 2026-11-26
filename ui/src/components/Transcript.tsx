@@ -75,7 +75,8 @@ function ActionButton({ label, onClick, children, testid, idle }: { label: strin
 // The session is replaced only when something other than its head, last
 // activity and revision changed (those move with every event; no row shows them).
 // `last`: the newest event shown. `other`: the head of the branch shown when it is not the session's.
-type Tail = { session: Session; lastEnd?: string; last?: string; reading: boolean; other?: string };
+// `asked`: the seq of the owner's newest message among the events shown.
+type Tail = { session: Session; lastEnd?: string; last?: string; reading: boolean; other?: string; asked?: number };
 const MOVING = new Set(["head", "updated", "rev"]);
 const sameSession = (a: Session, b: Session) => {
   if (a === b) return true;
@@ -91,9 +92,9 @@ function tailStore() {
     get: () => st!,
     // Called while the transcript renders: rows rendered in the same pass read it at once.
     // `reading`: the transcript shows a run away from the end of the session's branch.
-    put(session: Session, lastEnd: string | undefined, last: string | undefined, reading: boolean, other?: string) {
-      if (st && st.lastEnd === lastEnd && st.last === last && st.reading === reading && st.other === other && sameSession(st.session, session)) return;
-      st = { session, lastEnd, last, reading, other };
+    put(session: Session, lastEnd: string | undefined, last: string | undefined, reading: boolean, other?: string, asked?: number) {
+      if (st && st.lastEnd === lastEnd && st.last === last && st.reading === reading && st.other === other && st.asked === asked && sameSession(st.session, session)) return;
+      st = { session, lastEnd, last, reading, other, asked };
       dirty = true;
     },
     // After the commit: rows that did not render ask their selector again.
@@ -607,7 +608,9 @@ function AssistantBlocks({ blocks, prose, sid }: { blocks: AssistantBlock[]; pro
 function WorkRow({ row, sid }: { row: Row; sid: string }) {
   const remote = useTail((t) => !!t.session.machine);
   const cwd = useTail((t) => t.session.workspace);
-  return <Work row={row} sid={sid} cwd={cwd} remote={remote} />;
+  // The owner sent a message after this run: it is of a turn they moved past.
+  const passed = useTail((t) => t.asked !== undefined && row.e.seq < t.asked);
+  return <Work row={row} sid={sid} cwd={cwd} remote={remote} passed={passed} />;
 }
 
 // Whether a text holds anything but white space.
@@ -2087,7 +2090,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // (What the last measure read: a render reads no layout.)
   const { rem, gap, width } = sizes.current;
   tail.setImages(short_ ? undefined : events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id);
-  tail.put(session, short_ ? undefined : events.findLast((e) => e.kind === "turn_end")?.id, short_ ? undefined : events.at(-1)?.id, !!reading, reading?.other ? reading.head ?? undefined : undefined);
+  tail.put(session, short_ ? undefined : events.findLast((e) => e.kind === "turn_end")?.id, short_ ? undefined : events.at(-1)?.id, !!reading, reading?.other ? reading.head ?? undefined : undefined, events.findLast(isPrompt)?.seq);
 
   return (
     // A strip of the conversation stays above a tall stack of cards and a long

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "./isolate.ts";
-import { openPanel, scriptBash, shoot } from "./shots.ts";
+import { openFolds, openPanel, scriptBash, shoot } from "./shots.ts";
 
 // Feature: words selected in the conversation offer Quote and Comment. Quote puts them in the message
 // box as a quote block. Comment takes one line and sends "On <where>:", the quote and the line as the
@@ -145,6 +145,8 @@ test("a selection is quoted or commented, and a comment steers or queues like a 
   await expect(bar).toHaveCount(0);
 
   // A selection across blocks names each of them.
+  // (A run of a turn the owner moved past is one line where it was drawn anew: any on the page is opened first.)
+  await openFolds(page);
   await page.evaluate(() => {
     const texts = (css: string) => { const out: Text[] = []; const w = document.createTreeWalker(document.querySelector(css)!, NodeFilter.SHOW_TEXT); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.textContent!.trim()) out.push(n as Text); return out; };
     const from = texts('[data-testid="assistant-text"]')[0]!, to = texts('[data-testid="tool-call"]').at(-1)!;

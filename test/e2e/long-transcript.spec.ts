@@ -594,6 +594,8 @@ test("rows far from the view are held as light boxes that Find, a selection and 
     await page.goto(`${d.url}/s/${id}?e=${ninth.id}`);
     const jumped = page.locator(`[data-testid="user-message"]#e-${ninth.id}`);
     await expect(jumped).toBeInViewport({ timeout: 30_000 });
+    // (The run is of a turn the owner moved past: one line, opened first; then its step.)
+    await page.locator(`[data-testid="work-fold"][data-run="w:${all[all.indexOf(ninth) + 2]!.id}"]`).click();
     const line = page.locator(`[data-events~="${all[all.indexOf(ninth) + 2]!.id}"] .k-line`).first();
     await line.click();
     await expect(line).toHaveAttribute("aria-expanded", "true");
@@ -611,7 +613,8 @@ test("rows far from the view are held as light boxes that Find, a selection and 
     const twinPrompt = twinAll.find((e) => e.kind === "user" && String(e.data.text).startsWith("Prompt 14:"))!;
     await page.goto(`${d.url}/s/${twin}?e=${twinPrompt.id}`);
     await expect(page.locator(`[data-testid="user-message"]#e-${twinPrompt.id}`)).toBeInViewport({ timeout: 30_000 });
-    await expect(page.locator(`[data-events~="${twinAll[twinAll.indexOf(twinPrompt) + 2]!.id}"] .k-line`).first()).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(`[data-testid="work-fold"][data-run="w:${twinAll[twinAll.indexOf(twinPrompt) + 2]!.id}"]`)).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(`[data-events~="${twinAll[twinAll.indexOf(twinPrompt) + 2]!.id}"] .k-line`)).toHaveCount(0);
 
     // In forced colors the held words stay unseen (the system's text color would show them).
     await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(5);

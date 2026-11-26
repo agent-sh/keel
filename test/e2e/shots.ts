@@ -99,6 +99,12 @@ export const HAIKU = process.env.KEEL_TEST_MODEL ?? "bedrock:global.anthropic.cl
 // real model for.
 export const SCRIPTED = HAIKU.startsWith("scripted:");
 export const ask = (real: string, scripted: string) => (SCRIPTED ? scripted : real);
+// The run of calls of a turn the owner moved past is one line (ui/src/lib/work-fold.ts). A spec that reads the calls
+// of such a turn opens the runs drawn on the page first, as the owner would with a press on each.
+export async function openFolds(scope: Page | Locator) {
+  const folds = scope.getByTestId("work-fold");
+  for (let left = await folds.count(); left > 0; left = await folds.count()) await folds.first().click();
+}
 // The pickers of a session's message box: on a desk the mode, the model, the effort, the speed and the context
 // are behind the box's + (BoxMore in ui/src/components/Composer.tsx), so this opens it when it is closed and
 // gives back its popup. Where the box keeps them in its row (the start page, a phone) it does nothing and gives
