@@ -61,11 +61,10 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   await shoot(page, "tools-02-write-open");
 
   // The job's end wakes the idle session with a turn of its own (0b3664139: it used to ride the next
-  // request as a note). The turn's input is a collapsed "Harness note" (cd8b95cf1 drew it so; the old
-  // "note" line is no longer stored for an end that started a turn), and the turn ends with its own footer.
+  // request as a note). Its input is the background command's own notice, and the turn ends with its own footer.
   // Wait for that turn before asking: a question sent while the job still runs would race the wake.
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
-  const woke = page.getByTestId("harness-notice");
+  const woke = page.getByTestId("job-notice");
   await expect(woke).toHaveCount(1);
   await woke.locator(".k-heard-line").click();
   await expect(woke).toContainText("background command");

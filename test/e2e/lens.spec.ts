@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "./isolate.ts";
 import { daemon, exited, seeded } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
+import type { LensItem } from "../../src/core/lens.ts";
 
 // Feature: the Conversation lens. A session that has agents opens on the owner's
 // own messages, the reply each of his turns ended with, and between them one
@@ -11,7 +12,7 @@ import { shoot } from "./shots.ts";
 // costs what it shows: its answer carries the bodies of the shown events alone.
 // The spec runs its own daemon on a seeded coordinator of three days.
 
-type Lens = { items: { t: string; id?: string; seq?: number; from?: number; to?: number }[]; events: Record<string, unknown>; last: { id: string; seq: number } };
+type Lens = { items: LensItem[]; events: Record<string, unknown>; last: { id: string; seq: number } };
 
 const lensRead = (page: Page, id: string) => page.waitForResponse((r) => new URL(r.url()).pathname === `/api/sessions/${id}/lens`);
 
@@ -133,10 +134,12 @@ test("a session with agents opens on the conversation, its stretches folded and 
     await page.getByTestId("menu-lens").click();
     await expect(page.getByTestId("lens")).toBeVisible();
 
-    // New since read lands on the first new item of the lens: the place is read up to the
-    // second reply, so the stretch after it is where what is new starts.
-    const reply2 = answer.items.filter((x) => x.t === "reply")[1]!;
-    const readEvent = reply2.id!;
+    // New since read lands on the first new item of the lens. Read through the last
+    // item before the failed stretch (not through a fixed position among replies).
+    const failedAt = answer.items.findIndex((x) => x.t === "run" && x.facts.failed === 1);
+    expect(failedAt).toBeGreaterThan(0);
+    const before = answer.items[failedAt - 1]!;
+    const readEvent = before.t === "run" ? before.last : before.id;
     // (Set before the page's own code runs, once: the page leaving writes its own places first.)
     await page.goto("about:blank");
     await page.addInitScript(({ sid, ev, seq }) => {
@@ -145,12 +148,13 @@ test("a session with agents opens on the conversation, its stretches folded and 
       const all = JSON.parse(localStorage.getItem("keel.places") ?? "{}");
       all[sid] = { ...all[sid], read: ev, readSeq: seq, readAt: Date.now() - 3600_000, at: Date.now() };
       localStorage.setItem("keel.places", JSON.stringify(all));
-    }, { sid: id!, ev: readEvent, seq: reply2.seq! });
+    }, { sid: id!, ev: readEvent, seq: before.t === "run" ? before.to : before.seq });
+    // A short desktop window leaves the mark out of view even with the compact lens rows.
+    await page.setViewportSize({ width: 1920, height: 600 });
     await page.goto(`${d.url}/s/${id}`);
     await expect(page.getByTestId("lens")).toBeVisible({ timeout: 30_000 });
     const jump = page.getByTestId("new-since-jump");
     await expect(jump).toBeVisible();
-    await shoot(page, "lens-03-new-since");
     await jump.click();
     const rule = page.locator('[data-testid="lens"] [data-new-since]');
     await expect(rule).toHaveCount(1);
@@ -161,6 +165,8 @@ test("a session with agents opens on the conversation, its stretches folded and 
     expect(box!.y).toBeLessThan(200);
     // In view, the way to it goes; read down to the end, what was new is read and the rule goes too.
     await expect(jump).toHaveCount(0);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await shoot(page, "lens-03-new-since");
     await page.getByTestId("lens").hover();
     for (let i = 0; i < 6; i++) await page.mouse.wheel(0, 4000);
     await expect(rule).toHaveCount(0, { timeout: 15_000 });
