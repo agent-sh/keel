@@ -189,7 +189,7 @@ test("a step of long commands is one row beside the reply", async ({ page, reque
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Quiet step" } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   const long = (n: number) => ({ name: "Bash", input: { command: `echo ${n} && echo "a command long enough to pass the width of the reading column when it stands beside another one of its kind ${n}"` } });
-  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([long(1), long(2), long(3)])}` } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:batch ${JSON.stringify([long(1), long(2), long(3)])}` } });
   await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as { kind: string }[]).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(1);
   await page.goto(`/s/${session.id}`);
   const line = page.locator('.k-work [data-testid="work-step"] > .k-line[data-step] > .k-line-text').first();
@@ -197,4 +197,38 @@ test("a step of long commands is one row beside the reply", async ({ page, reque
   const rows = await line.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
   expect(rows).toBe(1);
   await shoot(page, "quiet-09-step-one-row");
+});
+
+test("a finished conversation is one ink: nothing in it is set in a saturated colour or over the reply's size", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Calm prose" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const todos = (done: number) => ({ name: "TodoWrite", input: { todos: ["Write the note", "Change a line", "Check it"].map((content, i) => ({ content, activeForm: content, status: i < done ? "completed" : i === done ? "in_progress" : "pending" })) } });
+  const file = `calm-${Date.now()}.txt`;
+  const calls = [todos(1), { name: "Write", input: { file_path: file, content: "one\ntwo\nthree\n" } }, todos(2), { name: "Edit", input: { file_path: file, old_string: "two", new_string: "2" } }, { name: "Bash", input: { command: `cat ${file}`, description: "Read the note back" } }, todos(3)];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `A plan, a small change and a command, please.\nscript:calls ${JSON.stringify(calls)}` } });
+  await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as { kind: string }[]).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(1);
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("small-change").first()).toBeVisible({ timeout: 30_000 });
+  await page.mouse.move(5, 900);
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.toggle("dark", t === "dark"); }, theme);
+    // How far a colour is from grey (0 to 1, with its alpha), read as the page paints it.
+    const loud = await page.getByTestId("transcript").evaluate((root) => {
+      const c = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
+      const far = (css: string) => { c.clearRect(0, 0, 1, 1); c.fillStyle = css; c.fillRect(0, 0, 1, 1); const [r, g, b, a] = c.getImageData(0, 0, 1, 1).data; return ((Math.max(r!, g!, b!) - Math.min(r!, g!, b!)) / 255) * (a! / 255); };
+      const out: string[] = []; let largest = 0;
+      for (const el of root.querySelectorAll<HTMLElement>("*")) {
+        const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+        if (r.width < 1 || r.height < 1 || s.visibility === "hidden" || Number(s.opacity) === 0) continue;
+        const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent!.trim());
+        const inks: [string, string][] = [["background", s.backgroundColor], ...(own || el.tagName === "svg" ? [["color", s.color] as [string, string]] : []), ...(parseFloat(s.borderLeftWidth) > 0 ? [["border", s.borderLeftColor] as [string, string]] : [])];
+        for (const [what, ink] of inks) if (far(ink) > 0.2) out.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} ${what} ${ink}`);
+        if (own) largest = Math.max(largest, parseFloat(s.fontSize));
+      }
+      return { out: [...new Set(out)], largest };
+    });
+    expect(loud.out, `${theme}: saturated in a finished conversation`).toEqual([]);
+    expect(loud.largest).toBeLessThanOrEqual(15);
+  }
+  await shoot(page, "quiet-10-calm-prose");
 });

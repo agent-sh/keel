@@ -67,8 +67,9 @@ button.k-heard-line:hover { color: var(--fg); }
 /* `--k-verb`: the verbs' column; `--k-hang`: where a line's words start, and where its later rows do
    (a line outside a run of work, the question above the message box, stands at the same two). */
 .k-work { --k-verb: 4.25rem; --k-hang: calc(var(--k-verb) + 0.5rem); display: flex; flex-direction: column; min-width: 0; }
-/* The rail carries a step's state, so it is drawn to be seen (3:1 against the page in both themes). */
-.k-step { --k-edge: var(--st-idle); min-width: 0; padding-left: 0.625rem; border-left: 0.1875rem solid var(--k-edge); transition: border-left-color 400ms var(--ease-out); }
+/* The rail of a settled step is a soft rule beside the prose. It carries a step's state in colour only while
+   the step runs, asks or failed: then it is drawn to be seen. */
+.k-step { --k-edge: var(--line); min-width: 0; padding-left: 0.6875rem; border-left: 0.125rem solid var(--k-edge); transition: border-left-color 400ms var(--ease-out); }
 /* The step's part of the rail is its state: what most needs a look. */
 .k-step[data-state="need"] { --k-edge: var(--st-need); }
 .k-step[data-state="running"] { --k-edge: var(--st-work); }
@@ -162,6 +163,8 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-line-run { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--st-work); animation: var(--animate-pulse-dot); }
 .k-line-thought { width: 0.8125rem; height: 0.8125rem; color: var(--faint); }
 .k-delta { font-family: var(--font-mono); }
+/* On a line of the rail a change's counts are in the line's own quiet ink: the signs tell them apart. */
+.k-line .k-delta > * { color: var(--muted); }
 /* A chip at a line's end (a name of its own: the surfaces' chips are the toolkit's .k-line-chip). */
 .k-line-chip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.25rem; padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); font-weight: 400; font-size: var(--text-micro); line-height: 1; box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
 .k-line-chip[data-code] { font-family: var(--font-mono); }
@@ -173,7 +176,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-line-plan { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--muted); }
 .k-pips { display: inline-flex; gap: 2px; }
 .k-pips > i { width: 0.3125rem; height: 0.625rem; border-radius: 1px; background: var(--st-idle); }
-.k-pips > i[data-done] { background: var(--ok); }
+.k-pips > i[data-done] { background: var(--muted); }
 
 /* A call that asks the owner, and that the gate marks (the policy rates it high risk, it writes outside the
    folder, it leaves the sandbox): its line says why in a few words in the warning ink (the sentence is their
@@ -310,11 +313,11 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-line-more[data-tone="fail"] { color: var(--danger-ink); }
 .k-line-more-open { display: block; width: 100%; border-radius: var(--radius-sm); text-align: left; }
 .k-line-more-open:hover { background: var(--hover); color: var(--fg); }
-.k-line-change { margin: 0 0.25rem 0.3125rem calc(var(--k-hang) + 0.375rem); overflow: hidden; border-radius: var(--radius-xs); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.5; color: var(--fg); }
+.k-line-change { margin: 0 0.25rem 0.3125rem calc(var(--k-hang) + 0.375rem); overflow: hidden; border-radius: var(--radius-xs); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.5; color: var(--muted); }
 .k-line-change > div { padding: 0 0.5rem 0 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .k-line-change > div > span { display: inline-block; width: 1rem; text-align: center; color: var(--muted); user-select: none; }
-.k-line-change > div[data-kind="add"] { background: color-mix(in oklab, var(--ok) 10%, transparent); }
-.k-line-change > div[data-kind="del"] { background: color-mix(in oklab, var(--danger-soft) 70%, transparent); }
+/* A small change shown under its line is told by its signs and two inks, with no fill: the diff it opens to has the colours. */
+.k-line-change > div[data-kind="del"] { color: var(--faint); }
 
 /* What the model said on the way to a step, in its own words. More than a few
    words stand above the line in the text's own ink, a size under a reply:
@@ -357,8 +360,8 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 
 /* The way to the end of the conversation, while an earlier part is read: a
    strip of its own under the text, so it never lies over a line being read. */
-.k-latest-bar { position: absolute; inset: auto var(--sbw, 0px) 0 0; display: flex; align-items: center; justify-content: center; height: 2.375rem; border-top: 1px solid var(--line); background: var(--bg); }
-.k-station[data-helm] .k-latest-bar { background: var(--raised); }
+.k-latest-bar { position: absolute; inset: auto var(--sbw, 0px) 0 0; display: flex; align-items: center; justify-content: center; height: 2.375rem; --k-ground: var(--bg); background: linear-gradient(transparent, var(--k-ground) 60%); }
+.k-station[data-helm] .k-latest-bar { --k-ground: var(--raised); }
 
 /* A pane too narrow for the table (four panes, a phone): what was said stands above what was done, and a
    line's words wrap from the pane's own edge. */

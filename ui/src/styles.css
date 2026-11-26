@@ -700,8 +700,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel li::marker { color: var(--faint); }
 .prose-keel li:where(:not(:first-child)) { margin-top: 0.3em; }
 .prose-keel li > ul, .prose-keel li > ol { margin-top: 0.3em; }
-.prose-keel a { color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-underline-offset: 0.1875rem; }
-.prose-keel a:hover { text-decoration-color: var(--accent); }
+/* A link is the text's own ink over a soft rule; the rule takes the ink under the pointer. */
+.prose-keel a { color: inherit; text-decoration: underline; text-decoration-color: var(--line-strong); text-decoration-thickness: 1px; text-underline-offset: 0.1875rem; }
+.prose-keel a:hover { text-decoration-color: currentColor; }
 /* Code in a sentence is a tint, not a box: a reply that names ten files has no ten outlines. */
 .prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-ui); background: var(--sunken); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
 /* A quote, or words held inside another (a server's message, an agent's work, a block of calls):
@@ -732,9 +733,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel math[display="block"] { margin: 0.2em 0; }
 
 /* Code blocks: a quiet head with the language and a copy button. */
-.code-block { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--code-bg); overflow: hidden; }
+.code-block { border-radius: var(--radius-md); background: var(--code-bg); overflow: hidden; }
 /* The head is the block's chrome, not its words: a selection that takes the block copies its code alone. */
-.code-head { display: flex; align-items: center; height: var(--spacing-ctl-lg); padding: 0 0.375rem 0 0.75rem; font-size: var(--text-caption); color: var(--faint); border-bottom: 1px solid var(--line); user-select: none; }
+.code-head { display: flex; align-items: center; height: var(--spacing-ctl-lg); padding: 0 0.375rem 0 0.75rem; font-size: var(--text-caption); color: var(--faint); user-select: none; }
 /* A long fence label gives way on one line; Copy keeps its place. */
 .code-head .code-lang { min-width: 0; margin-right: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .code-head .code-copy { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); color: var(--faint); }
