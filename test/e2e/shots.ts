@@ -210,8 +210,10 @@ export async function choose(select: Locator, pick: string | { label: string }) 
   await select.click();
   const list = select.page().getByRole("listbox");
   const option = typeof pick === "string" ? list.locator(`[role="option"][data-value=${JSON.stringify(pick)}]`) : list.getByRole("option", { name: pick.label, exact: true });
+  const id = await option.evaluate((el) => el.closest('[role="listbox"]')!.id);
   await option.click();
-  await list.waitFor({ state: "hidden" });
+  // Another picker can still be closing in its portal. Wait for the list we chose from.
+  await select.page().locator(`[role="listbox"][id=${JSON.stringify(id)}]`).waitFor({ state: "hidden" });
 }
 
 // Enters a group of controls the way the Tab key does: focus on whatever comes
