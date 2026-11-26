@@ -3979,6 +3979,11 @@ export class Engine {
     };
     let thrown: Error | undefined;
     try {
+      // A local read must judge the path the preceding calls leave, not the
+      // file it named before they ran. The file tool still holds the gate's
+      // resulting inode through its open.
+      const checkAfterWrites = tool.readOnly && !session.machine;
+      if (checkAfterWrites && ctx.ordered) { await ctx.ordered(); if (ctx.signal.aborted) return interrupted(); }
       { const no = await answering(call.input); if (no) return no; }
       // The owner's hooks first: every gate after them judges the input they left.
       for (const h of allHooks()) {
@@ -4047,7 +4052,7 @@ export class Engine {
       const runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       // The calls before it in the reply that must come first (src/engine/step-order.ts): its tool runs after them.
-      if (ctx.ordered) { await ctx.ordered(); if (ctx.signal.aborted) return interrupted(); }
+      if (!checkAfterWrites && ctx.ordered) { await ctx.ordered(); if (ctx.signal.aborted) return interrupted(); }
       t0 = Date.now();
       // What the call sends out is the call's, in the outward ledger (src/safety/egress.ts).
       const run = outward({ tool: u.name, call: u.id, session: session.id }, () => (runCtx.dispatch ? runCtx.dispatch(tool, input, runCtx) : tool.run(input, runCtx)));

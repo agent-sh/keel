@@ -18,9 +18,9 @@ export class StepOrder {
   private edits: Promise<unknown>[] = [];
   constructor(private tools: readonly Pick<Tool, "name" | "readOnly" | "kind">[], private signal: AbortSignal) {}
 
-  // `start` begins the call at once, with `ordered`: a promise the call awaits right before it runs its tool (after
-  // its gates, so a request for the owner's answer is made at once, whatever the calls before it do). It settles when
-  // the calls before it that must come first have ended, or the turn was stopped (the call then answers the stop itself).
+  // `start` begins the call at once, with `ordered`: a promise a local read awaits before its gate (so the gate
+  // sees the files the earlier calls left), and other calls await before running the tool. It settles when those
+  // earlier calls end or the turn stops (the call then answers the stop itself).
   run<T>(u: Pick<ToolUseBlock, "name">, start: (ordered: () => Promise<void>) => Promise<T>): Promise<T> {
     const tool = this.tools.find((t) => t.name === u.name);
     // A read comes after every call that can write; a command, after the edits.
