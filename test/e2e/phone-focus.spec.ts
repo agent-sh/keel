@@ -73,10 +73,12 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         // The mode and the model are behind the box's plus, with attach.
         await expect(box.getByTestId("model-picker")).toHaveCount(0);
         await box.getByTestId("box-more").click();
-        await expect(page.getByTestId("box-more-popup").getByTestId("model-picker")).toBeVisible();
-        await expect(page.getByTestId("box-more-popup").getByTestId("attach")).toBeVisible();
+        // (Each session's box keeps its popup in the page while it is closed: the open one is the one in view.)
+        const popup = page.locator('[data-testid="box-more-popup"]:visible');
+        await expect(popup.getByTestId("model-picker")).toBeVisible();
+        await expect(popup.getByTestId("attach")).toBeVisible();
         await page.keyboard.press("Escape");
-        await expect(page.getByTestId("box-more-popup")).toBeHidden();
+        await expect(popup).toHaveCount(0);
         await shoot(page, `phone-focus-01-working-${size.width}`);
 
         // Another session asks: the bar says it as a quiet dot and figure, the list's button stays.

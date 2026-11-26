@@ -1197,7 +1197,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* On a desk the box is quiet in every view: a hairline frame that takes a step of ink, and no ring, when it has
    the keyboard (the caret says so), and Send and Stop at the size of a line's icon button. Send wears the accent
    only while there is something to send. */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   .k-composer-box { border-color: var(--line); }
   .k-composer-box:focus-within { border-color: var(--line-strong); box-shadow: none; }
   .k-compose-tools :is(.k-attach, .k-dictate, .k-talk, .k-box-more, .k-queue) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); }
@@ -2070,7 +2070,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* A session's box on a desk is one line in every view too (Composer.tsx): the same line, with the air of a
    pointer's controls: half a rem over and under the text, the tools a hair apart and off the frame, and the plain
    ones lit under the pointer. What else the box holds (attachments, notices) spans the line above or below. */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   .k-composer-box[data-line] > textarea { padding-top: 0.5rem; padding-bottom: 0.5rem; }
   .k-composer-box[data-line] > .k-compose-tools { gap: 0.125rem; padding: 0 0.375rem 0.375rem 0; }
   .k-composer-box[data-line] :is(.k-queue, .k-box-more, .k-stop):hover { background: var(--hover); }

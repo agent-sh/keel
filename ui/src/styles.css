@@ -438,7 +438,7 @@ html { -webkit-text-size-adjust: 100%; font-size: calc(17px * var(--ui-scale, 1)
 /* On a desk the type is a step smaller than a phone's on the same root, so every length keeps its place: the
    conversation's text is 15 px and the chrome 13 px at the default text size, the sizes a desktop app is read at;
    what is read beside the chrome is 12 px, and a heading in a reply 17 px. */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   :root { --text-micro: 0.6875rem; --text-caption: 0.75rem; --text-ui: 0.75rem; --text-base: 0.875rem; --text-read: 1rem; }
 }
 /* No color transitions while the theme flips: everything changes in one frame. */
