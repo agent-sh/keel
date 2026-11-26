@@ -1,18 +1,20 @@
 // A session row's own menu (right click, the Menu key or Shift F10 on the row): what the row's
 // actions do, by name, for a hand that does not hover. Pin, open beside, move to one of the owner's
-// folders, archive; a pinned row can be moved among the pinned. A session is filed from here in
+// folders, archive; a pinned row can be moved among the pinned. A session of Keel's goes on in Claude Code or Codex
+// (lib/move-out.ts), a copy of one resumes its original there; a session another harness runs forks into Keel. A session is filed from here in
 // whatever way the list is grouped: no switch to "By my folders" and no drag.
 import { Menu } from "@base-ui/react/menu";
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, ListChecks, MailOpen, Pencil, Pin, PinOff } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, CornerDownRight, FolderInput, FolderMinus, FolderPlus, ListChecks, MailOpen, Pencil, Pin, PinOff, SquareTerminal } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { folders, getFolders, loadFolders, tree, useFolders } from "../lib/folders.ts";
 import { listActed } from "../lib/list-hold.ts";
-import { reportError } from "../lib/store.ts";
+import { reportError, reportUnlessGone } from "../lib/store.ts";
+import { continueIn, continueOffer, HARNESS_WORD, type ContinueOffer, type Harness } from "../lib/move-out.ts";
 import { Kbd } from "./Kbd.tsx";
 import { itemClass, popupClass } from "./ui.tsx";
 
 export type RowMenuAt = { x: number; y: number };
-export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, onRename, onSelect, session }: {
+export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, onRename, onSelect, session, outward, onFork, forkFrom }: {
   at: RowMenuAt; onClose: () => void; pinned: boolean; archived: boolean; beside: boolean;
   // Unset for a row this daemon cannot pin or archive (a session another harness runs on another machine).
   onPin?: () => void; onMove?: (by: -1 | 1) => void; onBeside: () => void; onArchive?: () => void;
@@ -23,17 +25,29 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
   // Marks the row to act on with others (lib/select.ts).
   onSelect?: () => void;
   session?: { id: string; folder?: string | null };
+  // Set for a session of Keel's own on this machine: it can go on in Claude Code or Codex.
+  outward?: { id: string; title: string };
+  // Set for a session another harness runs: a new session here with its own history (`forkFrom` names the harness).
+  onFork?: () => void;
+  forkFrom?: string;
 }) {
+  // Whether it is a copy whose original is still there: asked when the menu opens.
+  const [offer, setOffer] = useState<ContinueOffer | null>(null);
+  useEffect(() => { if (outward) continueOffer(outward.id).then(setOffer, (e) => reportUnlessGone(e, { at: "RowMenu resume elsewhere" })); }, [outward?.id]);
+  const go = (h: Harness, original = false) => { if (outward) continueIn(outward, h, original).catch(reportError); };
   // The owner's folders are read when a menu first needs them (a list grouped another way has not).
   useEffect(() => { if (session && !getFolders().loaded) void loadFolders(); }, []);
   const anchor = { getBoundingClientRect: () => DOMRect.fromRect({ x: at.x, y: at.y, width: 0, height: 0 }) };
-  const item = (testid: string, icon: ReactNode, label: string, run: () => void, keys?: string) => (
-    <Menu.Item className={itemClass} data-testid={testid} onClick={run}>
+  const item = (testid: string, icon: ReactNode, label: string, run: () => void, keys?: string, hint?: string) => (
+    <Menu.Item className={itemClass} data-testid={testid} onClick={run} title={hint}>
       <span className="grid w-3.5 shrink-0 place-items-center [&>svg]:size-3.5">{icon}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {keys && <Kbd keys={keys} className="shrink-0" />}
     </Menu.Item>
   );
+  // A copy's original first, where it is still there; then a new session in each harness, written from this one.
+  const orig = offer?.original;
+  const kept = orig?.kept_here ? `; the ${orig.kept_here === 1 ? "turn" : `${orig.kept_here} turns`} taken here stay${orig.kept_here === 1 ? "s" : ""} here` : "";
   return (
     <Menu.Root open onOpenChange={(o) => { if (!o) onClose(); }} modal={false}>
       <Menu.Portal>
@@ -48,6 +62,10 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
             {beside && item("row-menu-beside", <Columns2 />, "Open beside", onBeside)}
             {onUnread && !archived && item("row-menu-unread", <MailOpen />, "Mark as unread", onUnread)}
             {session && !archived && <MoveTo id={session.id} at={session.folder ?? null} />}
+            {outward && !archived && <Menu.Separator className="mx-1 my-1 h-px bg-line" />}
+            {outward && !archived && orig && item("row-menu-original", <SquareTerminal />, `Resume the original in ${HARNESS_WORD[orig.harness]}`, () => go(orig.harness, true), undefined, `Opens the session this was copied from in a terminal${kept}`)}
+            {outward && !archived && (["claude", "codex"] as const).map((h) => item(`row-menu-resume-${h}`, <SquareTerminal />, `Resume in ${HARNESS_WORD[h]}`, () => go(h), undefined, `Writes this conversation as a new ${HARNESS_WORD[h]} session, opens it in a terminal and archives it here`))}
+            {onFork && item("row-menu-fork", <CornerDownRight />, "Fork into Keel", onFork, undefined, `A new session here with its own history; the session in ${forkFrom ?? "its harness"} goes on there`)}
             {onArchive && item("row-menu-archive", archived ? <ArchiveRestore /> : <Archive />, archived ? "Restore" : "Archive", onArchive)}
           </Menu.Popup>
         </Menu.Positioner>

@@ -81,7 +81,50 @@ export function OutsideSettings() {
         </div>
       </Card>
       {err && <p className="text-ui text-danger" data-testid="outside-settings-error">{err}</p>}
+      <TerminalSettings />
     </section>
+  );
+}
+
+// The terminal a session opens in when it moves to Claude Code or Codex (src/integrations/terminal-open.ts).
+type Term = { command: string; tmux: boolean };
+function TerminalSettings() {
+  const [v, setV] = useState<Term | null>(null);
+  const [found, setFound] = useState<{ terminal?: string; from?: string; tmux?: string } | null>(null);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const look = () => api<typeof found>("/api/terminal").then(setFound, reportError);
+  useEffect(() => {
+    api<{ settings: { terminal: Term } }>("/api/settings").then((x) => { setV(x.settings.terminal); setText(x.settings.terminal.command); }, reportError);
+    void look();
+  }, []);
+  const save = async (patch: Partial<Term>) => {
+    setErr("");
+    try {
+      const x = await api<{ settings: { terminal: Term } }>("/api/settings", { method: "PATCH", body: JSON.stringify({ terminal: patch }) });
+      setV(x.settings.terminal);
+      void look();
+    } catch (e) {
+      setErr(failed(e, { at: "TerminalSettings" }));
+    }
+  };
+  if (!v) return null;
+  const said = !found?.terminal ? "None found: name one here." : found.from === "settings" ? `Uses ${found.terminal}.` : `Empty: uses ${found.terminal}, ${found.from === "TERMINAL" ? "from $TERMINAL" : "found on your PATH"}.`;
+  return (
+    <>
+      <h3 className="mt-4 text-base font-medium">Moving a session out</h3>
+      <p className="text-ui text-muted">Resume in Claude Code or Codex, in a session's menu, writes it in that harness's own format and opens it in a terminal here.</p>
+      <Card>
+        <SettingRow label="Terminal" hint={<span data-testid="terminal-found">The words that open a window on the command after them, as "kitty" or "gnome-terminal --". {said}</span>}>
+          <input value={text} onChange={(e) => setText(e.target.value)} onBlur={() => { if (text.trim() !== v.command) void save({ command: text.trim() }); }} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) (e.target as HTMLInputElement).blur(); }}
+            placeholder={found?.terminal ?? "kitty"} aria-label="Terminal command" data-testid="terminal-command" className="k-field w-64 font-mono" />
+        </SettingRow>
+        <SettingRow label="Keep it in tmux" hint={found?.tmux || !v.tmux ? "The harness runs in a tmux session named for it: a window closed by mistake loses nothing, tmux attach brings it back." : "No tmux on your PATH: the harness runs in the window itself."}>
+          <Toggle on={v.tmux} label="Keep it in tmux" testid="terminal-tmux" onChange={(on) => void save({ tmux: on })} />
+        </SettingRow>
+      </Card>
+      {err && <p className="text-ui text-danger" data-testid="terminal-settings-error">{err}</p>}
+    </>
   );
 }
 

@@ -239,6 +239,27 @@ export type SessionSettings = {
   // continues by itself at `at`, while the failure `after` is still the last thing in it (src/engine/turn.ts).
   // `round`: how many times in a row it already did, each wait twice the one before.
   continue_at?: { at: number; after: string; round?: number };
+  // It went on in Claude Code or Codex (POST /api/sessions/:id/continue, src/server/routes/continue.ts): where,
+  // the command that resumes it there, and whether a terminal opened on it. The session is archived, still readable.
+  moved?: Moved;
+};
+
+// Where a session went when it moved to another harness: `target_id` is the session there (a new transcript Keel
+// wrote, or the original a copy was made from when `original`), `path` its file, `cwd` the folder it resumes in.
+export type Moved = {
+  harness: "claude" | "codex";
+  target_id: string;
+  path: string;
+  cwd: string;
+  resume: string;
+  shell_command: string;
+  at: number;
+  original?: true;
+  // The terminal: opened (with how), or why it did not (the command is then the owner's to paste).
+  opened: boolean;
+  how?: string;
+  why?: string;
+  notes?: string[];
 };
 
 // `anchor`: the session's head when it was queued (the branch it was written on).

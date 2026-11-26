@@ -96,13 +96,9 @@ test("a live Claude Code session shows in the list read-only and goes on in Keel
     await expect(page.getByTestId("question-asked")).toHaveCount(0);
     await expect(page.getByTestId("question-submit")).toHaveCount(0);
     await shoot(page, "outside-waiting");
-    // On a phone the bar is one quiet line over the box: Copy as its mark beside the sentence, in view and never
-    // over it (a session Keel can answer has its box under them).
+    // On a phone the bar is one quiet line over the box, with no button of its own: a copy is the row menu's fork.
     await page.setViewportSize({ width: 390, height: 844 });
-    const said = (await page.getByTestId("outside-state").boundingBox())!;
-    const press = (await page.getByTestId("outside-copy").boundingBox())!;
-    expect(press.x >= said.x + said.width - 0.5 || press.y >= said.y + said.height - 0.5).toBe(true);
-    expect(press.x + press.width).toBeLessThanOrEqual(390 + 0.5);
+    await expect(page.getByTestId("outside-copy")).toHaveCount(0);
     expect(await page.getByTestId("outside-bar").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     await shoot(page, "outside-phone");
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -181,8 +177,12 @@ test("a live Claude Code session shows in the list read-only and goes on in Keel
     await page.goto(`/s/${sid}`);
     await expect(page.getByTestId("outside-bar")).toBeVisible();
 
-    // One press: a Keel session that goes on with it.
-    await page.getByTestId("outside-copy").click();
+    // The row's menu forks it: a Keel session with its own history that goes on with it.
+    await row.click({ button: "right" });
+    const fork = page.getByTestId("row-menu-fork");
+    await expect(fork).toHaveText("Fork into Keel");
+    await expect(fork).toHaveAttribute("title", /own history; the session in Claude Code goes on there/);
+    await fork.click();
     await expect(page).not.toHaveURL(new RegExp(`/s/${sid}$`));
     const copy = new URL(page.url()).pathname.split("/").pop()!;
     made.push(copy);

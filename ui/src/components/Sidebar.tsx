@@ -13,7 +13,7 @@
 // the rest. On a phone the list is a drawer.
 import { restOff, restOn } from "../lib/open-ahead.ts";
 import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, ListFilter, MessageSquareMore, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, Settings, Tag, X } from "lucide-react";
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, Fragment, lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { composing, runCommand } from "../lib/keys.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
@@ -59,7 +59,10 @@ import { Grip } from "./Grip.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
 import { archive, movePin, pin, pinnedNow, placePin } from "../lib/sessops.ts";
-import { RowMenu, type RowMenuAt } from "./RowMenu.tsx";
+import type { RowMenuAt } from "./RowMenu.tsx";
+// Drawn only on a right click: its chunk stays out of the page's start (scripts/bundle-budget.test.ts).
+const RowMenu = lazy(() => import("./RowMenu.tsx").then((m) => ({ default: m.RowMenu })));
+import { movedTag, movedTip } from "../lib/move-out.ts";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
@@ -451,6 +454,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       <span className="k-row-end">
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
         {s.outside && <OutsideTag o={s.outside} />}
+        {/* Where a session went on when it moved to another harness (archived here, still readable). */}
+        {s.settings.moved && <span className="k-row-outside" data-testid="row-moved" title={movedTip(s.settings.moved)}>{movedTag(s.settings.moved)}</span>}
         <SessionBadges sessionId={s.id} />
         {/* What it needs is under a look: its pane shows another session for now. */}
         {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label={`${STATE_WORD.need}, under a look`} title={`${STATE_WORD.need} while its pane shows another session for now`}><Layers2 aria-hidden="true" /></span>}
@@ -513,6 +518,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       {/* News is a white dot at the row's end, in the time's place (bridge.css); a reader is told in words. */}
       {news && <span className="k-row-new" data-testid="row-new"><span className="sr-only">{NEW}</span></span>}
       {menu && (
+        <Suspense fallback={null}>
         <RowMenu
           at={menu}
           onClose={() => { setMenu(null); requestAnimationFrame(() => { if (document.activeElement === document.body) row.current?.focus(); }); }}
@@ -528,7 +534,11 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           onSelect={fixed ? undefined : () => toggleSelected(s.id)}
           onUnread={!unread && !s.machine && !s.parent_id ? () => { listActed(s.id); auto.unreadSession(s.id).catch(reportError); } : undefined}
           session={s.machine || fixed ? undefined : { id: s.id, folder: s.settings.folder_id ?? null }}
+          outward={!s.outside && !s.machine && !s.parent_id && !restore ? { id: s.id, title: s.title } : undefined}
+          onFork={s.outside && !s.machine ? () => { api<{ session: { id: string } }>(`/api/sessions/${s.id}/outside/copy`, { method: "POST" }).then((r) => navigate({ name: "session", id: r.session.id }), reportError); } : undefined}
+          forkFrom={s.outside ? OUTSIDE_LABEL[s.outside.harness] : undefined}
         />
+        </Suspense>
       )}
     </div>
   );

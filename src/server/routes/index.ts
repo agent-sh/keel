@@ -37,6 +37,7 @@ import { contentRouteRoutes } from "./content-routes.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
+import { continueRoutes } from "./continue.ts";
 import { outsideRoutes } from "./outside.ts";
 import { portRoutes } from "./port.ts";
 import { takeoverRoutes } from "./takeover.ts";
@@ -168,6 +169,7 @@ const modules: Record<string, RouteModule> = {
   convoRoutes,
   placesRoutes,
   importRoutes,
+  continueRoutes, // a session moved to Claude Code or Codex with one press: written there, a terminal opened on it
   portRoutes, // bring the setup of the other harnesses over
   takeoverRoutes, // taking over a session another harness runs
   outsideRoutes, // the sessions another harness runs here, read-only in the list while they run

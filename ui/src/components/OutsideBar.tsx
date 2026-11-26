@@ -6,10 +6,11 @@
 // this view as the harness writes it, and what it asks comes as Keel's cards
 // above. A terminal that has it open is answered through it: the agent view types the text there
 // (src/integrations/outside/terminal.ts), held while the owner's unsent draft is in its box or the box cannot be read, and the reply
-// comes here from the transcript. While any other process holds it, the bar says who and offers nothing
-// that writes. One press copies it into Keel
-// (a copy that goes on here; the original keeps running where it runs).
-import { ArrowUp, ChevronDown, ChevronRight, CornerDownRight, Square, X } from "lucide-react";
+// comes here from the transcript. Who holds it and what a send does are the box's placeholder; while
+// any other process holds it, the bar says who and offers nothing that writes.
+// A copy that goes on here is the row menu's Fork into Keel, the exception.
+// A session that moved here from Keel (src/server/routes/continue.ts) says so.
+import { ArrowUp, ChevronDown, ChevronRight, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Holder, Session, Usage } from "../../../src/core/types.ts";
 import { shortPath } from "../../../src/core/tool-line.ts";
@@ -29,6 +30,7 @@ type Route = "resume" | "steer" | "terminal" | "held" | "missing" | "unlocked" |
 type Details = {
   harness: string; label: string; source_id: string; path: string; live: boolean; files: string[]; usage: { model: string; usage: Usage; cost: number | null }[];
   holder?: Holder; route?: Route; turn?: boolean; sends?: Send[]; notes?: string[]; answers?: Record<string, Answered>;
+  moved_from?: { id: string; title: string };
 };
 
 const tokensOf = (u: Usage) => u.input + u.output + u.cache_read + u.cache_write;
@@ -40,7 +42,6 @@ export function OutsideBar({ session }: { session: Session }) {
   const st = useSessionState(session);
   const [d, setD] = useState<Details | null>(null);
   const [files, setFiles] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   // What became of the last text typed into a terminal (typed, or waiting there until the session is ready).
   const [typed, setTyped] = useState("");
@@ -67,18 +68,6 @@ export function OutsideBar({ session }: { session: Session }) {
     setNotes(data?.notes ?? []);
     if (data?.answers) setAnswers(session.id, data.answers);
   } }), [session.id]);
-  const go = async () => {
-    setBusy(true);
-    setNote("");
-    try {
-      const r = await api<{ session: { id: string } }>(`/api/sessions/${session.id}/outside/copy`, { method: "POST" });
-      navigate({ name: "session", id: r.session.id });
-    } catch (e) {
-      setNote(failed(e, { at: "OutsideBar copy" }));
-    } finally {
-      setBusy(false);
-    }
-  };
   // What a send does now, from who holds it: Keel resumes it, adds to the turn Keel runs, or nothing.
   const route: Route = d?.route === "none" ? "none" : holder?.kind === "keel" ? "steer" : holder?.kind === "terminal" && d?.route === "terminal" ? "terminal" : holder && holder.kind !== "free" ? "held" : d?.route === "missing" || d?.route === "unlocked" ? d.route : "resume";
   const program = o.harness === "claude" ? "claude" : "codex";
@@ -117,18 +106,19 @@ export function OutsideBar({ session }: { session: Session }) {
   const spent = [o.model, tokensOf(u) ? `${fmtTokens(tokensOf(u))} tokens` : "", cost].filter(Boolean).join(" · ");
   const answering = route === "resume" || route === "steer" || route === "terminal";
   const pending = (sends ?? []).filter((x) => x.state !== "delivered");
-  const placeholder = route === "steer" ? `Add to the turn Keel runs in ${where}` : route === "terminal" ? `Answer here: Keel types it into the terminal that has it open` : `Answer here: Keel resumes this session in ${where}`;
+  // Who holds it and what a send does, in the box itself.
+  const placeholder = route === "steer" ? `${holderSaid(holder, where)}: what you send joins the turn it runs in ${where}` : route === "terminal" ? `${holderSaid(holder, where)}: Keel types what you send into that terminal` : `${holderSaid(holder, where)}: what you send resumes this session in ${where}`;
   // A phone's line holds a few words: what the field does, said whole (the sentence stays its label).
   const narrow = usePhoneWidth();
   const shown = !narrow ? placeholder : route === "steer" ? "Add to the turn" : route === "terminal" ? "Type into its terminal" : `Answer in ${where}`;
   const quiet = route === "held" ? `${holderSaid(holder, where)}: answer it there. Keel sends nothing while another process holds it.`
     : route === "missing" ? `No ${program} program here: Keel answers a ${where} session with the ${program} on your PATH.`
     : route === "unlocked" ? `This ${where} keeps no writer locks, so Keel cannot tell whether a terminal has it open: answer it there, or update ${where}.`
-    : route === "terminal" ? `Typed into that terminal, the same session there: its reply comes here. Held while your unsent draft is in its box, or Keel cannot read the box. Copy into Keel makes a copy instead.`
-    : route === "none" ? `Read-only here: Keel sends nothing to ${where}. Copy into Keel makes a copy you work on here; the session there keeps running.`
-    : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards. Copy into Keel makes a copy instead.`;
+    : route === "terminal" ? `Typed into that terminal, the same session there: its reply comes here. Held while your unsent draft is in its box, or Keel cannot read the box.`
+    : route === "none" ? `${where} holds this session: Keel shows what it writes and sends nothing to it. Fork into Keel, in the row's menu, makes a session here with its own history.`
+    : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards.`;
   return (
-    <section className="k-outside" data-testid="outside-bar" data-state={st.watch === "need" ? "waiting" : o.state} data-harness={o.harness} data-answering={answering ? "" : undefined} data-route={route} data-above={above ? "" : undefined} aria-label={`${where} session`}>
+    <section className="k-outside" data-testid="outside-bar" data-holder={route === "none" ? undefined : holder?.kind ?? "free"} data-state={st.watch === "need" ? "waiting" : o.state} data-harness={o.harness} data-answering={answering ? "" : undefined} data-route={route} data-above={above ? "" : undefined} aria-label={`${where} session`}>
       <div className="k-outside-head">
         <Mark w={st.watch} />
         <div className="min-w-0 flex-1">
@@ -137,8 +127,8 @@ export function OutsideBar({ session }: { session: Session }) {
             {o.since > 0 && <span className="k-outside-since" title={`Since ${clock(o.since, { seconds: true })}`}> since {clock(o.since)}</span>}
           </p>
           <p className="k-outside-facts" data-testid="outside-facts">
-            {/* Who holds it says whether Keel can answer it; a session Keel only reads has nothing to say there. */}
-            {route !== "none" && <span className="k-outside-holder" data-testid="outside-holder" data-kind={holder?.kind ?? "free"}>{holderSaid(holder, where)}</span>}
+            {/* Who holds it is the box's placeholder; held by another process (no box), it is said here. */}
+            {(route === "held" || route === "terminal") && <span className="k-outside-holder" data-testid="outside-holder" data-kind={holder?.kind ?? "free"}>{holderSaid(holder, where)}</span>}
             {spent && <span data-testid="outside-spent">{spent}</span>}
             {o.files > 0 && (
               <button type="button" className="k-outside-files-btn" aria-expanded={files} data-testid="outside-files-toggle" onClick={() => setFiles((x) => !x)}>
@@ -148,10 +138,12 @@ export function OutsideBar({ session }: { session: Session }) {
             {o.failures > 0 && <span className="k-outside-failed" data-testid="outside-failures">{plural(o.failures, "failed call")}</span>}
           </p>
         </div>
-        <button type="button" className="k-btn k-btn-lg" data-ink={answering ? undefined : ""} data-testid="outside-copy" disabled={busy} onClick={go} aria-label="Copy into Keel" title={`A copy goes on here; the session in ${where} keeps running there`}>
-          <CornerDownRight aria-hidden="true" /><span className="k-outside-copy-label">Copy into Keel</span><span className="k-outside-copy-word" aria-hidden="true">Copy</span>
-        </button>
       </div>
+      {d?.moved_from && (
+        <p className="k-outside-note k-outside-from" data-testid="outside-moved-from">
+          Moved here from Keel: <a href={`/s/${d.moved_from.id}`} onClick={(e) => { e.preventDefault(); navigate({ name: "session", id: d.moved_from!.id }); }}>{d.moved_from.title || "a session"}</a>, archived there.
+        </p>
+      )}
       {files && d && (
         <ul className="k-outside-files" data-testid="outside-files">
           {d.files.map((f) => <li key={f} title={f}>{shortPath(f, session.workspace)}</li>)}

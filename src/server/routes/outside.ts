@@ -34,6 +34,7 @@ import { isOutside } from "../../core/outside.ts";
 import { classOf } from "../../automation/failure-groups.ts";
 import type { RouteModule } from "../app.ts";
 import { seesOutside } from "../admission.ts";
+import { movedFrom } from "./continue.ts";
 import "../../integrations/outside/settings.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -78,7 +79,8 @@ export const outsideRoutes: RouteModule = (deps) => {
     failed: (id, f) => { record(id, { kind: f.kind, cls: f.kind === "tool" ? f.tool : classOf(f.text), message: f.text }); },
     trouble: (e, at) => errors.capture("server", e, { at }),
     // A source with a copy in Keel shows on the copy, not as a session of its own.
-    copied: (h, id) => sharedImports(store).links(h, id).length > 0,
+    // (A copy that moved back to its harness, resuming this original there, hides it no more: src/server/routes/continue.ts.)
+    copied: (h, id) => sharedImports(store).links(h, id).some((l) => !store.session(l.session_id)?.settings.moved),
     ours: (id) => !!codexApp?.ours(id) || !!claudeCode?.ours(id),
   });
   const tell = (f: (h: ReturnType<typeof allHooks>[number]) => void) => { for (const h of allHooks()) try { f(h); } catch (e) { errors.capture("server", e, { at: "a question of a session answered in place" }); } };
@@ -130,8 +132,11 @@ export const outsideRoutes: RouteModule = (deps) => {
     "/api/sessions/:id/outside": {
       GET: async (req: Request & { params: { id: string } }) => {
         const d = await o.details(req.params.id);
-        if (d?.holder?.kind === "terminal") await through.fresh();
-        return d ? json({ ...d, ...inPlace(req.params.id, d.holder) }) : bad("not a session of another harness", 404);
+        if (!d) return bad("not a session of another harness", 404);
+        if (d.holder?.kind === "terminal") await through.fresh();
+        // The Keel session it was moved from (src/server/routes/continue.ts), told on its bar.
+        const from = d.harness === "claude" || d.harness === "codex" ? movedFrom(store.db, d.harness, d.source_id) : undefined;
+        return json({ ...d, ...inPlace(req.params.id, d.holder), ...(from ? { moved_from: from } : {}) });
       },
     },
     "/api/sessions/:id/outside/send": {
@@ -162,7 +167,8 @@ export const outsideRoutes: RouteModule = (deps) => {
         const model = await modelFor(providers, f);
         if (!model) return bad("no model is available: no provider has credentials", 409);
         const workspace = isDir(f.cwd) ? f.cwd! : deps.workspace;
-        const prior = imports.links(f.harness, f.id, f.path)[0];
+        // (A copy that moved back to its harness is done with: a fork makes a new one.)
+        const prior = imports.links(f.harness, f.id, f.path).find((l) => !store.session(l.session_id)?.settings.moved);
         const seq = prior ? store.lastSeq(prior.session_id) : 0;
         // The copy made before, brought up to date; a new one where it went on here or its source rewound.
         let r;

@@ -862,6 +862,8 @@ export class Store {
     if (!this.columnExists("queue", "anchor")) this.db.exec("ALTER TABLE queue ADD COLUMN anchor TEXT");
     if (!this.columnExists("queue", "meta")) this.db.exec("ALTER TABLE queue ADD COLUMN meta TEXT");
     if (!this.columnExists("sessions", "settings")) this.db.exec("ALTER TABLE sessions ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
+    // The session that moved to another harness, found by the session it became there (src/server/routes/continue.ts).
+    this.db.exec("CREATE INDEX IF NOT EXISTS sessions_moved ON sessions(json_extract(settings, '$.moved.target_id')) WHERE json_extract(settings, '$.moved.target_id') IS NOT NULL");
     // Bumped by every change of the session row: a reply that carries an older
     // revision than what a page holds does not undo the newer change.
     if (!this.columnExists("sessions", "rev")) this.db.exec("ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");

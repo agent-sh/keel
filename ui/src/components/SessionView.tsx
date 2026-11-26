@@ -46,6 +46,7 @@ const Approvals = lazy(() => import("./ApprovalCard.tsx").then((m) => ({ default
 const Questions = lazy(() => import("./QuestionCard.tsx").then((m) => ({ default: m.Questions })));
 // The bar of a session another harness runs: drawn only for such a session, so not in the page's start.
 const OutsideBar = lazy(() => import("./OutsideBar.tsx").then((m) => ({ default: m.OutsideBar })));
+const MovedBar = lazy(() => import("./MovedBar.tsx").then((m) => ({ default: m.MovedBar })));
 
 
 export { Boundary };
@@ -155,7 +156,11 @@ function OwnSessionView({ id, header, missingHeader, panel = true, focus = true,
                   } />
                   <Suspense fallback={null}><OutsideBar session={session} /></Suspense>
                 </>
-                : <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working" || compacting} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />}
+                : <>
+                  {/* Moved to Claude Code or Codex: where it went, over the box. */}
+                  {session.settings.moved && <Suspense fallback={null}><MovedBar id={session.id} moved={session.settings.moved} /></Suspense>}
+                  <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working" || compacting} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />
+                </>}
             </div>
           </div>
         </div>

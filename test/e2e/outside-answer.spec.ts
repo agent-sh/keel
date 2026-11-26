@@ -50,10 +50,12 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await page.goto(`/s/${sid}`);
     const bar = page.getByTestId("outside-bar");
     await expect(bar).toBeVisible();
-    // Nothing holds it: Keel can answer it here.
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free");
+    // Nothing holds it: Keel can answer it here. Who holds it and what a send does are the box's words, no chip of their own.
+    await expect(bar).toHaveAttribute("data-holder", "free");
+    await expect(bar.getByTestId("outside-holder")).toHaveCount(0);
+    await expect(bar.getByTestId("outside-copy")).toHaveCount(0);
     const input = bar.getByTestId("outside-input");
-    await expect(input).toHaveAttribute("placeholder", "Answer here: Keel resumes this session in Codex");
+    await expect(input).toHaveAttribute("placeholder", "Free: what you send resumes this session in Codex");
     // The lines under the head (the box, the note) start where the head's words do.
     const left = async (id: string) => (await bar.getByTestId(id).boundingBox())!.x;
     const words = await left("outside-state");
@@ -68,8 +70,9 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     const card = page.getByTestId("approval");
     await expect(card).toBeVisible({ timeout: 15_000 });
     await expect(card.getByTestId("approval-summary")).toContainText("make test");
-    // Keel holds the thread while its turn runs, and says so.
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Keel is answering");
+    // Keel holds the thread while its turn runs, and says so in the box.
+    await expect(bar).toHaveAttribute("data-holder", "keel");
+    await expect(input).toHaveAttribute("placeholder", "Keel is answering: what you send joins the turn it runs in Codex");
     await expect(bar.getByTestId("outside-stop")).toBeVisible();
     // The owner's message is in the row as Codex wrote it.
     await expect(page.getByTestId("transcript").getByText(`Run the tests ${tag}`).first()).toBeVisible();
@@ -77,8 +80,8 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(page.locator(`[data-testid="session-row"][data-session="${sid}"]`)).toHaveAttribute("data-watch", "need");
     await expect(bar.getByTestId("outside-state")).toContainText("Waits for your answer: Codex asks above");
     // The card asks, with the colour and the weight; the bar under it says so as plain lines beside its mark.
-    const weights = () => bar.evaluate((el) => ["outside-state", "outside-holder"].map((id) => getComputedStyle(el.querySelector(`[data-testid="${id}"]`)!).fontWeight));
-    expect(await weights()).toEqual(["400", "400"]);
+    const weights = () => bar.evaluate((el) => ["outside-state"].map((id) => getComputedStyle(el.querySelector(`[data-testid="${id}"]`)!).fontWeight));
+    expect(await weights()).toEqual(["400"]);
     await shoot(page, "outside-answer-card");
     // On a phone the bar is one quiet line over a box that fits: Send and Stop are in view, nothing runs off.
     const desk = page.viewportSize()!;
@@ -87,7 +90,6 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
       const fits = async (id: string) => { const b = (await bar.getByTestId(id).boundingBox())!; return b.x >= 0 && b.x + b.width <= 390 + 0.5; };
       await expect.poll(() => fits("outside-send")).toBe(true);
       expect(await fits("outside-stop")).toBe(true);
-      expect(await fits("outside-copy")).toBe(true);
       expect(await bar.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
       await expect(bar.getByTestId("outside-note")).toBeHidden();
       await expect(bar.getByTestId("outside-facts")).toBeHidden();
@@ -104,7 +106,7 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(line).toContainText("make test");
     await expect(line).not.toContainText('{"command"');
     // The turn is over and the child with it: the thread is free again, the send is delivered.
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
     await expect(bar.getByTestId("outside-sends")).toHaveCount(0);
     expect((await sessionOf())?.id).toBe(sid);
     // With no card above, the bar's own state has its weight back.
@@ -115,7 +117,7 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await input.fill(`form please ${tag}`);
     await bar.getByTestId("outside-send").click();
     await expect(bar.getByTestId("outside-said")).toContainText("asked for a form, and Keel declined it", { timeout: 15_000 });
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
     await shoot(page, "outside-answer-form");
 
     // A command that is really high risk is marked so, in Keel's words; on a phone the mark gives way to the
@@ -145,7 +147,7 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     await expect(denied.getByTestId("call-answer")).toHaveText("denied by you", { timeout: 15_000 });
     // It did not run: the line asks, it does not say it ran.
     await expect(denied.locator(".k-line-verb")).toHaveText("Asked to run");
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
 
     // A Codex that keeps no writer locks: nothing says whether a terminal has it open, so the box goes.
     rmSync(join(home!, "thread-writer-locks"), { recursive: true, force: true });
@@ -236,14 +238,14 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     await page.goto(`/s/${sid}`);
     const bar = page.getByTestId("outside-bar");
     await expect(bar).toBeVisible();
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free");
+    await expect(bar).toHaveAttribute("data-holder", "free");
     const input = bar.getByTestId("outside-input");
-    await expect(input).toHaveAttribute("placeholder", "Answer here: Keel resumes this session in Claude Code");
+    await expect(input).toHaveAttribute("placeholder", "Free: what you send resumes this session in Claude Code");
     await shoot(page, "outside-answer-claude-free");
     // On a phone it is the session's one-line box: a few words said whole, a finger's height, Send a line's icon.
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(input).toHaveAttribute("placeholder", "Answer in Claude Code");
-    await expect(input).toHaveAttribute("aria-label", "Answer here: Keel resumes this session in Claude Code");
+    await expect(input).toHaveAttribute("aria-label", "Free: what you send resumes this session in Claude Code");
     const px = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
     expect((await input.boundingBox())!.height).toBeGreaterThanOrEqual(2.75 * px - 1);
     expect(await input.evaluate((e) => e.scrollHeight <= e.clientHeight + 1), "the placeholder is one line").toBe(true);
@@ -258,7 +260,7 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     const card = page.getByTestId("approval");
     await expect(card).toBeVisible({ timeout: 15_000 });
     await expect(card.getByTestId("approval-summary")).toContainText("make test");
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Keel is answering");
+    await expect(bar).toHaveAttribute("data-holder", "keel");
     await expect(bar.getByTestId("outside-stop")).toBeVisible();
     await expect(page.getByTestId("transcript").getByText(`Run the tests ${tag}`).first()).toBeVisible();
     await shoot(page, "outside-answer-claude-card");
@@ -267,7 +269,7 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     await card.getByRole("button", { name: /Allow once/i }).click();
     await expect(page.getByTestId("transcript").getByText(`The command was allowed: Run the tests ${tag}`).first()).toBeVisible({ timeout: 15_000 });
     await expect(card).toHaveCount(0);
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
     await expect(bar.getByTestId("outside-sends")).toHaveCount(0);
     expect((await sessionOf())?.id).toBe(sid);
     await shoot(page, "outside-answer-claude-reply");
@@ -296,7 +298,7 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     await deny.click();
     await card.getByTestId("deny-send").click();
     await expect(card).toHaveCount(0);
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
     await touch.send("Emulation.setTouchEmulationEnabled", { enabled: false });
     await touch.detach();
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -314,7 +316,7 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     await plan.getByTestId("plan-approve").click();
     await expect(page.getByTestId("transcript").getByText("The plan was approved; going on in acceptEdits mode.").first()).toBeVisible({ timeout: 15_000 });
     await expect(plan).toHaveCount(0);
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
 
     // A command that is really high risk is marked so, in Keel's words (judged as running with no sandbox of
     // Keel's). Denied, its line says it was asked and denied by the owner (the transcript says only what it returned).
@@ -330,7 +332,7 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
     const denied = page.locator('[data-testid="tool-call"]').filter({ hasText: "rm -rf ~/projects" }).last();
     await expect(denied.getByTestId("call-answer")).toHaveText("denied by you", { timeout: 15_000 });
     await expect(denied.locator(".k-line-verb")).toHaveText("Asked to run");
-    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar).toHaveAttribute("data-holder", "free", { timeout: 10_000 });
     await shoot(page, "outside-answer-claude-denied");
     expect((await request.post(`/api/sessions/${sid}/messages`, { data: { text: "hello" } })).status()).toBe(409);
   } finally {
@@ -340,7 +342,7 @@ test("a Claude Code session is answered in place: a send, its card, the reply in
   }
 });
 
-// An Antigravity conversation Keel follows is read-only here: its bar says so, has no box, and names no holder
+// An Antigravity conversation Keel follows is only shown here: its bar says who holds it, has no box, and names no holder
 // (who holds a session says whether Keel can answer it, and Keel answers this one nowhere). Run the daemon with
 // KEEL_IMPORT_AGY_DIR at a scratch store (scripts/scratch-env.ts names it).
 test("an Antigravity session is followed read-only: no box and no holder in its bar", async ({ page, request }) => {
@@ -363,16 +365,15 @@ test("an Antigravity session is followed read-only: no box and no holder in its 
     await page.goto(`/s/${sid}`);
     const bar = page.getByTestId("outside-bar");
     await expect(bar).toHaveAttribute("data-harness", "agy");
-    await expect(bar.getByTestId("outside-note")).toContainText("Read-only here");
+    // The bar says who holds it and what a send does (nothing), not "read-only"; the copy is the row menu's fork.
+    await expect(bar.getByTestId("outside-note")).toContainText("Antigravity holds this session: Keel shows what it writes and sends nothing to it");
+    await expect(bar.getByTestId("outside-note")).not.toContainText("Read-only");
     await expect(bar.getByTestId("outside-compose")).toHaveCount(0);
     await expect(bar.getByTestId("outside-holder")).toHaveCount(0);
+    await expect(bar.getByTestId("outside-copy")).toHaveCount(0);
     await shoot(page, "outside-answer-agy-read-only");
-    // On a phone the read-only bar has room beside its state: Copy says its word, and its whole name to a screen reader.
     await page.setViewportSize({ width: 390, height: 844 });
-    const copy = bar.getByRole("button", { name: "Copy into Keel" });
-    await expect(copy).toHaveAttribute("title", /keeps running there/);
-    await expect(copy.getByText("Copy", { exact: true })).toBeVisible();
-    await expect(copy.getByText("Copy into Keel", { exact: true })).toBeHidden();
+    expect(await bar.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     await shoot(page, "outside-answer-agy-read-only-phone");
   } finally {
     await request.delete(`/api/sessions/${sid}`).catch(() => {});
@@ -451,7 +452,7 @@ test("a Claude Code session a terminal holds is answered through that terminal",
     await page.reload();
     await expect(bar).toHaveAttribute("data-route", "terminal", { timeout: 15_000 });
     const input = bar.getByTestId("outside-input");
-    await expect(input).toHaveAttribute("placeholder", "Answer here: Keel types it into the terminal that has it open");
+    await expect(input).toHaveAttribute("placeholder", `Open in a terminal (pid ${pid}): Keel types what you send into that terminal`);
     await expect(bar.getByTestId("outside-send")).toHaveAttribute("aria-label", "Type into the terminal");
     await expect(bar.getByTestId("outside-note")).toContainText("Held while your unsent draft is in its box");
 

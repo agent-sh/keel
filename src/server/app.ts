@@ -466,6 +466,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // A model switch keeps only what the new model takes (an effort or a
           // speed it does not list is dropped, as the profile POST does).
           let settings = moving ? carrySettings(s.settings, moving) : s.settings;
+          // Brought back from the archive, a session that moved to another harness is Keel's again: it forgets where it went.
+          if (body.archived === false && s.archived && settings.moved) { settings = { ...settings }; delete settings.moved; }
           if (body.settings) {
             settings = { ...settings };
             for (const [k, v] of Object.entries(body.settings)) {

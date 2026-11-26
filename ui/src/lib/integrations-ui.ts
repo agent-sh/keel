@@ -88,4 +88,18 @@ const openExport = (s: any) => sheets().then((m) => m.openExport(s)).catch(repor
 registerCommand({ id: "import-sessions", label: "Import sessions", group: "General", words: "claude code codex rust keel history import resume", run: () => void openImport() });
 slash.add({ id: "import", label: "Import sessions from Claude Code, Codex or the Rust Keel", run: () => void openImport() });
 slash.add({ id: "export", label: "Export this session or take it to another tool", when: ({ session }) => !!session, run: (_a, { session }) => void openExport(session) });
+// A session of Keel's goes on in Claude Code or Codex: written there, opened in a terminal, archived here (lib/move-out.ts).
+slash.add({
+  id: "continue",
+  label: "Resume this session in Claude Code or Codex, in a terminal",
+  hint: "claude | codex",
+  when: ({ session }) => !!session && !session.outside && !session.machine && !session.parent_id,
+  run: (a, { session }) => {
+    // No word means Claude Code; any word but the two is refused, never read as one of them.
+    const w = a.trim().toLowerCase();
+    const h = w === "" || w === "claude" ? "claude" : w === "codex" ? "codex" : undefined;
+    if (!h) return reportError(new Error(`/continue takes claude or codex, not "${a.trim()}"`));
+    if (session) void import("./move-out.ts").then((m) => m.continueIn(session, h)).catch(reportError);
+  },
+});
 headerActions.add({ id: "export", label: "Export or take it elsewhere", icon: createElement(Share, { className: "size-4" }), run: (s) => void openExport(s) });

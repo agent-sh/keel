@@ -57,8 +57,9 @@ const columns = (f: Found | null): (string | number | null)[] =>
   f ? [f.id, f.kind, f.cwd ?? null, f.title, f.updated_ms, f.size_bytes, haystack(f), offered(f) ? 1 : 0, keyHash(f)] : [null, null, null, null, null, null, null, null, null];
 const isIndexed = (h?: Harness): h is "claude" | "codex" => h === "claude" || h === "codex";
 
-// A row of the index whose source a Keel session on this machine holds a copy of.
-const COPIED = "NOT EXISTS (SELECT 1 FROM import_links l WHERE l.harness = import_index.harness AND l.source_id = import_index.sid AND l.source_path NOT GLOB 'm????????:/*' AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = l.session_id))";
+// A row of the index whose source a Keel session on this machine holds a copy of (one that moved back there
+// does not: src/server/routes/continue.ts).
+const COPIED = "NOT EXISTS (SELECT 1 FROM import_links l WHERE l.harness = import_index.harness AND l.source_id = import_index.sid AND l.source_path NOT GLOB 'm????????:/*' AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = l.session_id AND json_extract(s.settings, '$.moved') IS NULL))";
 
 // A row of the index as a listing orders it, before it is decoded.
 type IndexKey = { rowid: number; path: string; harness: Harness; id: string; updated_ms: number; size_bytes: number; title: string };
@@ -647,7 +648,7 @@ export class Imports {
     const path = typeof raw.transcript === "string" ? raw.transcript : "";
     if (!ids.length && !path) return undefined;
     return this.store.db.query<{ session_id: string }, [string, string, string, string, string]>(
-      "SELECT l.session_id FROM import_links l WHERE l.harness = ? AND (l.source_id IN (?, ?) OR (? != '' AND l.source_path = ?)) AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = l.session_id) ORDER BY l.imported_ms DESC LIMIT 1")
+      "SELECT l.session_id FROM import_links l WHERE l.harness = ? AND (l.source_id IN (?, ?) OR (? != '' AND l.source_path = ?)) AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = l.session_id AND json_extract(s.settings, '$.moved') IS NULL) ORDER BY l.imported_ms DESC LIMIT 1")
       .get(String(raw.tool), ids[0] ?? "", ids[1] ?? "", path, path)?.session_id;
   }
 

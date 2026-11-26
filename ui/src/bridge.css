@@ -2013,8 +2013,8 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside[data-state="stale"] .k-outside-state { font-weight: 400; color: var(--muted); }
 /* Each line of the bar is held to its width (a long placeholder or name never pushes Send out of view). */
 .k-outside > * { min-width: 0; }
-/* On a phone the bar is one quiet line over the box: the state in a few words, Copy as its mark alone; what
-   it spent and who holds it are left to the large screen, the box and its lines take the whole width, and the
+/* On a phone the bar is one quiet line over the box: the state in a few words; what
+   it spent is left to the large screen, the box and its lines take the whole width, and the
    sentence of how answering works is not repeated under a box that is there. */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-outside { gap: 0.25rem; padding: 0.375rem 0.5rem; }
@@ -2022,14 +2022,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-outside-head > div { min-width: 0; }
   .k-outside-state { overflow: hidden; font-size: var(--text-caption); font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
   .k-outside[data-answering] .k-outside-facts { display: none; }
-  .k-outside-head > .k-btn { flex-shrink: 0; }
-  .k-outside-copy-label { display: none; }
-  /* Read-only, the bar has room beside its state: the button says its word. */
-  .k-outside:not([data-answering]) .k-outside-copy-word { display: inline; }
   .k-outside-compose, .k-outside-sends, .k-outside-files, .k-outside-note { margin-left: 0; }
   .k-outside-note[data-quiet] { display: none; }
 }
-.k-outside-copy-word { display: none; }
 .k-outside-since { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
 .k-outside-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.875rem; margin-top: 0.125rem; font-size: var(--text-caption); color: var(--muted); font-variant-numeric: tabular-nums; }
 .k-outside-files-btn { display: inline-flex; align-items: center; gap: 0.125rem; color: var(--muted); border-radius: var(--radius-xs); }
@@ -2039,6 +2034,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside-files { display: grid; gap: 0.125rem; max-height: 9rem; overflow-y: auto; margin-left: 1.25rem; padding: 0.375rem 0.5rem; border-radius: var(--radius-sm); background: var(--sunken); font: var(--text-micro)/1.5 var(--font-mono); color: var(--fg); }
 .k-outside-files li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-outside-note { margin-left: 1.25rem; font-size: var(--text-micro); color: var(--faint); }
+/* The Keel session it moved here from: its name is the way back to it. */
+.k-outside-from { color: var(--muted); }
+.k-outside-from a { color: var(--accent); }
+.k-outside-from a:hover { text-decoration: underline; }
 /* Who holds it now: one word among its facts, the holder named while another process has it. */
 .k-outside-holder { color: var(--muted); }
 .k-outside-holder:not([data-kind="free"]) { color: var(--fg); font-weight: 600; }

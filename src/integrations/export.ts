@@ -411,7 +411,13 @@ const slug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
 // The line to paste into a shell: into the session's folder, whatever its name
 // holds (a space, a quote, a dollar sign), then the harness's resume command.
-export const resumeLine = (cwd: string, resume: string) => `cd ${/^[\w@%+=:,./-]+$/.test(cwd) ? cwd : shq(cwd)} && ${resume}`;
+// A word of a command line: as it is when the shell reads it so, else quoted.
+const word = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : shq(s));
+export const resumeLine = (cwd: string, resume: string) => `cd ${word(cwd)} && ${resume}`;
+// A harness's session id as it may go on a command line: the characters its ids are made of, no leading dash.
+// An id read from a transcript is that file's word, so one outside this is refused, and the line quotes it anyway.
+export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const resumeOf = (h: "claude" | "codex", id: string) => (h === "claude" ? `claude --resume ${word(id)}` : `codex resume ${word(id)}`);
 
 export function exportTo(format: "claude_code" | "codex", s: Session, lineageEvents: StoredEvent[]) {
   const id = crypto.randomUUID();
@@ -421,14 +427,14 @@ export function exportTo(format: "claude_code" | "codex", s: Session, lineageEve
   if (format === "claude_code") {
     const path = join(claudeRoot(), slug(s.workspace), `${id}.jsonl`);
     writeNew(path, toJsonl(toClaudeRecords(s, forClaude(events), id)));
-    return { format, target_id: id, path, cwd: s.workspace, resume_command: `claude --resume ${id}`, shell_command: resumeLine(s.workspace, `claude --resume ${id}`), exported_ms: now, notes };
+    return { format, target_id: id, path, cwd: s.workspace, resume_command: resumeOf("claude", id), shell_command: resumeLine(s.workspace, resumeOf("claude", id)), exported_ms: now, notes };
   }
   const d = new Date(now);
   const p2 = (n: number) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}-${p2(d.getMinutes())}-${p2(d.getSeconds())}`;
   const path = join(codexHome(), "sessions", String(d.getFullYear()), p2(d.getMonth() + 1), p2(d.getDate()), `rollout-${stamp}-${id}.jsonl`);
   writeNew(path, toCodexRollout(s, events, id, now));
-  return { format, target_id: id, path, cwd: s.workspace, resume_command: `codex resume ${id}`, shell_command: resumeLine(s.workspace, `codex resume ${id}`), exported_ms: now, notes };
+  return { format, target_id: id, path, cwd: s.workspace, resume_command: resumeOf("codex", id), shell_command: resumeLine(s.workspace, resumeOf("codex", id)), exported_ms: now, notes };
 }
 
 export { redact, redactDeep } from "./redact.ts";
