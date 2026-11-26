@@ -406,6 +406,14 @@ export const actions = {
   // (A pane that stood for the session until the list was in and the pane that replaces it both open it:
   // two reads of the same snapshot, a moment apart, on a page that is slow to start.)
   openSession(id: string): Promise<void> {
+    // Opened again while the page still holds it and its socket still sends it (inside the linger): what the page
+    // holds is the session as it is, every frame since its snapshot came by the stream. No snapshot is read again;
+    // a head the page does not hold is read as at any change of it. A socket lost or still catching up, a session
+    // of another daemon, or one whose snapshot is on its way is read as before.
+    if (state.events[id] && state.connected && state.synced && !splitId(id) && !loading.has(id) && scope.hearing(id)) {
+      headSoon(id);
+      return Promise.resolve();
+    }
     const reading = opening.get(id);
     if (reading) {
       if (preload?.id === id && preload.p === reading) preload = null; // taken, as loadSession takes it

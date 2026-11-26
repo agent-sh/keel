@@ -115,6 +115,9 @@ export class Scope {
     return { op: "resume", cursors, only: true, ...(watch.length ? { watch } : {}), ...(feeds.length ? { feeds } : {}) };
   }
 
+  // Whether the open socket sends this session's stream now.
+  hearing(id: string): boolean { return this.heard.has(id); }
+
   // What the open socket was told to send (for tests and the page's own checks).
   hears(): string[] { return [...this.heard].sort(); }
 }

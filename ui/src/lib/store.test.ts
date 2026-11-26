@@ -43,7 +43,7 @@ const waiting: { url: string; done: (body: unknown, status?: number) => void }[]
 G.fetch = (url: string) => new Promise<Response>((resolve) => waiting.push({ url: String(url), done: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) }));
 afterAll(() => Object.assign(G, kept));
 
-const { actions, apply, connect, getState, linkRtt, liveNow, PAGE, setBootLoad, staleSince, subscribe, trimmed } = await import("./store.ts");
+const { actions, apply, connect, getState, linkRtt, liveNow, PAGE, scope, setBootLoad, staleSince, subscribe, trimmed } = await import("./store.ts");
 
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 const asked = (url: string) => waiting.some((w) => w.url === url);
@@ -617,4 +617,42 @@ test("an agent's session the list leaves out stays, and the rest are read when a
   expect(await answer("/api/sessions", { sessions: [], agents_left: {}, rev: 7005 })).toBe(true);
   await p;
   expect(Object.keys(getState().sessions).filter((id) => !had.includes(id))).toEqual([]);
+});
+
+test("a session opened again while its stream is still heard reads no snapshot; a lost socket reads it again", async () => {
+  const s = row("rs", "rs-e3");
+  listed = [...listed, s];
+  // A page caught up on its socket (what the tests before left on their way is answered).
+  await reconnect();
+  await rest();
+  await frame({ t: "replayed", cursors: sock.sent[0].cursors });
+  for (const w of [...waiting]) {
+    const [, id, q] = /^\/api\/sessions\/([^/?]+)\?(events=0|page=\d+)$/.exec(w.url) ?? [];
+    if (id) await answer(w.url, snapshot(getState().sessions[id] ?? row(id, ""), q === "events=0" ? undefined : getState().events[id] ?? [], 8000));
+  }
+  expect(getState().synced).toBe(true);
+  // A view opens it: its snapshot, then its stream from there.
+  const off = scope.show("rs");
+  const first = actions.openSession("rs");
+  await settle();
+  expect(await answer(`/api/sessions/rs?page=${PAGE}`, snapshot(s, [1, 2, 3].map((n) => event("rs", n)), 9000))).toBe(true);
+  await first;
+  scope.loaded("rs");
+  expect(scope.hearing("rs")).toBe(true);
+  // A -> B -> A: the view leaves (the linger holds it) and comes back, a frame having come meanwhile.
+  off();
+  await frame({ t: "event", event: event("rs", 4) });
+  const back = scope.show("rs");
+  await actions.openSession("rs");
+  await settle();
+  expect(asked(`/api/sessions/rs?page=${PAGE}`)).toBe(false);
+  expect(getState().events.rs!.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+  // While the socket is lost the page cannot know what it missed: the open reads the snapshot.
+  sock.onclose!();
+  sock = Socket.all.at(-1)!;
+  const lost = actions.openSession("rs");
+  await settle();
+  expect(await answer(`/api/sessions/rs?page=${PAGE}`, snapshot(s, [1, 2, 3, 4].map((n) => event("rs", n)), 9100))).toBe(true);
+  await lost;
+  back();
 });
