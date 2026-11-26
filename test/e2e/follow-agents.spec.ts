@@ -66,6 +66,15 @@ test("what each agent is on is read from the tree and from the Agents list with 
     await page.setViewportSize({ width: 1320, height: 860 });
     await shoot(page, "follow-agents-02-tree-1320");
     await page.setViewportSize({ width: 1920, height: 1040 });
+    // The list folded: the open tree is a column of ticks under its session's word, one an agent in its state's
+    // colour. (They were drawn zero wide: the folded list had an empty gap as tall as the tree.)
+    await page.getByTestId("rail-toggle").click();
+    const ticks = page.locator(".k-tick-kids").getByTestId("child-session");
+    await expect(ticks).toHaveCount(3);
+    for (const t of await ticks.all()) expect((await t.boundingBox())!.width).toBeGreaterThan(4);
+    await expect(page.locator('.k-tick-kids [data-testid="child-session"][data-watch="need"]')).toHaveCount(1);
+    await shoot(page, "follow-agents-02b-folded");
+    await page.getByTestId("rail-toggle").click();
     // In the coordinator, the Agents list over the box says the same: one press. Before, its rows said the
     // agent's type and its age.
     await page.goto(`/s/${id}`);

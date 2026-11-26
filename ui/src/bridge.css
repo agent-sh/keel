@@ -1489,7 +1489,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-tick-kids .k-child-session:is([data-watch="fail"], [data-watch="declined"])::before { background: var(--dot-fail); }
 .k-tick-kids .k-child-session[data-watch="work"]::before { background: var(--dot-work); }
 .k-tick-kids .k-child-session[data-watch="wait"]::before { background: var(--dot-work); }
-.k-tick-kids .k-child-row { display: flex; justify-content: center; }
+.k-tick-kids .k-child-row { display: flex; justify-content: center; container-type: normal; }
 .k-tick-kids :is(.k-child-acts, .k-child-lane) { display: none; }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
