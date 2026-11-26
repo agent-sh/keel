@@ -246,7 +246,8 @@ test("instruction files: a section another file already carries is left out wher
     expect(text).toContain(`(Left out here: 2 sections under "# Shared rules", "## Testing" the same as in ${join(root, "shared.md")}, above.)`);
     // A heading goes with its section: the copy's "## Testing" went with its rule.
     expect(text.match(/^## Testing$/gm)?.length).toBe(1);
-    expect(text.match(/^# Shared rules$/gm)?.length).toBe(1);
+    // The copy's "# Shared rules" stays: its "## Codex only" is under it.
+    expect(text.match(/^# Shared rules$/gm)?.length).toBe(2);
   } finally {
     rmSync(join(root, ""), { recursive: true, force: true });
   }

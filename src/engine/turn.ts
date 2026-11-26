@@ -492,7 +492,7 @@ export function instructionsMade(cwd: string, window?: number, marks?: Marks): {
     const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined, { record: false });
     if (!fresh.text.trim()) continue;
     const limit = Math.min(cap === undefined ? whole : Math.min(whole, cap), room);
-    once.carried.record(fresh.text.slice(0, cutPoint(fresh.text, limit)), fresh.lines, p);
+    fresh.commit(cutPoint(fresh.text, limit));
     const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
     room -= Math.min(fresh.text.length, limit);
     parts.push(`# ${p}\n\n${body}`);

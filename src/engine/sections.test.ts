@@ -4,10 +4,11 @@ import { blockDiff } from "./prompt-note.ts";
 
 const long = (tag: string) => Array.from({ length: 6 }, (_, i) => `- ${tag} ${i}: a rule long enough to be worth a line of its own.`).join("\n");
 
-test("sections: blank lines and headings part them, a fence is one with its blank lines", () => {
-  const t = "# Title\nintro\n\n- a\n- b\n\n```\ncode\n\nmore\n```\n## Next\nbody";
-  expect(sectionsOf(t).map((s) => [s.key, s.heading])).toEqual([
-    ["# Title\nintro", false], ["- a\n- b", false], ["```\ncode\n\nmore\n```", false], ["## Next\nbody", false],
+test("sections: blank lines and headings part them, a heading is its own, a fence is one with its blank lines", () => {
+  const t = "# Title\nintro\n\n- a\n- b\n\n```\ncode\n# not a heading\n\nmore\n```\n## Next\nbody";
+  expect(sectionsOf(t).map((s) => [s.key, s.heading, s.under])).toEqual([
+    ["# Title", true, ""], ["intro", false, "# Title"], ["- a\n- b", false, "# Title"], ["```\ncode\n# not a heading\n\nmore\n```", false, "# Title"],
+    ["## Next", true, ""], ["body", false, "# Title\n## Next"],
   ]);
   expect(sectionsOf("## Alone\n\nbody").map((s) => s.heading)).toEqual([true, false]);
 });
@@ -18,9 +19,10 @@ test("a section the chain carries is left out with one line; a new rule keeps it
   const text = `<!-- copy -->\n# Shared\n\n${long("A")}\n\n## Tests\n\n${long("T")}\n\n## Mine\n\n${long("M")}\n\nok\n`;
   const r = c.fresh("/copy.md", text);
   expect(r.left).toBe(1);
-  expect(r.text).toBe(`<!-- copy -->\n(Left out here: 2 sections under "# Shared", "## Tests" the same as in /shared.md, above.)\n\n## Mine\n\n${long("M")}\n\nok\n`);
+  // "# Shared" stays: "## Mine" is under it.
+  expect(r.text).toBe(`<!-- copy -->\n# Shared\n\n(Left out here: 2 sections under "# Shared", "## Tests" the same as in /shared.md, above.)\n\n## Mine\n\n${long("M")}\n\nok\n`);
   // Its new sections are carried from then on, from this file.
-  expect(c.fresh("/third.md", `## Mine\n\n${long("M")}`).text).toBe(`(Left out here: a section under "## Mine" the same as in /copy.md, above.)`);
+  expect(c.fresh("/third.md", `# Shared\n\n## Mine\n\n${long("M")}`).text).toBe(`(Left out here: a section under "## Mine" the same as in /copy.md, above.)`);
   // Each kept line still names its line on disk.
   const mine = r.text.indexOf("## Mine");
   expect(r.lines.find((x) => x.at === mine)).toEqual({ at: mine, path: "/copy.md", line: text.split("\n").indexOf("## Mine") + 1 });
@@ -64,6 +66,33 @@ test("a text recorded as far as it is kept: what a cut left out is carried by no
   const c = new Carried();
   const text = `${long("A")}\n\n${long("B")}\n`;
   const r = c.fresh("/a.md", text, undefined, { record: false });
-  c.record(r.text.slice(0, text.indexOf("- B 0")), r.lines, "/a.md");
+  r.commit(text.indexOf("- B 0"));
   expect(c.fresh("/b.md", `${long("A")}\n\n${long("B")}\n`).text).toBe(`(Left out here: a section the same as in /a.md, above.)\n\n${long("B")}\n`);
+});
+
+const X = "- Run the full test suite before every push; a red suite never lands, whatever the reason given for it.";
+const Y = "- Style: keep each line under one hundred characters, and wrap prose at the sentence, never mid clause.";
+
+test("nested headings: a section is told by every heading above it, and a parent stays while any of its own does", () => {
+  const c = new Carried();
+  c.add("# Claude Code only\n\n## Tests\n\n" + X + "\n", "/home/.claude/CLAUDE.md");
+  // The same sub-heading under another parent is another scope: the Codex-only rules keep their parent.
+  const codex = "# Codex only\n\n## Tests\n\n" + X + "\n\n## Style\n\n" + Y + "\n";
+  expect(c.fresh("/home/.codex/AGENTS.md", codex).text).toBe(codex);
+  // Under the same parent the carried sub-section goes; the parent and its other child stay.
+  const d = new Carried();
+  d.add("# Shared\n\n## Tests\n\n" + X + "\n", "/a.md");
+  expect(d.fresh("/b.md", "# Shared\n\n## Tests\n\n" + X + "\n\n## Style\n\n" + Y + "\n").text)
+    .toBe(`# Shared\n\n(Left out here: a section under "## Tests" the same as in /a.md, above.)\n\n## Style\n\n${Y}\n`);
+});
+
+test("a heading with its first line glued under it is a heading of its own", () => {
+  const later = (first: string, then: string) => { const c = new Carried(); c.add(first, "/root/AGENTS.md"); return c.fresh("/root/pkg/AGENTS.md", then).text; };
+  // The scope a glued line opens is its own heading, not the one before it.
+  const scope = "# Root\n\n## Codex only\n- Codex reads this first.\n\n" + X;
+  expect(later("# Root\n\n## Claude Code only\n- Claude reads this first.\n\n" + X, scope)).toBe(scope);
+  // A glued copy under the same headings is carried.
+  const body = "## Testing\n" + X + "\n- and one more line of the same rule block here.";
+  expect(later("# Shared\n\n" + body, "# Shared\n\n" + body)).toBe(`(Left out here: a section under "## Testing" the same as in /root/AGENTS.md, above.)`);
+  expect(sectionsOf("## Codex only\n- a\n\n- b").map((s) => [s.key, s.heading, s.under])).toEqual([["## Codex only", true, ""], ["- a", false, "## Codex only"], ["- b", false, "## Codex only"]]);
 });
