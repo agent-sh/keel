@@ -66,6 +66,37 @@ test("what a test leaves running, in its group or out of it, does not hold the r
   else try { process.kill(b, "SIGKILL"); } catch {} // no scope here: the run did not wait for it all the same
 });
 
+test("a report retries an unrun test without rerunning decided tests on the same base and overlay", async () => {
+  const ready = join(dir, "retry-ready");
+  const log = join(dir, "retry-log");
+  const a = `echo a >> "${log}"; exit 1\n`;
+  const { top, session } = repo({ "a.test.sh": a, "b.test.sh": `[ -f "${ready}" ] || exit 127\n` });
+  gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
+  const report = async (again = false) => settled((await startFor(session.id, top, { again }))!, 20_000);
+  const first = await report();
+  expect(first.results.map((f) => f.state)).toEqual(["fails", "unrun"]);
+
+  writeFileSync(ready, "go\n");
+  const next = await report();
+  expect(next.results.map((f) => f.state)).toEqual(["fails", "passes"]);
+  expect(readFileSync(log, "utf8")).toBe("a\n");
+  expect(next.results[0]).toMatchObject({ exit: 1, ms: null, cpu_ms: null, from_run: first.id });
+  expect(beforeLine({ ...next, mergeBase: next.merge_base })).toContain("(from an earlier run)");
+  expect((await report()).id).toBe(next.id);
+
+  await report(true);
+  expect(readFileSync(log, "utf8")).toBe("a\na\n");
+  // Tests in the checkout can read the other overlaid test files.
+  writeFileSync(join(top, "b.test.sh"), "exit 0\n");
+  await report();
+  expect(readFileSync(log, "utf8")).toBe("a\na\na\n");
+  writeFileSync(join(top, "t.sh"), '# new runner\nsh "$1"\n');
+  const base = Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "new base", "--", "t.sh"], { cwd: top });
+  expect(base.exitCode).toBe(0);
+  await report();
+  expect(readFileSync(log, "utf8")).toBe("a\na\na\na\n");
+});
+
 // (Skipped where the sandbox, bubblewrap, cannot start: it is what confines the run.)
 test.skipIf(!sandboxStatus().available)("the run is confined by the session's own profile: a read-only session's test cannot write its folder", async () => {
   const { top, session } = repo({ "w.test.sh": "echo x > made.txt\n" });

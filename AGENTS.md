@@ -569,6 +569,13 @@ under `~/.cache/keel-work/bun/research/`.
   model (`src/checks/proof.ts`). The ledger keeps the newest
   `checks.keep_runs` rows (20,000 by default) and is read at `/api/checks`
   and in the session's timeline.
+- The tests on the base after a report (`src/checks/before-run.ts`) reuse
+  decided files from a prior run of the session on the same base, test
+  overlay, commands, named inputs and permissions. An unrun file is tried
+  again; the owner can run all again, and a check with `cache: false` always
+  runs fresh. An overlay change invalidates the proof because a test can read
+  another overlaid file. Reused file results carry their source run and no
+  new time or CPU charge.
 - A spawn in a repository says what was tried there before: its result (once, never the system prompt) names
   the closest earlier agents of that repository, at most three, each with how it ended (landed, refused by
   review with the first finding's class, abandoned, working now), its branch and head, and the first line of

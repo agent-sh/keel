@@ -21,7 +21,7 @@ import { inSlice, SLICES } from "../tools/job-slice.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import * as cache from "./package-cache.ts";
 import { BEFORE_DIR, clipWhy, commandFor, declaredOf, howToRun, keyOf, limitFor, lockDirOf, missingOnBase, needsOf, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type BasePackages, type FileResult } from "./before.ts";
-import { baseOf, namedFor, ofSession, repoOf, type Repo } from "./ledger.ts";
+import { baseOf, inputsOf, namedFor, ofSession, repoOf, type Repo } from "./ledger.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS fails_before (
@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS fails_before (
   ended INTEGER
 );
 CREATE INDEX IF NOT EXISTS fails_before_session ON fails_before(session_id, id);
+CREATE INDEX IF NOT EXISTS fails_before_key ON fails_before(session_id, key, id);
 `;
 
 // `common`: the repository's common git directory, where its scratch worktree is listed.
@@ -58,7 +59,7 @@ type Row = Omit<BeforeRun, "results"> & { results: string };
 // folder (the gate's confineFor), or undefined when its commands run unconfined.
 type Deps = {
   store: Store; bus: Bus; capture: (e: unknown, ctx: object) => void;
-  perm: (sessionId: string) => { mode: string; sandbox: string } | undefined;
+  perm: (sessionId: string) => { mode: string; sandbox: string; network?: boolean } | undefined;
   // `shown`: more folders the run reads (the base's packages, src/checks/package-cache.ts), each in a layer of the
   // run's own where overlays mount (`layered`: what the run writes there stays out of them), else read-only.
   confine: (sessionId: string, workspace: string, tool: string, shown?: string[]) => { wrap: (argv: string[]) => string[]; sandbox: string; network?: boolean; layered?: boolean } | undefined;
@@ -154,8 +155,9 @@ const kept = ((globalThis as any).__keelFailsBefore ??= { lanes: new Map(), goin
 const { lanes, going } = kept;
 
 // The test files the session's folder adds or changes over its base, started
-// on the base. A run of the same files on the same base going now, or one that
-// ran every file, is the answer, unless `again` (the owner's Run again).
+// on the base. An identical run going now is the answer. Otherwise keep the
+// decisions already in the ledger and run only what has none, unless `again`
+// (the owner's Run again).
 // Undefined: the folder names no check that runs test files, or none of its
 // changed files is one.
 export async function startFor(sessionId: string, folder: string, o: { base?: string; again?: boolean } = {}): Promise<BeforeRun | undefined> {
@@ -170,13 +172,26 @@ export async function startFor(sessionId: string, folder: string, o: { base?: st
   const tests = testsOf(changed, named.checks).filter((t) => existsSync(join(repo.top, t.path)));
   if (!tests.length) return undefined;
   const files = tests.map((t) => ({ path: t.path, command: commandFor(t), bytes: readBytes(join(repo.top, t.path)) }));
-  const key = keyOf(mb ?? "", files);
+  const perm = d.perm(sessionId);
+  // All overlaid files are available to every test (one test can import another).
+  // The cache never crosses a changed overlay, base, repository or session, and
+  // checks that read more than their named inputs can set cache: false.
+  const checks = [...new Set(tests.map((t) => t.check))].map((c) => [c.name, c.dir, c.cache, inputsOf(repo.top, c.inputs)]);
+  const scope = JSON.stringify([mb, repo.top, perm?.mode, perm?.sandbox, perm?.network, checks]);
+  const key = keyOf(scope, files);
   const had = d.store.db.query<Row, [string, string]>("SELECT * FROM fails_before WHERE session_id = ? AND key = ? ORDER BY id DESC LIMIT 1").get(sessionId, key);
   if (had && going.has(had.id)) return going.get(had.id)!.run;
-  // (A file that could not run is run again, unless what stopped it was the base's install, which failed for its
-  // lockfile a short while ago: the same answer, at once.)
-  if (had && !o.again && (JSON.parse(had.results) as FileResult[]).every((f) => f.state !== "unrun" || (f.install && cache.lookup(f.install)?.state === "failed"))) return toRun(had);
-  const results: FileResult[] = tests.map((t, i) => ({ path: t.path, check: t.check.name, command: files[i]!.command, state: "waiting", why: "", exit: null, ms: null, cpu_ms: null }));
+  const prior = had && !o.again ? toRun(had) : undefined;
+  const caching = files.every((f) => f.bytes !== null);
+  const decided = (f: FileResult) => f.state === "passes" || f.state === "fails";
+  // A file that could not run is tried again, unless its install failure is still current.
+  const answered = (f: FileResult) => decided(f) || (f.install && cache.lookup(f.install)?.state === "failed");
+  if (prior && caching && tests.every((t, i) => t.check.cache && answered(prior.results[i]!))) return prior;
+  const results: FileResult[] = tests.map((t, i) => {
+    const old = prior?.results[i];
+    if (old && caching && t.check.cache && decided(old)) return { ...old, ms: null, cpu_ms: null, from_run: old.from_run ?? prior!.id };
+    return { path: t.path, check: t.check.name, command: files[i]!.command, state: "waiting", why: "", exit: null, ms: null, cpu_ms: null };
+  });
   const why = !baseName ? "no base branch to compare with" : !mb ? `no merge base with ${baseName}` : null;
   const id = Number(d.store.db.query("INSERT INTO fails_before (session_id, key, repo, base, merge_base, common, state, why, results, created) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)")
     .run(sessionId, key, repo.top, baseName ?? null, mb, repo.common, why, JSON.stringify(results), Date.now()).lastInsertRowid);
@@ -275,6 +290,7 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
       if (existsSync(from) && !existsSync(to)) try { symlinkSync(from, to); } catch {} // one at a time: it is there
     }
     for (let i = 0; i < tests.length; i++) {
+      if (run.results[i]!.from_run != null) continue; // the exact checkout already gave this answer
       const t = tests[i]!;
       run.results[i] = { ...run.results[i]!, state: "running" };
       save(run);

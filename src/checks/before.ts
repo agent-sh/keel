@@ -164,7 +164,7 @@ export function limitFor(ownRunsMs: readonly number[]): number {
 // --- the line on the agent's report
 
 // `install`: the key of the base's install whose failure kept the file from running (src/checks/package-cache.ts).
-export type FileResult = { path: string; check: string; command: string; state: State | "running" | "waiting"; why: string; exit: number | null; ms: number | null; cpu_ms: number | null; install?: string };
+export type FileResult = { path: string; check: string; command: string; state: State | "running" | "waiting"; why: string; exit: number | null; ms: number | null; cpu_ms: number | null; install?: string; from_run?: number };
 // `unconfined`: why the run went outside the sandbox (the session runs in full auto with its sandbox off).
 // `note`: how its packages were had, when the line should say it (installed for this run only).
 export type BeforeIn = { mergeBase: string | null; base: string | null; why?: string | null; unconfined?: string | null; note?: string | null; results: readonly FileResult[] };
@@ -181,7 +181,7 @@ export function beforeLine(b: BeforeIn): string {
   const open = b.results.filter((r) => r.state === "running" || r.state === "waiting");
   const done = b.results.filter((r) => r.state !== "running" && r.state !== "waiting");
   const said = (n: number) => {
-    const shown = done.slice(0, n).map((r) => `${r.path} ${stateWords(r.state, r.why)}`);
+    const shown = done.slice(0, n).map((r) => `${r.path} ${stateWords(r.state, r.why)}${r.from_run != null ? " (from an earlier run)" : ""}`);
     const rest = done.length - shown.length;
     const running = open.length ? `${open.length} still running (${open.length === 1 ? "its answer follows" : "their answers follow"} when done, and the Review view shows ${open.length === 1 ? "it" : "them"})` : "";
     return [...shown, rest ? `${rest} more` : "", running].filter(Boolean).join("; ");
