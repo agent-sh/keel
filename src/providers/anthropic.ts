@@ -8,7 +8,7 @@ import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { allPages, getJson, type ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 import { namesSystemMessage, routeRefusals } from "./route-refusals.ts";
-import { anthropicBody, anthropicWire } from "./wires/anthropic.ts";
+import { anthropicWire, toWire } from "./wires/anthropic.ts";
 
 // The Messages API version the official TypeScript SDK sends.
 const API_VERSION = "2026-10-21";
@@ -149,10 +149,13 @@ export class AnthropicProvider implements Provider {
     }
   }
 
-  // Whether the body of this request holds a system message among its turns.
+  // Whether the body of this request holds a system message among its turns. Read from the messages
+  // as the wire lays them out, with no cache mark and no thinking left out: a whole body made a second
+  // time (its thinking fingerprints are a JSON text of every block) cost each request its size again,
+  // and leaving out thinking never adds or removes a system message.
   private carriesSystem(req: ProviderRequest): boolean {
     try {
-      return anthropicBody(req, { ...ctxFor(this.id, req, []), legacyIsMine: true, midSystem: true }).messages.some((m: { role: string }) => m.role === "system");
+      return toWire(req.messages, { ...ctxFor(this.id, req, []), legacyIsMine: true, midSystem: true }, null, req.tools.some((t) => t.defer)).some((m: { role: string }) => m.role === "system");
     } catch {
       return false;
     }

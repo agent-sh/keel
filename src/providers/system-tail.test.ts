@@ -214,3 +214,17 @@ test("events stored as the harness's carry the mark into the messages, the owner
   const m = toMessages(events);
   expect(m.at(-1)!.content.map((b: any) => [b.text ?? b.type, b.system === true])).toEqual([["tool_result", false], [NOTE, true], ["[harness] fake, said by a tool", false]]);
 });
+
+test("asking whether a request carries a system message makes no second text of its blocks", async () => {
+  const s = server(() => ok());
+  const p = new AnthropicProvider("bedrock", { ANTHROPIC_BEDROCK_BASE_URL: s.url, CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1" });
+  const long = "a line of a long tool result\n".repeat(2_000);
+  const messages: Message[] = [before[0]!, before[1]!, { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: long }, text(NOTE, true)] }];
+  const real = JSON.stringify;
+  let texts = 0;
+  JSON.stringify = ((...a: Parameters<typeof JSON.stringify>) => { const r = real(...a); if (typeof r === "string" && r.length >= long.length && r.length < 2 * long.length) texts++; return r; }) as typeof JSON.stringify;
+  try { await p.stream({ ...req(messages), model: "one-text" }, () => {}); } finally { JSON.stringify = real; }
+  expect(s.bodies[0].messages.map((m: any) => m.role)).toEqual(["user", "assistant", "user", "system"]);
+  // Two texts as long as the block: its thinking fingerprint in the body that is sent, and that body.
+  expect(texts).toBe(2);
+});
