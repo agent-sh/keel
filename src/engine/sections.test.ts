@@ -18,9 +18,9 @@ test("a section the chain carries is left out with one line; a new rule keeps it
   const text = `<!-- copy -->\n# Shared\n\n${long("A")}\n\n## Tests\n\n${long("T")}\n\n## Mine\n\n${long("M")}\n\nok\n`;
   const r = c.fresh("/copy.md", text);
   expect(r.left).toBe(1);
-  expect(r.text).toBe(`<!-- copy -->\n(Left out here: 2 sections the same as in /shared.md, above.)\n\n## Mine\n\n${long("M")}\n\nok\n`);
+  expect(r.text).toBe(`<!-- copy -->\n(Left out here: 2 sections under "# Shared", "## Tests" the same as in /shared.md, above.)\n\n## Mine\n\n${long("M")}\n\nok\n`);
   // Its new sections are carried from then on, from this file.
-  expect(c.fresh("/third.md", long("M")).text).toBe("(Left out here: a section the same as in /copy.md, above.)");
+  expect(c.fresh("/third.md", `## Mine\n\n${long("M")}`).text).toBe(`(Left out here: a section under "## Mine" the same as in /copy.md, above.)`);
   // Each kept line still names its line on disk.
   const mine = r.text.indexOf("## Mine");
   expect(r.lines.find((x) => x.at === mine)).toEqual({ at: mine, path: "/copy.md", line: text.split("\n").indexOf("## Mine") + 1 });
@@ -39,6 +39,25 @@ test("a block's note does not tell again what only moved to another file", () =>
   expect(gone).toContain("No longer read on its own: /u/.codex/AGENTS.md.");
   expect(gone).not.toContain("Deleted");
   expect(blockDiff(before, `# /r/AGENTS.md\n\n${long("R")}\n`, () => false)).toContain("Deleted (or no longer found where it was read): /u/.codex/AGENTS.md.");
+});
+
+test("the same words under another heading are another rule: each probe keeps its text", () => {
+  const X = "- Run the full test suite before every push; a red suite never lands, whatever the reason given for it.";
+  const later = (first: string, then: string) => { const c = new Carried(); c.add(first, "/root/AGENTS.md"); return c.fresh("/root/pkg/AGENTS.md", then).text; };
+  // A scope line: what Codex is told under its own heading is not Claude's.
+  expect(later("## Claude Code only\n\n" + X, "## Codex only\n\n" + X)).toBe("## Codex only\n\n" + X);
+  // A rule a package says again under its own heading, beside its own rules.
+  for (const [first, then] of [
+    ["# Root\n\n" + X, "## Pkg rules\n\n" + X + "\n\n- Pkg only: never import from ../server."],
+    ["# Root\n\n" + X, "# Pkg\n\n- Use pnpm here.\n\n" + X + "\n\nThe rule above applies here to the e2e suite too, not only unit tests."],
+    ["## Rules\n\n" + X + "\n\n- b", "## Rules here\n\n- a: pkg first.\n\n" + X + "\n\n- c"],
+  ]) expect(later(first!, then!)).toBe(then!);
+  // Under the same heading it is carried, and a heading goes only when all under it does.
+  const c = new Carried();
+  c.add(`## Tests\n\n${long("T")}`, "/a.md");
+  expect(c.fresh("/b.md", `## Tests\n\n${long("T")}\n\n- own: kept.\n`).text).toBe(`## Tests\n\n(Left out here: a section under "## Tests" the same as in /a.md, above.)\n\n- own: kept.\n`);
+  // The chain's own path lines are no file's heading: the bare text is still the key.
+  expect(sectionsOf("# /u/AGENTS.md\n\nbody").map((x) => x.scoped)).toEqual(["# /u/AGENTS.md", "\nbody"]);
 });
 
 test("a text recorded as far as it is kept: what a cut left out is carried by no file", () => {
