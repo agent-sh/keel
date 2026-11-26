@@ -674,6 +674,14 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/leftovers/branch/delete": {
       POST: (req: any) => attempt(async () => { const b = await body(req); await leftovers.deleteBranch(leftCtx(), branchSeen(b)); return json({ deleted: true }); }),
     },
+    // The landed pass: worktrees whose branch's work the base holds, each named with its HEAD and its landing as listed.
+    "/api/leftovers/remove-landed": {
+      POST: (req: any) => attempt(async () => {
+        const b = await body(req);
+        const list = (Array.isArray(b.worktrees) ? b.worktrees.slice(0, 1000) : []).filter((x: any) => typeof x?.head === "string" && x.head);
+        return json(await leftovers.removeLanded(leftCtx(), list.map((x: any) => ({ ...treeSeen(x), how: x.how === "whole" ? "whole" : "changed" }))));
+      }),
+    },
     "/api/leftovers/remove-all": {
       POST: (req: any) => attempt(async () => {
         const b = await body(req);

@@ -14,7 +14,7 @@
 // hands to another manager (`systemd-run --user`, a container engine, ssh to another machine), and commands older
 // than the jobs the daemon keeps.
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { BEFORE_DIR } from "../checks/before.ts";
@@ -26,6 +26,7 @@ import { clientsOf, portsOf } from "../fleet/portal.ts";
 import { allJobs, findJob, jobsIn, jobsOf, processesOf, scopeHoldsSelf, stopJob, type Job } from "../tools/jobs.ts";
 import type { Worktree, Worktrees } from "../worktree/manager.ts";
 import { readsOf } from "../server/reads.ts";
+import { readText } from "../core/proc.ts";
 import * as rules from "./leftover-rules.ts";
 import * as scopes from "./scopes.ts";
 import { HOLDS_SELF } from "./foreign-scopes.ts";
@@ -153,6 +154,86 @@ const uniqueOf = async (dir: string, ref: string, self?: string | string[], over
   const out = await run(dir, ["rev-list", "--count", ref, "--not", ...(over ? [`refs/heads/${over}`] : []), ...[self ?? []].flat().map((b) => `--exclude=${b}`), "--branches", "--remotes", "--tags", "--"]);
   return out === undefined ? undefined : Number(out.trim()) || 0;
 };
+
+// The base a branch lands on: the local branch origin/HEAD names (its remote ref when there is none), else a
+// local main or master, as the landing queue and the board take it. Nothing is fetched.
+async function landingBase(top: string): Promise<string | undefined> {
+  const origin = (await run(top, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim();
+  if (origin) {
+    const local = origin.slice(origin.indexOf("/") + 1);
+    return local && (await run(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${local}`]))?.trim() ? local : origin;
+  }
+  for (const b of ["main", "master"]) if ((await run(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${b}`]))?.trim()) return b;
+  return undefined;
+}
+
+// Whether the base holds a branch's work though its commits are its own (leftover-rules.ts, Landed). Read from git
+// and the landing record; the merges' objects go to a folder of Keel's own, dropped after, and no merge driver or
+// attribute of the repository runs (an empty attribute source). A whole landing stays one as the base grows, so it
+// is kept by the tip; any other answer by the tip and the base's tip. `undefined`: nothing says it landed, or git
+// could not tell (the safe side).
+const landedKept = new Map<string, rules.Landed | null>();
+const BASE_LOG = 3000;
+export async function landedOn(store: Store, top: string, tip: string, base?: string): Promise<rules.Landed | undefined> {
+  base ??= await landingBase(top);
+  if (!base) return undefined;
+  const baseTip = (await run(top, ["rev-parse", "--verify", "--quiet", `${base}^{commit}`]))?.trim();
+  if (!baseTip || !/^[0-9a-f]{40,64}$/.test(tip)) return undefined;
+  const w = locate(top);
+  if (!w) return undefined;
+  const whole = `${w.common} ${tip} ${base}`, any = `${whole} ${baseTip}`;
+  const known = landedKept.get(whole) ?? landedKept.get(any);
+  if (known !== undefined) return known ?? undefined;
+  const found = await landedRead(store, top, w.common, tip, baseTip).catch(() => undefined);
+  if (landedKept.size > 4096) landedKept.clear();
+  if (found?.how === "whole") landedKept.set(whole, found);
+  else landedKept.set(any, found ?? null);
+  return found;
+}
+async function landedRead(store: Store, top: string, common: string, tip: string, baseTip: string): Promise<rules.Landed | undefined> {
+  const ahead = (await run(top, ["rev-list", "--count", `${baseTip}..${tip}`, "--"]))?.trim();
+  if (ahead === undefined || !/^\d+$/.test(ahead)) return undefined;
+  if (ahead === "0") return { how: "whole", by: "patch" };
+  const empty = (await git(top, ["hash-object", "-t", "tree", "--stdin"], { read: true, input: "" })).out.trim();
+  if (!/^[0-9a-f]{40,64}$/.test(empty)) return undefined;
+  const dir = join(store.stateDir, "overlap-objects");
+  mkdirSync(dir, { recursive: true });
+  const objects = mkdtempSync(join(dir, "landed-"));
+  try {
+    mkdirSync(join(objects, "info"), { recursive: true });
+    const env = { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(common, "objects") };
+    // The branch merged on `at` gives `at`'s own tree: `at` holds every line of it.
+    const holds = async (at: string) => {
+      const [mt, t] = await Promise.all([
+        git(top, ["--attr-source", empty, "-c", "core.attributesFile=/dev/null", "merge-tree", "--write-tree", "--no-messages", at, tip], { read: true, env, timeout: 60_000 }),
+        run(top, ["rev-parse", `${at}^{tree}`]),
+      ]);
+      return mt.code === 0 && !!t && mt.out.trim().split("\n")[0] === t.trim();
+    };
+    const fork = (await run(top, ["merge-base", baseTip, tip]))?.trim();
+    // A branch that changes no file over its fork (empty commits, a change and its undo) merges to any tree: the
+    // tree says nothing of its commits, so only the landing record speaks for it, and its branch stays.
+    const [forkTree, tipTree] = fork ? await Promise.all([run(top, ["rev-parse", `${fork}^{tree}`]), run(top, ["rev-parse", `${tip}^{tree}`])]) : [];
+    const changes = !!forkTree && !!tipTree && forkTree.trim() !== tipTree.trim();
+    const cherry = changes ? (await run(top, ["cherry", baseTip, tip]))?.split("\n").filter(Boolean) : undefined;
+    if (cherry?.length && cherry.every((l) => l.startsWith("- "))) return { how: "whole", by: "patch" };
+    if (changes && (await holds(baseTip))) return { how: "whole", by: "tree", at: baseTip };
+    const mine = (await run(top, ["log", "--format=%s", `${baseTip}..${tip}`, "--"]))?.split("\n").filter(Boolean);
+    const theirs = fork ? (await run(top, ["log", "--first-parent", `--max-count=${BASE_LOG}`, "--format=%H%x00%s", `${fork}..${baseTip}`, "--"]))?.split("\n").filter(Boolean).map((l) => { const [sha, subject] = l.split("\0"); return { sha: sha!, subject: subject ?? "" }; }) : undefined;
+    if (!mine || !theirs) return undefined;
+    const subjects = new Set(mine);
+    const queued = await queuedAs(store, tip);
+    if (changes) for (const at of rules.candidatesOf(theirs, subjects, queued)) if (await holds(at)) return { how: "whole", by: "tree", at };
+    const on = new Set(theirs.map((c) => c.subject));
+    const rec = rules.recordOf({ commits: subjects.size, matched: [...subjects].filter((s) => on.has(s)).length, newest: theirs.find((c) => subjects.has(c.subject))?.sha, queued, reviewed: await reviewedYes(store, tip) });
+    return rec ? { how: "changed", ...rec } : undefined;
+  } finally {
+    rmSync(objects, { recursive: true, force: true });
+  }
+}
+// The commit the landing queue landed this tip as, and whether a review said land it: small tables, read off the loop.
+const queuedAs = async (store: Store, tip: string) => (await readsOf(store).sql<{ landed: string }>("SELECT landed FROM landing_queue WHERE tip = ? AND state = 'landed' AND landed IS NOT NULL ORDER BY updated DESC LIMIT 1", [tip]).catch(() => []))[0]?.landed ?? undefined;
+const reviewedYes = async (store: Store, tip: string) => (await readsOf(store).sql<{ n: number }>("SELECT count(*) AS n FROM review_verdicts WHERE commit_sha = ? AND land = 'yes'", [tip]).catch(() => []))[0]?.n ? true : false;
 
 // The owner's processes and the folder each works in, read once: a worktree a process works in is not removed
 // (a command run by hand, another harness's session, an editor's server). The daemon is not one of them.
@@ -359,7 +440,9 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
   const busy = moved ?? await stashOn(w.repo_root, w.branch) ?? (st.exists ? busyIn(await openSessions(c.store), cwds(), w.path, sessionId, live) : undefined);
   const unknown = unique === undefined ? "its commits could not be counted" : look === undefined || nested === undefined ? "its ignored files could not be looked through" : hidden === undefined ? "the files git is told not to look at could not be compared" : undefined;
   const dirty = Math.max(st.dirty, look?.dirty ?? 0) + (hidden ?? 0);
-  const fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown });
+  // Commits only its branch holds: the base may still hold their work (a rebase or cherry-pick that changed the patch).
+  const landed = unique && sha && !unknown && !inner && !busy && !dirty ? await landedOn(c.store, w.repo_root, sha) : undefined;
+  const fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown, landed });
   if (fate.act === "remove") {
     // (Read before the worktree and branch go.)
     const lends = !!over && !!sha && !!(await uniqueOf(at, sha, [w.branch, ...others]));
@@ -372,12 +455,14 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
         const lent = lends ? `; the commits it started from are on ${over}` : "";
         return `\n\n(The agent changed no files; its worktree was removed${gone}${lent}.)`;
       }
+      if (unique && landed) return `\n\nIts ${rules.count(st.commits_ahead, "commit")} over ${w.base} landed with another patch (${rules.landedWords(landed)}): its worktree ${w.path}${r.branch_deleted ? ` and branch ${w.branch} were` : " was"} removed${gone}.`;
       const on = (await run(w.repo_root, ["for-each-ref", "--count=4", `--contains=${sha}`, "--format=%(refname:short)", "refs/heads", "refs/remotes", "refs/tags"]))?.split("\n").filter((x) => x && x !== w.branch) ?? [];
       return `\n\nIts ${rules.count(st.commits_ahead, "commit")} over ${w.base} ${st.commits_ahead === 1 ? "is" : "are"} also on ${on.slice(0, 3).join(", ") || "other branches"}: its worktree ${w.path}${r.branch_deleted ? ` and branch ${w.branch} were` : " was"} removed${gone}.`;
     }
     return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${r.reason}.`;
   }
   const why = (fate as { why: string }).why;
+  if (!dirty && landed?.how === "changed") return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}, kept: it ${rules.landedWords(landed)}, so the base does not hold its every line. Settings, Leftovers removes the worktree with the landed ones and keeps the branch.`;
   if (!unknown && !inner && !busy && (dirty || unique)) return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${rules.count(st.commits_ahead, "commit")} over ${w.base}, ${rules.count(dirty, "uncommitted file")}. Review and merge it from there (git merge ${w.branch}).${await landingOf(c.store, w, sha, dirty)}`;
   return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${why}.`;
 }
@@ -453,7 +538,8 @@ export type Survey = {
   // The job scopes that run and are not this daemon's job (another daemon's, or one whose processes carry another
   // daemon's mark): what each holds. Keel never signals one by itself; the owner stops it here.
   foreign?: Awaited<ReturnType<typeof scopes.foreignScopes>>;
-  worktrees: { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string }[];
+  // `landed`: the base holds its branch's work (leftover-rules.ts, Landed), with `bytes` it holds on disk.
+  worktrees: { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string; landed?: rules.Landed & { words: string }; bytes?: number }[];
   branches: { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By }[];
   repos: string[];
 };
@@ -508,6 +594,25 @@ async function heads(top: string, base?: string): Promise<{ name: string; sha: s
   return list;
 }
 
+// What a worktree holds on disk, in bytes (du, off the loop), kept ten minutes for its path and HEAD.
+const sizes = new Map<string, { bytes: number; at: number }>();
+async function sizeOf(path: string, head: string): Promise<number | undefined> {
+  const key = `${path}\0${head}`, k = sizes.get(key);
+  if (k && Date.now() - k.at < 600_000) return k.bytes;
+  try {
+    const p = Bun.spawn(["du", "-sbx", path], { stdout: "pipe", stderr: "ignore" });
+    const t = setTimeout(() => p.kill(), 60_000);
+    const out = await readText(p.stdout, "du");
+    clearTimeout(t);
+    if ((await p.exited) !== 0 && !out) return undefined;
+    const bytes = Number(out.split(/\s/)[0]);
+    if (!Number.isFinite(bytes)) return undefined;
+    if (sizes.size > 4096) sizes.clear();
+    sizes.set(key, { bytes, at: Date.now() });
+    return bytes;
+  } catch { return undefined; }
+}
+
 async function pool<T, R>(items: T[], n: number, f: (t: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
@@ -558,6 +663,7 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
     const tips = await heads(r.top, base);
     const out_ = new Set(list.map((t) => t.branch).filter(Boolean));
     const baseName = base?.replace(/^origin\//, "");
+    const landBase = await landingBase(r.top);
     const orphans = list.filter((t) => !t.main && !workspaces.some((w) => contains(realOf(t.path), w)) && !jobsIn(t.path).length);
     const rows = await pool(orphans, 4, async (t) => {
       const missing = !existsSync(t.path);
@@ -568,8 +674,12 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
       const sid = byPath.get(t.path) ?? (t.branch ? byBranch.get(t.branch) ?? byBranch.get(`${r.common}\0${t.branch}`) : undefined);
       const why = t.locked ? "it is locked" : st === undefined ? "git could not read its status" : st.dirty ? `${rules.count(st.dirty, "uncommitted file")}`
         : loose === undefined ? "its commits could not be counted" : loose ? `${rules.count(loose, "commit")} on no branch` : missing ? undefined : workingIn(procs, t.path);
+      // A clean one on a branch whose work the base holds: the landed pass takes it (and its branch, when whole).
+      const landed = !why && t.branch && !missing && landBase && t.branch !== landBase.replace(/^origin\//, "") ? await landedOn(store, r.top, t.head, landBase) : undefined;
+      const bytes = landed ? await sizeOf(t.path, t.head) : undefined;
       return { repo: r.common, top: r.top, path: t.path, branch: t.branch, head: t.head, made: treeMade(t.path), dirty: st?.dirty, ignored: st?.ignored.length ? st.ignored : undefined,
-        ahead: Number.isFinite(ahead) ? ahead : undefined, base, locked: t.locked, missing: missing || undefined, by: who(sid), removable: !why, why };
+        ahead: Number.isFinite(ahead) ? ahead : undefined, base, locked: t.locked, missing: missing || undefined, by: who(sid), removable: !why, why,
+        ...(landed ? { landed: { ...landed, words: rules.landedWords(landed) }, bytes } : {}) };
     });
     out.worktrees.push(...rows);
     for (const h of tips) {
@@ -689,6 +799,33 @@ export async function removeTree(c: Ctx, seen: TreeSeen): Promise<void> {
 }
 export async function deleteBranch(c: Ctx, seen: BranchSeen): Promise<void> {
   await dropBranch(branchCheck(await survey(c, { only: seen.repo }), seen));
+}
+
+// The landed pass: every worktree listed as landed, each checked as above and again for its landing as it was
+// listed. A whole landing takes its branch too (deleted by the tip that was checked); a changed one leaves it.
+export type LandedSeen = TreeSeen & { how: "whole" | "changed" };
+export async function removeLanded(c: Ctx, items: LandedSeen[]): Promise<{ removed: string[]; deleted: string[]; refused: { what: string; why: string }[]; bytes: number }> {
+  const out = { removed: [] as string[], deleted: [] as string[], refused: [] as { what: string; why: string }[], bytes: 0 };
+  for (const repo of [...new Set(items.map((x) => x.repo))]) {
+    const s = await survey(c, { only: repo });
+    for (const seen of items.filter((x) => x.repo === repo)) {
+      try {
+        const t = treeCheck(s, seen);
+        const pass = rules.landedPass(t);
+        if (!pass) throw new Error("not removed: its branch's work is not on the base now");
+        if ((pass === "tree-and-branch") !== (seen.how === "whole")) throw new Error(`not removed: it changed since it was listed (it ${t.landed!.words} now)`);
+        await dropTree(c, t);
+        out.removed.push(seen.path);
+        out.bytes += t.bytes ?? 0;
+        if (pass === "tree-and-branch") {
+          const r = await git(t.top, ["update-ref", "-d", `refs/heads/${t.branch}`, t.head], { timeout: 30_000 });
+          if (r.code === 0) out.deleted.push(t.branch!);
+          else out.refused.push({ what: t.branch!, why: `its worktree went; git would not delete the branch: ${r.err.trim().split("\n").at(-1)}` });
+        }
+      } catch (e) { out.refused.push({ what: seen.path, why: (e as Error).message }); }
+    }
+  }
+  return out;
 }
 
 // The whole list in one act: every worktree and branch the owner was shown, each checked as above (the

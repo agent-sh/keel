@@ -19,7 +19,9 @@ type Fate = { act: "stop" | "stop-builds" | "keep"; why: string };
 type Scope = { memory_bytes: number; idle_since: number; command_ended: boolean; builds: { pid: number; kind: string; idle_since: number; memory_bytes: number }[]; fate: Fate; keep: boolean };
 type Proc = { session_id: string; title: string; agent?: { id: string; status: string }; job_id: string; command: string; cwd: string; started: number; running: boolean; pids: number[]; ports: number[]; contain?: string; earlier?: boolean; scope?: Scope };
 type Held = { scopes: number; memory_bytes: number; others: { scopes: number; memory_bytes: number }; at: number; bounds: { idle_ms: number; build_idle_ms: number } };
-type Tree = { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string };
+type Tree = { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string;
+  // The base holds its branch's work though not its commits: "whole" (its branch goes too) or "changed" (landed edited; its branch stays).
+  landed?: { how: "whole" | "changed"; at?: string; words: string }; bytes?: number };
 type Branch = { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By };
 // A job scope that is not this daemon's job (another daemon's, or one whose processes carry another daemon's mark).
 // `daemon_live`: a daemon of the state folder its processes were started over runs now. `holds_self`: this daemon is in it.
@@ -133,6 +135,29 @@ export function LeftoversPanel() {
       void load();
     }
   };
+  // The landed pass: the worktrees whose branch's work the base holds, with what they hold on disk.
+  const landed = s.worktrees.filter((w) => w.removable && w.branch && !w.missing && w.landed);
+  const landedWhole = landed.filter((w) => w.landed!.how === "whole").length;
+  const landedBytes = landed.reduce((n, w) => n + (w.bytes ?? 0), 0);
+  const landedLabel = `Remove ${landed.length} landed ${landed.length === 1 ? "worktree" : "worktrees"}${landedBytes ? `, ${mb(landedBytes)}` : ""}`;
+  const removeLanded = async () => {
+    const changed = landed.length - landedWhole;
+    const body = [landedWhole ? `${landedWhole} ${landedWhole === 1 ? "worktree goes with its branch" : "worktrees go with their branches"}: the base holds every line of their work.` : "",
+      changed ? `${changed} ${changed === 1 ? "worktree goes and its branch stays" : "worktrees go and their branches stay"}: their work landed with changes, so their commits are kept.` : ""].filter(Boolean).join("\n");
+    if (!(await confirmAction({ title: `${landedLabel}?`, body: `${body}\n\nNothing uncommitted is in any of them. Each is checked again first: one that changed since it was listed stays.`, action: "Remove", danger: true }))) return;
+    setBusy("landed");
+    try {
+      const r = await api<{ removed: string[]; deleted: string[]; refused: { what: string; why: string }[]; bytes: number }>("/api/leftovers/remove-landed", { method: "POST", body: JSON.stringify({
+        worktrees: landed.map((w) => ({ repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, how: w.landed!.how })),
+      }) });
+      setSaid(`Removed ${r.removed.length} ${r.removed.length === 1 ? "worktree" : "worktrees"}${r.bytes ? ` (${mb(r.bytes)})` : ""}${r.deleted.length ? ` and ${r.deleted.length} ${r.deleted.length === 1 ? "branch" : "branches"}` : ""}.${r.refused.length ? ` Kept ${r.refused.length}: ${r.refused.slice(0, 3).map((x) => `${x.what} (${x.why})`).join("; ")}${r.refused.length > 3 ? "; ..." : ""}` : ""}`);
+    } catch (e) {
+      setSaid((e as Error).message);
+    } finally {
+      setBusy(null);
+      void load();
+    }
+  };
   const foreign = s.foreign ?? [];
   const left = foreign.filter((f) => !f.daemon_live), running = foreign.filter((f) => f.daemon_live);
   const foreignItem = (f: Foreign) => (
@@ -158,10 +183,13 @@ export function LeftoversPanel() {
   return (
     <Page testid="leftovers">
       <Group hint={<span role="status" data-testid="leftovers-said">{said ?? "Keel removes by itself only the worktrees it made for agents, when nothing in them would be lost. The rest is yours to remove here."}</span>}
-        actions={<button type="button" className="k-btn k-btn-lg" data-testid="leftovers-remove-all" disabled={busy !== null || !(trees.length + merged.length)}
+        actions={<>{!!landed.length && <button type="button" className="k-btn k-btn-lg" data-testid="leftovers-remove-landed" disabled={busy !== null}
+          title="Worktrees with nothing uncommitted whose branch's work is on the base: a branch goes too when the base holds its every line" onClick={removeLanded}>
+          {landedLabel}
+        </button>}<button type="button" className="k-btn k-btn-lg" data-testid="leftovers-remove-all" disabled={busy !== null || !(trees.length + merged.length)}
           title={trees.length + merged.length ? "Every worktree with nothing uncommitted and every branch whose commits are all on its base" : undefined} onClick={removeAll}>
           {allLabel}
-        </button>} />
+        </button></>} />
 
       <Group title="Left running" count={s.processes.length} hint={<>
         <p>{`Commands of sessions whose processes still run after the command's call ended, from this daemon and the ones before it.${s.held?.at ? ` They hold ${mb(s.held.memory_bytes)}.` : ""} ${s.held ? `One whose session ended is stopped once it idles for ${Math.round(s.held.bounds.idle_ms / 60_000)} minutes; a build daemon (Gradle, Kotlin, Bazel, sccache) when its session ends or it builds nothing for ${Math.round(s.held.bounds.build_idle_ms / 60_000)}.` : ""} One with a terminal in it (tmux, script, an editor) or a process put in it from outside is kept until you stop it. Keep one to leave it running.${s.held?.others.scopes ? ` ${s.held.others.scopes} job ${s.held.others.scopes === 1 ? "scope" : "scopes"} of other Keel daemons (${mb(s.held.others.memory_bytes)}) are not this daemon's and are left alone.` : ""}`}</p>
@@ -230,7 +258,11 @@ export function LeftoversPanel() {
                       </>}
                   </span>
                 </span>}
-                meta={<>{!treeBy && <Who by={w.by} />}{age(w.made)}</>}
+                meta={<>
+                  {w.landed && <Status tone={w.landed.how === "whole" ? "ok" : "quiet"} testid="leftover-landed" title={`${w.landed.words}${w.landed.how === "whole" ? ": its branch goes with it" : ": its branch stays"}`}>{w.landed.how === "whole" ? "landed" : "landed with changes"}</Status>}
+                  {w.bytes !== undefined && <span className="w-14 text-right" title="What it holds on disk">{mb(w.bytes)}</span>}
+                  {!treeBy && <Who by={w.by} />}{age(w.made)}
+                </>}
                 actions={<button type="button" className="k-btn" data-testid="leftover-remove" aria-label={`Remove worktree ${w.path}`} disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
                   onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 }, "Removed.")}>
                   Remove

@@ -563,3 +563,99 @@ test("a stop of a command's scope is told once for its key, across a restart, an
   expect(told).toEqual([`${parent.id}: stopped x`, `${parent.id}: Of an agent's session that is gone: stopped y`]);
   store.db.close();
 });
+
+// A branch the base took with another patch: a cherry-pick onto a base that moved the context, an edit while
+// landing it. Its commits are on no other branch; what decides is whether a commit of the base holds its lines.
+const ten = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
+const put = (dir: string, lines: string[]) => writeFileSync(join(dir, "f.txt"), lines.join("\n") + "\n");
+const edit = (dir: string, n: number, text: string, subject: string) => {
+  const lines = readFileSync(join(dir, "f.txt"), "utf8").trimEnd().split("\n");
+  lines[n - 1] = text;
+  put(dir, lines);
+  git(dir, "commit", "-qam", subject);
+};
+// A repository with f.txt on main, and agents' worktrees Keel made from it, one per name.
+async function landRepo(name: string, agents: string[]) {
+  const r = repo(name);
+  put(r, ten);
+  git(r, "add", "-A");
+  git(r, "commit", "-qm", "ten lines");
+  const store = storeAt(`state-${name}`);
+  const wts = new Worktrees(store, join(root, `${name}-wts`));
+  const made = [];
+  for (const a of agents) {
+    const s = store.createSession({ workspace: r, title: a, model: "scripted:stand-in" });
+    const { wt } = await wts.create(s.id, r, a);
+    wts.adopt(s.id, wt);
+    made.push({ s, wt, own: () => leftovers.ownWorktree({ store, wts }, s.id, () => false) });
+  }
+  return { r, store, wts, made };
+}
+
+test("the worktree Keel made goes with its branch when the base holds its every line under another patch", async () => {
+  const { r, made: [k, later] } = await landRepo("land-tree", ["picked", "edited-after"]);
+  edit(k!.wt.path, 6, "six", "Change six");
+  edit(r, 4, "four", "Change four on main"); // the context of the branch's hunk: its patch id on main differs
+  git(r, "cherry-pick", k!.wt.branch);
+  expect(git(r, "cherry", "main", k!.wt.branch).trim()).toStartWith("+ "); // not one patch id
+  expect(await k!.own()).toStartWith(`\n\nIts 1 commit over main landed with another patch (the base holds its every line at `);
+  expect(existsSync(k!.wt.path)).toBe(false);
+  expect(branchesOf(r)).not.toContain(k!.wt.branch);
+  // Landed, then the base edited the same line again: the base's tip no longer holds it, the landed commit does.
+  edit(later!.wt.path, 8, "eight", "Change eight");
+  git(r, "cherry-pick", later!.wt.branch);
+  edit(r, 8, "eight, later", "Change eight again on main");
+  expect(await later!.own()).toContain("landed with another patch (the base holds its every line at ");
+  expect(branchesOf(r)).not.toContain(later!.wt.branch);
+});
+
+test("a branch that landed with changes, or not at all, keeps its worktree and branch at its end", async () => {
+  const { r, made: [changed, open, reverted] } = await landRepo("land-changed", ["changed", "open", "reverted"]);
+  edit(changed!.wt.path, 6, "six from the agent", "Change six");
+  edit(r, 6, "six as landed", "Change six"); // the same subject, landed with an edit
+  const said = await changed!.own();
+  expect(said).toContain("landed as ");
+  expect(said).toContain("with changes (its commit is on the base by subject)");
+  expect(existsSync(changed!.wt.path)).toBe(true);
+  expect(branchesOf(r)).toContain(changed!.wt.branch);
+  // Its subject on the base and nothing else: no commit holds its line, nothing says it landed whole.
+  edit(open!.wt.path, 2, "two", "Change two");
+  expect(await open!.own()).toStartWith(`\n\nIts work is on branch ${open!.wt.branch}`);
+  expect(branchesOf(r)).toContain(open!.wt.branch);
+  // Taken and reverted with another subject before any landing record: the base's tip gives its line back.
+  edit(reverted!.wt.path, 9, "nine", "Change nine");
+  edit(r, 9, "nine", "Something else");
+  edit(r, 9, "line 9", "Revert something else");
+  expect(await reverted!.own()).toStartWith(`\n\nIts work is on branch ${reverted!.wt.branch}`);
+  expect(existsSync(reverted!.wt.path)).toBe(true);
+});
+
+test("the landed pass removes each listed landed worktree, the branch only of a whole landing, and refuses one that changed", async () => {
+  const { r, store, made: [whole, changed, moved, open] } = await landRepo("land-pass", ["whole", "changed", "moved", "open"]);
+  edit(whole!.wt.path, 3, "three", "Change three");
+  edit(changed!.wt.path, 5, "five from the agent", "Change five");
+  edit(moved!.wt.path, 7, "seven", "Change seven");
+  edit(open!.wt.path, 10, "ten", "Change ten");
+  edit(r, 1, "one", "Change one on main");
+  git(r, "cherry-pick", whole!.wt.branch, moved!.wt.branch);
+  edit(r, 5, "five as landed", "Change five");
+  const ctx = { store, isRunning: () => false, workspace: r };
+  const s = await leftovers.survey(ctx);
+  const row = (p: string) => s.worktrees.find((w) => w.path === p)!;
+  expect(row(whole!.wt.path).landed).toMatchObject({ how: "whole", by: "tree" });
+  expect(row(changed!.wt.path).landed).toMatchObject({ how: "changed" });
+  expect(row(open!.wt.path).landed).toBeUndefined();
+  expect(row(whole!.wt.path).bytes).toBeGreaterThan(0);
+  const seen = (p: string) => { const w = row(p); return { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0, how: w.landed!.how }; };
+  const listed = [seen(whole!.wt.path), seen(changed!.wt.path), seen(moved!.wt.path)];
+  git(moved!.wt.path, "commit", "-q", "--allow-empty", "-m", "after it was listed");
+  const out = await leftovers.removeLanded(ctx, listed);
+  expect(out.removed).toEqual([whole!.wt.path, changed!.wt.path]);
+  expect(out.deleted).toEqual([whole!.wt.branch]);
+  expect(out.refused.map((x) => x.what)).toEqual([moved!.wt.path]);
+  expect(out.refused[0]!.why).toContain("it changed since it was listed");
+  expect(existsSync(whole!.wt.path) || existsSync(changed!.wt.path)).toBe(false);
+  expect(branchesOf(r)).toEqual(expect.arrayContaining([changed!.wt.branch, moved!.wt.branch, open!.wt.branch]));
+  expect(branchesOf(r)).not.toContain(whole!.wt.branch);
+  expect(existsSync(open!.wt.path)).toBe(true);
+});

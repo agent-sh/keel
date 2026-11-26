@@ -57,10 +57,49 @@ export function newSince(before: GitSnap, trees: GitTree[], heads: Record<string
   };
 }
 
+// ---- a branch that landed with another patch: rebased, cherry-picked with a conflict edit, squashed, a fix on top.
+//
+// Its commits are on no other branch, yet its work may be on the base. "whole": nothing of it is lost when the
+// branch goes, proven from git alone: every commit of it is on the base by patch id, or the branch merged on a
+// commit of the base gives that commit's own tree (git merge-tree), which is what landing it there would make: that
+// commit holds every line the branch changes, whatever its commits look like. The merge-tree is the strongest of
+// the tests: a patch id fails on a rebase that moved the context, a diff that applies fails on a later edit of the
+// same lines, and both miss a squash; a revert on the base makes the merge give the branch's lines back, so a
+// reverted change is never taken as landed. "changed": the landing record names it (the landing queue landed this
+// tip, or every commit of it is on the base by subject, or a review said land it and some of it is there) but no
+// commit of the base holds its lines as they are: what landed was edited (a conflict resolved, a fix on top). Its
+// branch is kept: only its folder may go, which loses nothing committed.
+export type Landed = { how: "whole"; by: "patch" | "tree"; at?: string } | { how: "changed"; at: string; why: string };
+// What the landing record says of a branch whose lines no commit of the base holds. `commits`: its commits over the
+// base, by subject; `matched`: how many of those subjects a commit of the base since the fork has; `newest`: the
+// newest such commit; `queued`: the commit the landing queue landed this tip as; `reviewed`: a review said land it.
+export type LandRecord = { commits: number; matched: number; newest?: string; queued?: string; reviewed?: boolean };
+export function recordOf(r: LandRecord): { at: string; why: string } | undefined {
+  if (r.queued) return { at: r.queued, why: "the landing queue landed it" };
+  if (!r.newest || !r.matched) return undefined;
+  if (r.matched >= r.commits) return { at: r.newest, why: r.commits === 1 ? "its commit is on the base by subject" : `its ${r.commits} commits are on the base by subject` };
+  if (r.reviewed) return { at: r.newest, why: `a review said land it, and ${r.matched} of its ${r.commits} commits are on the base by subject` };
+  return undefined;
+}
+// The commits of the base worth a merge-tree, newest first: the one the landing queue landed it as, then those whose
+// subject is one of the branch's (a rebase and a cherry-pick keep it). At most `max`.
+export function candidatesOf(baseLog: { sha: string; subject: string }[], subjects: Set<string>, queued?: string, max = 8): string[] {
+  const out = queued ? [queued] : [];
+  for (const c of baseLog) {
+    if (out.length >= max) break;
+    if (subjects.has(c.subject) && !out.includes(c.sha)) out.push(c.sha);
+  }
+  return out;
+}
+export function landedWords(l: Landed): string {
+  if (l.how === "changed") return `landed as ${l.at.slice(0, 10)} with changes (${l.why})`;
+  return l.by === "patch" ? "every commit of it is on the base by patch id" : `the base holds its every line${l.at ? ` at ${l.at.slice(0, 10)}` : ""}`;
+}
+
 // What is in a worktree: uncommitted and untracked files, ignored ones (git worktree remove deletes them),
 // commits that no other branch, remote branch or tag holds, a repository inside it with work of its own, a
-// process or session in it.
-export type TreeState = { dirty: number; ignored?: string[]; unique: number; busy?: string; unknown?: string; inner?: string };
+// process or session in it. `landed`: the base holds its branch's work though not its commits (above).
+export type TreeState = { dirty: number; ignored?: string[]; unique: number; busy?: string; unknown?: string; inner?: string; landed?: Landed };
 export function treeHolds(s: TreeState): string {
   if (s.unknown) return `git could not read it: ${s.unknown}`;
   const parts: string[] = [];
@@ -81,14 +120,23 @@ export function branchHolds(s: { unique: number; out?: string; unknown?: string 
 // The worktree Keel made for the agent goes, with its branch, when nothing of it would be lost and nothing uses
 // it: no uncommitted or untracked file, no commit that only its branch holds, no repository inside it with work
 // of its own, no process or other session in it. Its ignored files go with it (build output, the files Keel
-// copied in from .worktreeinclude), as they always have.
+// copied in from .worktreeinclude), as they always have. A branch whose commits are its own goes too when the base
+// holds its whole work (`landed` whole); one that landed with changes is kept, with its worktree, for the owner.
 export function ownTreeFate(s: TreeState): Fate {
   if (s.unknown) return { act: "keep", why: `git could not read it: ${s.unknown}` };
   if (s.inner) return { act: "keep", why: s.inner };
   if (s.busy) return { act: "keep", why: s.busy };
   if (s.dirty) return { act: "keep", why: count(s.dirty, "uncommitted file") };
-  if (s.unique) return { act: "keep", why: `${count(s.unique, "commit")} on no other branch` };
+  if (s.unique && s.landed?.how !== "whole") return { act: "keep", why: `${count(s.unique, "commit")} on no other branch${s.landed ? `, ${landedWords(s.landed)}` : ""}` };
   return { act: "remove" };
+}
+
+// The landed pass of the page: a listed worktree that goes, and whether its branch goes with it. A worktree with
+// anything uncommitted, locked, gone, or with no branch is not in it; a whole landing takes the branch, a changed
+// one leaves it.
+export function landedPass(t: { removable: boolean; branch?: string; missing?: boolean; landed?: Landed }): "tree-and-branch" | "tree" | undefined {
+  if (!t.removable || !t.branch || t.missing || !t.landed) return undefined;
+  return t.landed.how === "whole" ? "tree-and-branch" : "tree";
 }
 
 export const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

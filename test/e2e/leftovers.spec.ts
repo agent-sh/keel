@@ -245,3 +245,58 @@ test("a job scope of another daemon is listed with what it holds and stopped by 
     for (const n of readdirSync("/proc")) try { if (/^\d+$/.test(n) && readFileSync(`/proc/${n}/cmdline`, "utf8").includes(`sleep\u0000701.${tag}`)) process.kill(Number(n), "SIGKILL"); } catch {}
   }
 });
+
+// Feature: worktrees whose branch landed with another patch. One branch's commit was cherry-picked onto a base
+// that moved its context (no patch id matches, the base holds every line), another's landed with an edit. Settings
+// > Leftovers marks both landed and offers one pass with what they hold on disk: it removes both folders and the
+// first branch, and keeps the second branch, whose own lines are not on the base.
+test("the landed pass removes worktrees whose branch's work is on the base, and the branch only of a whole landing", async ({ page, request }) => {
+  const stamp = Date.now();
+  const base = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
+  const repo = join(base, `landed-${stamp}`), whole = join(base, `landed-${stamp}-whole`), edited = join(base, `landed-${stamp}-edited`);
+  const g = (cwd: string, ...args: string[]) => git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...args);
+  const put = (dir: string, n: number, text: string, subject: string) => {
+    const lines = readFileSync(join(dir, "f.txt"), "utf8").trimEnd().split("\n");
+    lines[n - 1] = text;
+    writeFileSync(join(dir, "f.txt"), lines.join("\n") + "\n");
+    g(dir, "commit", "-qam", subject);
+  };
+  mkdirSync(repo, { recursive: true });
+  g(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "f.txt"), Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  g(repo, "add", "-A");
+  g(repo, "commit", "-qm", "ten lines");
+  g(repo, "worktree", "add", "-q", whole, "-b", `landed-whole-${stamp}`);
+  g(repo, "worktree", "add", "-q", edited, "-b", `landed-edited-${stamp}`);
+  put(whole, 3, "three", "Change three");
+  put(edited, 7, "seven from the agent", "Change seven");
+  put(repo, 1, "one", "Change one on main");
+  g(repo, "cherry-pick", `landed-whole-${stamp}`);
+  put(repo, 7, "seven as landed", "Change seven");
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: repo, title: "Landed" } })).json();
+  try {
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/settings/leftovers");
+    const w = page.locator(`[data-testid="leftover-worktree"][data-path="${whole}"]`), e = page.locator(`[data-testid="leftover-worktree"][data-path="${edited}"]`);
+    await expect(w.getByTestId("leftover-landed")).toHaveText("landed");
+    await expect(e.getByTestId("leftover-landed")).toHaveText("landed with changes");
+    await expect(page.getByTestId("leftovers-remove-landed")).toContainText(/Remove \d+ landed worktrees?, \d/);
+    await shoot(page, "leftovers-03-landed");
+    await page.getByTestId("leftovers-remove-landed").click();
+    await expect(page.getByRole("alertdialog")).toContainText("the base holds every line of their work");
+    await expect(page.getByRole("alertdialog")).toContainText("their work landed with changes, so their commits are kept");
+    await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
+    await expect(page.getByTestId("leftovers-said")).toContainText(/^Removed \d+ worktrees? \(.+\) and \d+ branch/);
+    await expect(w).toHaveCount(0);
+    await expect(e).toHaveCount(0);
+    expect(git(repo, "branch", "--list", `landed-whole-${stamp}`)).toBe("");
+    expect(git(repo, "branch", "--list", `landed-edited-${stamp}`)).toContain(`landed-edited-${stamp}`);
+    await expect(page.locator(`[data-testid="leftover-branch"][data-name="landed-edited-${stamp}"]`)).toContainText("1 commit not on main");
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+    for (const d of [whole, edited]) try { git(repo, "worktree", "remove", "--force", d); } catch {}
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(whole, { recursive: true, force: true });
+    rmSync(edited, { recursive: true, force: true });
+  }
+});
