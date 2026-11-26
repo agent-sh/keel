@@ -1284,7 +1284,8 @@ describe("the wire contract", () => {
     const asig = sign("sha256", Buffer.from(landMessage(key, fp, ts)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
     return call("POST", `/v1/landings/${encodeURIComponent(key)}/land`, { fp }, { "x-hm-asig": asig });
   };
-  const QUESTIONS = { questions: [{ id: "build", question: "Build type?", options: [{ label: "Debug" }, { label: "Release" }] }, { id: "checks", question: "Which checks?", multiSelect: true, options: [{ label: "Unit" }, { label: "Integration" }] }] };
+  // A header and a choice's meaning of its own: the contract does not lean on a question another test left open.
+  const QUESTIONS = { questions: [{ id: "build", header: "Build", question: "Build type?", options: [{ label: "Debug", description: "With symbols" }, { label: "Release" }] }, { id: "checks", question: "Which checks?", multiSelect: true, options: [{ label: "Unit" }, { label: "Integration" }] }] };
   const asks = (sid: string, callId: string) => {
     const e = store.append(sid, "assistant", { blocks: [{ type: "tool_use", id: callId, name: "AskUserQuestion", input: QUESTIONS }] });
     let got: any;
