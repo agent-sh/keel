@@ -192,6 +192,9 @@ test("usage compare: both sides and the change read together on a phone", async 
     await expect(panel.getByText("Reading the measurements.")).toHaveCount(0);
     await expect.poll(sideways, view).toBeLessThanOrEqual(0);
   }
+  // The help mark stands at the end of the views' first line, not on a line of its own under them.
+  const mid = async (l: ReturnType<typeof page.locator>) => { const r = (await l.boundingBox())!; return r.y + r.height / 2; };
+  expect(Math.abs((await mid(panel.getByTestId("set-help").first())) - (await mid(views.getByRole("radio", { name: "Overview" }))))).toBeLessThanOrEqual(6);
   await shoot(page, "usage-views-09-overview-phone");
 
   for (const id of made) await request.delete(`/api/sessions/${id}`);

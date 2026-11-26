@@ -252,8 +252,9 @@ export function UsagePanel() {
           { value: "compactions", label: "Compactions", before: GROUP_GAP }, { value: "yield", label: "Review yield" }, { value: "memory", label: "Memory" },
           { value: "compare", label: "Compare", before: GROUP_GAP }, { value: "trials", label: "Trials" },
         ]} />
-        {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} />}
-        <Help label="where it is measured">Measured on this machine. Nothing is sent anywhere.</Help>
+        {/* On a phone the help stands at the end of the views' first line, not on a line of its own, and the range under them. */}
+        <span className="k-usage-help flex md:order-last"><Help label="where it is measured">Measured on this machine. Nothing is sent anywhere.</Help></span>
+        {ranged && <div className="min-w-0 max-md:basis-full"><Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} /></div>}
       </div>
       {view === "overview" ? <Overview range={range} go={setView} /> : view === "causes" ? <CostDrivers range={range} /> : view === "sessions" ? <SpendRank range={range} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
         : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "yield" ? <ReviewYield range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} sweep={link.sweep} onTab={setMemoryTab} /> : view === "trials" ? <SettingTrials /> : <CompareView />}

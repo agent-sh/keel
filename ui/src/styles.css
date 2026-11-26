@@ -487,6 +487,12 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-seg[data-bare].k-usage-views { padding-block: 2px; }
 .k-seg[data-bare].k-usage-views > button:not([aria-selected="true"], [aria-checked="true"]) { color: var(--muted); }
 .k-seg[data-bare].k-usage-views > button:not([aria-selected="true"], [aria-checked="true"]):hover { color: var(--fg); }
+/* A phone: the views share their first line with the help mark after them (UsagePanel.tsx), so it has no line of its own. */
+@media (max-width: 767px) {
+  .k-seg.k-usage-views { flex: 1 1 0; min-width: 0; }
+  .k-usage-help { align-self: flex-start; align-items: center; min-height: calc(var(--spacing-ctl-sm) + 4px); }
+}
+@media (max-width: 767px) and (hover: none) { .k-usage-help { min-height: calc(var(--spacing-ctl-lg) + 4px); } }
 @media (hover: none) { .k-seg > button { height: var(--spacing-ctl-lg); min-width: var(--spacing-ctl-lg); } }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
