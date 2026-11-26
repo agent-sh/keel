@@ -10,7 +10,8 @@ import { CALL_FAILED, CALL_STOPPED, agentTask, callState, failureLine, type Call
 import { Apart, Under } from "../ToolCall.tsx";
 import { savePref } from "../../lib/ui.ts";
 import { setupWords } from "../../lib/worktree.ts";
-import { cn } from "../../lib/utils.ts";
+import { clock, cn, fmtWait } from "../../lib/utils.ts";
+import { reportTimes } from "../../lib/report-times.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Markdown } from "../Markdown.tsx";
 import { Seg } from "../Seg.tsx";
@@ -22,7 +23,8 @@ export { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
 import { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
 import { AgentLane } from "./Lane.tsx";
 
-type Report = { id: string; title: string; status: AgentRecord["status"]; said: AgentSaid; text: string; key: string; task?: string };
+// `finished`, `waited`: the part's stamp of when the agent finished and what kept the report back (lib/report-times.ts).
+type Report = { id: string; title: string; status: AgentRecord["status"]; said: AgentSaid; text: string; key: string; task?: string; finished?: unknown; waited?: unknown };
 
 // The daemon escapes only a frame's own tag inside it (core.ts inert): only
 // that is undone here, so a report's own "&lt;" stays as it was written.
@@ -43,7 +45,7 @@ function reports(text: string, meta?: Record<string, any>): Report[] {
     if (at >= 0) used.add(at);
     const key = (at >= 0 && parts[at]!.report_id) || `${m[1]}#${out.length}`;
     // How it ended, in the word its tree row and its card use (src/core/state-words.ts).
-    out.push({ id: m[1]!, key, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), said: agentSaid({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }, undefined) });
+    out.push({ id: m[1]!, key, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), finished: at >= 0 ? parts[at]!.finished : undefined, waited: at >= 0 ? parts[at]!.waited : undefined, said: agentSaid({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }, undefined) });
   }
   // One agent with more than one report here: each says which task it answers.
   for (const r of out) {
@@ -165,6 +167,13 @@ function ReportActions({ a }: { a?: AgentRecord }) {
   );
 }
 
+const TIMES = { time: (ts: number) => clock(ts, { seconds: true }), span: fmtWait };
+// When the agent finished, and apart, when its report reached this session (the input's own time).
+function ReportTimes({ r, reached }: { r: Report; reached: number }) {
+  const words = reportTimes(TIMES, r.finished, reached, r.waited);
+  return words ? <div className="mb-1.5 text-caption text-faint" data-testid="agent-report-times">{words}</div> : null;
+}
+
 // A message the harness put in the conversation: an agent's report, a wake, a
 // loop run, a task. Shown as what it is, never as the owner's words.
 export function InputNotice({ e }: { e: StoredEvent }) {
@@ -193,6 +202,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
             <ChevronRight className="k-heard-chev group-data-[open]/rep:rotate-90" />
           </Collapsible.Trigger>
           <Collapsible.Panel className="k-heard-body text-ui text-fg">
+            <ReportTimes r={r} reached={e.ts} />
             <Markdown text={r.text} />
             <ReportActions a={agents[r.id]} />
           </Collapsible.Panel>

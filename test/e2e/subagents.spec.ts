@@ -317,6 +317,9 @@ test("two reports of one agent in one input show as two cards", async ({ page, r
   await page.goto(`/s/${session.id}`);
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
   const cards = page.getByTestId("agent-reports").last().getByTestId("agent-report");
+  // A session whose turns ran on their own opens folded in the lens: the cards are in the stream.
+  await expect(page.getByTestId("lens-run").or(cards.first()).first()).toBeVisible({ timeout: 60_000 });
+  if (await page.getByTestId("lens-to-stream").isVisible()) await page.getByTestId("lens-to-stream").click();
   await expect(cards).toHaveCount(2, { timeout: 60_000 });
   await cards.first().click();
   await cards.last().click();
@@ -325,6 +328,9 @@ test("two reports of one agent in one input show as two cards", async ({ page, r
   expect(warnings).toEqual([]);
   await expect(cards.first().getByTestId("agent-report-status")).toContainText("earlier task");
   await expect(cards.last().getByTestId("agent-report-status")).toContainText("latest task");
+  // Each says when its task finished, and apart, when it reached the parent: the first waited out the parent's work.
+  await expect(cards.first().getByTestId("agent-report-times")).toHaveText(/^Its task ended \d\d:\d\d:\d\d, reached this session \d\d:\d\d:\d\d \(\d+s later\)$/);
+  await expect(cards.last().getByTestId("agent-report-times")).toContainText(/^Its task ended \d\d:\d\d:\d\d, reached this session/);
   await shoot(page, "agents-09-two-reports-one-agent");
   await request.delete(`/api/sessions/${session.id}`);
 });

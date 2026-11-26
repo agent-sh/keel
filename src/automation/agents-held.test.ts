@@ -413,3 +413,44 @@ test("two tasks given an ended agent with no event between them have two report 
   await until(() => agents.get(a.id)!.status === "completed");
   await quiet(p.id);
 }, 30_000);
+
+// Two tasks of one agent finish while its parent's turn runs, before either
+// report is read; the owner stops the parent and the daemon restarts. Each
+// report keeps the time its task finished, stamped with its report id, and
+// the input that brings both says when they reached the parent.
+test("each report keeps when its task finished through a hold and a restart", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "reads its reports late" });
+  engine.send(p.id, "owner: warm");
+  await quiet(p.id);
+  hangs.add(p.id);
+  engine.send(p.id, "owner: start");
+  await until(() => engine.isRunning(p.id));
+  await until(() => !hangs.has(p.id)); // its request is with the provider, hung there
+  const a = await lane(p.id, "first task");
+  await a.ended();
+  const stamp = () => store.db.query<{ report_id: string; created: number }, [string]>("SELECT report_id, created FROM agent_owed WHERE agent_id = ? ORDER BY created, rowid").all(a.id);
+  const [first] = stamp();
+  expect(first!.created).toBe(agents.get(a.id)!.ended!);
+  await Bun.sleep(20); // the second task ends at another millisecond
+  await agents.send(a.id, "second task");
+  await until(() => agents.get(a.id)!.tasks === 1 && agents.isEnded(agents.get(a.id)!));
+  const both = stamp();
+  expect(both).toHaveLength(2);
+  expect(both[0]).toEqual(first!); // the first stamp did not move
+  expect(both[1]!.created).toBe(agents.get(a.id)!.ended!);
+  expect(reports(p.id)).toEqual([]);
+
+  await engine.interrupt(p.id, "owner");
+  await quiet(p.id);
+  core.dropPending(p.id); // what waited in memory is gone with the daemon
+  agents.recover();
+  await Bun.sleep(1_100); // it reaches the parent well after it finished
+  engine.resumeQueue(p.id);
+  await quiet(p.id);
+  const input = store.events(p.id).findLast((e) => e.kind === "user")!;
+  const parts = ((input.data.parts ?? [input.data]) as Record<string, unknown>[]).filter((x) => x.kind === "subagent");
+  expect(parts.map((x) => [x.report_id, x.finished])).toEqual(both.map((o) => [o.report_id, o.created]));
+  expect(parts.map((x) => x.waited)).toEqual(["held", "held"]);
+  expect(input.ts - both[1]!.created).toBeGreaterThan(1_000);
+  expect(stamp()).toEqual([]);
+}, 30_000);

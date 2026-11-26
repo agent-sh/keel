@@ -1702,12 +1702,19 @@ export const reportId = (a: Pick<AgentRecord, "id" | "first_seq" | "tasks">) => 
 // Reports owed to the parent, one row per report instance, the report as it
 // was then: a new task for the agent does not clear an earlier one still owed,
 // and a restart delivers every owed one. Cleared when it is sent, or when a
-// wait result holding it is stored.
+// wait result holding it is stored. `created` is when the agent finished
+// that task, stamped once with the report id: every send of the report carries
+// it unchanged as `finished` (a settle, a held queue, a restart), and the
+// stored input's own time is when it reached the parent.
 type Owed = { report_id: string; agent_id: string; parent_id: string; block: string; status: string; created: number };
 const OWED_SCHEMA = `CREATE TABLE IF NOT EXISTS agent_owed (report_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, parent_id TEXT NOT NULL, block TEXT NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS agent_owed_parent ON agent_owed(parent_id, created);`;
-const owe = (a: AgentFull) =>
-  D().store.db.query("INSERT OR IGNORE INTO agent_owed (report_id, agent_id, parent_id, block, status, created) VALUES (?, ?, ?, ?, ?, ?)").run(reportId(a), a.id, a.parent_id, reportBlock(a), a.status, Date.now());
+// The row as it is kept: a report owed already keeps its first stamp.
+function owe(a: AgentFull): Owed {
+  const db = D().store.db;
+  db.query("INSERT OR IGNORE INTO agent_owed (report_id, agent_id, parent_id, block, status, created) VALUES (?, ?, ?, ?, ?, ?)").run(reportId(a), a.id, a.parent_id, reportBlock(a), a.status, a.ended ?? Date.now());
+  return db.query<Owed, [string]>("SELECT * FROM agent_owed WHERE report_id = ?").get(reportId(a))!;
+}
 const owedOf = (parentId: string) => D().store.db.query<Owed, [string]>("SELECT * FROM agent_owed WHERE parent_id = ? ORDER BY created, rowid").all(parentId);
 // This report reached the parent: no longer owed; the agent's flag follows its current report.
 function settle(agentId: string, report: string) {
@@ -1769,8 +1776,7 @@ function handback(a: AgentFull, grouped = false) {
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return;
   if (!grouped) {
-    owe(a);
-    return sendOwed({ report_id: reportId(a), agent_id: a.id, block: reportBlock(a), status: a.status }, a.parent_id);
+    return sendOwed(owe(a), a.parent_id);
   }
   // Told in the failure notice. Its timers are cancelled only when the notice
   // can go and say so: a parent held after the owner's Stop keeps them, and
@@ -1817,29 +1823,38 @@ export const REPORT_SETTLE = { quietMs: 2_000, maxMs: 10_000 };
 const othersWork = (parentId: string, agentId: string) => !D().engine.isRunning(parentId) &&
   !!D().store.db.query("SELECT 1 FROM agents WHERE parent_id = ? AND id != ? AND status = 'running' LIMIT 1").get(parentId, agentId);
 
-function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string, boot = false) {
+// What a report's part of an input says of it: `finished` is the owed row's stamp, never the
+// time it is sent; `waited` names what kept it back when something did (pure, for the tests).
+export type ReportWait = "restart" | "held" | "settle";
+export const reportMeta = (o: Pick<Owed, "report_id" | "agent_id" | "status" | "created">, waited?: ReportWait) =>
+  ({ kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status, finished: o.created, ...(waited ? { waited } : {}) });
+// `was`: what kept it back before this send (it rode while the owner's Stop held the parent).
+function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status" | "created">, parentId: string, boot = false, was?: ReportWait) {
   if (isPending(parentId, isReport(o.report_id))) return; // already on its way
-  const meta = { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status };
   // (Read again when it is sent: what the agent left unread may have been delivered, or gone, by then.)
   const said = () => `${HANDBACK_PREFACE}\n${withUnread(o.block, o.agent_id)}`;
   const text = said();
-  const go = (ride: boolean) => deliver(parentId, text, meta, {
-    ride, ...(boot && waits.cutTurn(parentId) ? { hold: true } : othersWork(parentId, o.agent_id) ? { settle: REPORT_SETTLE } : { coalesceMs: 300 }),
-    refresh: (parts) => {
-      // Lined up to start a turn, and the owner stopped the parent since: it rides instead.
-      if (!ride && D().engine.isHeld(parentId)) return void go(true);
-      const last = parts.findLast((p) => p.kind === "subagent")?.report_id === o.report_id;
-      const t = last ? tail(parentId) : { text: "", timers: [] };
-      return {
-        text: said() + t.text, meta,
-        // Sending this report settles this report only, never a newer one.
-        onSent: () => {
-          for (const id of t.timers) waits.cancel(id, parentId);
-          settle(o.agent_id, o.report_id);
-        },
-      };
-    },
-  });
+  const go = (ride: boolean) => {
+    const hold = boot && waits.cutTurn(parentId), settles = !hold && othersWork(parentId, o.agent_id);
+    const meta = reportMeta(o, ride ? "held" : was ?? (boot ? "restart" : settles ? "settle" : undefined));
+    return deliver(parentId, text, meta, {
+      ride, ...(hold ? { hold: true } : settles ? { settle: REPORT_SETTLE } : { coalesceMs: 300 }),
+      refresh: (parts) => {
+        // Lined up to start a turn, and the owner stopped the parent since: it rides instead.
+        if (!ride && D().engine.isHeld(parentId)) return void go(true);
+        const last = parts.findLast((p) => p.kind === "subagent")?.report_id === o.report_id;
+        const t = last ? tail(parentId) : { text: "", timers: [] };
+        return {
+          text: said() + t.text, meta,
+          // Sending this report settles this report only, never a newer one.
+          onSent: () => {
+            for (const id of t.timers) waits.cancel(id, parentId);
+            settle(o.agent_id, o.report_id);
+          },
+        };
+      },
+    });
+  };
   go(D().engine.isHeld(parentId));
 }
 
@@ -1849,7 +1864,7 @@ export function releaseOwed(parentId: string) {
   if (D().engine.isHeld(parentId)) return;
   const rode = new Set(takeRiding(parentId, (m) => m.kind === "subagent").map((m) => m.report_id));
   const rows = owedOf(parentId);
-  for (const o of rows) if (rode.has(o.report_id)) sendOwed(o, parentId);
+  for (const o of rows) if (rode.has(o.report_id)) sendOwed(o, parentId, false, "held");
   sendAllOwed(rows);
 }
 
