@@ -126,11 +126,19 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
       await expect.poll(async () => { const t = (await title.boundingBox())!, r = (await risk.boundingBox())!; return t.y + t.height <= r.y + 0.5 || r.x >= t.x + t.width - 0.5; }).toBe(true);
       // The title keeps its words on a line or two, never one word a line.
       expect((await title.boundingBox())!.height).toBeLessThan(64);
+      // Later stands with the answers, not on a row of its own under the risk.
+      const later = card.getByTestId("ask-later").locator("visible=true");
+      await expect(later).toHaveCount(1);
+      const deny = (await card.getByTestId("deny").boundingBox())!, put = (await later.boundingBox())!;
+      expect(Math.abs(put.y + put.height / 2 - (deny.y + deny.height / 2))).toBeLessThan(4);
       await shoot(page, "outside-answer-risk-phone");
     } finally { await page.setViewportSize(desk); }
     await card.getByRole("button", { name: /^Deny/ }).click();
     await card.getByTestId("deny-send").click();
-    await expect(page.locator('[data-testid="tool-call"][data-call="c2"]').last().getByTestId("call-answer")).toHaveText("denied by you", { timeout: 15_000 });
+    const denied = page.locator('[data-testid="tool-call"][data-call="c2"]').last();
+    await expect(denied.getByTestId("call-answer")).toHaveText("denied by you", { timeout: 15_000 });
+    // It did not run: the line asks, it does not say it ran.
+    await expect(denied.locator(".k-line-verb")).toHaveText("Asked to run");
     await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
 
     // A Codex that keeps no writer locks: nothing says whether a terminal has it open, so the box goes.

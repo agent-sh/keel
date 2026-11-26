@@ -1315,7 +1315,8 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
               </span>
             )}
             {first && <WaitingSlot sessionId={a.session_id} />}
-            {onLater && <LaterButton onPress={onLater} lone={a.risk !== "high"} />}
+            {/* (A high-risk card's Later stands with its answers on a phone: beside the risk's words it took a row of its own.) */}
+            {onLater && <LaterButton onPress={onLater} lone={a.risk !== "high"} className={a.risk === "high" ? "max-md:hidden" : undefined} />}
           </div>
           {notice}
           {summary}
@@ -1454,6 +1455,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
           >
             Deny{!touch && <Digit n={3} on={digits.deny} />}
           </button>
+          {onLater && !dense && a.risk === "high" && <LaterButton onPress={onLater} lone={false} className="md:hidden" />}
           {err ? <span className={cn("ml-auto min-w-0 basis-full text-micro text-danger", !dense && "sm:basis-auto sm:truncate")} role="alert" title={err} data-testid="approval-error">{err}</span>
             // Why the answers wait, beside them, before anything was pressed: the text is to be opened
             // (the list's Enter does that while the list has the keyboard), or so many of its lines have
@@ -1493,14 +1495,14 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
 
 // Puts a waiting request away to the count in the session's head (lib/later.ts). The turn still waits on it.
 // Not an answer: it needs no settle time and takes no key of the card's.
-export function LaterButton({ onPress, lone = true, all }: { onPress: () => void; lone?: boolean; all?: boolean }) {
+export function LaterButton({ onPress, lone = true, all, className }: { onPress: () => void; lone?: boolean; all?: boolean; className?: string }) {
   return (
     <button
       type="button"
       data-testid="ask-later"
       onClick={onPress}
       title={all ? "Put these away to the count in the head: the turn still waits for them" : "Put this away to the count in the head: the turn still waits for it"}
-      className={cn("inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40", lone && "ml-auto [[data-waiting-slot]:not(:empty)+&]:ml-0")}
+      className={cn("inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40", lone && "ml-auto [[data-waiting-slot]:not(:empty)+&]:ml-0", className)}
     >
       <Clock className="size-3.5" aria-hidden="true" />
       {all ? "All later" : "Later"}

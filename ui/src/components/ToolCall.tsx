@@ -285,7 +285,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // The command's start under the model's words: cut by the row's end, and said to go on when it has more lines.
   const head = note && (state !== "waiting" || named) ? `${what}${more ? " …" : ""}` : "";
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
-  const verb = rejected ? "Plan update not applied" : state === "unrun" ? NOT_RUN : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
+  // (A command of another harness's that the owner denied on its card did not run: its record says only what it returned.)
+  const verb = answered?.state === "denied" && isShell ? "Asked to run" : rejected ? "Plan update not applied" : state === "unrun" ? NOT_RUN : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
   const changed = state === "ok" || state === "running" || state === "live" || state === "waiting";
   // A small change shows its lines under the closed line, as a failure shows its reason.
