@@ -610,6 +610,8 @@
 .k-child-why[data-watch="need"] .k-child-why-text { color: var(--muted); }
 .k-child-why-time { flex: none; }
 .k-child-dot { display: flex; align-items: center; flex-shrink: 0; }
+/* A row that asks or failed says more than news: it carries no dot, as a session's row (list-order.ts isNews). */
+.k-child-session:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) > .k-child-dot { display: none; }
 .k-child-dot > span:first-child { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent); }
 /* Its controls (its lane, and Stop while it is live) lie over the row's end and show under the pointer or the keyboard, where the word was: no row keeps room for them, so the words line up. */
 .k-child-acts { position: absolute; right: 0.125rem; top: 0; height: 1.5rem; display: flex; align-items: center; opacity: 0; pointer-events: none; }
