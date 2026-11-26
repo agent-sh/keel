@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { boxTools, closeBoxTools, HAIKU, SCRIPTED, shoot } from "./shots.ts";
 
 // Feature: the message box's built-in commands that used to say "not
 // available yet". /permissions sets a mode by name or opens the menu, /review
@@ -34,7 +34,8 @@ test("slash commands", async ({ page, request }) => {
   await box.fill("");
 
   await run("/permissions full-auto");
-  await expect(page.getByTestId("permission-mode")).toHaveText("Full auto");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Full auto");
+  await closeBoxTools(page);
   await run("/permissions");
   await expect(page.getByTestId("mode-read-only")).toBeVisible();
   await shoot(page, "slash-02-permissions");

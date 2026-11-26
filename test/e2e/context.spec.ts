@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { boxTools, HAIKU, SCRIPTED, shoot } from "./shots.ts";
 
 // Feature: the context meter shows tokens against the model's listed window;
 // effort comes from the model's listed efforts; compaction (with a focus)
@@ -14,9 +14,9 @@ test("context meter, effort, compact and clear", async ({ page, request }) => {
   const composer = page.getByTestId("composer");
 
   // Effort: pick one the model lists; the next turn records it.
-  await page.getByTestId("effort-picker").click();
+  await (await boxTools(page)).getByTestId("effort-picker").click();
   await page.getByRole("menuitem", { name: "low" }).click();
-  await expect(page.getByTestId("effort-picker")).toContainText("low");
+  await expect((await boxTools(page)).getByTestId("effort-picker")).toContainText("low");
 
   await composer.fill("My favourite colour is teal. Never answer me in French. Reply with only the word noted.");
   await composer.press("Enter");
@@ -24,7 +24,7 @@ test("context meter, effort, compact and clear", async ({ page, request }) => {
   const ev = await (await request.get(`/api/sessions/${session.id}`)).json();
   expect(ev.events.find((e: any) => e.kind === "turn_start").data.effort).toBe("low");
 
-  await page.getByTestId("context-meter").click();
+  await (await boxTools(page)).getByTestId("context-meter").click();
   await expect(page.getByTestId("context-popup")).toContainText(/of 1\.0M tokens/);
   await expect(page.getByTestId("context-popup")).toContainText("Messages");
   await shoot(page, "context-01-meter");
@@ -56,7 +56,7 @@ test("context meter, effort, compact and clear", async ({ page, request }) => {
   await expect(page.getByTestId("assistant-text").last()).toContainText(/teal/i);
 
   // Clear, then undo.
-  await page.getByTestId("context-meter").click();
+  await (await boxTools(page)).getByTestId("context-meter").click();
   await page.getByTestId("clear-context").click();
   await expect(page.getByTestId("cleared")).toBeVisible();
   await page.keyboard.press("Escape");

@@ -3,7 +3,7 @@ import type { Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openPanel, shoot } from "./shots.ts";
+import { boxTools, openPanel, shoot } from "./shots.ts";
 
 // Feature: the color tokens read on every surface they are used on, in both
 // themes. Warn text (a caption, or a chip on its own tint) has 4.5:1 against
@@ -347,7 +347,7 @@ test("the Need tally and a switched-off setting's name read in both themes", asy
   const { session } = await (await request.post("/api/sessions", { data: { model, title: "Words on their own ground" } })).json();
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("permission-menu").first().click();
+  await (await boxTools(page)).getByTestId("permission-menu").first().click();
   const name = page.getByText("Network in the sandbox");
   await name.waitFor();
   // The contrast of an element's text against what is painted behind it, its ancestors' opacity counted.

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { shoot, setPanes } from "./shots.ts";
+import { boxTools, setPanes, shoot } from "./shots.ts";
 
 // Feature: the top edge of the window. The rail's brand row and the pane's top bar are one height,
 // so their content starts on one line. Where a pane is as wide as a desk window leaves it (a
@@ -238,8 +238,8 @@ test("a head with a long title and a long reason is still one bar, the brand row
 
 // Feature: the bar's mode control is neutral ink in every session. Full auto draws warm, with the struck
 // shield, only where it is unusual for the session (new sessions start in another mode, so the owner
-// chose it for this one) or while a call of the session waits on the owner. The mode is said once, in the message
-// box's row; the bar does not repeat it.
+// chose it for this one) or while a call of the session waits on the owner. The mode is said once, behind the message
+// box's +; the bar does not repeat it.
 test("Full auto is neutral ink where it is the owner's usual mode and warm where it is not", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   const model = models.find((m) => m.id === "scripted:stand-in")?.id;
@@ -252,22 +252,22 @@ test("Full auto is neutral ink where it is the owner's usual mode and warm where
     await page.setViewportSize({ width: 1920, height: 1040 });
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
     await page.goto(`/s/${session.id}`);
-    await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Ask");
     const calm = await look();
     // The owner's usual mode is Full auto: the session in it looks like any other.
     await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
     await page.reload();
-    await expect(page.getByTestId("permission-mode")).toHaveText("Full auto");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Full auto");
     await expect.poll(look, "Full auto, the owner's usual mode, is neutral ink without the struck shield").toEqual(calm);
     await shoot(page, "mode-tone-01-usual");
     // New sessions start in Ask: this session chose Full auto, which is unusual here.
     await request.put("/api/permissions/settings", { data: { default_mode: "ask" } });
     await page.reload();
-    await expect(page.getByTestId("permission-mode")).toHaveText("Full auto");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Full auto");
     await expect.poll(async () => (await look()).colour, "Full auto the owner chose for this session is warm").not.toBe(calm.colour);
     expect((await look()).struck).toBe(true);
-    // It is said once, in the message box's row: the bar says nothing of the mode, usual or not.
+    // It is said once, behind the message box's +: the bar says nothing of the mode, usual or not.
     await expect(page.getByTestId("head-mode")).toHaveCount(0);
     await expect(page.getByTestId("session-header")).not.toContainText("Full auto");
     await expect(page.getByTestId("permission-menu")).toHaveCount(1);

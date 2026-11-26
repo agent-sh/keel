@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ask, HAIKU, endsAre, scriptBash, shoot } from "./shots.ts";
+import { ask, boxTools, closeBoxTools, endsAre, HAIKU, scriptBash, shoot } from "./shots.ts";
 
 // Feature: the permission gate. A command that changes things asks; "always
 // allow" stores a grant that covers the next one; a grant is revoked from the
@@ -18,14 +18,18 @@ test("permission gate", async ({ page, request }) => {
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await request.put("/api/permissions/settings", { data: { default_mode: "ask" } });
   await page.goto(`/s/${session.id}`);
-  await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
-  // The mode is chosen in the message box's row, beside the model, and the bar says nothing of it while it is the usual one.
-  const tools = page.getByTestId("composer-tools");
-  await expect(tools.getByTestId("permission-menu")).toBeVisible();
+  // On a desk the box is one line: the mode is chosen behind its +, above the model, and neither the box's row nor
+  // the bar holds it while it is the usual one.
+  const box = page.getByTestId("composer-box");
+  await expect(box.getByTestId("box-more")).toBeVisible();
+  for (const id of ["permission-menu", "model-picker", "effort-picker", "context-meter"]) await expect(box.getByTestId(id)).toHaveCount(0);
+  const more = await boxTools(page);
+  await expect(more.getByTestId("permission-mode")).toHaveText("Ask");
   await expect(page.getByTestId("session-header").getByTestId("permission-menu")).toHaveCount(0);
   await expect(page.getByTestId("head-mode")).toHaveCount(0);
-  const [mode, model] = [(await tools.getByTestId("permission-menu").boundingBox())!, (await tools.getByTestId("model-picker").boundingBox())!];
-  expect(mode.x + mode.width, "the mode stands before the model in the row").toBeLessThanOrEqual(model.x + 1);
+  const [mode, model] = [(await more.getByTestId("permission-menu").boundingBox())!, (await more.getByTestId("model-picker").boundingBox())!];
+  expect(mode.y + mode.height, "the mode stands above the model behind the +").toBeLessThanOrEqual(model.y + 1);
+  await closeBoxTools(page);
 
   const say = async (text: string) => {
     await page.getByTestId("composer").fill(text);
@@ -58,7 +62,7 @@ test("permission gate", async ({ page, request }) => {
   expect(existsSync(join(ws, "beta.txt"))).toBe(true);
 
   // 4. The grants panel lists it; revoke it.
-  await page.getByTestId("permission-menu").click();
+  await (await boxTools(page)).getByTestId("permission-menu").click();
   await shoot(page, "perm-03-menu");
   await page.getByTestId("open-grants").click();
   const grant = page.getByTestId("grant").filter({ hasText: "touch *" });
@@ -76,13 +80,14 @@ test("permission gate", async ({ page, request }) => {
   await page.keyboard.press("Escape");
 
   // 5. Read-only mode refuses without asking.
-  await page.getByTestId("permission-menu").click();
+  await (await boxTools(page)).getByTestId("permission-menu").click();
   await page.getByTestId("mode-read-only").click();
-  await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
-  // Out of the usual mode, the bar still says nothing: the mode is in the message box's row, once.
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Read only");
+  // Out of the usual mode, the bar still says nothing: the mode is behind the message box's +, once.
   await expect(page.getByTestId("head-mode")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("mode-ask")).toBeHidden();
+  await closeBoxTools(page);
   await say(ask("Run exactly this Bash command once and nothing else: touch gamma.txt. If it fails, do not retry; reply with one word: refused.", scriptBash("touch gamma.txt")));
   await endsAre(page, 3, 120_000);
   await expect(card).toHaveCount(0);
@@ -93,8 +98,9 @@ test("permission gate", async ({ page, request }) => {
 
   // 6. Deny with a reason: the model sees it.
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
-  await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Ask");
   await expect(page.getByTestId("head-mode")).toHaveCount(0);
+  await closeBoxTools(page);
   await say(ask("Run exactly this Bash command once and nothing else: rm alpha.txt. If it is denied, do not retry; quote the reason you were given.", scriptBash("rm alpha.txt")));
   await expect(card).toBeVisible({ timeout: 60_000 });
   // The card is a named group: what it asks, with its command as the description.
@@ -153,11 +159,11 @@ test("a late permissions read never brings back an older mode", async ({ page, r
     await page.goto(`/s/${session.id}`);
     await readDone;
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: to } });
-    await expect(page.getByTestId("permission-mode")).toHaveText(label[to]!);
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText(label[to]!);
     release();
     await page.waitForResponse((r) => r.url().endsWith(`/api/sessions/${session.id}/permissions`));
     await page.waitForTimeout(300);
-    await expect(page.getByTestId("permission-mode")).toHaveText(label[to]!);
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText(label[to]!);
     await page.unroute(`**/api/sessions/${session.id}/permissions`);
   }
   await request.delete(`/api/sessions/${session.id}`);
@@ -293,7 +299,8 @@ test("a write through a redirect on a group, a loop or nothing is never run as a
 
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "read-only", sandbox: "off" } });
   await page.goto(`/s/${session.id}`);
-  await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Read only");
+  await closeBoxTools(page);
   await run(["ls > /dev/null 2>&1; { pwd; }", "> bare.txt", "{ echo a; echo b; } > grouped.txt", "echo x >&copied.txt", "for f in a b; do echo $f; done > looped.txt"]);
   await endsAre(page, 1, 60_000);
   // The last call's refusal reaches the model, and no file was written.
@@ -332,7 +339,8 @@ test("everyday reads run unasked, and an expansion that asks names the form that
 
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await page.goto(`/s/${session.id}`);
-  await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Ask");
+  await closeBoxTools(page);
   await run(["command -v ls", "[[ -f a.txt ]] && seq 1 3 | tac", "f=a.txt; sort $f | paste - -", "sort -- $(ls)", "find . -type f -exec wc -l {} +"]);
   // No card: the turn ends on its own, with the last command's output.
   await endsAre(page, 1, 60_000);
@@ -374,7 +382,8 @@ test("a command that can destroy or expose asks as high risk, and its near miss 
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: "Risk classes" } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await page.goto(`/s/${session.id}`);
-  await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Ask");
+  await closeBoxTools(page);
   const card = page.getByTestId("approval");
   let turns = 0;
   const asked = async (command: string, why: RegExp | null, shot?: string) => {

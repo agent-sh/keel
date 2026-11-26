@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Editor } from "./acp-editor.ts";
-import { ask, HAIKU, openPanel, SCRIPTED, scriptBash, shoot } from "./shots.ts";
+import { ask, boxTools, HAIKU, openPanel, SCRIPTED, scriptBash, shoot } from "./shots.ts";
 
 // Feature: an editor drives Keel over the Agent Client Protocol. It makes a
 // session, picks the model
@@ -551,7 +551,7 @@ test("acp agent models", async ({ page, request }) => {
     await expect(page.getByTestId("assistant-text").last()).toContainText("model deep, effort high");
 
     // The picker has the agent's models; the session moves to another in place.
-    await page.getByTestId("model-picker").click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("standin-m");
     await expect(page.getByTestId("model-option").filter({ hasText: "standin-m: Fast" })).toBeVisible();
     await shoot(page, "acp-15-agent-models");

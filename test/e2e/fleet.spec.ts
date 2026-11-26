@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { ask, choose, HAIKU, pickModel, scriptBash, shoot } from "./shots.ts";
+import { ask, boxTools, choose, HAIKU, pickModel, scriptBash, shoot } from "./shots.ts";
 
 // Feature: the fleet. Two daemons on this machine stand in for two machines:
 // this one (KEEL_URL) pairs with the other (KEEL_PEER_URL) from the Machines
@@ -67,8 +67,8 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("session-title")).toHaveText("Started on the other machine");
     // Its model is the other daemon's: the picker names it and offers that daemon's listing.
-    await expect(page.getByTestId("model-picker")).not.toContainText(/Choose a model|No models/);
-    await page.getByTestId("model-picker").click();
+    await expect((await boxTools(page)).getByTestId("model-picker")).not.toContainText(/Choose a model|No models/);
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await expect(page.getByTestId("peer-catalog")).toContainText("Models devbox lists");
     await expect(page.getByTestId("model-option").first()).toBeVisible();
     // Favorites and hiding are this daemon's choices: a peer's listing offers neither.

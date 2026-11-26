@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { boxTools, HAIKU, SCRIPTED, shoot } from "./shots.ts";
 
 // Feature: Settings > Providers shows every provider with its listing state and
 // the plugins; one session moves between providers and model families
@@ -9,15 +9,16 @@ import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 // not listed here is skipped with a note, so the spec runs on any accounts.
 type Listed = { id: string; name: string; provider: string; family: string };
 const pick = async (page: Page, m: Listed) => {
-  await page.getByTestId("model-picker").last().click();
+  await (await boxTools(page)).getByTestId("model-picker").last().click();
   await page.getByPlaceholder("Search models").fill(m.name);
   await page.locator(`[data-testid="model-option"][data-model="${m.id}"]`).first().click();
   // With a warm prompt cache the switch asks first (switch-warning.spec covers it).
+  // (The picker is behind the box's +, which may have closed: the switch is read from it either way.)
   const confirm = page.getByTestId("confirm");
   const trigger = page.getByTestId("model-picker").last().filter({ hasText: m.name });
-  await expect(confirm.or(trigger)).toBeVisible();
+  await expect(confirm.or(trigger)).toBeAttached();
   if (await confirm.isVisible()) await confirm.getByRole("button", { name: "Switch" }).click();
-  await expect(trigger).toBeVisible();
+  await expect((await boxTools(page)).getByTestId("model-picker").last().filter({ hasText: m.name })).toBeVisible();
 };
 
 test("providers and a cross-family session", async ({ page, request }) => {

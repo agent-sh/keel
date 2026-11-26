@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, endsAre, shoot, ask, scriptBash, openPanel, turnEnds } from "./shots.ts";
+import { ask, boxTools, closeBoxTools, endsAre, HAIKU, openPanel, scriptBash, shoot, turnEnds } from "./shots.ts";
 
 // Feature: the command sandbox. In auto-edits mode with the workspace-write
 // profile and the network off, a command runs without asking, can write the
@@ -19,14 +19,15 @@ test("command sandbox", async ({ page, request }) => {
   await page.goto(`/s/${session.id}`);
 
   // Turn the sandbox on from the menu.
-  await page.getByTestId("permission-menu").click();
+  await (await boxTools(page)).getByTestId("permission-menu").click();
   await page.getByTestId("mode-auto-edits").click();
   await page.getByTestId("sandbox-workspace-write").click();
   await page.getByTestId("sandbox-network").click();
   await expect(page.getByTestId("sandbox-network")).not.toHaveAttribute("data-checked");
   await shoot(page, "sandbox-01-menu");
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("permission-menu")).toContainText("sandbox");
+  await expect((await boxTools(page)).getByTestId("permission-menu")).toContainText("sandbox");
+  await closeBoxTools(page);
 
   const cmd = `touch inside.txt; touch ${outside}; getent hosts example.com || echo no-network`;
   await page.getByTestId("composer").fill(ask(`Run exactly this one Bash command, once, and nothing else: ${cmd}\nThen reply with one word: done.`, scriptBash(cmd)));

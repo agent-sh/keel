@@ -62,7 +62,7 @@ test("the bar rests with three or four controls, the rest in the session's one m
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`/s/${session.id}`);
     const header = pane(page, session.id).getByTestId("session-header");
-    // (The permission mode is in the message box's row, and in the bar only when it is not the usual one.)
+    // (The permission mode is behind the message box's +, and in the bar only when it is not the usual one.)
     await expect(header.getByTestId("permission-menu")).toHaveCount(0);
     await expect(header.getByTestId("panel-menu")).toBeVisible();
     await page.mouse.move(1000, 800);

@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { SCRIPTED, shoot } from "./shots.ts";
+import { boxTools, SCRIPTED, shoot } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/bulk-mcp.ts`;
 const STAND_IN = "scripted:claude-stand-in";
@@ -54,7 +54,7 @@ test("context popup: system prompt, tools by server and messages by origin", asy
     expect(c.parts.messages.rows.map((r: any) => r.key)).toContain("owner");
 
     // The popup: the server's row, how many are loaded, how to save them, and the estimate marked as such.
-    await page.getByTestId("context-meter").click();
+    await (await boxTools(page)).getByTestId("context-meter").click();
     const popup = page.getByTestId("context-popup");
     const row = popup.locator('[data-testid="tools-group"][data-group="mcp:bulk"]');
     await expect(row).toContainText("bulk");

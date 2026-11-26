@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: each row of the model picker says what a switch to it re-reads
 // without the prompt cache and what that adds, and offers Compact first. A
@@ -12,7 +12,7 @@ import { shoot } from "./shots.ts";
 const STAND_IN = "scripted:stand-in";
 
 async function pickModel(page: Page, name: string) {
-  await page.getByTestId("model-picker").click();
+  await (await boxTools(page)).getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill(name);
   await page.getByRole("option", { name: new RegExp(name) }).first().click();
 }
@@ -30,9 +30,9 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     const confirm = page.getByTestId("confirm");
 
     // Nothing cached yet: the switch happens at once.
-    await page.getByTestId("effort-picker").click();
+    await (await boxTools(page)).getByTestId("effort-picker").click();
     await page.getByRole("menuitem", { name: "low" }).click();
-    await expect(page.getByTestId("effort-picker")).toContainText("low");
+    await expect((await boxTools(page)).getByTestId("effort-picker")).toContainText("low");
     await expect(confirm).toHaveCount(0);
 
     const composer = page.getByTestId("composer");
@@ -41,7 +41,7 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
 
     // The row says what a switch adds; a tenth of a cent is under the cent the owner is asked about, so Enter switches.
-    await page.getByTestId("model-picker").click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("Scripted backup");
     const popup = page.getByTestId("model-popup");
     const backupRow = popup.locator('[data-testid="model-option"][data-model="scripted:stand-in-backup"]').first();
@@ -65,14 +65,14 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     await shoot(page, "switch-00-row-cost-phone");
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1920, height: 1040 });
-    await page.getByTestId("model-picker").click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("Scripted backup");
     await expect(backupRow).toHaveAttribute("data-highlighted", "");
     await page.keyboard.press("Enter");
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted backup");
     await expect(confirm).toHaveCount(0);
     await pickModel(page, "Scripted stand-in");
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted stand-in");
     await expect(confirm).toHaveCount(0);
     expect(await (await request.get(`/api/sessions/${session.id}/switch-warning?model=scripted:stand-in-backup`)).json()).toMatchObject({ ask: false, ask_usd: 0.01, ran_on: STAND_IN, can_compact: true });
 
@@ -86,7 +86,7 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     await expect(confirm).toContainText(/costs about <?\$[\d.]+, against <?\$[\d.]+ from the cache/);
     await shoot(page, "switch-01-model-warning");
     await confirm.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted stand-in");
 
     // A message sent while the switch is still being checked waits for it: nothing
     // leaves on the old model, and Cancel leaves the text in the box.
@@ -102,7 +102,7 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     await expect(confirm).toContainText("Switch to Scripted backup?");
     await confirm.getByRole("button", { name: "Cancel" }).click();
     await page.unroute("**/switch-warning**");
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted stand-in");
     await expect(composer).toHaveValue("Send me on the new model.");
     expect((await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "user")).toHaveLength(1);
     await composer.fill("");
@@ -112,26 +112,26 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     await composer.press("Enter");
     await expect(confirm).toContainText("Switch to Scripted backup?");
     await confirm.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted stand-in");
     await composer.fill("/model Scripted");
     await composer.press("Enter");
     await expect(page.getByTestId("composer-notice")).toContainText("Give the full id");
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted stand-in");
 
     // The effort is part of the cached prompt on this wire: asked; Cancel keeps it.
-    await page.getByTestId("effort-picker").click();
+    await (await boxTools(page)).getByTestId("effort-picker").click();
     await page.getByRole("menuitem", { name: "high" }).click();
     await expect(confirm).toContainText("Change the effort to high?");
     await expect(confirm).toContainText("The effort is part of the cached prompt.");
     await confirm.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByTestId("effort-picker")).toContainText("low");
+    await expect((await boxTools(page)).getByTestId("effort-picker")).toContainText("low");
 
     // Switch, then back to the model the conversation ran on: no question the second time.
     await pickModel(page, "Scripted backup");
     await confirm.getByRole("button", { name: "Switch" }).click();
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted backup");
     await pickModel(page, "Scripted stand-in");
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted stand-in");
     await expect(confirm).toHaveCount(0);
     await shoot(page, "switch-02-switched-back");
 
@@ -142,11 +142,11 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
     expect((await request.get(`/api/sessions/${session.id}/switch-warning?model=nope:none`)).status()).toBe(400);
 
     // Compact first, the row's second action: the model in use summarizes from its warm cache, then the switch, unasked.
-    await page.getByTestId("model-picker").click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("Scripted backup");
     await backupRow.hover();
     await backupRow.getByTestId("compact-first").click();
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted backup");
     await expect(confirm).toHaveCount(0);
     await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).find((e) => e.kind === "compaction")?.data.model).toBe(STAND_IN);
     await shoot(page, "switch-03-compacted-from-row");

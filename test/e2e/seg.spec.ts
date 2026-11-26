@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import type { Locator, Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: one segmented control with one keyboard. The Errors tabs, the
 // Inbox's tabs and a Settings choice are the same component: one Tab stop
@@ -100,7 +100,7 @@ test("an arrow key never loosens permissions, and tabs keep to their own keys", 
   await page.goto(`/s/${session.id}`);
   await page.getByTestId("composer").first().waitFor();
 
-  await page.getByTestId("permission-menu").first().click();
+  await (await boxTools(page)).getByTestId("permission-menu").first().click();
   const modes = page.getByRole("radiogroup", { name: "Permission mode" });
   await modes.waitFor();
   const checked = (group: typeof modes) => group.locator('[aria-checked="true"]');

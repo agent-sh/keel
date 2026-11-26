@@ -1,5 +1,5 @@
 import { expect, test, type WebSocketRoute } from "./isolate.ts";
-import { ask, shoot } from "./shots.ts";
+import { ask, boxTools, shoot } from "./shots.ts";
 import { connect, createServer, type Socket } from "node:net";
 
 // Feature: what the page asks the daemon for. A session at work costs no
@@ -108,7 +108,7 @@ test("the whole model listing and this machine's own sessions are not read befor
     if (r.method() === "GET" && (u.pathname === "/api/models" || u.pathname === "/api/fleet")) asked.push(u.pathname + u.search);
   });
   await page.goto(`/s/${session.id}`);
-  const picker = page.getByTestId("model-picker");
+  const picker = (await boxTools(page)).getByTestId("model-picker");
   // The message box names its model from the brief read.
   await expect(picker).toContainText(all.find((m) => m.id === STAND_IN)!.name);
   await expect(page.getByTestId("model-unlisted")).toHaveCount(0);
@@ -122,7 +122,7 @@ test("the whole model listing and this machine's own sessions are not read befor
   const other = listed.find((m) => !held.has(m.id)) ?? listed[0]!;
   const popup = page.getByTestId("model-popup");
   for (let open = 0; open < 2; open++) {
-    await picker.click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await expect(popup).toBeVisible();
     await page.getByPlaceholder("Search models").fill(other.model);
     await expect(popup.locator(`[data-testid="model-option"][data-model="${other.id}"]`).first()).toBeVisible({ timeout: 10_000 });
@@ -134,7 +134,7 @@ test("the whole model listing and this machine's own sessions are not read befor
   await page.getByTestId("composer").fill(`/model ${other.id}`);
   await page.getByTestId("composer").press("Enter");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.model, { timeout: 10_000 }).toBe(other.id);
-  await expect(picker).toContainText(other.name);
+  await expect((await boxTools(page)).getByTestId("model-picker")).toContainText(other.name);
   await request.delete(`/api/sessions/${session.id}`);
 });
 

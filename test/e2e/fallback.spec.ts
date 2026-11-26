@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, closeBoxTools, shoot } from "./shots.ts";
 
 // Feature: a session's fallback model, set from /fallback or a refusal card:
 // when the model declines, the turn goes on by itself on the fallback, which
@@ -18,17 +18,18 @@ test("fallback model for declined requests", async ({ page, request }) => {
 
   await composer.fill("/fallback Scripted backup");
   await composer.press("Enter");
-  await expect(chip).toContainText("Scripted backup");
+  await expect((await boxTools(page)).getByTestId("fallback-chip")).toContainText("Scripted backup");
+  await closeBoxTools(page);
 
   await composer.fill("script:refuse");
   await composer.press("Enter");
   await expect(page.getByTestId("note").last()).toContainText("declined (cyber). Continuing on Scripted backup.", { timeout: 15_000 });
   await expect(page.getByTestId("assistant-text").last()).toHaveText("The backup model took the request.");
   await expect(page.getByTestId("turn-end")).toHaveCount(1);
-  await expect(page.getByTestId("model-picker").first()).toContainText("Scripted backup");
+  await expect((await boxTools(page)).getByTestId("model-picker").first()).toContainText("Scripted backup");
   await shoot(page, "fallback-01-continued");
 
-  await chip.getByRole("button", { name: "No fallback model" }).click();
+  await (await boxTools(page)).getByTestId("fallback-chip").getByRole("button", { name: "No fallback model" }).click();
   await expect(chip).toHaveCount(0);
   expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.fallback).toBeUndefined();
 
@@ -46,6 +47,6 @@ test("fallback model for declined requests", async ({ page, request }) => {
   await shoot(page, "fallback-02-refusal-card");
   await card.getByRole("button", { name: "Retry on it" }).click();
   await expect(page.getByTestId("assistant-text").last()).toHaveText("The backup model took the request.", { timeout: 15_000 });
-  await expect(chip).toContainText("Scripted backup");
+  await expect((await boxTools(page)).getByTestId("fallback-chip")).toContainText("Scripted backup");
   expect((await (await request.get(`/api/sessions/${s2.id}`)).json()).session.settings.fallback).toBe(BACKUP);
 });

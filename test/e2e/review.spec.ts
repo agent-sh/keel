@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
+import { boxTools, HAIKU, openPanel, SCRIPTED, shoot } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 const events = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
@@ -149,7 +149,7 @@ test("reviewer mode judges calls", async ({ page, request }) => {
   await shoot(page, "review-04-settings");
 
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("permission-menu").click();
+  await (await boxTools(page)).getByTestId("permission-menu").click();
   await page.getByTestId("mode-reviewer").click();
   await page.keyboard.press("Escape");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/permissions`)).json()).perm.mode).toBe("reviewer");

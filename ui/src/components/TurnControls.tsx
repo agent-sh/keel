@@ -468,12 +468,14 @@ function BuildPin({ build, used, busy, disabled, onAdopt }: { build: BuildState;
 }
 
 // The efforts the session's model lists; nothing is offered it does not take.
-// `openSignal` opens it when it changes (its key, Alt+E).
+// `openSignal` opens it when it changes (its key, Alt+E), never by its value at mount: the picker is mounted again
+// where the box moves it (a desk's + and a phone's row), and an ask made before must not open it there.
 export const EffortPicker = memo(function EffortPicker({ sessionId, openSignal }: { sessionId: string; openSignal?: number }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const models = useStore((s) => s.models);
   const [open, setOpen] = useState(false);
-  useEffect(() => { if (openSignal) setOpen(true); }, [openSignal]);
+  const atMount = useRef(openSignal);
+  useEffect(() => { if (openSignal !== atMount.current) setOpen(true); }, [openSignal]);
   const efforts = models.find((m) => m.id === session?.model)?.efforts ?? [];
   if (!session || !efforts.length) return null;
   const cur = session.settings.effort && efforts.includes(session.settings.effort) ? session.settings.effort : efforts.includes("high") ? "high" : efforts[0]!;

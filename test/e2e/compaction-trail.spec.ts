@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { boxTools, HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: a compaction keeps the artifact trail of the work. Beside the
 // model's summary it stores a block made from the events by the harness: the
@@ -39,7 +39,7 @@ test("a compaction keeps the work's artifact trail and says what it kept", async
   const id = made.session.id;
 
   await page.goto(`/s/${id}`);
-  await page.getByTestId("context-meter").click();
+  await (await boxTools(page)).getByTestId("context-meter").click();
 
   // A compaction whose summary never answers is stopped by Stop: it ends at once, nothing is stored,
   // no failure is recorded for the owner's own stop, and the session takes a message again.
@@ -60,7 +60,7 @@ test("a compaction keeps the work's artifact trail and says what it kept", async
   await shoot(page, "compaction-stop-02-stopped");
 
   // (The press on Stop closed the popup: the stopped compaction is tried again, with no hang in its focus.)
-  await page.getByTestId("context-meter").click();
+  await (await boxTools(page)).getByTestId("context-meter").click();
   await page.getByTestId("compact-focus").fill("");
   await page.getByTestId("compact-now").click();
   await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 60_000 });

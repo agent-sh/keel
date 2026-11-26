@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openPanel, shoot } from "./shots.ts";
+import { boxTools, openPanel, shoot } from "./shots.ts";
 
 // Feature: controls come in four heights (1.5, 1.75, 2 and 2.25 rem) and none
 // is a target under 24 px. Checked on a session with its Changes panel open:
@@ -65,11 +65,11 @@ test("no control is under 24 px and icon buttons keep to the four heights", asyn
   await page.getByTestId("review-panel").or(page.getByTestId("side-panel")).first().waitFor();
   await page.waitForTimeout(600);
   seen.review = await small();
-  await page.getByTestId("permission-menu").first().click();
+  await (await boxTools(page)).getByTestId("permission-menu").first().click();
   await page.getByTestId("mode-ask").waitFor();
   seen.permissions = await small();
   await page.keyboard.press("Escape");
-  await page.getByTestId("model-picker").first().click();
+  await (await boxTools(page)).getByTestId("model-picker").first().click();
   await page.getByPlaceholder("Search models").waitFor();
   await page.waitForTimeout(300);
   seen.models = await small();

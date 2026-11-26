@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { boxTools, HAIKU, shoot } from "./shots.ts";
 
 // Feature: the sandbox's syscall filter state is shown beside the sandbox's own state, in the
 // permission menu and on the network page. The scripted daemon's sandbox reports no filter, so the
@@ -19,7 +19,7 @@ test("sandbox filter: its state in the permission menu and the network page", as
       await route.fulfill({ response: r, json: { ...j, sandbox: { ...j.sandbox, default: "workspace-write", ...filter } } });
     });
     await page.goto(`/s/${session.id}`);
-    await page.getByTestId("permission-menu").click();
+    await (await boxTools(page)).getByTestId("permission-menu").click();
     const said = page.getByTestId("sandbox-filter");
     await expect(said).toContainText(seccomp ? "syscall filter is on" : "syscall filter is off: bwrap refused --seccomp");
     await shoot(page, `sandbox-filter-${shot}-menu`);

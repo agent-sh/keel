@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { sessionsFolder, specEnv } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, closeBoxTools, shoot } from "./shots.ts";
 
 // Feature: a daemon restart does not lose a running turn. A crash (SIGKILL)
 // leaves the turn open: the next daemon closes it, marks the tool call it cut
@@ -795,7 +795,8 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     const ran = () => (existsSync(join(ws(state), "ran.txt")) ? readFileSync(join(ws(state), "ran.txt"), "utf8") : "");
 
     await page.goto(`${d.url}/s/${sid}`);
-    await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Ask");
+    await closeBoxTools(page);
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([mark(1), mark(2)])}`);
     await page.getByTestId("composer").press("Enter");
     const card = page.getByTestId("approval");

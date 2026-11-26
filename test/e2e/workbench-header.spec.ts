@@ -296,8 +296,14 @@ async function crowded(request: import("@playwright/test").APIRequestContext, mo
 // into Session actions along with the tools.
 async function reachable(station: Locator, foldPanels = false) {
   const header = station.getByTestId("session-header");
-  // The permission mode is in the message box's row, beside the model; the bar holds no control of it.
-  await expect(station.getByTestId("composer-tools").getByTestId("permission-menu")).toBeAttached();
+  // The permission mode is in the message box: in its row on a phone, behind its + on a desk (one line, no picker in
+  // the row), one of the two and never both; the bar holds no control of it.
+  const box = station.getByTestId("composer-box"), rowMode = box.getByTestId("composer-tools").getByTestId("permission-menu"), plus = box.getByTestId("box-more");
+  await expect(rowMode.or(plus)).toHaveCount(1);
+  if (await plus.count()) {
+    await expect(box).toHaveAttribute("data-line", "true");
+    await expect(box.getByTestId("model-picker")).toHaveCount(0);
+  }
   await expect(header.getByTestId("permission-menu")).toHaveCount(0);
   await expect(station.getByTestId("session-menu")).toBeInViewport({ ratio: 1 });
   if (foldPanels) await expect(station.getByTestId("panel-menu")).toHaveCount(0);

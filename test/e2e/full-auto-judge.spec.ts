@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { shoot } from "./shots.ts";
+import { boxTools, closeBoxTools, shoot } from "./shots.ts";
 
 const MODEL = "scripted:stand-in";
 const shell = (command: string) => ({ name: "Bash", input: { command } });
@@ -26,10 +26,12 @@ test("Auto reviews uncovered work while Full auto runs everything unreviewed", a
     await page.getByTestId("composer").press("Enter");
   };
   const choose = async (name: string, label: string) => {
-    await page.getByTestId("permission-menu").click();
+    await (await boxTools(page)).getByTestId("permission-menu").click();
     await page.getByTestId(`mode-${name}`).click();
-    await expect(page.getByTestId("permission-mode")).toHaveText(label);
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText(label);
     await page.keyboard.press("Escape");
+    // (The + stays open after a pick; closed, it covers no card the turn brings above the box.)
+    await closeBoxTools(page);
   };
   const clean = "git clean -fn"; // dry run; even an allowed call cannot delete files
   const denied = "printf marker > judge-deny.txt";
@@ -46,12 +48,13 @@ test("Auto reviews uncovered work while Full auto runs everything unreviewed", a
   expect(await cards()).toEqual([]);
 
   await choose("auto", "Auto");
-  await page.getByTestId("permission-menu").click();
+  await (await boxTools(page)).getByTestId("permission-menu").click();
   // Each mode says what it does in one line; the mode in use says the whole of it.
   await expect(page.getByTestId("mode-full-auto")).toContainText("Runs everything; nothing is checked");
   await expect(page.getByTestId("mode-description")).toBeVisible();
   await shoot(page, "permission-review-01-modes");
   await page.keyboard.press("Escape");
+  await closeBoxTools(page);
 
   await send(shell(clean), write("workspace.txt", "in scope"), shell("printf marker > judge-allow.txt"), shell(denied), shell("printf marker > judge-unavailable.txt"));
   await turnsDone(2);

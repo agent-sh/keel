@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { expect, test, type APIRequestContext, type Locator } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: the model picker over hundreds of listed models. With no query it
 // shows favorites, recent models and one folded group per provider (the
@@ -412,8 +412,8 @@ test("model picker: the effort on each row, one Enter sets both", async ({ page,
     // Alt+M, the name, Alt+Left, Enter: four presses for both.
     await page.keyboard.press("Enter");
     await expect(popup).toBeHidden();
-    await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
-    await expect(page.getByTestId("effort-picker")).toContainText("low");
+    await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted backup");
+    await expect((await boxTools(page)).getByTestId("effort-picker")).toContainText("low");
     expect(await read()).toMatchObject({ model: "scripted:stand-in-backup", settings: { effort: "low" } });
 
     // With no query plain Right steps it; on the model in use that is an effort change alone.
@@ -427,7 +427,7 @@ test("model picker: the effort on each row, one Enter sets both", async ({ page,
     await page.keyboard.press("ArrowRight");
     await expect(current.getByTestId("row-effort")).toHaveAttribute("data-effort", "high");
     await page.keyboard.press("Enter");
-    await expect(page.getByTestId("effort-picker")).toContainText("high");
+    await expect((await boxTools(page)).getByTestId("effort-picker")).toContainText("high");
     expect(await read()).toMatchObject({ model: "scripted:stand-in-backup", settings: { effort: "high" } });
 
     // Escape leaves both as they were, whatever the rows were set to.
@@ -443,10 +443,14 @@ test("model picker: the effort on each row, one Enter sets both", async ({ page,
     const menu = page.getByRole("menu");
     await expect(menu).toContainText("Effort, from the next turn");
     await menu.getByRole("menuitem", { name: "low" }).click();
-    await expect(page.getByTestId("effort-picker")).toContainText("low");
+    await expect((await boxTools(page)).getByTestId("effort-picker")).toContainText("low");
 
-    // A phone: the effort sits on the row's last line and answers a tap.
+    // A phone: the effort sits on the row's last line and answers a tap. (The pickers move from the desk's + to the
+    // phone's row: the Alt+E made before opens nothing there by itself.)
     await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId("composer-box")).not.toHaveAttribute("data-line");
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await expect(page.getByRole("menu")).toHaveCount(0);
     const tools = page.getByTestId("composer-open");
     if (await tools.isVisible()) await tools.click();
     await page.getByTestId("model-picker").click();

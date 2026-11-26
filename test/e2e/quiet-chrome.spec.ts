@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, inHead } from "./shots.ts";
+import { closeBoxTools, HAIKU, inHead, shoot } from "./shots.ts";
 
 // Feature: the shell shows a control where it is needed and keeps the rest out
 // of sight until it is pointed at or the keyboard reaches it. A control that
@@ -183,6 +183,29 @@ test("a session's box on a desk is one quiet line in the workbench: the pickers 
   await expect(page.getByTestId("box-more-popup").getByTestId("model-picker")).toBeVisible();
   await expect(page.getByTestId("box-more-popup").getByTestId("permission-menu")).toBeVisible();
   await shoot(page, "quiet-08-box-one-line");
+  // A key that asks for a picker opens the + with that picker's own menu, every time, and a plain press on the + after
+  // it opens no menu by itself.
+  const more = box.getByTestId("box-more"), models = page.getByTestId("model-popup"), menus = page.getByRole("menu");
+  await closeBoxTools(page);
+  for (let i = 0; i < 2; i++) {
+    await page.getByTestId("composer").click();
+    await page.keyboard.press("Alt+m");
+    await expect(models).toBeVisible();
+    await expect(more).toHaveAttribute("data-popup-open", "");
+    await page.keyboard.press("Escape");
+    await expect(models).toBeHidden();
+    await closeBoxTools(page);
+  }
+  await page.getByTestId("composer").click();
+  await page.keyboard.press("Alt+e");
+  await expect(menus).toContainText("Effort, from the next turn");
+  await page.keyboard.press("Escape");
+  await expect(menus).toHaveCount(0);
+  await closeBoxTools(page);
+  await more.click();
+  await expect(page.getByTestId("box-more-popup").filter({ visible: true }).getByTestId("effort-picker")).toBeVisible();
+  await expect(menus).toHaveCount(0);
+  await expect(models).toBeHidden();
 });
 
 test("a step of long commands is one row beside the reply", async ({ page, request }) => {

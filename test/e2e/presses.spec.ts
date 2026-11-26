@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: Settings > Telemetry records what the owner presses, on this
 // machine. Three controls pressed 3, 2 and 1 times come back most used first
@@ -26,7 +26,8 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
     }
   };
   await press("session-menu", 3);
-  await press("model-picker", 2);
+  // (On a desk the model is behind the box's +: the + is the box's control pressed here.)
+  await press("box-more", 2);
   await press("panel-menu", 1);
   // A word typed into the message box is no press and is kept nowhere.
   await page.getByTestId("composer").fill(typed);
@@ -52,7 +53,7 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   const view = panel.locator('[data-testid="press-view"][data-view="session"]');
   await expect(view).toBeVisible();
   const rows = view.getByTestId("press-row");
-  await expect.poll(async () => (await rows.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-control")}:${e.querySelector("[data-testid=press-count]")?.textContent}`)))).toEqual(["session-menu:3", "model-picker:2", "panel-menu:1"]);
+  await expect.poll(async () => (await rows.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-control")}:${e.querySelector("[data-testid=press-count]")?.textContent}`)))).toEqual(["session-menu:3", "box-more:2", "panel-menu:1"]);
   const never = panel.getByTestId("press-never");
   await expect(never.getByTestId("press-never-row").first()).toBeVisible();
   // Pressed controls are not in the list of the never pressed.
@@ -148,7 +149,7 @@ test("telemetry: a session row, the send keys, a key command, a row action and a
   await gotOne("key:palette");
   await page.keyboard.press("Escape");
   // A menu item, by name.
-  await page.getByTestId("effort-picker").click();
+  await (await boxTools(page)).getByTestId("effort-picker").click();
   await page.getByRole("menuitem", { name: "low" }).click();
   await gotOne("effort-low");
 

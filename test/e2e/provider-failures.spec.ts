@@ -2,7 +2,7 @@ import { expect, test, type Page } from "./isolate.ts";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { exited, ownDaemon } from "./peer.ts";
-import { endsAre, shoot } from "./shots.ts";
+import { boxTools, closeBoxTools, endsAre, shoot } from "./shots.ts";
 
 // Feature: what the owner sees when the provider fails or stops early. A real
 // model cannot be made to do these on demand, so the scripted stand-in
@@ -101,7 +101,8 @@ test("an overloaded model moves the turn to the session's fallback, and the next
     const { session } = await api("/api/sessions", { model: STAND_IN, title: "Overloaded with a fallback" });
     await api(`/api/sessions/${session.id}`, { settings: { fallback: "scripted:stand-in-backup" } }, "PATCH");
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("fallback-chip")).toContainText("Scripted backup");
+    await expect((await boxTools(page)).getByTestId("fallback-chip")).toContainText("Scripted backup");
+    await closeBoxTools(page);
     const composer = page.getByTestId("composer");
     await composer.fill("script:overloaded-long");
     await composer.press("Enter");
@@ -245,7 +246,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   // A long reply takes the context past its compaction line: the meter says
   // where that is, and the next turn compacts before its request.
   await send(page, "script:fill", 3);
-  await page.getByTestId("context-meter").click();
+  await (await boxTools(page)).getByTestId("context-meter").click();
   await expect(page.getByTestId("context-popup")).toContainText("of 64k tokens · compacts at 6.8k");
   await shoot(page, "failures-04-context-full");
   await page.keyboard.press("Escape");

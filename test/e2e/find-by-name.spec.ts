@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: the permission modes and the side panels are found by what they
 // do, without reading a description of each. Modes are grouped by who decides
@@ -18,10 +18,10 @@ test("modes and panels are grouped and say what they do", async ({ page, request
 
     // First use: the mode for "edits run, commands ask" is the row that says so.
     const started = Date.now();
-    await page.getByTestId("permission-menu").click();
+    await (await boxTools(page)).getByTestId("permission-menu").click();
     await page.getByRole("radio", { name: /edits run; commands ask/i }).click();
     expect(Date.now() - started).toBeLessThan(5000);
-    await expect(page.getByTestId("permission-mode")).toHaveText("Auto edits");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Auto edits");
     // The row says when a command does not ask: the sandbox and read-only commands are in its words.
     await expect(page.locator('[data-testid="mode-row"][data-mode="auto-edits"]').getByTestId("mode-summary")).toHaveText(/unless read-only or sandboxed/);
     // The groups are headed as the Panels picker's are: the same class, so the same face and size.
@@ -46,9 +46,16 @@ test("modes and panels are grouped and say what they do", async ({ page, request
     await page.keyboard.press("ArrowUp");
     await page.keyboard.press("ArrowUp");
     await expect(page.getByTestId("mode-ask")).toBeFocused();
-    await expect(page.getByTestId("permission-mode")).toHaveText("Auto edits");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Auto edits");
     await shoot(page, "find-01-modes");
     await page.setViewportSize({ width: 390, height: 844 });
+    // (A phone's box holds the mode in its own row: the menu moved there from the desk's + and opens again from it.)
+    await expect(page.getByTestId("composer-box")).not.toHaveAttribute("data-line");
+    if (!(await row("plan").isVisible())) {
+      const tools = page.getByTestId("composer-open");
+      if (await tools.isVisible()) await tools.click();
+      await page.getByTestId("permission-menu").click();
+    }
     await expect(row("plan")).toBeInViewport({ ratio: 1 });
     await shoot(page, "find-02-modes-phone");
     await page.setViewportSize({ width: 1920, height: 1040 });

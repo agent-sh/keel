@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ask, choose, HAIKU, shoot } from "./shots.ts";
+import { ask, boxTools, closeBoxTools, choose, HAIKU, shoot } from "./shots.ts";
 
 // Feature: plan mode. The session reads and plans but changes nothing; the
 // model presents its plan on a card; the owner sends it back once, then
@@ -12,10 +12,11 @@ test("plan mode and plan approval", async ({ page, request }) => {
   mkdirSync(ws, { recursive: true });
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("permission-menu").click();
+  await (await boxTools(page)).getByTestId("permission-menu").click();
   await page.getByTestId("mode-plan").click();
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("permission-mode")).toHaveText("Plan");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Plan");
+  await closeBoxTools(page);
 
   // A real model plans from words. The stand-in presents the plan its script holds, presents the
   // second one when the first comes back, and runs the command once a plan is approved: the card,
@@ -50,14 +51,16 @@ test("plan mode and plan approval", async ({ page, request }) => {
   const after = await (await request.get(`/api/sessions/${session.id}/plan`)).json();
   expect(after.open.map((c: { id: string }) => c.id)).toEqual([open[0].id]);
   expect(after.plan).toBeNull();
-  await expect(page.getByTestId("permission-mode")).toHaveText("Plan");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Plan");
+  await closeBoxTools(page);
   await card.locator("textarea").fill(shown);
   await card.getByTestId("plan-edit").click();
 
   await choose(card.getByTestId("plan-mode"), "auto-edits");
   await card.getByTestId("plan-approve").click();
   await expect(card).toHaveCount(0);
-  await expect(page.getByTestId("permission-mode")).toHaveText("Auto edits");
+  await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Auto edits");
+  await closeBoxTools(page);
   // Auto edits still asks before a command that writes (no sandbox here).
   const asks = page.getByTestId("approval");
   await expect(asks).toBeVisible({ timeout: 90_000 });

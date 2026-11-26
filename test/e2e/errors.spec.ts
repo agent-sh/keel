@@ -122,7 +122,8 @@ test("a reconnect after a deletion or a failed first load records no error", asy
   const s = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Deleted while away" } })).json()).session;
   await page.goto(`/s/${s.id}`);
   await expect(page.getByTestId("station-head").first()).toContainText("Deleted while away");
-  await expect(page.getByTestId("permission-menu")).toBeVisible();
+  // (The box is drawn: on a desk its mode and model are behind its +.)
+  await expect(page.getByTestId("composer-box").getByTestId("box-more")).toBeVisible();
   // The listing is there after all: the socket's open loaded it again.
   await expect.poll(() => listings).toBeGreaterThanOrEqual(2);
 

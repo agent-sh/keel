@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { expect, test, type Page } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { boxTools, HAIKU, shoot } from "./shots.ts";
 
 // Feature: changing a session's model mid-session. A switch made while a turn
 // runs takes effect at that turn's next request (not at the next turn); the
@@ -10,7 +10,7 @@ import { HAIKU, shoot } from "./shots.ts";
 // back). Before a switch to a window the context does not fit, the picker
 // says so and offers to compact on the model in use first.
 async function pick(page: Page, m: { id: string; model: string }) {
-  await page.getByTestId("model-picker").click();
+  await (await boxTools(page)).getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill(m.model);
   await page.getByTestId("model-popup").locator(`[data-testid="model-option"][data-model="${m.id}"]`).first().click();
 }
@@ -138,7 +138,7 @@ test("a stale switch pick distinguishes a failed listing from a missing model", 
     expect((await request.post(`${path}/messages`, { data: { text: "Hello there." } })).ok()).toBe(true);
     await page.goto(`/s/${session.id}`);
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
-    await page.getByTestId("model-picker").click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill(target);
     const option = page.getByTestId("model-popup").locator(`[data-model="${target}"]`).first();
     await expect(option).toBeVisible();

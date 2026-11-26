@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { daemon, exited, ROOT, sessionsFolder } from "./own-daemon.ts";
-import { scrollsSideways, shoot } from "./shots.ts";
+import { boxTools, scrollsSideways, shoot } from "./shots.ts";
 
 // Feature: a folder's content stays on the providers the owner allowed for it.
 // Settings > Content routes names the providers per folder (and for every other
@@ -125,7 +125,7 @@ test("content routes: a folder's calls go only to its allowed providers, and the
     await shoot(page, "content-routes-01-refused");
 
     // The owner switches the refused session to a model of an allowed provider in its picker, and it goes on.
-    await page.getByTestId("model-picker").click();
+    await (await boxTools(page)).getByTestId("model-picker").click();
     const option = page.getByTestId("model-popup").locator(`[data-testid="model-option"][data-model="${SECOND}"]`).first();
     await option.scrollIntoViewIfNeeded();
     await Promise.all([page.waitForResponse((res) => res.url().endsWith(`/api/sessions/${inB}`) && res.request().method() === "PATCH" && res.ok()), option.click()]);

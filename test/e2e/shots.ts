@@ -63,11 +63,40 @@ export const HAIKU = process.env.KEEL_TEST_MODEL ?? "bedrock:global.anthropic.cl
 // real model for.
 export const SCRIPTED = HAIKU.startsWith("scripted:");
 export const ask = (real: string, scripted: string) => (SCRIPTED ? scripted : real);
-// Picks a model in the open page's model picker by its exact id (the run's model unless named).
+// The pickers of a session's message box: on a desk the mode, the model, the effort, the speed and the context
+// are behind the box's + (BoxMore in ui/src/components/Composer.tsx), so this opens it when it is closed and
+// gives back its popup. Where the box keeps them in its row (the start page, a phone) it does nothing and gives
+// back the scope. Safe to call again: an open popup stays open. `scope` is the page or a pane holding one box.
+export async function boxTools(scope: Page | Locator): Promise<Page | Locator> {
+  const page = "page" in scope && typeof scope.page === "function" ? scope.page() : (scope as Page);
+  const box = scope.getByTestId("composer-box").first();
+  await expect(box).toBeVisible();
+  const more = box.getByTestId("box-more");
+  if ((await box.getAttribute("data-line")) === null || !(await more.count())) return scope;
+  // (Each session box's popup stays in the page while closed, hidden: the open one is the one shown.)
+  const popup = page.getByTestId("box-more-popup").filter({ visible: true });
+  if ((await more.getAttribute("data-popup-open")) === null) await more.click();
+  await expect(more).toHaveAttribute("data-popup-open", "");
+  await expect(popup).toBeVisible();
+  return popup;
+}
+// Closes the box's + popup when it is open (no picker's own menu open inside it), so it covers nothing above the
+// box: a spec that read a picker and goes on in the conversation calls it. Nothing happens where it is closed or absent.
+export async function closeBoxTools(scope: Page | Locator) {
+  const more = scope.getByTestId("composer-box").first().getByTestId("box-more");
+  if (!(await more.count()) || (await more.getAttribute("data-popup-open")) === null) return;
+  await more.click();
+  await expect(more).not.toHaveAttribute("data-popup-open");
+}
+
+// Picks a model in the open page's model picker by its exact id (the run's model unless named), and leaves the
+// session box's + closed as it found it.
 export async function pickModel(page: Page, id = HAIKU) {
-  await page.getByTestId("model-picker").click();
+  await (await boxTools(page)).getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill(id);
   await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
+  await expect(page.getByPlaceholder("Search models")).toBeHidden();
+  await closeBoxTools(page);
 }
 // The stand-in's words for "run this one shell command", made `afterMs` into the turn when given
 // (a real model takes a moment before its first call; the stand-in makes it at once).

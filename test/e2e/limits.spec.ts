@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: rate-limit and plan usage windows, and account states. Settings >
 // Providers shows each provider's windows as meters and an account that
@@ -44,14 +44,14 @@ test("limits: windows in Settings, account states, the chip by the picker", asyn
   const model = models.find((m: any) => m.provider === pid);
   const s = (await (await request.post("/api/sessions", { data: { model: model.id } })).json()).session;
   await page.goto(`/s/${s.id}`);
-  const chip = page.getByTestId("limit-chip");
+  const chip = (await boxTools(page)).getByTestId("limit-chip");
   await expect(chip).toContainText(p.kind === "billing" ? "Billing" : "Key refused");
   await chip.click();
   await expect(page.getByTestId("limit-popup").getByTestId("provider-problem")).toBeVisible();
   await shoot(page, "limits-02-chip");
   await page.keyboard.press("Escape");
 
-  await page.getByTestId("model-picker").click();
+  await (await boxTools(page)).getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill(model.name);
   await expect(page.locator(`[data-testid="model-group"][data-group="${pid}"] [data-testid="group-problem"]`)).toBeVisible();
   await page.keyboard.press("Escape");

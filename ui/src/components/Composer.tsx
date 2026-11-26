@@ -57,20 +57,35 @@ const Pickers = {
   }),
   Model: memo(ModelPicker), Effort: memo(EffortPicker), Speed: memo(SpeedPicker), Fallback: memo(FallbackChip), Limit: memo(LimitChip), Meter: memo(ContextMeter),
 };
-// Focus's + in the message box: the mode, the model, the effort and the context in one popup. A key that asks for
-// one of them (Alt M, Alt E, /permissions) opens it with that picker.
-function BoxMore({ signal, children }: { signal: string; children: ReactNode }) {
+// The + in a session's message box on a desk: the mode, the model, the effort and the context in one popup. A key
+// that asks for one of them (Alt M, Alt E, /permissions) opens it with that picker's own menu. The pickers stay
+// mounted while it is closed (a picker that mounted with the ask would take it as its first value and open nothing),
+// and an ask reaches its picker once the popup is in place: a menu placed against a trigger that is still hidden
+// measures nothing, and its observer is told of the size twice in one frame.
+type Asks = { mode: number; model: number; effort: number };
+function BoxMore({ asks, children }: { asks: Asks; children: (asks: Asks) => ReactNode }) {
   const [open, setOpen] = useState(false);
-  const was = useRef(signal);
-  useEffect(() => { if (signal !== was.current) { was.current = signal; setOpen(true); } }, [signal]);
+  const [given, setGiven] = useState(asks);
+  const latest = useRef(asks);
+  latest.current = asks;
+  const shown = useRef(false);
+  const key = `${asks.mode}|${asks.model}|${asks.effort}`, was = useRef(key);
+  useEffect(() => {
+    if (key === was.current) return;
+    was.current = key;
+    if (shown.current) setGiven(latest.current);
+    else setOpen(true);
+  }, [key]);
+  const change = (o: boolean) => { if (!o) shown.current = false; setOpen(o); };
+  const settled = (o: boolean) => { shown.current = o; if (o) setGiven(latest.current); };
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={change} onOpenChangeComplete={settled}>
       <Popover.Trigger className="k-box-more grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg data-popup-open:bg-hover" data-testid="box-more" aria-label="Mode, model and context" title="Mode, model and context">
         <Plus className="size-4" />
       </Popover.Trigger>
-      <Popover.Portal>
+      <Popover.Portal keepMounted>
         <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50">
-          <Popover.Popup className="k-box-more-pop flex flex-col items-start gap-1 rounded-lg border border-line bg-raised p-1.5 shadow-3 outline-none" data-testid="box-more-popup">{children}</Popover.Popup>
+          <Popover.Popup className="k-box-more-pop flex flex-col items-start gap-1 rounded-lg border border-line bg-raised p-1.5 shadow-3 outline-none" data-testid="box-more-popup">{children(given)}</Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
     </Popover.Root>
@@ -1282,15 +1297,19 @@ const SessionComposer = memo(function SessionComposer({
             {!oneLine && sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
             {!oneLine && <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />}
             {oneLine && (
-              <BoxMore signal={`${modeOpen}|${pickerSignal}|${effortOpen}`}>
-                {phoneLine && <span className="flex items-center gap-x-0.5">{attach}<SpeechButtons sid={sid} /></span>}
-                {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
-                <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
-                {sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
-                {sid && <Pickers.Speed sessionId={sid} />}
-                {sid && <Pickers.Fallback sessionId={sid} />}
-                {model && <Pickers.Limit model={model} />}
-                {sid && <Pickers.Meter sessionId={sid} />}
+              <BoxMore asks={{ mode: modeOpen, model: pickerSignal, effort: effortOpen }}>
+                {(asks) => (
+                  <>
+                    {phoneLine && <span className="flex items-center gap-x-0.5">{attach}<SpeechButtons sid={sid} /></span>}
+                    {sid && <Pickers.Mode sessionId={sid} openSignal={asks.mode} />}
+                    <Pickers.Model value={model} onChange={pickModel} openSignal={asks.model} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
+                    {sid && <Pickers.Effort sessionId={sid} openSignal={asks.effort} />}
+                    {sid && <Pickers.Speed sessionId={sid} />}
+                    {sid && <Pickers.Fallback sessionId={sid} />}
+                    {model && <Pickers.Limit model={model} />}
+                    {sid && <Pickers.Meter sessionId={sid} />}
+                  </>
+                )}
               </BoxMore>
             )}
           </span>

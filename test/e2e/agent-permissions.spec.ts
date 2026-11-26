@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 const STAND_IN = "scripted:stand-in";
 const calls = (list: { name: string; input: unknown }[]) => `script:calls ${JSON.stringify(list)}`;
@@ -30,9 +30,9 @@ test("a parent's permission change reaches its agents and their open cards", asy
     await shoot(page, "agent-permissions-01-asking");
 
     // Read only on the root: the agent's card is settled as read only settles it, and nothing was written.
-    await page.getByTestId("permission-menu").click();
+    await (await boxTools(page)).getByTestId("permission-menu").click();
     await page.getByTestId("mode-read-only").click();
-    await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
+    await expect((await boxTools(page)).getByTestId("permission-mode")).toHaveText("Read only");
     await page.keyboard.press("Escape");
     await expect(theirs).toHaveCount(0, { timeout: 30_000 });
     expect((await perm(child.session_id)).mode).toBe("read-only");

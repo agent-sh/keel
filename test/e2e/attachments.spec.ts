@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
-import { HAIKU, ask, shoot, tabInto } from "./shots.ts";
+import { ask, boxTools, closeBoxTools, HAIKU, shoot, tabInto } from "./shots.ts";
 
 // A one-page PDF with one line of text, offsets computed so readers accept it.
 function pdf(line: string): Buffer {
@@ -119,7 +119,7 @@ test("attachments: the model's image and PDF support before Send", async ({ page
 
   // On a model whose listing says nothing about images: sent, what happens if it cannot read
   // them said in one sentence, and a listed model that reads them one press away.
-  await page.getByTestId("model-picker").click();
+  await (await boxTools(page)).getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill("scripted:stand-in");
   await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
   await expect(line).toContainText("Scripted stand-in does not say it reads images: sent as it is, left out with a note if refused");
@@ -128,7 +128,8 @@ test("attachments: the model's image and PDF support before Send", async ({ page
   await expect(reader).toHaveText("Use Scripted backup");
   await shoot(page, "attach-04-unverified-reader");
   await reader.click();
-  await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
+  await expect((await boxTools(page)).getByTestId("model-picker")).toContainText("Scripted backup");
+  await closeBoxTools(page);
   await expect(line).toContainText("Reads images");
   await expect(reader).toHaveCount(0);
 

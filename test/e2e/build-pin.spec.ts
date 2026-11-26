@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { startFakeMessages } from "./fixtures/fake-messages.ts";
 import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { boxTools, shoot } from "./shots.ts";
 
 // Feature: a daemon upgrade does not make a live session pay for its whole
 // context again. A session keeps the tools and system prompt it was last
@@ -119,7 +119,7 @@ test("a session keeps its tools and prompt across an upgrade and takes the new b
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${asked}`);
     await turn(asked, "hello on build two");
-    await page.getByTestId("context-meter").click();
+    await (await boxTools(page)).getByTestId("context-meter").click();
     const pin = page.getByTestId("build-pin");
     await expect(pin).toContainText(`Tools and prompt are from build ${one}`);
     await expect(page.getByTestId("build-pin-waiting")).toContainText("This build (build-two) changed the prompt (core) and the tools (Bash)");
@@ -341,7 +341,7 @@ test("an edited instruction file reaches a warm session at its tail and is folde
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${id}`);
     await expect(page.getByTestId("note").filter({ hasText: "Told the model what changed in its prompt (instruction files)" })).toBeVisible();
-    await page.getByTestId("context-meter").click();
+    await (await boxTools(page)).getByTestId("context-meter").click();
     await expect(page.getByTestId("build-pin-told")).toContainText("Your change to the prompt (instruction files) was told to the model at the end of its context, so it applies now.");
     await shoot(page, "build-pin-told");
     await page.keyboard.press("Escape");
