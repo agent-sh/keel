@@ -362,6 +362,10 @@ test("a state that is well asks nothing: this machine's ready mark and the helpe
   await page.goto("/settings/machines");
   await expect(page.getByTestId("machine-state").first()).toContainText("ready");
   expect(await chroma("machine-state-mark"), "the ready mark is a grey").toBeLessThan(0.03);
+  // Placement is a group of the Settings kit: its name, and what it is on a line of its own under it.
+  const placement = page.getByTestId("placement");
+  await expect(placement.locator(".k-set-title h3")).toHaveText("Placement");
+  await expect(placement.locator(".k-set-hint")).toHaveText("Where new work goes when you pick Auto. The first rule that holds wins.");
   await shoot(page, "quiet-16-well-machine");
   await page.goto("/settings/helper");
   await expect(page.getByTestId("helper-mail-mark")).toHaveAttribute("data-tone", "ok");

@@ -3,21 +3,18 @@
 // one by its daemon URL or ssh host, the ssh hosts offered, and the daemons
 // that linked to this one.
 import { ArrowUp, Cpu, Link2, Plus, RefreshCw, Server, Terminal, Trash2, Unlink, Wand2, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { fleet, useFleet, type Machine, type Rule } from "../lib/fleet.ts";
 import { reportError, failed } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
-import { Card } from "./Settings.tsx";
+import { Empty, Group, Page } from "./settings/kit.tsx";
 import { Select } from "./Select.tsx";
 import { Seg } from "./Seg.tsx";
 
 const field = "k-field w-full";
 const btn = "k-btn k-btn-lg [&>svg]:text-faint";
 const ghost = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50 [&>svg]:size-3.5";
-const heading = (t: string, extra?: ReactNode) => (
-  <h3 className="k-after-card mt-7 mb-2 flex items-center gap-2 k-label">{t}{extra}</h3>
-);
 
 // A machine that is ready asks nothing: its dot is grey, as a well row of Health is. The colour is one that works or is gone.
 const TONE: Record<string, string> = { ready: "k-set-dot", busy: "bg-st-work", starting: "bg-st-work animate-pulse-dot", offline: "bg-danger", unknown: "bg-line-strong" };
@@ -272,9 +269,8 @@ function Placement({ machines }: { machines: Machine[] }) {
   const name = (id: string) => targets.find((t) => t.id === id)?.name ?? id;
   const save = (next: Rule[]) => fleet.saveRules(next).then(() => setErr("")).catch((e) => setErr(failed(e, { at: "MachinesPanel" })));
   return (
-    <Card>
-      <div className="py-1" data-testid="placement">
-        {rules.length === 0 && <p className="k-empty py-3.5">No rules: new work stays on this machine unless you pick one.</p>}
+    <Group title="Placement" count={rules.length || undefined} testid="placement" hint="Where new work goes when you pick Auto. The first rule that holds wins.">
+        {rules.length === 0 && <Empty>No rules: new work stays on this machine unless you pick one.</Empty>}
         {rules.map((r, i) => (
           <div key={i} className="flex items-center gap-3 border-b border-line py-2.5" data-testid="placement-rule">
             <span className="grid size-5 shrink-0 place-items-center rounded-full bg-sunken text-micro tabular-nums text-muted">{i + 1}</span>
@@ -314,8 +310,7 @@ function Placement({ machines }: { machines: Machine[] }) {
           <button type="submit" className={btn} data-testid="placement-add"><Plus /> Add rule</button>
         </form>
         {err && <div className="pb-3 text-caption text-danger">{err}</div>}
-      </div>
-    </Card>
+    </Group>
   );
 }
 
@@ -332,9 +327,9 @@ export function MachinesSettings() {
   const linked = machines.filter((m) => m.source !== "local" && m.enabled);
   const offered = machines.filter((m) => !m.enabled);
   return (
-    <div data-testid="machines-panel">
-      <Card>
-        {local ? <LocalRow m={local} /> : <p className="py-6 text-ui text-faint">Reading the machines.</p>}
+    <Page testid="machines-panel">
+      <Group>
+        {local ? <LocalRow m={local} /> : <Empty>Reading the machines.</Empty>}
         {linked.map((m) => <MachineRow key={m.id} m={m} />)}
         <div className="border-t border-line">
           {adding ? (
@@ -346,12 +341,10 @@ export function MachinesSettings() {
             </div>
           )}
         </div>
-      </Card>
-      {heading("Placement", <span className="font-normal">· where new work goes when you pick Auto; the first rule that holds wins</span>)}
+      </Group>
       <Placement machines={machines} />
-      {offered.length > 0 && heading("Machines over ssh, not enabled", <span className="font-normal">· from your ssh configuration, aliases of one machine as its routes; enabling one grants its home folder (Edit narrows it)</span>)}
       {offered.length > 0 && (
-        <Card>
+        <Group title="Machines over ssh, not enabled" count={offered.length} testid="machines-offered" hint="From your ssh configuration, aliases of one machine as its routes. Enabling one grants its home folder (Edit narrows it).">
           <div className="py-1">
             {(allHosts ? offered : offered.slice(0, HOSTS_SHOWN)).map((m) => <SshHost key={m.id} m={m} onDaemon={() => { setPreset(m.name); setAdding(true); }} />)}
             {offered.length > HOSTS_SHOWN && (
@@ -360,11 +353,10 @@ export function MachinesSettings() {
               </button>
             )}
           </div>
-        </Card>
+        </Group>
       )}
-      {pairs.length > 0 && heading("Daemons linked to this one")}
       {pairs.length > 0 && (
-        <Card>
+        <Group title="Daemons linked to this one" count={pairs.length} testid="machines-pairs">
           {pairs.map((p) => (
             <div key={p.daemon_id} className="flex items-center gap-3 border-t border-line py-3 first:border-0" data-testid="pair-row">
               <Link2 className="size-3.5 text-faint" />
@@ -376,8 +368,8 @@ export function MachinesSettings() {
               </button>
             </div>
           ))}
-        </Card>
+        </Group>
       )}
-    </div>
+    </Page>
   );
 }
