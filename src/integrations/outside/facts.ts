@@ -41,7 +41,16 @@ export type Reader = {
   facts(): Facts;
   // The failures read since the last take, oldest first.
   takeFailures(): Failed[];
+  // What the next record can change, as plain data: a reader made from it (readerOf) reads on where this one
+  // stopped, so a transcript is not read again from its start after a restart (src/integrations/outside/reads.ts).
+  // The failures not taken yet are not in it: a restart tells only the failures it reads.
+  save(): ReaderState;
 };
+
+// A reader's state as `save` gives it: its harness's own fields, under the version of their shape.
+export type ReaderState = { v: number; h: OutsideHarness; [k: string]: unknown };
+// The version of the saved shape: a state of another one is not read (its transcript is read from its start).
+export const READER_V = 1;
 
 const tsOf = (r: any) => Date.parse(r?.timestamp ?? "") || 0;
 
@@ -89,8 +98,17 @@ const absolute = (p: string, cwd?: string) => (isAbsolute(p) || !cwd ? p : resol
 class Files {
   private seen = new Set<string>();
   list: string[] = [];
+  constructor(had: unknown = []) { for (const p of Array.isArray(had) ? had : []) if (typeof p === "string") this.add(p); }
   add(p: string) { if (p && !this.seen.has(p)) { this.seen.add(p); this.list.push(p); } }
 }
+
+// A saved state of this harness and version, else none.
+const savedOf = (h: OutsideHarness, s: ReaderState | undefined): Record<string, any> => (s && s.v === READER_V && s.h === h ? s : {});
+const str = (x: unknown) => (typeof x === "string" ? x : undefined);
+const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : 0);
+const stateOf = (x: unknown): OutsideState => (x === "working" || x === "waiting" || x === "stale" ? x : "done");
+const pairs = (x: unknown): [string, any][] => (Array.isArray(x) ? x.filter((p) => Array.isArray(p) && typeof p[0] === "string") : []);
+const usages = (x: unknown): Record<string, Usage> => (x && typeof x === "object" && !Array.isArray(x) ? { ...(x as Record<string, Usage>) } : {});
 
 // Claude Code: a turn opens with the owner's prompt and ends with its
 // turn_duration (or stop hook) record, a reply that stopped by itself, or an
@@ -98,16 +116,17 @@ class Files {
 // owner (a question, a plan) is a wait. One reply is written as several
 // records with the same message id, each carrying the reply's usage so far:
 // the last one counts.
-export function claudeReader(): Reader {
-  let state: OutsideState = "done";
-  let since = 0, last = 0;
-  let waiting: string | undefined;
-  let model: string | undefined;
-  let cwd: string | undefined;
-  const open = new Map<string, { name: string; path?: string; ts?: number }>();
-  const replies = new Map<string, { model: string; usage: Usage }>();
-  const settled: Record<string, Usage> = {};
-  const files = new Files();
+export function claudeReader(saved?: ReaderState): Reader {
+  const was = savedOf("claude", saved);
+  let state: OutsideState = stateOf(was.state);
+  let since = num(was.since), last = num(was.last);
+  let waiting: string | undefined = str(was.waiting);
+  let model: string | undefined = str(was.model);
+  let cwd: string | undefined = str(was.cwd);
+  const open = new Map<string, { name: string; path?: string; ts?: number }>(pairs(was.open));
+  const replies = new Map<string, { model: string; usage: Usage }>(pairs(was.replies));
+  const settled: Record<string, Usage> = usages(was.settled);
+  const files = new Files(was.files);
   let failures: Failed[] = [];
   const set = (s: OutsideState, ts: number, w?: string) => {
     if (s !== state || w !== waiting) since = ts || since;
@@ -175,6 +194,7 @@ export function claudeReader(): Reader {
       return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage, files: [...files.list], ...(doing ? { doing } : {}) };
     },
     takeFailures() { const f = failures; failures = []; return f; },
+    save: () => ({ v: READER_V, h: "claude", state, since, last, waiting, model, cwd, open: [...open], replies: [...replies], settled: { ...settled }, files: [...files.list] }),
   };
 }
 
@@ -206,17 +226,18 @@ const outputText = (out: unknown): string => {
 // a call is open until its output; a request for the owner's input is a wait,
 // and so is an approval the rollout records. Its token_count records carry
 // the session's running total: what each adds is the model's of that turn.
-export function codexReader(): Reader {
-  let state: OutsideState = "done";
-  let since = 0, last = 0;
-  let waiting: string | undefined;
-  let model: string | undefined;
-  let cwd: string | undefined;
-  let total: Usage = emptyUsage();
-  const usage: Record<string, Usage> = {};
-  const open = new Map<string, { name: string; paths: string[]; ts?: number }>();
-  const approvals = new Set<string>();
-  const files = new Files();
+export function codexReader(saved?: ReaderState): Reader {
+  const was = savedOf("codex", saved);
+  let state: OutsideState = stateOf(was.state);
+  let since = num(was.since), last = num(was.last);
+  let waiting: string | undefined = str(was.waiting);
+  let model: string | undefined = str(was.model);
+  let cwd: string | undefined = str(was.cwd);
+  let total: Usage = was.total && typeof was.total === "object" ? { ...emptyUsage(), ...was.total } : emptyUsage();
+  const usage: Record<string, Usage> = usages(was.usage);
+  const open = new Map<string, { name: string; paths: string[]; ts?: number }>(pairs(was.open));
+  const approvals = new Set<string>(Array.isArray(was.approvals) ? was.approvals.filter((a: unknown) => typeof a === "string") : []);
+  const files = new Files(was.files);
   let failures: Failed[] = [];
   const set = (s: OutsideState, ts: number, w?: string) => {
     if (s !== state || w !== waiting) since = ts || since;
@@ -282,6 +303,7 @@ export function codexReader(): Reader {
       return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage: { ...usage }, files: [...files.list], ...(doing ? { doing } : {}) };
     },
     takeFailures() { const f = failures; failures = []; return f; },
+    save: () => ({ v: READER_V, h: "codex", state, since, last, waiting, model, cwd, total: { ...total }, usage: { ...usage }, open: [...open], approvals: [...approvals], files: [...files.list] }),
   };
 }
 
@@ -295,14 +317,15 @@ const agyTs = (r: any) => {
   const m = typeof r?.created_at === "string" ? /^(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?/.exec(r.created_at) : null;
   return m ? Date.parse(`${m[1]}T${m[2]}${m[3] ? m[3].slice(0, 4) : ""}${m[4] ?? "Z"}`) || 0 : 0;
 };
-export function agyReader(): Reader {
-  let state: OutsideState = "done";
-  let since = 0, last = 0;
-  let waiting: string | undefined;
-  let model: string | undefined;
-  const usage: Record<string, Usage> = {};
-  const open: { name: string; path?: string; ts: number }[] = [];
-  const files = new Files();
+export function agyReader(saved?: ReaderState): Reader {
+  const was = savedOf("agy", saved);
+  let state: OutsideState = stateOf(was.state);
+  let since = num(was.since), last = num(was.last);
+  let waiting: string | undefined = str(was.waiting);
+  let model: string | undefined = str(was.model);
+  const usage: Record<string, Usage> = usages(was.usage);
+  const open: { name: string; path?: string; ts: number }[] = Array.isArray(was.open) ? was.open.filter((c: any) => c && typeof c.name === "string") : [];
+  const files = new Files(was.files);
   let failures: Failed[] = [];
   const set = (s: OutsideState, ts: number, w?: string) => {
     if (s !== state || w !== waiting) since = ts || since;
@@ -360,10 +383,12 @@ export function agyReader(): Reader {
       return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage: { ...usage }, files: [...files.list], ...(c ? { doing: { tool: c.name, since: c.ts } } : {}) };
     },
     takeFailures() { const f = failures; failures = []; return f; },
+    save: () => ({ v: READER_V, h: "agy", state, since, last, waiting, model, usage: { ...usage }, open: open.map((c) => ({ ...c })), files: [...files.list] }),
   };
 }
 
-export const readerOf = (h: OutsideHarness): Reader => (h === "codex" ? codexReader() : h === "agy" ? agyReader() : claudeReader());
+// `saved`: a state a reader of the same harness saved (Reader.save), to read on from where it stopped.
+export const readerOf = (h: OutsideHarness, saved?: ReaderState): Reader => (h === "codex" ? codexReader(saved) : h === "agy" ? agyReader(saved) : claudeReader(saved));
 
 // Antigravity's run status of a conversation (its list's `status`) as the word withOwnWord takes: idle is a turn
 // that ended, running or busy one at work. A word it may add later says nothing.

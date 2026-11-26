@@ -21,7 +21,7 @@
 // turning between them, each later one reads only what the file gained and
 // appends the events it adds; a source that rewound is read again and goes on
 // as a new branch. Nothing is written to the other harness's folders.
-import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync, watch, type FSWatcher } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Store } from "../../core/store.ts";
@@ -36,7 +36,8 @@ import { AgyConvert, agyFoundAt, agyHome, agyListed, agyPlace, STORES as AGY_STO
 import { offered } from "../import/offer.ts";
 import { itemsOf, storedData, type Found } from "../import/types.ts";
 import { filesStored } from "../import/service.ts";
-import { agyWord, aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader } from "./facts.ts";
+import { agyWord, aged, readerOf, splitGrown, total, withOwnWord, type Failed, type Facts, type OutsideHarness, type Reader, type ReaderState } from "./facts.ts";
+import { headHash, headLen, lineEnd, resumeAt, SAVE_MS, type SavedRead } from "./reads.ts";
 import { excluded, outsideSettings, type OutsideSettings } from "./settings.ts";
 import { claudeHolder, claudeLive, codexHolder, recordHolder, codexKeepsLocks, FREE, readClaudeRecord, readLocks, type Holder, type Lock } from "./writer.ts";
 
@@ -61,6 +62,15 @@ CREATE TABLE IF NOT EXISTS outside_sessions (
   failures INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS outside_sessions_src ON outside_sessions(harness, source_id);
+CREATE TABLE IF NOT EXISTS outside_reads (
+  path TEXT PRIMARY KEY,
+  harness TEXT NOT NULL,
+  offset INTEGER NOT NULL,
+  head_len INTEGER NOT NULL,
+  head TEXT NOT NULL,
+  reader TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS outside_events (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   n INTEGER NOT NULL,
@@ -98,6 +108,9 @@ type Tracked = {
   path: string;
   harness: OutsideHarness;
   offset: number;          // the bytes read so far
+  line: number;            // the place after the last whole line read: what a restart reads on from (outside_reads)
+  saved?: SavedRead | null; // the place a daemon before kept (null: none, or already used)
+  dirty?: boolean;         // read further since its place was last kept
   rest: string;            // a last line the writer had not finished
   decoder: TextDecoder;
   reader: Reader;
@@ -165,6 +178,9 @@ export type OutsideStatus = {
   full_copies: number;
   // Looks at /proc/locks (who holds a Codex thread): one a tick for the rows pages show, one for each other read.
   lock_reads: number;
+  // Transcripts read on from the place a daemon before kept, and the bytes that spared reading again.
+  resumed: number;
+  resumed_bytes: number;
   unwatched?: string;
 };
 
@@ -225,9 +241,10 @@ export class Outside {
   private recent = new Map<string, { off?: () => void; still: () => Promise<boolean> }>();
   private prune?: ReturnType<typeof setInterval>;
   private holders?: ReturnType<typeof setInterval>;
+  private keeping?: ReturnType<typeof setInterval>;
   private unsettle?: () => void;
   private cfg: OutsideSettings;
-  stats: OutsideStatus = { enabled: false, days: 0, roots: [], watches: 0, tracked: 0, sessions: 0, reads: 0, bytes: 0, first_reads: 0, first_bytes: 0, copies: 0, copy_ms: 0, copy_bytes: 0, full_copies: 0, lock_reads: 0 };
+  stats: OutsideStatus = { enabled: false, days: 0, roots: [], watches: 0, tracked: 0, sessions: 0, reads: 0, bytes: 0, first_reads: 0, first_bytes: 0, copies: 0, copy_ms: 0, copy_bytes: 0, full_copies: 0, lock_reads: 0, resumed: 0, resumed_bytes: 0 };
 
   constructor(private d: OutsideDeps) {
     d.store.migrate(SCHEMA);
@@ -280,6 +297,9 @@ export class Outside {
     // Who holds a session a page shows, read again (a row tells only a change).
     this.holders = setInterval(() => this.tick(), HOLDER_MS);
     (this.holders as any).unref?.();
+    // Where each transcript was read to, kept for the next start (src/integrations/outside/reads.ts).
+    this.keeping = setInterval(() => this.keepReads(), SAVE_MS);
+    (this.keeping as any).unref?.();
   }
 
   // Who holds each row a page shows, read again: one look at /proc/locks for all of them.
@@ -302,6 +322,8 @@ export class Outside {
     this.on = false;
     clearInterval(this.prune);
     clearInterval(this.holders);
+    clearInterval(this.keeping);
+    this.keepReads();
     for (const { w } of this.watchers.values()) try { w.close(); } catch {}
     this.watchers.clear();
     this.heard.clear();
@@ -701,9 +723,54 @@ export class Outside {
 
   private schedule(path: string, harness: OutsideHarness) {
     if (!this.on) return;
-    if (!this.files.has(path)) this.files.set(path, { path, harness, offset: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(harness), synced: -1, failures: 0, mtime: 0 });
+    if (!this.files.has(path)) this.files.set(path, { path, harness, offset: 0, line: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(harness), synced: -1, failures: 0, mtime: 0 });
     this.pending.add(path);
     this.kick();
+  }
+
+  // The place a daemon before kept for a transcript, used once: when the file is still the one it read, the
+  // reader goes on from there with the state it had (src/integrations/outside/reads.ts).
+  private resume(t: Tracked, size: number) {
+    if (t.saved === undefined) {
+      const row = this.d.store.db.query<{ harness: string; offset: number; head_len: number; head: string; reader: string }, [string]>("SELECT harness, offset, head_len, head, reader FROM outside_reads WHERE path = ?").get(t.path);
+      let reader: ReaderState | undefined;
+      try { reader = row ? JSON.parse(row.reader) : undefined; } catch {}
+      t.saved = row && reader ? { harness: row.harness as OutsideHarness, offset: row.offset, head_len: row.head_len, head: row.head, reader } : null;
+    }
+    const saved = t.saved;
+    t.saved = null;
+    if (!saved || size < saved.offset) return;
+    let head = "";
+    try {
+      const fd = openSync(t.path, "r");
+      try { const b = new Uint8Array(headLen(saved.offset)); const n = readSync(fd, b, 0, b.length, 0); head = headHash(b.subarray(0, n)); } finally { closeSync(fd); }
+    } catch { return; }
+    const at = resumeAt(saved, { harness: t.harness, size, head });
+    if (!at) return;
+    Object.assign(t, { offset: at, line: at, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness, saved.reader) });
+    this.stats.resumed++;
+    this.stats.resumed_bytes += at;
+  }
+
+  // The places of the transcripts read further since the last keep, in one write (every SAVE_MS while watching,
+  // and when the watch stops). Places older than the days watched go.
+  private keepReads() {
+    const due = [...this.files.values()].filter((t) => t.dirty && t.found && !t.ignored && t.line > 0);
+    if (!due.length) return;
+    const now = Date.now();
+    try {
+      const put = this.d.store.db.query("INSERT OR REPLACE INTO outside_reads (path, harness, offset, head_len, head, reader, ts) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      const heads = due.map((t) => {
+        try {
+          const fd = openSync(t.path, "r");
+          try { const b = new Uint8Array(headLen(t.line)); const n = readSync(fd, b, 0, b.length, 0); return n === b.length ? headHash(b) : undefined; } finally { closeSync(fd); }
+        } catch { return undefined; }
+      });
+      this.d.store.db.transaction(() => {
+        due.forEach((t, i) => { const h = heads[i]; if (h) put.run(t.path, t.harness, t.line, headLen(t.line), h, JSON.stringify(t.reader.save()), now); t.dirty = false; });
+        this.d.store.db.query("DELETE FROM outside_reads WHERE ts < ?").run(now - Math.max(1, this.cfg.days) * DAY);
+      })();
+    } catch (e) { this.d.trouble?.(e, "keeping where another harness's sessions were read"); }
   }
 
   private kick() {
@@ -735,7 +802,9 @@ export class Outside {
       if (f.kind !== "interactive" || !offered(f)) { t.ignored = true; t.reader = readerOf(t.harness); return; }
       t.found = f;
     }
-    if (size < t.offset) Object.assign(t, { offset: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness), synced: -1 });
+    if (size < t.offset) Object.assign(t, { offset: 0, line: 0, rest: "", decoder: new TextDecoder(), reader: readerOf(t.harness), synced: -1, dirty: true });
+    // A transcript first read since the start goes on from where a daemon before stopped reading it.
+    if (t.offset === 0) this.resume(t, size);
     // Antigravity's run status, read with what the transcript gained (its list changes with it).
     if (t.harness === "agy" && t.session) { const at = agyPlace(t.path); const rows = at && agyListed(at.store, [t.found.id]); if (rows) t.status = rows.get(t.found.id)?.status; }
     if (size === t.offset) { this.tell(t); return; }
@@ -748,6 +817,9 @@ export class Outside {
       const { records, rest } = splitGrown(t.rest, t.decoder.decode(bytes, { stream: true }));
       t.rest = rest;
       for (const r of records) t.reader.push(r);
+      // (In the same step as the records it read: a place kept at any moment matches the reader's state.)
+      t.line = lineEnd(t.offset, bytes) ?? t.line;
+      t.dirty = true;
       t.offset += bytes.length;
       this.stats.bytes += bytes.length;
       if (first) this.stats.first_bytes += bytes.length;

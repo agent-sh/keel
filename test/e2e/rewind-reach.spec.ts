@@ -57,7 +57,7 @@ test("a rewind names the commit, the push, the outside write, the ignored delete
   await turn(request, id, 2, calls([{ name: "Write", input: { file_path: "b.txt", content: "edit\n" } }]));
 
   // The daemon's answer for each turn, before anything is clicked.
-  const turns = (await (await request.get(`/api/sessions/${id}/checkpoints`)).json()).turns as { n: number; not_undone?: { kind: string; line: string; n: number }[] }[];
+  const turns = (await (await request.get(`/api/sessions/${id}/checkpoints?not_undone=1`)).json()).turns as { n: number; not_undone?: { kind: string; line: string; n: number }[] }[];
   expect(turns).toHaveLength(2);
   expect(turns[0]!.not_undone!.map((x) => x.kind)).toEqual(["git", "remote", "outside", "ignored", "mcp"]);
   expect(turns[0]!.not_undone!.map((x) => x.n)).toEqual([1, 1, 1, 1, 1]);

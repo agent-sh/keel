@@ -155,7 +155,13 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         // (The starts alone, from the index that holds only those columns, on the read thread.)
         const starts = turns.length ? (await readsOf(store).sql<{ seq: number }>("SELECT seq FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq", [s.id])).map((r) => r.seq) : [];
         const place = new Map(starts.map((seq, i) => [seq, i + 1]));
-        const said = await reach.byTurn(s, (turn) => place.get(turn)).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), new Map()));
+        // What each turn's rewind cannot take back reads every call of the session the first time a daemon is
+        // asked (rewind-reach.ts): only the Changes panel shows it, so only a read that asks for it pays for it. The
+        // line above the message box, the Rewind dialog and the Artifacts panel read this route for its turns alone,
+        // each time a session is shown (all at once after a restart).
+        const said = new URL(req.url).searchParams.get("not_undone") === "1"
+          ? await reach.byTurn(s, (turn) => place.get(turn)).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), new Map()))
+          : new Map();
         return json({ turns: turns.map((t) => ({ ...t, ...(place.has(t.turn) ? { n: place.get(t.turn) } : {}), ...(said.get(t.turn)?.length ? { not_undone: said.get(t.turn) } : {}) })), expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
       }),
     },

@@ -1,7 +1,7 @@
 // The watcher over fixture stores of Claude Code and Codex in a scratch folder: what it watches,
 // what it reads of a file that grows, what its copy appends, and what the owner's settings change.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -9,6 +9,7 @@ import { Store } from "../../core/store.ts";
 import { Bus } from "../../core/bus.ts";
 import { ownEnv } from "../../../test/env.ts";
 import { Outside } from "./service.ts";
+import { readerOf } from "./facts.ts";
 import { OUTSIDE_DEFAULTS, type OutsideSettings } from "./settings.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-outside-"));
@@ -181,6 +182,7 @@ describe("outside sessions", () => {
       expect(r.store.event(second[3]!.event_id)?.data.results.map((x: any) => x.tool_use_id)).toEqual(["b"]);
 
       // A daemon that starts again converts the file from its start to the same events: no new branch.
+      // Its row's facts read on from where the daemon before stopped reading (outside_reads), not from the start.
       r.o.stop();
       const o = new Outside({ store: r.store, bus: new Bus(), workspace: r.dir, settings: () => r.settings, viewed: () => true });
       o.start();
@@ -188,6 +190,12 @@ describe("outside sessions", () => {
         t.reply("m2", "it is fixed");
         t.end();
         await until(() => sessionOf(r.store, "c7")?.outside?.state === "done");
+        expect(o.stats.resumed).toBe(1);
+        expect(o.stats.first_reads).toBe(0);
+        expect(o.stats.resumed_bytes).toBe(statSync(path).size - o.stats.bytes);
+        const whole = readerOf("claude");
+        for (const l of readFileSync(path, "utf8").split("\n")) if (l.trim()) whole.push(JSON.parse(l));
+        expect(sessionOf(r.store, "c7")?.usage.input).toBe(whole.facts().usage["claude-opus-4-5"]!.input);
         await o.sync(s.id);
         const third = stored(r.store, s.id);
         expect(third.slice(0, 4)).toEqual(second);

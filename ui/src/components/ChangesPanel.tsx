@@ -53,7 +53,7 @@ export function ChangesPanel({ session }: { session: Session }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ turns: Turn[]; expired: number; scope: string; reason: string | null; skipped?: string[]; skipped_count?: number }>(`/api/sessions/${sessionId}/checkpoints`);
+      const r = await api<{ turns: Turn[]; expired: number; scope: string; reason: string | null; skipped?: string[]; skipped_count?: number }>(`/api/sessions/${sessionId}/checkpoints?not_undone=1`);
       setTurns(r.turns);
       setScope({ scope: r.scope, reason: r.reason, skipped: r.skipped, skipped_count: r.skipped_count, expired: r.expired });
       setTurnDiff({});
