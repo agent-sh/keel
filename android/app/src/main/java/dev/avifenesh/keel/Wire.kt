@@ -1089,8 +1089,10 @@ data class Live(val working: Int, val needs: Int, val title: String, val body: S
                 if (needs > 0) "$needs need${if (needs == 1) "s" else ""} you" else null,
                 if (failed > 0) "$failed error${if (failed == 1) "" else "s"}" else null,
             ).joinToString(" · ")
+            // What waits on the owner is named first, as the count and the tap lead there (live.ts liveStatus); then what
+            // works, the longest-running first.
             val byStart = roots.sortedBy { start[it] ?: 0.0 }
-            return Live(roots.size, needs, what, byStart.take(4).joinToString(" · ") { chats[it]?.title ?: "A session" },
+            return Live(roots.size, needs, what, (waiting.toList() + byStart).take(4).joinToString(" · ") { chats[it]?.title?.ifBlank { null } ?: "A session" },
                 byStart.mapNotNull { start[it] }.minOrNull()?.let { (it * 1000).toLong() } ?: 0, failed, to(needs, failed))
         }
         /** The background check's read (GET /v1/pulse): the daemon's own status, else made from the pulse (a daemon from before). */

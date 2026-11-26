@@ -265,8 +265,8 @@ class WireTest {
         fun chat(id: String, title: String, parent: String? = null) = Chat(id, title, "working", 1.0, 0, false, false, "", "", parent)
         val chats = listOf(chat("a", "Fix the build"), chat("b", "Docs"), chat("a1", "Worker", "a")).associateBy { it.id }
         val held = Live.of(mapOf("b" to 200.0, "a" to 100.0, "a1" to 150.0), listOf(Card("q-1", "a1", "question", "", "", emptyList(), "pending", null, 1.0, emptyList())), chats)
-        // Fix the build's agent asks: it needs the owner, Docs works.
-        assertEquals(Live(1, 1, "1 session working · 1 needs you", "Docs", 200_000, to = "needs"), held)
+        // Fix the build's agent asks: it needs the owner and is named first, where the count and the tap lead; Docs works.
+        assertEquals(Live(1, 1, "1 session working · 1 needs you", "Fix the build · Docs", 200_000, to = "needs"), held)
         assertEquals(false, Live.of(emptyMap(), emptyList(), chats).shown)
     }
 

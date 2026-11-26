@@ -5,16 +5,24 @@ import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { liveData, liveStatus, LiveTicker, readLive, type LiveStatus } from "./live.ts";
 
-test("the status counts what runs and what waits, the longest-running first", () => {
+test("the status counts what runs and what waits, what waits named first, then the longest-running", () => {
   const s = liveStatus([
     { title: "Docs", running: true, since: 2000, needs: 0 },
     { title: "Fix the build", running: true, since: 1000, needs: 1 },
     { title: "Idle", running: false, needs: 1 },
   ]);
-  // Fix the build waits on the owner: it needs them, it does not work.
-  expect(s).toEqual({ working: 1, needs: 2, failed: 0, titles: ["Docs"], since: 2000 });
-  expect(liveData(s)).toEqual({ w: "1", q: "2", f: "0", to: "needs", title: "1 session working · 2 need you", body: "Docs", since: "2000" });
+  // Fix the build waits on the owner: it needs them, it does not work, and it is named before what works.
+  expect(s).toEqual({ working: 1, needs: 2, failed: 0, titles: ["Fix the build", "Idle", "Docs"], since: 2000 });
+  expect(liveData(s)).toEqual({ w: "1", q: "2", f: "0", to: "needs", title: "1 session working · 2 need you", body: "Fix the build · Idle · Docs", since: "2000" });
   expect(liveData(liveStatus([]))).toEqual({ w: "0", q: "0", f: "0", to: "sessions", title: "", body: "" });
+});
+
+test("with one session waiting and another running, the body names the waiting one first, where the count and the tap lead", () => {
+  const d = liveData(liveStatus([{ title: "Running B", running: true, since: 1000, needs: 0 }, { title: "Waiting A", running: false, needs: 1 }]));
+  expect(d).toMatchObject({ title: "1 session working · 1 needs you", to: "needs", body: "Waiting A · Running B" });
+  // Only a wait: its title. Nothing waits: the running summary as before.
+  expect(liveData(liveStatus([{ title: "Waiting A", running: true, since: 1000, needs: 2 }]))).toMatchObject({ title: "2 need you", to: "needs", body: "Waiting A" });
+  expect(liveData(liveStatus([{ title: "B", running: true, since: 2000, needs: 0 }, { title: "C", running: true, since: 1000, needs: 0 }])).body).toBe("C · B");
 });
 
 test("the open errors ride with work or a wait, and a tap goes to what asks first", () => {
@@ -119,7 +127,8 @@ test("the status is read from what runs and waits, never a whole table, and each
   const s = readLive({ store, running: () => running, waiting: () => [agent.id, asks.id], below: () => new Map([[leads.id, 1]]), failed: () => 2 });
   store.db.query = query as any;
   // The agent's card is its root's: the root waits on the owner, and the archived session is not counted.
-  expect(s).toEqual({ working: 1, needs: 2, failed: 2, titles: ["Runs"], since: 5000 });
+  // The roots that wait are named first.
+  expect(s).toEqual({ working: 1, needs: 2, failed: 2, titles: ["Leads agents", "Asks", "Runs"], since: 5000 });
   const plan = (sql: string) => JSON.stringify(query("EXPLAIN QUERY PLAN " + sql).all(...Array(sql.split("?").length - 1).fill(runs.id)));
   expect(asked.length).toBeGreaterThan(0);
   expect({ lists, unindexed: asked.filter((sql) => !plan(sql).includes("events_turn_marks")) }).toEqual({ lists: 0, unindexed: [] });

@@ -26,14 +26,17 @@ export const liveTo = (s: Pick<LiveStatus, "needs" | "failed">): LiveTo => (s.ne
 // cards wait on the owner in it or in its agents (an agent's work is its root's: a root is listed).
 export type LiveRow = { title: string; running: boolean; since?: number; needs: number };
 
+// `rows` lists the sessions that wait in the order their waits began (readLive puts them first).
 export function liveStatus(rows: LiveRow[], failed = 0): LiveStatus {
   // A session whose turn waits on the owner is counted with what needs them, not with what works.
   const run = rows.filter((r) => r.running && !r.needs);
+  const waits = rows.filter((r) => r.needs);
   const starts = run.map((r) => r.since).filter((n): n is number => typeof n === "number");
   const out: LiveStatus = {
     working: run.length, needs: rows.reduce((n, r) => n + r.needs, 0), failed: 0,
-    // The longest-running first: the one the owner has waited on longest.
-    titles: run.sort((a, b) => (a.since ?? 0) - (b.since ?? 0)).map((r) => r.title || "A session").slice(0, 4),
+    // What waits on the owner is named first, as the count and the tap lead there; then what runs, the
+    // longest-running first: the one the owner has waited on longest.
+    titles: [...waits, ...run.sort((a, b) => (a.since ?? 0) - (b.since ?? 0))].map((r) => r.title || "A session").slice(0, 4),
     since: starts.length ? Math.min(...starts) : null,
   };
   out.failed = out.working || out.needs ? Math.max(0, failed) : 0;
@@ -73,7 +76,8 @@ export function readLive(d: LiveDeps): LiveStatus {
   const below = d.below();
   const runs = new Set(d.running());
   const rows: LiveRow[] = [];
-  for (const id of new Set([...runs, ...below.keys(), ...waits.keys()])) {
+  // The sessions that wait first, in the order their cards are listed: the notification names them first.
+  for (const id of new Set([...waits.keys(), ...runs, ...below.keys()])) {
     const s = store.session(id);
     if (!s || s.parent_id || s.archived) continue;
     const running = runs.has(id) || (below.get(id) ?? 0) > 0;
