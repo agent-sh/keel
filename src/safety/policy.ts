@@ -1213,7 +1213,7 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
   type Folder = { dir: string; shown: boolean };
   const usual = (i: number): Folder[] => [...new Set([pre.dirs[i] ?? cwd, cwd, f.workspace, home])].map((dir) => ({ dir, shown: false }));
   // The `cd` that left the folder of part `i` unknown, when it is spelled with a name the line sets, and the
-  // relative steps written out after it (`cd $D; cd ..; cd .ssh`), which lead on from wherever it led.
+  // relative steps written out after it (`cd $D; cd ..; cd .ssh`), which may lead on from wherever it led.
   // (`last`: the `cd` nearest before each part, found once for the line; `chains`: what each `cd` comes to.)
   type Entered = { to: string; at: number; then: string[]; key: number };
   const last: (number | undefined)[] = [];
@@ -1247,18 +1247,21 @@ function unspeltIn(s: Line, f: Facts, cwd: string, home: string, all?: string[])
     let to = led.get(cd.key);
     if (!to) {
       const from = pre.dirs[cd.at] ?? null, dirs = new Map<string, boolean>();
-      // (The steps after it, from each folder it may have led to: from a guessed one, with the steps up and without.)
-      const on = cd.then.map(clean).join("/");
-      const add = (dir: string | null, shown: boolean) => {
-        for (const t of !on ? [""] : !shown && UP.test(on) ? [on, on.replace(/(^|\/)\.\.(?=\/|$)/g, "$1.")] : [on]) {
-          const d = dir === null || !t ? dir : spelled(t, dir, home);
-          if (d) dirs.set(d, !!dirs.get(d) || shown);
-        }
-      };
+      const add = (dir: string | null, shown: boolean) => { if (dir) dirs.set(dir, !!dirs.get(dir) || shown); };
       for (const c of wordStands(cd.to, cd.at, s, home)) {
         if (c.startsWith(SOMEWHERE)) { for (const u of usual(cd.at)) add(u.dir, false); continue; }
         const text = clean(c);
         add(spelled(text, from ?? cwd, home), whole(c) && (from !== null || ROOTED.test(text)));
+      }
+      // The steps after it. None of these is known to have landed, or to have run (one after `||` runs only where
+      // the command before it failed): the shell may be where the `cd` spelled with the name led, where it was
+      // before it, or on from either by any of the steps, each taken or not. (From a guessed folder a step up is
+      // tried as written and as no step: a step up from a folder nobody knows can land in any of them.)
+      if (cd.then.length) for (const u of usual(cd.at)) add(u.dir, false);
+      for (const step of cd.then.map(clean)) {
+        for (const [dir, shown] of [...dirs]) for (const t of !shown && UP.test(step) ? [step, step.replace(/(^|\/)\.\.(?=\/|$)/g, "$1.")] : [step]) add(spelled(t, dir, home), shown);
+        // (More folders than the line has paths to look at: not followed, and not known to lead nowhere protected.)
+        if (dirs.size > PATHS) { s.cost.over = true; break; }
       }
       led.set(cd.key, to = [...dirs].map(([dir, shown]) => ({ dir, shown })));
     }

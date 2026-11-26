@@ -201,6 +201,26 @@ test("the relative steps after a cd spelled with a name the line sets lead on fr
     expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-low", "allow"]);
 });
 
+test("a step after a cd spelled with a name may not have been taken: the folders before it are tried too", () => {
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  const led = "for D in /tmp /home/u; do true; done; ";
+  // The step runs only where the first failed, or fails itself: the shell is still where the name led.
+  for (const command of [
+    `${led}cd $D || cd sub; cat .ssh/known`, `${led}cd $D; cd build; echo x >> .bashrc`, `for D in /tmp /home/u; do cd $D; cd build 2>/dev/null; cat .ssh/known; done`,
+    `${led}cd $D; cd a; cd b; cp k .ssh/authorized_keys`, `${led}cd $D; test -d .ssh || cd sub; cd .ssh; cat known`,
+  ]) expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "owner", "ask-high"]);
+  // The cd spelled with the name may have failed too: the steps are tried from where the shell was before it.
+  for (const command of ["for D in /tmp /nowhere; do true; done; cd $D || cd .ssh; cp k authorized_keys", "y=sub || true; cd $y; cd .ssh; tee authorized_keys < f"])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-high", "ask-high"]);
+  for (const command of [`${led}cd $D || cd sub; cat notes.txt`, `${led}cd $D; cd build; echo x >> out.txt`])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-low", "allow"]);
+  // More steps than lead to a number of folders the rules look at: asked about, at a bounded cost.
+  const many = `${led}cd $D; ${Array.from({ length: 30 }, (_, i) => `cd d${i}; `).join("")}cat notes.txt`;
+  const t0 = performance.now();
+  expect([shell(many), shell(many, "full-auto")]).toEqual(["ask-high", "ask-high"]);
+  expect(performance.now() - t0).toBeLessThan(2000);
+});
+
 test("a line that names files through its names in more ways than the rules read asks as high risk, at a bounded cost", () => {
   const rep = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join("");
   // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)
