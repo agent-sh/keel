@@ -59,6 +59,10 @@ test("what each agent is on is read from the tree and from the Agents list with 
     // The state's one word stays on the row's first line.
     await expect(row("Linter").getByTestId("child-state")).toHaveText("Working");
     await expect(row("Asker").getByTestId("child-state")).toHaveText("Needs you");
+    // An agent at work has a still dot: a tree of working agents breathed a halo a row, louder than the one that asks.
+    const halo = (name: string) => row(name).locator('.k-mark[data-watch="work"]').evaluate((el) => getComputedStyle(el, "::after").display);
+    expect(await halo("Linter")).toBe("none");
+    expect(await halo("Indexer")).toBe("none");
     // The line is cut where the row ends, never wrapped: a row is two lines at most.
     expect(await row("Linter").getByTestId("child-session").evaluate((el) => el.getBoundingClientRect().height / parseFloat(getComputedStyle(document.documentElement).fontSize))).toBeLessThan(2.8);
     expect(c).toEqual({ presses: 0, dwells: 0 });

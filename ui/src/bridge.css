@@ -32,8 +32,10 @@
 @keyframes k-dot-breathe { 0%, 100% { opacity: 0.3; transform: scale(0.92); } 50% { opacity: 1; transform: scale(1.08); } }
 @keyframes k-dot-breathe-still { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .k-mark[data-watch="work"]::after { animation-name: k-dot-breathe-still; } }
-/* A count's mark and an alert's are small and in a crowd (and inside lines that clip): the halo is not drawn there. */
-:is(.k-alert-icon, .k-tick) .k-mark[data-watch="work"]::after { display: none; }
+/* A count's mark and an alert's are small and in a crowd (and inside lines that clip): the halo is not drawn there.
+   Nor on a tree's agent rows: ten agents at work were ten halos breathing down the list, louder than the one row
+   that asks. Each row's word and step already say it works. */
+:is(.k-alert-icon, .k-tick, .k-child-session) .k-mark[data-watch="work"]::after { display: none; }
 /* Waiting on its agents or a command in the background: a hollow ring of dashes in the work blue. */
 .k-mark[data-bg] { background: transparent; box-shadow: none; border: 1.5px dashed var(--dot-work); }
 .k-mark[data-bg]::after { display: none; }
