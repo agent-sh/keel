@@ -285,3 +285,20 @@ test("a page of buttons is not a page of bold: a button's words are regular, and
   await shoot(page, "quiet-12-buttons");
 });
 
+
+test("a page of settings is not a column of bold: a setting's name is regular over its quiet line, and the weight is a group's name", async ({ page }) => {
+  for (const path of ["/settings/general", "/settings/alerts", "/settings/safety"]) {
+    await page.goto(path);
+    const rows = page.locator(".k-setting");
+    await expect(rows.first()).toBeVisible();
+    const names = await rows.evaluateAll((els) => els.map((el) => { const name = el.firstElementChild!.firstElementChild as HTMLElement, hint = name.nextElementSibling as HTMLElement | null; return [getComputedStyle(name).fontWeight, getComputedStyle(name).color, hint ? getComputedStyle(hint).color : ""]; }));
+    expect([...new Set(names.map((n) => n[0]))], `the names' weights on ${path}`).toEqual(["400"]);
+    for (const [, name, hint] of names) if (hint) expect(name, `a name is in ink, its line in the quiet ink, on ${path}`).not.toBe(hint);
+  }
+  await page.goto("/settings/health");
+  await expect(page.locator(".k-set-title").first()).toBeVisible();
+  expect(await page.locator(".k-set-title").first().evaluate((el) => getComputedStyle(el).fontWeight)).toBe("600");
+  await page.goto("/settings/alerts");
+  await expect(page.locator(".k-setting").first()).toBeVisible();
+  await shoot(page, "quiet-13-settings");
+});
