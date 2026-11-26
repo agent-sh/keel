@@ -7,7 +7,7 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { memoryMeter } from "../integrations/memory-meter.ts";
 import { nativeLog } from "../integrations/native-log.ts";
-import { dropNote, offersFrom, sweep, Sweeps, tidyIndex, DAY, type FactRow, type RecordRow } from "./sweep.ts";
+import { dropNote, offersFrom, sweep, sweepLine, Sweeps, tidyIndex, DAY, type FactRow, type RecordRow } from "./sweep.ts";
 
 const hooksAtStart = allHooks().length;
 afterAll(() => { allHooks().length = hooksAtStart; });
@@ -48,10 +48,10 @@ test("the card's figures per system come from the day's rows, and a system with 
   // Native memory: three sessions loaded the Claude folder, one read a file and one wrote one.
   const nd = join(dir, "claude-mem");
   for (const s of ["a", "b", "c"]) log.note(s, "claude", "loaded", nd, 800, at);
-  log.note("a", "claude", "read", join(nd, "x.md"), 0, at);
+  log.note("a", "claude", "read", join(nd, "xnote.md"), 0, at);
   log.note("b", "claude", "wrote", join(nd, "y.md"), 0, at);
-  put(join(nd, "MEMORY.md"), "- [x](x.md): one\n");
-  put(join(nd, "x.md"), "---\ntype: user\n---\nx");
+  put(join(nd, "MEMORY.md"), "- [x](xnote.md): one\n");
+  put(join(nd, "xnote.md"), "---\ntype: user\n---\nx");
   // Momentum: two nudges; the turn after the first ended on its own, the owner stopped the one after the second.
   const s = store.createSession({ model: "p:m", workspace: dir });
   const act = store.db.query("INSERT INTO momentum_acts (session_id, ts, action) VALUES (?, ?, 'steer')");
@@ -65,7 +65,9 @@ test("the card's figures per system come from the day's rows, and a system with 
   expect(by.helper!.figures).toMatchObject({ recalls: 2, recalls_used: 1, checked: 2, records: 3, unused: 2, stale: 1 });
   expect(by.helper!.helped).toBe(0.5);
   expect(by.claude!.figures).toMatchObject({ loads: 3, sessions: 3, reads: 1, writes: 1, notes: 1, unindexed: 0 });
-  expect(by.claude!.helped).toBe(0.333);
+  // Its one fact was used by the session that read its note, not by the one that wrote another file.
+  expect(by.claude!.measure).toMatchObject({ given: 2, used: 1 });
+  expect(by.claude!.helped).toBe(0.5);
   expect(by.codex!.helped).toBeNull();
   expect(by.codex!.on).toBe(false);
   expect(by.momentum!.figures).toMatchObject({ acts: 2, steer: 2, ended: 1, interrupted: 1 });
@@ -127,4 +129,33 @@ test("a stored card keeps its offers' state and the helped share of each day for
   expect(sweeps.get("c2")!.offers[0]!.state).toBe("dismissed");
   expect(sweeps.history().map((h) => h.helped.tacit)).toEqual([0.5, 0.7]);
   expect(sweeps.setOffer("c9:0", {})).toBeNull();
+});
+
+test("a native memory's day: the facts a loading session's next steps used, a correction it broke, its tokens and its one improvement", async () => {
+  const { dir, store, log, sql } = fixture();
+  const at = now - 3_600_000;
+  const nd = join(dir, "claude-judged");
+  put(join(nd, "MEMORY.md"), "- [Landing queue](land.md): the after step runs in the checkout\n- [Phone walk](phone.md): keeps shots from the dev desk\n");
+  put(join(nd, "land.md"), "---\ntype: project\n---\nx");
+  put(join(nd, "phone.md"), "---\ntype: project\n---\nx");
+  put(join(nd, "feedback_stash.md"), "---\nname: stash\ntype: feedback\n---\nNever run `git stash` in a worktree.\n");
+  const a = store.createSession({ model: "p:m", workspace: dir }), b = store.createSession({ model: "p:m", workspace: dir });
+  log.note(a.id, "claude", "loaded", nd, 2500, at);
+  log.note(b.id, "claude", "loaded", nd, 2500, at);
+  store.append(a.id, "assistant", { blocks: [{ type: "text", text: "The landing queue lands it." }, { type: "tool_use", id: "1", name: "Bash", input: { command: "git stash" } }] }, undefined, at + 1000);
+  store.append(b.id, "assistant", { blocks: [{ type: "text", text: "Done." }] }, undefined, at + 1000);
+  const card = await sweep({ sql, store, tacit: { on: false, falls: 0 }, momentum: { on: false }, now });
+  const claude = card.systems.find((s) => s.id === "claude")!;
+  expect(claude.measure).toEqual({ given: 4, used: 1, mistakes: 1, tokens: 2000 });
+  expect(claude.helped).toBe(0.25);
+  expect(claude.next!.text).toContain("`git stash` ran after a note forbade it in 1 session");
+  expect(card.systems.find((s) => s.id === "momentum")!.next!.text).toContain("no command");
+});
+
+test("the helper's line wakes it only when a number moved since the card before", () => {
+  const sys = (given: number, used: number, mistakes = 0) => ({ id: "claude" as const, label: "Claude Code auto memory", short: "Claude", on: true, figures: {}, helped: null, measure: { given, used, mistakes, tokens: 100 } });
+  const card = (s: ReturnType<typeof sys>) => ({ id: "c", ts: now, since: now - DAY, until: now, systems: [s], offers: [] });
+  expect(sweepLine(card(sys(30, 9)), null)).toEqual({ line: "Claude 30% used", moved: [] });
+  expect(sweepLine(card(sys(30, 9)), card(sys(30, 10))).moved).toEqual([]);
+  expect(sweepLine(card(sys(30, 9, 1)), card(sys(30, 9)))).toEqual({ line: "Claude: 1 repeated mistake, up from 0. Claude 30% used, 1 repeat", moved: ["Claude: 1 repeated mistake, up from 0"] });
 });

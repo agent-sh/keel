@@ -7,7 +7,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { addMemory, checkMail, dropMemory, editMemory, helperAnswers, openHelper, setHelper, useHelper, type HelperAnswer, type MemoryRecord } from "../lib/helper.ts";
 import { reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { MemorySweep } from "./MemorySweep.tsx";
+import { MemorySweepLine } from "./MemorySweep.tsx";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { Empty, Group, Item as SetItem, List, Status } from "./settings/kit.tsx";
@@ -154,7 +154,7 @@ export function HelperPanel(_: { session: Session }) {
       </header>
       <MemoryList />
 
-      <MemorySweep compact />
+      <MemorySweepLine />
 
       <section aria-labelledby="helper-ev">
         <h3 id="helper-ev" className="text-ui font-semibold">Lately</h3>

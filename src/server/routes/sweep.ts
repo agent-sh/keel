@@ -7,7 +7,7 @@
 //   POST /api/memory/sweep/offers/:id/confirm   { confirm } run that command, once
 //   POST /api/memory/sweep/offers/:id/dismiss   leave it
 import * as activity from "../../automation/activity.ts";
-import { dropNote, sweep, Sweeps, tidyIndex, DAY, type Card, type Offer } from "../../helper/sweep.ts";
+import { dropNote, sweep, sweepLine, Sweeps, tidyIndex, DAY, type Card, type Offer } from "../../helper/sweep.ts";
 import { nativeLog } from "../../integrations/native-log.ts";
 import { MemoryStore } from "../../integrations/memory-store.ts";
 import { readsOf } from "../reads.ts";
@@ -36,12 +36,13 @@ export function sweepRoutes({ store, errors }: Deps, mem: MemoryStore, tacit: { 
     const falls = store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM admin_meta WHERE key LIKE 'memory_fell:%'").get()?.n ?? 0;
     running = sweep({ sql: (q, p) => readsOf(store).sql(q, p), store, tacit: { on: tacit.on(), falls }, momentum: { on: momentum.on() } })
       .then((card) => {
+        const prev = sweeps.latest();
         sweeps.save(card);
         nativeLog(store).prune();
-        // The helper hears of it with its next turn; it is not woken for it.
+        // One quiet line for the helper; it is woken (and may tell the owner) only when a number moved.
         const h = helperNow?.();
-        const says = card.systems.filter((s) => s.helped !== null).map((s) => `${s.label} ${Math.round(100 * s.helped!)}%`).join(", ");
-        h?.record("memory_sweep", null, "Memory sweep", `${says || "nothing measured"}; ${card.offers.length} offer${card.offers.length === 1 ? "" : "s"} waiting in Settings > Usage > Memory.`, "feed");
+        const said = sweepLine(card, prev);
+        h?.record("memory_sweep", null, said.moved.length ? "Memory sweep: a number moved" : "Memory sweep", `${said.line}; details in Settings > Usage > Memory.`, said.moved.length ? "wake" : "feed");
         return card;
       })
       .finally(() => { running = null; });

@@ -39,11 +39,18 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     await expect(by("tacit").getByTestId("sweep-helped")).toHaveText("40%");
     await expect(by("helper")).toContainText("1 of 2 recalls used");
     await expect(by("helper").getByTestId("sweep-helped")).toHaveText("50%");
-    await expect(by("claude")).toContainText("loaded in 3 sessions");
-    await expect(by("claude").getByTestId("sweep-helped")).toHaveText("33%");
+    // Claude's auto memory: five sessions loaded it; one read its note, of the two with later steps one named
+    // its fact and one ran the call its correction note forbids.
+    await expect(by("claude")).toContainText("loaded in 5 sessions");
+    await expect(by("claude")).toContainText("2 of 3 facts used");
+    await expect(by("claude").getByTestId("sweep-repeats")).toHaveText("1 repeat");
+    await expect(by("claude").getByTestId("sweep-helped")).toHaveText("67%");
+    await expect(by("claude").getByTestId("sweep-next")).toContainText("`git stash` ran after a note forbade it in 1 session");
+    await expect(by("tacit").getByTestId("sweep-repeats")).toHaveText("none");
     await expect(by("codex")).toContainText("no session has loaded it yet");
     await expect(by("codex").getByTestId("sweep-helped")).toHaveCount(0);
     await expect(by("momentum")).toContainText("1 nudge");
+    await expect(by("tacit").getByTestId("sweep-next")).toContainText("code-word");
 
     // Three offers: the stale record, the fact never named, the index that misses a note.
     const offers = page.getByTestId("sweep-offer");
@@ -89,6 +96,17 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     await page.reload();
     await expect(page.getByTestId("sweep-offer")).toHaveCount(3);
     await expect(page.locator('[data-testid="sweep-offer"][data-state="applied"]')).toHaveCount(3);
+
+    // The helper's panel says it in one quiet line, and its Details open the card.
+    await page.goto(`${d.url}/`);
+    await page.getByTestId("open-helper").click();
+    const line = page.getByTestId("sweep-line");
+    await expect(line).toContainText("tacit 40%");
+    await expect(line).toContainText("Claude 67%, 1 repeat");
+    await expect(page.getByTestId("sweep-systems")).toHaveCount(0);
+    await shoot(page, "memory-sweep-05-helper-line");
+    await line.getByTestId("sweep-line-open").click();
+    await expect(page.getByTestId("sweep-systems")).toBeVisible();
   } finally {
     d.proc.kill();
     await exited(d.proc);

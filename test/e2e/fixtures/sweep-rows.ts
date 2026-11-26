@@ -1,6 +1,7 @@
 // Rows for the memory sweep spec, written into a stopped daemon's store: a day of recalls (what the
 // memory store gave and what turns named), a fact given often and never named, a stale record of the
-// helper, a Claude auto memory folder three sessions loaded, and two nudges of the supervisor.
+// helper, a Claude auto memory folder three sessions loaded (one then named a fact of it, one ran a
+// call its correction note forbids), and a nudge of the supervisor.
 // Usage: bun sweep-rows.ts <state folder> <auto memory folder>
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -26,7 +27,7 @@ db.query("INSERT INTO helper_records (key, value, kind, source, ts, updated, use
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(dir, "MEMORY.md"), "- [Role](user_role.md): the owner runs the company\n");
 writeFileSync(join(dir, "user_role.md"), "---\nname: Role\ndescription: the owner runs the company\ntype: user\n---\nRuns it.\n");
-writeFileSync(join(dir, "feedback_tests.md"), "---\nname: Tests\ndescription: run the focused tests, not the suite\ntype: feedback\n---\nFocused.\n");
+writeFileSync(join(dir, "feedback_tests.md"), "---\nname: Tests\ndescription: run the focused tests, not the suite\ntype: feedback\n---\nFocused. Never run `git stash` in a worktree.\n");
 const log = db.query("INSERT INTO native_memory_log (session_id, ts, system, action, file, bytes) VALUES (?, ?, 'claude', ?, ?, ?)");
 for (const s of ["a", "b", "c"]) log.run(s, at, "loaded", dir, 900);
 log.run("a", at, "read", join(dir, "user_role.md"), 0);
@@ -34,3 +35,16 @@ log.run("a", at, "read", join(dir, "user_role.md"), 0);
 db.exec("CREATE TABLE IF NOT EXISTS momentum_acts (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, action TEXT NOT NULL)");
 db.query("INSERT INTO momentum_acts (session_id, ts, action) VALUES ('m1', ?, 'steer')").run(at);
 db.close();
+
+// Two sessions that loaded the folder, with their next steps: written through the store, as the daemon would.
+process.env.KEEL_CONFIG_DIR = join(state, "fixture-config");
+const { Store } = await import("../../../src/core/store.ts");
+const store = new Store(state);
+const sess = (text: string, call?: string) => {
+  const s = store.createSession({ model: "scripted:stand-in", workspace: state, title: "sweep fixture" });
+  store.db.query("INSERT INTO native_memory_log (session_id, ts, system, action, file, bytes) VALUES (?, ?, 'claude', 'loaded', ?, 900)").run(s.id, at, dir);
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text }, ...(call ? [{ type: "tool_use", id: "c1", name: "Bash", input: { command: call } }] : [])] }, undefined, at + 1000);
+};
+sess("The owner runs the company, as the role note says.");
+sess("Saving my work first.", "git stash");
+store.db.close();

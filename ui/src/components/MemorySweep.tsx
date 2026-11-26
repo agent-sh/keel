@@ -1,10 +1,11 @@
 // The helper's daily sweep of the memory systems (src/helper/sweep.ts): how each system did over the
 // last day, and up to three offered improvements. An offer changes something only when it is
 // pressed; one that sends a note to the owner's memory store shows the command first.
-// Settings > Usage, Memory, Sweep, and a short form in the helper's panel.
+// Settings > Usage, Memory, Sweep, and one quiet line in the helper's panel (MemorySweepLine).
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Card, Offer, System, SystemId } from "../../../src/helper/sweep.ts";
+import { openMemory } from "../lib/integrations-ui.ts";
 import { api, reportError } from "../lib/store.ts";
 import { clock, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -20,7 +21,30 @@ export function said(s: System): { gave: string; used: string } {
   if (s.id === "tacit") return { gave: `${plural(f.recalls!, "recall")}, ${plural(f.facts!, "fact")}, ${fmtTokens(f.tokens!)} tokens`, used: f.checked ? `${f.named} of ${f.checked} facts named${f.rules ? `; ${f.followed} of ${plural(f.rules, "rule")} followed, ${f.broken} broken` : ""}` : "nothing to judge yet" };
   if (s.id === "helper") return { gave: `${plural(f.recalls!, "recall")}; ${plural(f.records!, "record")} kept`, used: f.checked ? `${f.recalls_used} of ${f.checked} recalls used; ${f.stale} stale` : `nothing recalled; ${f.stale} stale` };
   if (s.id === "momentum") return { gave: plural(f.acts!, "nudge"), used: f.ended! + f.interrupted! + f.failed! ? `${f.ended} ended on their own, ${f.interrupted} stopped, ${f.failed} failed` : "nothing followed yet" };
-  return { gave: s.on ? `loaded in ${plural(f.sessions!, "session")}; ${plural(f.notes!, "note")}` : (s.note ?? "off"), used: f.sessions ? `${f.sessions_read} read, ${f.sessions_wrote} wrote` : "no session used it" };
+  const m = s.measure;
+  return { gave: s.on ? `loaded in ${plural(f.sessions!, "session")}; ${plural(f.notes!, "note")}` : (s.note ?? "off"), used: m?.given ? `${m.used} of ${m.given} facts used; ${f.sessions_read} read, ${f.sessions_wrote} wrote` : f.sessions ? `${f.sessions_read} read, ${f.sessions_wrote} wrote` : "no session used it" };
+}
+
+// A card made before the four figures were kept has none: its rows show nothing there.
+const repeats = (s: System) => (s.measure ? (s.measure.mistakes ? plural(s.measure.mistakes, "repeat") : "none") : undefined);
+const cost = (s: System) => (s.measure && s.measure.tokens ? `${fmtTokens(s.measure.tokens)} tokens` : undefined);
+
+// The helper's panel: one quiet line of the latest card, its details in Settings.
+export function MemorySweepLine() {
+  const [a, setA] = useState<Answer | null>(null);
+  useEffect(() => { void api<Answer>("/api/memory/sweep").then(setA, reportError); }, []);
+  const c = a?.card;
+  const parts = (c?.systems ?? []).filter((s) => s.measure && (s.measure.given || s.measure.mistakes)).map((s) => {
+    const m = s.measure!;
+    return `${s.short ?? s.label} ${m.given ? `${Math.round((100 * m.used) / m.given)}%` : "none judged"}${m.mistakes ? `, ${plural(m.mistakes, "repeat")}` : ""}`;
+  });
+  return (
+    <p className="text-caption text-muted" data-testid="sweep-line">
+      <span className="text-fg">Memory</span>{" "}
+      {!a ? "reading the last sweep" : !c ? "not swept yet" : parts.length ? `used yesterday: ${parts.join(", ")}` : "nothing recalled to judge yesterday"}
+      {" "}<button type="button" className="k-link hover:underline" data-testid="sweep-line-open" onClick={() => openMemory(undefined, "sweep")}>Details</button>
+    </p>
+  );
 }
 
 function OfferItem({ o, onChange }: { o: Offer; onChange: () => void }) {
@@ -57,7 +81,7 @@ function OfferItem({ o, onChange }: { o: Offer; onChange: () => void }) {
   );
 }
 
-export function MemorySweep({ compact = false }: { compact?: boolean }) {
+export function MemorySweep() {
   const [a, setA] = useState<Answer | null>(null);
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => api<Answer>("/api/memory/sweep").then(setA, reportError), []);
@@ -68,19 +92,22 @@ export function MemorySweep({ compact = false }: { compact?: boolean }) {
   const aside = <button type="button" className="k-btn" data-quiet disabled={busy || a.running} data-testid="sweep-run" onClick={run}><RefreshCw className={busy ? "animate-spin" : undefined} />{busy ? "Sweeping" : "Sweep now"}</button>;
   if (!c) return <Group title="Daily sweep" hint="once a day, the helper reads how each memory system did" actions={aside} testid="sweep-card"><Empty testid="sweep-none">No sweep yet. The first one runs a few minutes after the daemon starts, then once a day.</Empty></Group>;
   const open = c.offers.filter((o) => o.state === "open").length;
-  const cols = [{ head: "System", grow: true }, { head: "Gave", minor: true }, { head: "Used", minor: true }, { head: "Helped", end: true }];
+  const cols = [{ head: "System", grow: true }, { head: "Gave", minor: true }, { head: "Used", minor: true }, { head: "Repeated", minor: true }, { head: "Cost", minor: true }, { head: "Helped", end: true }];
   return (
     <div className="flex flex-col gap-4" data-testid="sweep-card" data-offers={open}>
-      <Group title={compact ? "Memory sweep" : "Daily sweep"} hint={`${clock(c.since, { date: true })} to ${clock(c.until, { date: true })}`} actions={aside}
-        help={<>The helper reads Keel's own records once a day: what each memory system gave, what a turn then used of it, and what it cost. Helped is the share used. Nothing is asked of a model and nothing changes until you press an offer.</>}>
+      <Group title="Daily sweep" hint={`${clock(c.since, { date: true })} to ${clock(c.until, { date: true })}`} actions={aside}
+        help={<>The helper reads Keel's own records once a day: what each memory system gave, what the model then used of it in its next steps, the mistakes a note forbids that a session made anyway, and what the recall cost in tokens. Helped is the share used. Each system's best next step is under it. Nothing is asked of a model and nothing changes until you press an offer.</>}>
         <Table cols={cols} label="Memory systems over the last day" testid="sweep-systems">
           {c.systems.map((s) => {
             const w = said(s);
             return (
-              <Row key={s.id} name={s.label} testid="sweep-system" data-system={s.id}>
+              <Row key={s.id} name={s.label} testid="sweep-system" data-system={s.id}
+                detail={s.next ? <p className="text-caption text-muted" data-testid="sweep-next">Next: {s.next.text}</p> : undefined}>
                 <Cell col={cols[1]!}>{w.gave}</Cell>
                 <Cell col={cols[2]!}>{w.used}</Cell>
-                <Cell col={cols[3]!}>{s.helped === null ? <Status tone="quiet">{s.on || s.figures.acts || s.figures.sessions ? "None yet" : "Off"}</Status> : <span data-testid="sweep-helped">{pct(s.helped)}</span>}</Cell>
+                <Cell col={cols[3]!}><span data-testid="sweep-repeats">{repeats(s)}</span></Cell>
+                <Cell col={cols[4]!}>{cost(s)}</Cell>
+                <Cell col={cols[5]!}>{s.helped === null ? <Status tone="quiet">{s.on || s.figures.acts || s.figures.sessions ? "None yet" : "Off"}</Status> : <span data-testid="sweep-helped">{pct(s.helped)}</span>}</Cell>
               </Row>
             );
           })}

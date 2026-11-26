@@ -15,6 +15,8 @@ import { existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
 import { notesOf, type NoteFile } from "../engine/native-memory.ts";
+import { bytesPerToken } from "../engine/compact.ts";
+import { bansIn, indexFacts, judge, lineOf, moved, nextOf, recallOf, stepOf, summaryFacts, SESSIONS_MAX, STEPS_MAX, type Measure, type Next, type Recall } from "./sweep-recall.ts";
 
 export const DAY = 86_400_000;
 // What a fact must have been given before the sweep says it never helped, in the days it looks back.
@@ -30,7 +32,9 @@ export const KEEP_SWEEPS = 60;
 export type Sql = <T = any>(sql: string, params?: (string | number | null)[]) => Promise<T[]>;
 export type SystemId = "tacit" | "helper" | "claude" | "codex" | "momentum";
 export type Figures = Record<string, number>;
-export type System = { id: SystemId; label: string; on: boolean; note?: string; figures: Figures; helped: number | null };
+// `measure`: the four figures every system is read by (facts judged, used, repeated mistakes, recall tokens);
+// `next`: its one ranked improvement, a plain description (an offer below is what can be pressed).
+export type System = { id: SystemId; label: string; short?: string; on: boolean; note?: string; figures: Figures; helped: number | null; measure?: Measure; next?: Next | null };
 
 export type OfferKind = "drop_record" | "drop_note" | "tidy_index" | "tacit_note";
 export type OfferState = "open" | "applied" | "dismissed";
@@ -206,6 +210,14 @@ CREATE INDEX IF NOT EXISTS memory_sweeps_ts ON memory_sweeps(ts);`);
   }
 }
 
+// The helper's line for a card: each system's share used and its repeats, and what moved since the card before.
+export function sweepLine(card: Card, prev: Card | null): { line: string; moved: string[] } {
+  const before = new Map((prev?.systems ?? []).map((s) => [s.id, s.measure]));
+  const changes = card.systems.map((s) => (s.measure ? moved(before.get(s.id), s.measure, s.short ?? s.label) : null)).filter((x): x is string => !!x);
+  const line = lineOf(card.systems.map((s) => ({ label: s.label, short: s.short ?? s.label, measure: s.measure })));
+  return { line: changes.length ? `${changes.join("; ")}. ${line}` : line, moved: changes };
+}
+
 // --- the sweep -------------------------------------------------------------------------
 
 export type SweepDeps = {
@@ -230,6 +242,69 @@ const FACTS = `SELECT name, COUNT(*) AS given, COUNT(DISTINCT session_id) AS ses
   FROM memory_given WHERE ts >= ? AND ts < ? GROUP BY name`;
 const NATIVE = `SELECT system, action, COUNT(*) AS rows, COUNT(DISTINCT session_id) AS sessions, COALESCE(SUM(bytes), 0) AS bytes FROM native_memory_log WHERE ts >= ? AND ts < ? GROUP BY system, action`;
 const ACTS = `SELECT action, COUNT(*) AS ok FROM momentum_acts WHERE ts >= ? AND ts < ? GROUP BY action`;
+
+const SHORT: Record<SystemId, string> = { tacit: "tacit", helper: "helper", claude: "Claude", codex: "Codex", momentum: "momentum" };
+
+// A native system's day: each session that loaded it (the newest SESSIONS_MAX judged), its facts as its
+// files hold them now, and the session's next steps. The tokens are every load's block, at the
+// session's model's own bytes a token.
+const LOADS = `SELECT l.session_id, MIN(l.ts) AS ts, l.file AS dir, SUM(l.bytes) AS bytes, s.model AS model FROM native_memory_log l LEFT JOIN sessions s ON s.id = l.session_id
+  WHERE l.system = ? AND l.action = 'loaded' AND l.ts >= ? AND l.ts < ? GROUP BY l.session_id, l.file ORDER BY MAX(l.ts) DESC`;
+const STEPS = `SELECT data FROM events WHERE session_id = ? AND kind = 'assistant' AND ts >= ? AND ts < ? ORDER BY seq LIMIT ?`;
+const TOUCHED = `SELECT DISTINCT file FROM native_memory_log WHERE session_id = ? AND system = ? AND action IN ('read', 'wrote') AND file != '' AND ts >= ? AND ts < ?`;
+
+export function nativeFacts(system: "claude" | "codex", dir: string): { facts: ReturnType<typeof indexFacts>; bans: string[] } {
+  const text = (f: string) => { try { return readFileSync(join(dir, f), "utf8"); } catch { return ""; } };
+  if (system === "codex") { const summary = text("memory_summary.md"); return { facts: summaryFacts(summary), bans: bansIn([summary]) }; }
+  const notes = notesOf(dir).notes.filter((n) => n.type === "feedback").map((n) => text(n.file));
+  return { facts: indexFacts(text("MEMORY.md")), bans: bansIn(notes) };
+}
+
+export async function nativeRecall(d: Pick<SweepDeps, "sql">, system: "claude" | "codex", since: number, until: number): Promise<Recall> {
+  const loads = await d.sql<{ session_id: string; ts: number; dir: string; bytes: number; model: string | null }>(LOADS, [system, since, until]);
+  const byDir = new Map<string, ReturnType<typeof nativeFacts>>();
+  const out: Parameters<typeof recallOf>[0][number][] = [];
+  for (const [i, l] of loads.entries()) {
+    const tokens = Math.round(l.bytes / bytesPerToken(l.model ?? undefined));
+    if (!l.dir || !existsSync(l.dir)) { out.push({ facts: [], judged: null, tokens }); continue; }
+    let f = byDir.get(l.dir);
+    if (!f) byDir.set(l.dir, (f = nativeFacts(system, l.dir)));
+    if (i >= SESSIONS_MAX || !f.facts.length) { out.push({ facts: f.facts, judged: null, tokens }); continue; }
+    const [rows, touched] = await Promise.all([d.sql<{ data: string }>(STEPS, [l.session_id, l.ts, until, STEPS_MAX]), d.sql<{ file: string }>(TOUCHED, [l.session_id, system, l.ts, until])]);
+    const steps = rows.map((r) => { try { return stepOf(JSON.parse(r.data)); } catch { return null; } }).filter((x) => !!x);
+    out.push({ facts: f.facts, judged: steps.length || touched.length ? judge(f.facts, f.bans, steps, touched.map((t) => t.file)) : null, tokens });
+  }
+  return recallOf(out);
+}
+
+// A system with its four figures and its one improvement.
+export function measured(s: System, facts: FactRow[] = [], recall?: Recall): System {
+  const f = s.figures, extra: Next[] = [];
+  let m: Measure, list: { name: string; given: number; used: number }[] = [], broken = recall?.broken;
+  if (s.id === "tacit") {
+    m = { given: f.checked ?? 0, used: f.named ?? 0, mistakes: f.broken ?? 0, tokens: f.tokens ?? 0 };
+    list = facts.filter((x) => !x.rule).map((x) => ({ name: x.name, given: x.checked, used: x.used, tokens: x.tokens }));
+    const rule = facts.filter((x) => x.broken > 0).sort((a, b) => b.broken - a.broken)[0];
+    if (rule) extra.push({ text: `The rule ${rule.name} was broken ${rule.broken} times after it was given: give it a deny key so the store stops the call.`, score: 1000 + rule.broken });
+    if (f.falls) extra.push({ text: `Recall fell on ${f.falls} path${f.falls === 1 ? "" : "s"}: see the store's own health before trusting its share.`, score: 50 });
+  } else if (s.id === "helper") {
+    m = { given: f.checked ?? 0, used: f.recalls_used ?? 0, mistakes: 0, tokens: f.tokens ?? 0 };
+    if (f.stale) extra.push({ text: `Forget ${f.stale} stale record${f.stale === 1 ? "" : "s"} no turn used in ${RECORD_STALE_DAYS} days.`, score: 20 + f.stale });
+  } else if (s.id === "momentum") {
+    m = { given: f.acts ?? 0, used: f.ended ?? 0, mistakes: 0, tokens: 0 };
+    if (!f.acts) extra.push({ text: "momentum sent Keel no command today: its session scan does not read Keel's control socket (momentum.sock in Keel's state folder), so it supervises no Keel session.", score: 10 });
+    else if ((f.interrupted ?? 0) > (f.ended ?? 0)) extra.push({ text: `More of momentum's nudges were stopped (${f.interrupted}) than ended on their own (${f.ended}): review what it steers.`, score: 30 });
+  } else {
+    m = recall ? { given: recall.given, used: recall.used, mistakes: recall.mistakes, tokens: recall.tokens } : { given: 0, used: 0, mistakes: 0, tokens: 0 };
+    list = recall?.facts ?? [];
+    if (f.unindexed || f.dangling) extra.push({ text: `MEMORY.md misses ${f.unindexed} note${f.unindexed === 1 ? "" : "s"} and points at ${f.dangling} missing: tidy it (offered below).`, score: 60 + (f.unindexed ?? 0) + (f.dangling ?? 0) });
+    if (f.over) extra.push({ text: "MEMORY.md is past what a start reads: move detail into topic files.", score: 80 });
+  }
+  const next = nextOf({ label: s.label, ...m, days: s.id === "tacit" ? FACT_DAYS : 1, facts: list, broken, extra });
+  // A native system's helped share is its facts used when its steps were judged, else the sessions that touched it.
+  const helped = recall && recall.given > 0 ? share(recall.used, recall.given) : s.helped;
+  return { ...s, short: SHORT[s.id], helped, measure: m, next };
+}
 
 export async function sweep(d: SweepDeps): Promise<Card> {
   const now = d.now ?? Date.now(), since = now - DAY;
@@ -261,12 +336,13 @@ export async function sweep(d: SweepDeps): Promise<Card> {
     byAct.push(row);
   }
   const claudeOn = !!found.length || nlog.some((r) => r.system === "claude");
+  const [claudeRecall, codexRecall] = await Promise.all([nativeRecall(d, "claude", since, now), nativeRecall(d, "codex", since, now)]);
   const systems: System[] = [
-    tacitSystem(paths, d.tacit.on, d.tacit.falls),
-    helperSystem(paths, records, now),
-    nativeSystem("claude", nlog, claudeDirs, claudeOn, claudeOn ? undefined : "no session has loaded it yet"),
-    nativeSystem("codex", nlog, codexDirs, nlog.some((r) => r.system === "codex"), nlog.some((r) => r.system === "codex") ? undefined : "off, or no session has loaded it yet"),
-    momentumSystem(byAct, d.momentum.on),
+    measured(tacitSystem(paths, d.tacit.on, d.tacit.falls), facts),
+    measured(helperSystem(paths, records, now)),
+    measured(nativeSystem("claude", nlog, claudeDirs, claudeOn, claudeOn ? undefined : "no session has loaded it yet"), [], claudeRecall),
+    measured(nativeSystem("codex", nlog, codexDirs, nlog.some((r) => r.system === "codex"), nlog.some((r) => r.system === "codex") ? undefined : "off, or no session has loaded it yet"), [], codexRecall),
+    measured(momentumSystem(byAct, d.momentum.on)),
   ];
   const id = Bun.randomUUIDv7();
   const offers = offersFrom({ facts, records, native: claudeDirs, reads, now, sweep: id });
