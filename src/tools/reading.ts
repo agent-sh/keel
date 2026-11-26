@@ -282,8 +282,9 @@ const LINE_END = /\r\n|[\n\r\u2028\u2029]/;
 // as rows `N<tab>line`), at most `budget` characters of them; a mark past the
 // budget is a line saying so. Only Keel's rows carry a number and a tab: a row
 // the reader typed itself is replaced by the file's row of that number (text
-// under a line number is always the file's), or loses its row form when the
-// page has no such line, and every other tab of the reader's text is spaces.
+// under a line number is always the file's, and counts against the same
+// budget), or loses its row form when the page has no such line, and every
+// other tab of the reader's text is spaces.
 // `quoted`: the lines shown as they are.
 export function expandReading(reading: string, page: Pick<Page, "rows">, budget: number): { text: string; quoted: Span[] } {
   const out: string[] = [];
@@ -292,12 +293,22 @@ export function expandReading(reading: string, page: Pick<Page, "rows">, budget:
   // The page's first and last line: a mark is walked only inside them, whatever numbers the reader wrote.
   let lo = Infinity, hi = -Infinity;
   for (const n of page.rows.keys()) { if (n < lo) lo = n; if (n > hi) hi = n; }
+  let skip: { at: number; from: number; to: number } | undefined;
   for (const typed of reading.split(LINE_END)) {
     const row = ROW.exec(typed);
     const own = row ? page.rows.get(Number(row[1])) : undefined;
     if (own !== undefined) {
-      const n = Number(row![1]);
-      out.push(`${n}\t${own}`);
+      // (A typed row is a mark of one line: it takes of the same budget, and past it the line is not shown.
+      // A run of such rows past the budget is one line saying so.)
+      const n = Number(row![1]), r = `${n}\t${own}`;
+      if (r.length + 1 > left) {
+        if (skip && skip.at === out.length - 1) { skip.from = Math.min(skip.from, n); skip.to = Math.max(skip.to, n); }
+        else { skip = { at: out.length, from: n, to: n }; out.push(""); }
+        out[skip.at] = skip.from === skip.to ? `[line ${skip.from} is not shown here]` : `[lines ${skip.from}-${skip.to} are not shown here]`;
+        continue;
+      }
+      left -= r.length + 1;
+      out.push(r);
       quoted.push({ from: n, to: n });
       continue;
     }

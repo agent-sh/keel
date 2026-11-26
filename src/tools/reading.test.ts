@@ -527,6 +527,18 @@ describe("the reading itself", () => {
     // A diff's hunk header is not a mark.
     expect(expandReading("@@ -3,4 +3,5 @@", page, 100).text).toBe("@@ -3,4 +3,5 @@");
   });
+
+  test("rows the reader types take of the same budget as its marks: past it they are one line saying so", () => {
+    const rows = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => `${a + i}\tFAKE`).join("\n");
+    // Room for three rows of `N<tab>line N` and a newline each.
+    const r = expandReading(`What it is.\n${rows(1, 9)}\nThen.\n${rows(20, 20)}\n@@ 30-31`, page, 27);
+    expect(r.text).toBe("What it is.\n1\tline 1\n2\tline 2\n3\tline 3\n[lines 4-9 are not shown here]\nThen.\n[line 20 is not shown here]\n[lines 30-31 are not shown here]");
+    expect(r.quoted).toEqual([{ from: 1, to: 3 }]);
+    // A reader that types a row for every line of a page gives back no more of it than its marks could.
+    const every = expandReading(rows(1, 50), page, 200);
+    expect(every.text.length).toBeLessThan(260);
+    expect(every.text).toEndWith("-50 are not shown here]");
+  });
 });
 
 describe("only Keel's rows carry a number and a tab", () => {
