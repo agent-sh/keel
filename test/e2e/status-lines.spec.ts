@@ -8,7 +8,7 @@ import { shoot } from "./shots.ts";
 // Above: the plan and the agents. Below: what the turn does now, with a marker that says thinking, acting
 // or waiting, then the folder, the project and what the session changed. The agents open their list, the
 // changes open the Changes panel, the folder and a file named in the action open the Files panel.
-// On a phone the same two lines fold to what fits, every target a finger's size. The scripted stand-in
+// On a phone the upper line can wrap, every target a finger's size. The scripted stand-in
 // writes the turns.
 const STAND_IN = "scripted:stand-in";
 const E2E = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
@@ -251,7 +251,7 @@ test.describe("at a desk", () => {
 
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
-  test("the same two lines fold to what fits, with targets a finger can press", async ({ page, request }) => {
+  test("the dock wraps to fit, with targets a finger can press", async ({ page, request }) => {
     const ids: string[] = [];
     const loops = watchLoops(page);
     try {
@@ -263,9 +263,12 @@ test.describe("on a phone", () => {
       await expect(pane.getByTestId("dock-agents")).toBeVisible({ timeout: 30_000 });
       await expect(pane.getByTestId("dock-changes-open")).toBeVisible({ timeout: 30_000 });
       await expect(pane.getByTestId("dock-action-path")).toBeVisible({ timeout: 30_000 });
-      await expect.poll(async () => (await measure(page)).dock!.height, { message: "two lines" }).toBeLessThanOrEqual(2 * 3.4 * 16);
       const m: Seen = await measure(page);
       expect(m.kids).toEqual(["dock-top", "dock-now"]);
+      // The plan and agents may stand on separate tap rows. The current action is still one row below them.
+      expect(m.now.rect!.top).toBeGreaterThanOrEqual(m.top.rect!.bottom);
+      expect(m.now.rect!.height).toBeLessThanOrEqual(2.75 * m.rem + 1);
+      expect(m.dock!.height).toBeLessThanOrEqual((3 * 2.75 + 0.375) * m.rem + 1);
       // Nothing is cut: every part lies inside its line, and every button is a finger's size (2.75rem).
       expect(m.top.out).toEqual([]);
       expect(m.now.out).toEqual([]);
