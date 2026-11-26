@@ -901,6 +901,36 @@ test("an ask is the owner's words; an ask with another mark, or a peer's message
   expect(told.sort()).toEqual(["mixed:deleted", "peer:deleted"]);
 });
 
+test("recovery arms an owed prompt without reading its session's history on the loop", async () => {
+  const dir = scratch("owed-cold");
+  const a = rig(dir);
+  const s = a.session();
+  for (let i = 0; i < 140; i++) a.store.append(s.id, "note", { text: `Earlier note ${i}` });
+  a.store.append(s.id, "turn_end", { reason: "end_turn" });
+  await a.engine.settle(0);
+  const q = a.engine.message(s.id, "sent during the drain", { kind: "steer", agent_id: "ag_1" }).queued!;
+  a.store.db.close();
+
+  const b = rig(dir);
+  const done = new Promise<void>((resolve) => {
+    const off = b.bus.on((f) => {
+      if (f.t === "event" && f.event.session_id === s.id && f.event.kind === "turn_end") { off(); resolve(); }
+    });
+  });
+  let whenListed!: number;
+  await b.engine.recover(b.store.bootWorking, async () => { whenListed = b.store.coldReads().start.rows; });
+  await done;
+  await b.engine.idle(s.id);
+  try {
+    expect(whenListed).toBe(0);
+    expect(b.store.coldReads().start.rows).toBe(0);
+    expect(promptsOf(b.store, s.id, q.id)).toHaveLength(1);
+  } finally {
+    b.store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A prompt that came while the daemon stopped is owed a start (queue_owed). The turn a restart cut is continued
 // by the next daemon, and its first request takes the row; the debt is paid there, not left for a later start.
 test("a queued prompt taken by the continued turn's first request leaves no start owed", async () => {

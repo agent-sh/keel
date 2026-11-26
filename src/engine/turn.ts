@@ -4939,7 +4939,7 @@ export class Engine {
       if (!s || !this.store.queue(id).length) { this.settleOwed(id); continue; }
       // (An archived session's is started when it is restored: startOwed.)
       if (s.archived || this.held.has(id) || this.running.has(id)) continue;
-      const end = this.lineage(id).at(-1);
+      const end = this.store.headEvent(id);
       if (end?.kind === "turn_end" && end.data.reason === "restart") continue;
       this.owe(id);
       void this.startWhenListed(id, waitModel);
@@ -4957,6 +4957,9 @@ export class Engine {
       if (!s || s.archived || this.draining || this.held.has(id) || this.running.has(id) || !this.owed.has(id) || !this.store.queue(id).length) return;
       try {
         await waitModel(s.model);
+        // Starting the prompt checks its anchor against the branch. Bring the
+        // rows in on the read thread, not in the loop that sends it.
+        if (!this.store.isKept(id)) await this.store.warm(id, false, 0, true).catch(() => {});
         const release = await pace();
         try {
           if (this.draining || this.held.has(id) || this.running.has(id) || !this.owed.has(id)) return;
