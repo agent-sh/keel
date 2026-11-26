@@ -2057,6 +2057,13 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    line's icon, drawn small in a finger's target; Send fills its icon's square only while there is something to send. */
 .k-composer-box[data-line] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
 .k-composer-box[data-line] > * { grid-column: 1 / -1; }
+/* The attachments are the box's first row, and the row that gives way: a long draft in a short window keeps its
+   lines and the strip is what is left, down to one row that scrolls (as it yields in a box that is not one line). */
+.k-composer-box[data-line]:has(> .k-attachments) { grid-template-rows: 1fr; }
+.k-composer-box[data-line] > .k-attachments { align-self: stretch; }
+/* (The line saves the box a row, so the strip met no pressure until the conversation was gone: while the box holds
+   attachments the conversation keeps a few lines where the pane has them, and the strip is what gives.) */
+.k-session:has(.k-composer-box[data-line] > .k-attachments) > .k-reading-room { min-height: clamp(0px, calc(100% - 18rem), 5rem); }
 .k-composer-box[data-line] > textarea { grid-column: 1; }
 .k-composer-box[data-line] > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; gap: 0; padding: 0 0.125rem 0 0; }
 .k-composer-box[data-line] .k-compose-send { gap: 0; }
@@ -2067,6 +2074,11 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-composer-box[data-line] .k-send::before { content: ""; position: absolute; inset: 50% auto auto 50%; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); transform: translate(-50%, -50%); border-radius: var(--radius-md); background: var(--accent); }
 .k-composer-box[data-line] .k-send:disabled { color: var(--faint); opacity: 1; }
 .k-composer-box[data-line] .k-send:disabled::before { background: transparent; }
+/* The box's + popup: what the next turn runs with, one choice a row. The rows are one width whatever they say, so
+   a choice that changes a row's words (another model, another effort) resizes nothing: the popup stays where it
+   is, and so does a menu anchored to one of its rows. */
+.k-box-more-pop { width: 14rem; }
+.k-box-more-pop > button { width: 100%; }
 /* A session's box on a desk is one line in every view too (Composer.tsx): the same line, with the air of a
    pointer's controls: half a rem over and under the text, the tools a hair apart and off the frame, and the plain
    ones lit under the pointer. What else the box holds (attachments, notices) spans the line above or below. */

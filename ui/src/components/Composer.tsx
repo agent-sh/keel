@@ -1141,7 +1141,7 @@ const SessionComposer = memo(function SessionComposer({
 
       <p role="status" className="sr-only" data-testid="saved-status">{said}</p>
       {images.length > 0 && (
-        <div className="k-scroll-more flex max-h-[9.25rem] min-h-[4.75rem] shrink-[99] flex-wrap gap-2 px-3 pt-3" data-testid="attachments">
+        <div className="k-attachments k-scroll-more flex max-h-[9.25rem] min-h-[4.75rem] shrink-[99] flex-wrap gap-2 px-3 pt-3" data-testid="attachments">
           {images.map((a) => (
             <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${fmtSize(a.bytes)}`}>
               {a.file ? (

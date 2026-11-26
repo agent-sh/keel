@@ -195,7 +195,8 @@ test("model picker: counts, exact ids, the default, recent picks, two hide rules
 // Two stand-in OpenAI-compatible servers with long, alike names: providers
 // whose labels differ in their last word, models whose ids differ in their
 // last letter.
-const LAB_MODELS = "abcdefgh".split("").map((x) => `laboratory/long-context-instruct-preview-quantized-${x}`);
+// (Long enough to be cut in the chooser at a desk's type size.)
+const LAB_MODELS = "abcdefgh".split("").map((x) => `laboratory/long-context-instruct-preview-quantized-for-extended-windows-${x}`);
 async function withLab(request: APIRequestContext, run: () => Promise<void>) {
   const server = createServer((req, res) => {
     res.writeHead(req.url?.startsWith("/v1/models") ? 200 : 404, { "content-type": "application/json" });
