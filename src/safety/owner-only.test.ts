@@ -78,6 +78,16 @@ test("a command whose plain shape writes an owner-only file is the owner's, befo
   expect(shell('git commit -m "docs: > ~/.bashrc is yours"')).toBe("ask-low");
 });
 
+test("the folder a copy or a move is told with -t is where its files land", () => {
+  const shell = (command: string, mode: Mode = "ask") => how(decide({ kind: "shell", command, cwd: ws }, facts(mode)));
+  for (const command of [
+    "mv -t /home/u/own/.git/hooks k", "mv --target-directory=/home/u/own/.git/hooks k", "mv --target-directory /home/u/own/.git/hooks k", "cp -t ~/.ssh k", "cp -rt ~/.config/systemd/user units",
+    "install -m 755 -t .git/hooks k", "cp -t/home/u/own/.git/hooks k", "p=/home/u; q=$p/own; D=$q; mv -t $D/.git/hooks k", "p=/home/u; q=$p/own; D=$q; cp --target-directory=$D/../.ssh k",
+  ]) expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "owner", "ask-high"]);
+  for (const command of ["mv -t build k", "cp -t dist a b c", "rsync -t a b", "cp -at /w/repo/out a", "ln -sft /w/repo/links a b", "cp -u --preserve=timestamps a b", "mv -T a b"])
+    expect([command, shell(command), shell(command, "full-auto")]).toEqual([command, "ask-low", "allow"]);
+});
+
 test("a protected file named through a name the line sets is a path the command does not spell out", () => {
   const shell = (command: string, mode: Mode = "ask", more: Record<string, unknown> = {}) => how(decide({ kind: "shell", command, cwd: ws }, facts(mode, more)));
   const why = (command: string) => { const d = decide({ kind: "shell", command, cwd: ws }, facts("full-auto")); return "ask" in d ? d.ask.why : ""; };

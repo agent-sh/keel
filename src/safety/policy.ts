@@ -424,7 +424,15 @@ function writesInto(run: string[]): string[] {
   const rest = run.slice(1), args = rest.filter((a) => !a.startsWith("-"));
   if (name === "tar" || name === "bsdtar") { const k = rest.findIndex((a) => a === "-C" || a === "--directory"); return k >= 0 && rest[k + 1] ? [rest[k + 1]!] : rest.filter((a) => a.startsWith("--directory=")).map((a) => a.slice(12)); }
   if (name === "unzip") { const k = rest.indexOf("-d"); return k >= 0 && rest[k + 1] ? [rest[k + 1]!] : []; }
-  return args.length >= 2 ? args.slice(-1) : [];
+  // (`-t DIR`, `--target-directory=DIR`: the folder the option names, in a cluster of short options too. The last
+  // word is still read as one: the option may be another's value.)
+  const told: string[] = [];
+  if (/^(cp|install|mv|ln)$/.test(name)) rest.forEach((a, k) => {
+    if (a.startsWith("--target-directory=")) told.push(a.slice(19));
+    else if (a === "--target-directory" || /^-[A-Za-z]*t$/.test(a)) { if (rest[k + 1] !== undefined) told.push(rest[k + 1]!); }
+    else { const m = /^-[A-Za-z]*?t(.+)$/.exec(a); if (m && !a.startsWith("--")) told.push(m[1]!); }
+  });
+  return [...told, ...(args.length >= 2 ? args.slice(-1) : [])];
 }
 // A patch a command part applies, or an archive it unpacks, with the folder its files land in (relative to where
 // the part runs). `file` is not given when it reads the patch or the archive from another command.
