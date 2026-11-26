@@ -380,20 +380,24 @@ function init(deps: Deps) {
 
   if (!g.__keelAutomationRecovered && !runMode.client) {
     g.__keelAutomationRecovered = true;
-    try {
-      // Before anything of this start is delivered to a session: the turn the
-      // last daemon left open there is closed (after the gate's hooks, which
-      // say what became of a cut call, were registered above this module).
-      try { deps.engine.closeCut(deps.store.bootWorking); } catch (e) { capture(e, { at: "recover", step: "close" }); }
-      waits.recover();
-      loops.recover();
-      agents.recover();
-      writeAsks.recover();
-      failures.recover();
-      goals.recover();
-    } catch (e) {
-      capture(e, { at: "recover" });
-    }
+    const recover = () => {
+      try {
+        // Before anything of this start is delivered to a session: the turn the
+        // last daemon left open there is closed, after the gate's hooks and job
+        // recovery can say what became of a cut call.
+        try { deps.engine.closeCut(deps.store.bootWorking); } catch (e) { capture(e, { at: "recover", step: "close" }); }
+        waits.recover();
+        loops.recover();
+        agents.recover();
+        writeAsks.recover();
+        failures.recover();
+        goals.recover();
+      } catch (e) {
+        capture(e, { at: "recover" });
+      }
+    };
+    if (deps.boot?.jobs) void deps.boot.jobs.then(recover);
+    else recover();
     process.on("exit", () => waits.stopAll());
   }
 
@@ -402,6 +406,7 @@ function init(deps: Deps) {
   // snooze) and every ten seconds at the latest; what is scheduled through a request or a turn wakes the tick.
   g.__keelAutomationLeave?.();
   g.__keelAutomationLeave = joinPulse("automation", () => {
+    if (deps.boot?.jobs) return;
     // A notification held back while the owner attended its session goes out when they no longer do.
     alerts.tickWithheld();
     // A card that waits while the owner is away is told again, at growing gaps (src/automation/reminders.ts).

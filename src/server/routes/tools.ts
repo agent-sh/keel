@@ -44,8 +44,10 @@ export const toolRoutes: RouteModule = (deps) => {
   // a delete: that is no result the turn waited for) and a session the owner stopped are told with
   // the session's next request, whatever starts it, as a background command's end is.
   jobEnded.tell = (job, text, { sent, note, riding }) => {
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
+        // A stop or a live job from a reload can finish between recovery slices.
+        if (deps.boot?.jobs) await deps.boot.jobs;
         // Its session is gone or archived: nobody to tell, and nothing left to owe.
         const s = deps.store.session(job.sessionId);
         if (!s || s.archived) return riding ? note() : sent();
@@ -95,10 +97,14 @@ export const toolRoutes: RouteModule = (deps) => {
   // Its note went with a request of the session: the input lined up for it is not sent.
   jobEnded.read = (job) => void withdraw(job.sessionId, (m) => m.kind === "harness" && m.job === job.id);
   // Background commands a previous daemon started run on; take them back.
-  try {
-    adoptJobs(join(deps.store.stateDir, "spill"), (file, why) =>
-      deps.errors.capture("tool", new Error(`A record of a background command was not taken over at this start: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt jobs" }, { group: "a job's record was not taken over" }));
-  } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
+  const spill = join(deps.store.stateDir, "spill");
+  const refused = (file: string, why: string) => void deps.errors.capture("tool", new Error(`A record of a background command was not taken over at this start: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt jobs" }, { group: "a job's record was not taken over" });
+  const problem = (e: unknown) => void deps.errors.capture("tool", e, { at: "adopt jobs" });
+  if (deps.boot) {
+    deps.boot.jobs = adoptJobs(spill, refused, { afterListen: true }).then(() => {}, problem);
+  } else {
+    try { adoptJobs(spill, refused); } catch (e) { problem(e); }
+  }
   // The commands whose end a note of the session already tells (what a restart between storing the note and marking
   // it reported must not tell twice). Notes stored before this table are not in it.
   deps.store.migrate("CREATE TABLE IF NOT EXISTS told_jobs (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, job TEXT NOT NULL, PRIMARY KEY (session_id, job)) WITHOUT ROWID");

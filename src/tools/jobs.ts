@@ -823,7 +823,29 @@ function traceIn(dir: string, f: unknown): string | undefined {
 // `refused`: told each record that is not adopted, with why.
 // A settled record whose scope still runs (a build daemon or a server its command left) is taken back
 // whatever its age: its processes are this daemon's to list and to stop, not only the newest MAX_ENDED.
-export function adoptJobs(spillRoot: string, refused?: (file: string, why: string) => void): number {
+type AdoptionRefusal = (file: string, why: string) => void;
+export function adoptJobs(spillRoot: string, refused?: AdoptionRefusal): number;
+export function adoptJobs(spillRoot: string, refused: AdoptionRefusal | undefined, mode: { afterListen: true }): Promise<number>;
+export function adoptJobs(spillRoot: string, refused?: AdoptionRefusal, mode?: { afterListen: true }): number | Promise<number> {
+  const scan = scanJobs(spillRoot, refused);
+  if (mode?.afterListen) return (async () => {
+    // The socket and the route hooks are set up before the first slice.
+    await new Promise<void>((done) => setImmediate(done));
+    let deadline = performance.now() + 8;
+    for (let step = scan.next(); ; step = scan.next()) {
+      if (step.done) return step.value;
+      if (performance.now() >= deadline) {
+        await new Promise<void>((done) => setImmediate(done));
+        deadline = performance.now() + 8;
+      }
+    }
+  })();
+  let step = scan.next();
+  while (!step.done) step = scan.next();
+  return step.value;
+}
+
+function* scanJobs(spillRoot: string, refused?: AdoptionRefusal): Generator<void, number> {
   let n = 0;
   let sessions: string[] = [];
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
@@ -839,11 +861,16 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   const unlisted = new Map<string, { m: Meta; f: string }[]>();
   adoptStats.read = 0;
   for (const sid of sessions) {
+    yield;
     const dir = join(spillRoot, sid, "jobs");
     let files: string[] = [];
     try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { continue; }
     const listed = settledIn(dir);
-    for (const f of files) {
+    for (const [i, f] of files.entries()) {
+      if (i % 32 === 0) {
+        if (ended.length >= MAX_ENDED * 4) trimHistory();
+        yield;
+      }
       const known = listed.get(f.slice(0, -5));
       if (known && scoped.has(f.slice(0, -5))) { held.push({ dir, f }); continue; }
       if (known) { ended.push({ ...known, dir, f }); continue; }
@@ -867,17 +894,18 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   // A settled record whose scope runs: taken back whatever its age, when it names that very scope and a
   // live process in it carries the job's mark (scopeWhy). Else it is history like any other.
   for (const e of held) {
+    yield;
     const m = e.m ?? readRecord(join(e.dir, e.f));
     const why = !m ? undefined : m.cgroup !== scoped.get(m.id) ? "the scope running under its id is not the cgroup its record names" : scopeWhy(m, envsIn(m.cgroup!), stateId);
     if (m && !why) take(m, e.dir, e.f, true);
     else if (m) ended.push({ m, started: Number(m.started) || 0, num: Number.isInteger(m.num) ? m.num : 0, dir: e.dir, f: e.f });
   }
-  ended.sort((a, b) => b.started - a.started);
-  for (const e of ended.slice(0, MAX_ENDED)) {
+  trimHistory();
+  for (const e of ended) {
+    yield;
     const m = e.m ?? readRecord(join(e.dir, e.f));
     if (m) take(m, e.dir, e.f);
   }
-  for (const e of ended.slice(MAX_ENDED)) counter = Math.max(counter, e.num);
   concealLater(unlisted);
   for (const j of cut) finish(j, null, null);
   for (const j of history.sort((a, b) => b.started - a.started)) jobs.set(j.id, j);
@@ -886,6 +914,11 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   if (terminals.length) { const rows = procTable(true); for (const j of terminals) j.swept = sweep(j, rows); }
   if (adopted.size) { watchAdopted(); watcher ??= setInterval(watchAdopted, 1000); }
   return n;
+
+  function trimHistory() {
+    ended.sort((a, b) => b.started - a.started);
+    for (const e of ended.splice(MAX_ENDED)) counter = Math.max(counter, e.num);
+  }
 
   // `verified`: its scope runs and a process there carries its mark (scopeWhy).
   function take(m: Meta, dir: string, f: string, verified = false) {
@@ -1013,22 +1046,26 @@ export async function adoptScopes(spillRoot: string, refused?: Refused): Promise
 // time after the start; then each is listed in its folder's index, and a later
 // start does not read it unless it is among the newest it keeps.
 function concealLater(byDir: Map<string, { m: Meta; f: string }[]>) {
-  const rest = [...byDir].flatMap(([dir, list]) => list.map((e) => ({ dir, ...e })));
+  const rest = byDir.entries();
+  let next = rest.next();
+  let i = 0;
   const step = () => {
-    let written = 0;
+    let read = 0;
     const lines = new Map<string, string>();
-    while (rest.length && written < 100) {
-      const e = rest.shift()!;
+    while (!next.done && read < 100) {
+      const [dir, list] = next.value;
+      const e = list[i++]!;
+      if (i === list.length) { next = rest.next(); i = 0; }
+      read++;
       if (e.m.concealed !== true) {
-        try { writeMeta(join(e.dir, e.f.replace(/\.json$/, ".log")), e.m); } catch { continue; }
-        written++;
+        try { writeMeta(join(dir, e.f.replace(/\.json$/, ".log")), e.m); } catch { continue; }
       }
-      lines.set(e.dir, (lines.get(e.dir) ?? "") + `${e.m.id}\t${Number(e.m.started) || 0}\t${Number.isInteger(e.m.num) ? e.m.num : 0}\n`);
+      lines.set(dir, (lines.get(dir) ?? "") + `${e.m.id}\t${Number(e.m.started) || 0}\t${Number.isInteger(e.m.num) ? e.m.num : 0}\n`);
     }
     for (const [dir, text] of lines) try { appendFileSync(join(dir, SETTLED), text); } catch {}
-    if (rest.length) setTimeout(step, 50);
+    if (!next.done) setTimeout(step, 50);
   };
-  if (rest.length) setTimeout(step, 0);
+  if (!next.done) setTimeout(step, 0);
 }
 
 // A job folder's index of its settled records (an end reported, no stop to see through, no terminal

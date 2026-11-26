@@ -837,6 +837,25 @@ test("a later start reads only the ended records it keeps", async () => {
   }
 });
 
+test("the serving daemon can take jobs back after it listens, without dropping their history", async () => {
+  const root = mkdtempSync(join(RUN, "jobs-later-"));
+  const spill = join(root, "spill"), dir = join(spill, "s-later", "jobs");
+  mkdirSync(dir, { recursive: true });
+  const at = Date.now() - 60_000;
+  writeFileSync(join(dir, "job-later.json"), JSON.stringify({
+    id: "job-later", num: 9200, sessionId: "s-later", command: "echo kept", cwd: root,
+    started: at, background: false, pid: 987900000, reported: true, ended: at + 1, concealed: true,
+  }));
+  try {
+    const adoption = adoptJobs(spill, undefined, { afterListen: true });
+    expect(findJob("s-later", "job-later")).toBeUndefined();
+    expect(await adoption).toBe(0);
+    expect(jobsOf("s-later").map((j) => j.id)).toEqual(["job-later"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a copy or a restore of a state folder keeps its ended commands; only what could be signalled is refused", () => {
   const root = mkdtempSync(join(RUN, "jobs-copied-"));
   const spill = join(root, "spill");

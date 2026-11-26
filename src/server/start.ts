@@ -25,7 +25,7 @@ import { routeRefusals } from "../providers/route-refusals.ts";
 import { addAdmission } from "./admission.ts";
 import { watchSessionCallers } from "./caller.ts";
 import { listReach } from "../automation/api-grant.ts";
-import { serve } from "./app.ts";
+import { serve, type Deps } from "./app.ts";
 import { readsOf } from "./reads.ts";
 import { routeModules } from "./routes/index.ts";
 import { portHolder, waitForLeaving } from "../core/daemon-lock.ts";
@@ -217,8 +217,9 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   providers.start();
   process.on("exit", () => providers.plugins.killAll());
   startMark("engine");
+  const deps: Deps = { store, bus, engine, providers, errors, workspace: resolve(opts.workspace ?? process.cwd()), ...(opts.client ? {} : { boot: {} }) };
   const server = serve(
-    { store, bus, engine, providers, errors, workspace: resolve(opts.workspace ?? process.cwd()) },
+    deps,
     { hostname, port, development: opts.dev },
     routeModules,
   );
@@ -232,6 +233,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // A client's daemon recovers nothing; the sessions the last daemon left
   // working are idle again, as no turn runs in them.
   if (opts.client) for (const id of store.bootWorking) store.bootSettled(id);
+  // The modules close crash-cut turns before engine recovery and must see their adopted jobs.
+  const jobs = deps.boot?.jobs;
   if (!opts.client) {
     providers.models().then(async () => {
       // One line of what the first listing found: the providers with credentials and their models, and the ones whose listing failed.
@@ -252,19 +255,25 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     // The recovery reads the branch of every session before its first await,
     // while the daemon already listens: timed, so a stall it makes is named.
     // (Also a span of the activity record, with its parts inside engine.recover: a memory step names which.)
-    void timed(() => "the start's recovery read every session's branch", () => spanning("start", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
-      for (let i = 0; ; i++) {
-        try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
-        await Bun.sleep(5_000);
+    void (jobs ?? Promise.resolve()).then(() => {
+      if (deps.boot) deps.boot.jobs = undefined;
+      try {
+        return timed(() => "the start's recovery read every session's branch", () => spanning("start", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
+          for (let i = 0; ; i++) {
+            try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
+            await Bun.sleep(5_000);
+          }
+        })), "the start's recovery"));
+      } finally {
+        // Keep the startup's synchronous recovery reads distinct from the requests it held.
+        store.serving = true;
       }
-    })), "the start's recovery")).catch((e) => errors.capture("server", e, { at: "recover" }))
+    }).catch((e) => errors.capture("server", e, { at: "recover" }))
       // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
       .then(() => restarts?.finish((id, cut) => wentOn(store, engine, id, cut.turn_event)))
       .catch((e) => errors.capture("server", e, { at: "restart record" }));
   }
-  // From here the loop serves: a session read whole on it holds everyone, and is counted as that
-  // (Store.coldReads). What the start read before this, the recovery's first reads included, held nobody.
-  store.serving = true;
+  if (opts.client) store.serving = true;
   if (!opts.client) {
     // The sessions used in the last hour have their rows brought into memory, off the loop and one
     // after another: after a start nothing is, and the first reader that cannot wait (a report sent
@@ -290,6 +299,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   }
   const stop = async (drainMs = 0) => {
     stopDiagnostics?.();
+    await jobs;
     // The stop's two lines in the log: what it waits for, and what it parked.
     const running = store.db.query<{ id: string }, []>("SELECT id FROM sessions").all().filter((r) => engine.isRunning(r.id)).length;
     const up = Date.now() - ((globalThis as { __keelStarted?: number }).__keelStarted ?? Date.now());

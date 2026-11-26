@@ -59,7 +59,11 @@ const socketKinds = new Map<string, SocketHandler>();
 export const registerSocket = (kind: string, h: SocketHandler) => void socketKinds.set(kind, h);
 const socketKind = (ws: Bun.ServerWebSocket<any>) => (ws.data && typeof ws.data === "object" ? socketKinds.get((ws.data as any).kind) : undefined);
 
-export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string };
+export type Deps = { store: Store; bus: Bus; engine: Engine; providers: Providers; errors: ErrorTracker; workspace: string;
+  // Set only for a serving daemon's start. Tool routes provide the recovery; session requests and
+  // the startup hooks wait for it rather than treating a previous daemon's commands as missing.
+  boot?: { jobs?: Promise<void> };
+};
 
 // Fields of `PATCH /api/sessions/:id` a feature module owns (marks, memory
 // switches, a step budget). Every `check` runs before anything changes and
@@ -239,6 +243,12 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       try {
         const refused = await admit(req, srv);
         if (refused) return refused;
+        if (deps.boot?.jobs && routeOf(req) !== "GET /api/daemon") {
+          await deps.boot.jobs;
+          // A drain or a write hold can have started while the request waited.
+          const nowRefused = await admit(req, srv);
+          if (nowRefused) return nowRefused;
+        }
         const swap = standIn(req);
         if (swap instanceof Response) return swap;
         stood = swap;
