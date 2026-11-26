@@ -856,6 +856,10 @@ test("home: every count of what needs you counts sessions, not their agents' req
     // What goes on by itself is muted in the headline; what needs the owner is in ink.
     const ink = (id: string) => page.getByTestId(id).evaluate((el) => getComputedStyle(el).color);
     expect(await ink("home-count-fail"), "a failure is in ink").toBe(await ink("home-count-need"));
+    // The headline is a sentence at the reading size with its figures at the words' weight: the rows under it ask.
+    const said = await need.evaluate((el) => ({ weight: getComputedStyle(el.querySelector(".k-home-n")!).fontWeight, size: parseFloat(getComputedStyle(el).fontSize) / parseFloat(getComputedStyle(document.documentElement).fontSize) }));
+    expect(said.weight).toBe("400");
+    expect(said.size).toBeLessThanOrEqual(1.0625);
     await expect(page.getByTestId("inbox-count")).toHaveText("1");
     await shoot(page, "home-12-counted-sessions");
     // The Inbox lists each request, and says once, under the first of them, that agents of the tree wait.
