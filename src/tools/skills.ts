@@ -540,7 +540,7 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
   holdChoice(ctx.sessionId, choiceOf(skill), skill.name, grantable, false);
   const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine, vars) : hooksSaid(skill, raw, ctx.sessionId));
-  if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
+  if (await ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
   usage?.record(skill.name);
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}`);
 }

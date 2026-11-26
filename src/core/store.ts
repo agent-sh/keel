@@ -1462,10 +1462,11 @@ export class Store {
   // The bodies of a session's events from the one numbered `from` on (to the one numbered `to`),
   // in memory when this resolves, without the loop waiting for the disk: each run that is not in
   // memory is read on the read thread and handed over, and the loop is given back between runs.
-  // For a reader that can wait and is about to read them (a turn before its first request, a page
+  // For a reader that can wait and is about to read them (a turn before a request, a page
   // opening a part of a session). Where no thread reads (or it does not answer), the runs are read
   // here, one at a time with the loop given back in between.
-  async warmBodies(session_id: string, from = 0, to = Infinity): Promise<void> {
+  // `waitOnce`: claim the caller's one wait behind a report, shared across its ranges.
+  async warmBodies(session_id: string, from = 0, to = Infinity, waitOnce?: () => boolean): Promise<void> {
     await this.warm(session_id, false);
     const k = this.kept.get(session_id);
     if (!k || !k.all.length) return;
@@ -1473,7 +1474,7 @@ export class Store {
     const a = Math.min(firstAfter(k.all, from - 1), k.all.length - 1), b = Math.max(last, 1);
     let missing = false;
     for (let i = Math.floor(a / RUN); i * RUN < Math.min(b, k.all.length); i++) if (!k.runs[i]) { missing = true; break; }
-    if (missing) await this.fill(k, a, b);
+    if (missing) await this.fill(k, a, b, false, waitOnce);
     if (!k.gone) this.touch(session_id, k);
   }
 
@@ -1579,19 +1580,29 @@ export class Store {
   // The runs of a kept session from place `a` up to place `b`, in memory: each one that is not is
   // read on the read thread and handed over (else here), with the loop given back between runs.
   // `within`: only while the bodies kept fit the budget.
-  private async fill(k: Kept, a: number, b: number, within = false): Promise<void> {
+  private async fill(k: Kept, a: number, b: number, within = false, waitOnce?: () => boolean): Promise<void> {
     let t0 = performance.now();
     for (let i = Math.floor(a / RUN); i * RUN < Math.min(b, k.all.length) && !k.gone; i++) {
       const have = k.runs[i];
       if (have) { have.used = ++this.tick; continue; }
       if (within && this.keptBytes >= this.budget * 0.9) break;
-      const hi = k.all[Math.min(k.all.length, (i + 1) * RUN) - 1]!.seq;
-      const rows: { data: string }[] | undefined = this.readOff ? await this.readOff(BODIES, [k.id, k.all[i * RUN]!.seq, hi]).catch(() => undefined) : undefined;
+      let end = Math.min(k.all.length, (i + 1) * RUN);
+      let rows: { data: string }[] | undefined;
+      for (;;) {
+        const off = this.readLater && waitOnce?.() ? this.readLater : this.readOff;
+        if (!off) { rows = undefined; break; }
+        const hi = k.all[end - 1]!.seq;
+        rows = await off(BODIES, [k.id, k.all[i * RUN]!.seq, hi]).catch(() => undefined);
+        if (k.gone || k.runs[i] || !rows) break;
+        const now = Math.min(k.all.length, (i + 1) * RUN);
+        if (k.all[now - 1]!.seq === hi) break;
+        // A steer or a tool result grew the run while it was read. Ask again
+        // off the loop: the run grows only until it has RUN events.
+        end = now;
+      }
       if (k.gone) return;
       if (k.runs[i]) continue;
-      // (The run as it stands now: an event stored meanwhile is in it, and was not read.)
-      const end = Math.min(k.all.length, (i + 1) * RUN);
-      if (rows && rows.length === end - i * RUN && k.all[end - 1]!.seq === hi) { this.install(k, i, rows); this.bodiesOff++; }
+      if (rows && rows.length === end - i * RUN) { this.install(k, i, rows); this.bodiesOff++; }
       else this.read(k, i);
       if (performance.now() - t0 < 4) continue;
       await pause();

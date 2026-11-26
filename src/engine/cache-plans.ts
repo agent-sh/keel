@@ -62,6 +62,8 @@ type Deps = {
   call(id: string, st: PlanStep, messages: Message[], signal: AbortSignal, fitTokens: number): Promise<ProviderResult>;
   // The context's summary, prepared while the cache is warm (idle compaction's own).
   prepare(id: string, st: PlanStep): void;
+  // A long wait may have given back the bodies that preparing or projecting reads.
+  warm?(id: string): Promise<void>;
 };
 
 type Run = {
@@ -214,6 +216,8 @@ export class CachePlans {
     }
     r.last = this.decide(r, Date.now());
     if (r.last.choice !== "warm" && r.last.choice !== "summary") return;
+    if (this.d.warm) await this.d.warm(r.id);
+    if (this.runs.get(r.id) !== r) return;
     const st = await r.step();
     if (this.runs.get(r.id) !== r) return;
     if (r.last.choice === "summary") {

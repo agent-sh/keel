@@ -769,9 +769,10 @@ export class Engine {
       isHeld: (id) => this.held.has(id),
       draining: () => this.draining,
       waitShape: (id) => this.waitShape?.(id),
+      warm: async (id) => { await this.warmContext(id); },
       replan: (id) => {
         const s = this.store.session(id);
-        if (s && !this.running.has(id)) void this.step(s, s.model).then((st) => { if (!this.running.has(id)) this.planPark(this.store.session(id) ?? s, st); })
+        if (s && !this.running.has(id)) void this.warmContext(id).then(() => this.step(s, s.model)).then((st) => { if (!this.running.has(id)) this.planPark(this.store.session(id) ?? s, st); })
           .catch((e) => this.errors.capture("provider", e, { session: id, at: "cache plan after a model switch" }));
       },
       call: async (id, st, messages, signal, tokens) => {
@@ -1080,20 +1081,22 @@ export class Engine {
   // a report or an agent): read back from the end to the last turn's end. An agent's task and the
   // messages its parent sent it carry `owned` when the parent's turn was the owner's (src/automation/agents.ts):
   // that is the owner's word reaching the agent, and what stands before the task (a forked history) is not.
-  byOwner(id: string): boolean {
-    const line = this.lineage(id);
+  byOwner(id: string, line = this.lineage(id)): boolean {
     // A turn a restart cut and the continued one are one turn: past the restart message the
     // end of the cut turn does not end the search, whoever started that turn counts.
     let continued = false;
     for (let i = line.length - 1; i >= 0; i--) {
       const e = line[i]!;
       if (e.kind === "turn_end") {
-        if (continued && e.data.reason === "restart") { continued = false; continue; }
+        if (continued && this.store.body(e).reason === "restart") { continued = false; continue; }
         return false;
       }
-      if (e.kind === "user" && e.data.origin === "restart") continued = true;
-      if (e.kind === "user" && (ownerPrompt(e.data) || e.data.owned === true)) return true;
-      if (e.kind === "user" && e.data.kind === "task") return false;
+      if (e.kind !== "user") continue;
+      // Ownership may decide how to warm a cold context. Read just the prompt, not its entire run.
+      const data = this.store.body(e);
+      if (data.origin === "restart") continued = true;
+      if (ownerPrompt(data) || data.owned === true) return true;
+      if (data.kind === "task") return false;
     }
     return false;
   }
@@ -3040,21 +3043,34 @@ export class Engine {
     }
   }
 
-  // The bodies a turn's first request is made from are read off the loop before the turn reads
+  // The bodies a turn's requests are made from are read off the loop before the turn reads
   // them: the shown branch from its last checkpoint on (and that checkpoint's own event, which
   // says where it keeps from). A session at rest gives its bodies back after two minutes, and a
   // turn that starts then read them back a run at a time, on the loop, from the disk.
   // `line`: the branch as the caller read it (the same events: their bodies are read through them).
-  private async warmContext(id: string, line: readonly StoredEvent[] = this.lineage(id)) {
+  private async warmContext(id: string, line?: readonly StoredEvent[], allowQueue = false) {
     try {
+      if (!line) {
+        if (!this.store.isKept(id)) await this.store.warm(id, false);
+        line = this.lineage(id);
+      }
+      // A steer can still be queued when the reply returns. Check before
+      // claiming the one wait shared by the checkpoint and the tail.
+      let waited = false;
+      const waitOnce = allowQueue ? () => {
+        if (waited || this.byOwner(id, line) || this.liveSteers(id).some((q) => ownersMeta(q.meta))) return false;
+        waited = true;
+        return true;
+      } : undefined;
       let at = line.length - 1;
       while (at >= 0 && line[at]!.kind !== "compaction") at--;
-      if (at >= 0) await this.store.warmBodies(id, line[at]!.seq, line[at]!.seq);
+      if (at >= 0) await this.store.warmBodies(id, line[at]!.seq, line[at]!.seq, waitOnce);
       const from = line[checkpointAt(line).keepFrom]?.seq;
-      if (from !== undefined) await this.store.warmBodies(id, from);
+      if (from !== undefined) await this.store.warmBodies(id, from, Infinity, waitOnce);
     } catch {
       // What could not be read ahead is read by the turn, as it was.
     }
+    return line;
   }
 
   private async loop(id: string, signal: AbortSignal) {
@@ -3068,7 +3084,7 @@ export class Engine {
     // (And the bodies its first request is made from, which a session at rest gave back: warmContext.)
     // (Each part of a turn's start is a span of the activity record: a memory step names which.)
     const ready = await during("turn", () => this.store.warm(id, false), "a turn's start: reading its session's rows")
-      .then(() => during("turn", () => this.warmContext(id), "a turn's start: reading the bodies of its context"))
+      .then(() => during("turn", () => this.warmContext(id, undefined, true), "a turn's start: reading the bodies of its context"))
       .then(() => during("turn", () => this.step(session, session.model), "a turn's start: building its first step"))
       .finally(() => this.setting.delete(id))
       // A setup that fails after the stop has nothing left to say: the turn is closed.
@@ -3101,7 +3117,10 @@ export class Engine {
     const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal: AbortSignal.any([signal, failing.signal]), seen, spillDir: join(this.spillRoot, id),
       parentId: session.parent_id ?? undefined,
       questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }),
-      inContext: (text) => JSON.stringify(toMessages(this.lineage(id))).includes(JSON.stringify(text).slice(1, -1)),
+      inContext: async (text) => {
+        const line = await this.warmContext(id);
+        return !!line && JSON.stringify(toMessages(line)).includes(JSON.stringify(text).slice(1, -1));
+      },
       read: (source, text, prompt) => this.read(id, source, text, prompt, signal),
       readMaterial: (items, question, callId, opts) => this.readMaterial(id, items, question, opts?.signal ? AbortSignal.any([signal, opts.signal]) : signal, callId, opts),
       readBudget: () => readBudget(this.readerHost(id)),
@@ -3239,6 +3258,9 @@ export class Engine {
         // a prompt typed while idle does: the turn they joined may be one a wait
         // or a loop started in a session the owner had stopped.
         for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
+        // Tool, approval and provider waits can outlive the bodies. Read
+        // them again once any owner steer has joined this step.
+        if (steps) await this.warmContext(id, undefined, true);
         // A row a stopping daemon owed a start, taken by the turn the next one continued: nothing is owed for an empty queue.
         if (this.owed.has(id) && !this.store.queue(id).length) this.settleOwed(id);
         session = this.store.session(id)!;
@@ -3281,7 +3303,9 @@ export class Engine {
         // tools (the cached prefix), and calls it still makes are not run.
         if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness", system: true });
         // (A history not counted yet is counted here in slices: the counts below then read what is kept.)
-        await countPaced(this.lineage(id), st.info.id);
+        const toCount = this.lineage(id);
+        await this.warmContext(id, toCount, true);
+        await countPaced(toCount, st.info.id);
         let events = this.lineage(id);
         const limit = this.limitOf(session, st.info.context);
         let mark: ReturnType<typeof followUpMark>;
@@ -3347,6 +3371,7 @@ export class Engine {
         if (steps === 1 && (await this.tellBranch(session, events))) events = this.lineage(id);
         if (steps === 1 && this.tellNotes(session, events)) events = this.lineage(id);
         if (st.info.id === session.model && this.tellPrompt(session, events)) events = this.lineage(id);
+        await this.warmContext(id, events);
         const messages = timed(() => "projecting a session's history into a request's messages", () => toMessages(events));
         let res: ProviderResult;
         let sentAt = 0;
@@ -3419,6 +3444,9 @@ export class Engine {
         }
         // A wait kept warm before this request is told by what it read (src/engine/cache-plans.ts).
         if (this.cachePlans.owes(id)) this.cachePlans.answered(id, { route: st.info.id, usage: res.usage, sentAt, compactedAt: events.findLast((e) => e.kind === "compaction")?.ts, cause: cacheBreaks.get(res) });
+        // The stream may have waited for the provider or its account for longer than the bodies
+        // were kept. The after-response hooks, counts and tool calls still use that history.
+        await this.warmContext(id, undefined, true);
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         // (Right before the step's own writes: the hold's notice comes a moment before the lock is taken.)
         if (this.store.pacing?.()) await this.store.clear(signal);
@@ -4998,6 +5026,7 @@ export class Engine {
   // (the call asking), in place of the "interrupted" stand-in.
   async ask(id: string, extra: Message[], signal: AbortSignal, model?: string, pending?: { id: string; text: string }): Promise<ProviderResult & { model_id: string }> {
     const session = this.store.session(id)!;
+    await this.warmContext(id);
     const st = await this.step(session, model ?? session.model);
     const line = this.lineage(id);
     const messages = toMessages(line);

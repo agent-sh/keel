@@ -14,7 +14,7 @@ export type ToolContext = {
   questionChanged?: () => void;
   // Set by the engine: whether this text is in what the model sees now (the
   // context after the last compaction or clear, on the branch shown).
-  inContext?: (text: string) => boolean;
+  inContext?: (text: string) => boolean | Promise<boolean>;
   cwd: string;
   signal: AbortSignal;
   spillDir: string;

@@ -4,7 +4,7 @@
 // with the scripted stand-in as the model.
 import { afterAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.ts";
 import { allHooks, registerHooks } from "./hooks.ts";
@@ -17,6 +17,65 @@ afterAll(() => { allHooks().length = hooksAtStart; });
 
 const scratch = (name: string) => mkdtempSync(join(process.env.TMPDIR ?? ".", `${name}-`));
 const image = { type: "image" as const, media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" };
+
+test.each([
+  ["owner-started", [0, 0]],
+  ["unattended", [1, 2]],
+  ["owner steer into a wake", [1, 1]],
+] as const)("turn history after give-back: %s", async (kind, expected) => {
+  const dir = scratch("turn-cold-bodies");
+  const meta = kind === "owner-started" ? undefined : { kind: "wake" };
+  const { store, engine, requests, session } = rig(dir, {
+    request: async () => {
+      if (requests.length !== 1) return;
+      // The reply returns after an owner steer was queued and the report
+      // blocked the read thread, but before the engine has taken the steer.
+      if (kind === "owner steer into a wake") returned = store.giveBack(0);
+      engine.send(s.id, "keep going", { mode: "steer", meta: kind === "unattended" ? meta : undefined });
+    },
+  });
+  const s = session();
+  const reader = new Database(join(dir, "keel.db"), { readonly: true });
+  const release = store.hold(s.id);
+  const hooks = allHooks().length;
+  let returned = 0;
+  let queued = 0;
+  const atRequest: number[] = [];
+  try {
+    const covered = store.append(s.id, "user", { text: "a covered prompt" });
+    store.append(s.id, "user", { text: "a retained earlier prompt" });
+    store.append(s.id, "compaction", { mode: "summary", summary: "Earlier work.", covered: covered.id });
+    for (let i = 0; i < 150; i++) store.append(s.id, "note", { text: `history ${i}` });
+    store.append(s.id, "turn_end", { reason: "end_turn" });
+    const read = (sql: string, params: (string | number | null)[]) => reader.query<unknown, any[]>(sql).all(...params);
+    // The fast path cannot queue behind a report. Once a queued read answers,
+    // the thread is free for the unattended turn's remaining runs.
+    store.readOff = async (sql, params) => queued > atRequest.length ? read(sql, params) : undefined;
+    store.readLater = async (sql, params) => { queued++; return read(sql, params); };
+    store.serving = true;
+    registerHooks({
+      beforeRequest: (_, req) => { if (req.purpose === "turn") atRequest.push(queued); return req; },
+      stepHold: () => {
+        if (!returned && requests.length === 1) returned = store.giveBack(0);
+        return undefined;
+      },
+    });
+    expect(store.giveBack(0)).toBeGreaterThan(0);
+    engine.send(s.id, "first step", { meta });
+    await engine.idle(s.id);
+    expect(returned).toBeGreaterThan(0);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(expect.arrayContaining(["a retained earlier prompt", "keep going"]));
+    expect(atRequest).toEqual([...expected]);
+    if (kind === "unattended") expect(store.bodyReads().by).toEqual([]);
+  } finally {
+    allHooks().length = hooks;
+    release();
+    reader.close();
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // A steer is the same row as a queued prompt with a mark on it: it carries the
 // branch it was written on, and the running turn takes it only on that branch.

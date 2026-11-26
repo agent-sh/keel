@@ -720,10 +720,17 @@ test("bodies read on the loop are counted by who asked; warmed off the loop, a t
   await store.warmBodies(s.id, line[280]!.seq);
   expect(loop().n).toBe(2);
   expect(line.at(-1)!.data.i).toBe(299);
-  // What the thread read of a run that grew meanwhile is not used: the run is read as it is now.
+  // A run that grew meanwhile is read again as it is now, still off the loop.
   rest();
-  store.readOff = async (sql, params) => { const rows = other.query<{ data: string }, any[]>(sql).all(...params); store.append(s.id, "note", { text: "meanwhile" }); return rows; };
+  let retried = 0;
+  store.readOff = async (sql, params) => {
+    const rows = other.query<{ data: string }, any[]>(sql).all(...params);
+    if (++retried === 1) store.append(s.id, "note", { text: "meanwhile" });
+    return rows;
+  };
   await store.warmBodies(s.id, line[280]!.seq);
+  expect(retried).toBe(2);
+  expect(loop().n).toBe(2);
   expect(store.lineage(s.id).at(-1)!.data.text).toBe("meanwhile");
   expect(store.lineage(s.id).slice(-4, -1).map((e) => e.data.i ?? e.data.model)).toEqual([299, 300, "m"]);
   other.close();
