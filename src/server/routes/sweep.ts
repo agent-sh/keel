@@ -8,6 +8,7 @@
 //   POST /api/memory/sweep/offers/:id/dismiss   leave it
 import { join } from "node:path";
 import * as activity from "../../automation/activity.ts";
+import { nativeRoots } from "../../engine/native-memory.ts";
 import { dropNote, sweep, unstampedOffer, sweepLine, Sweeps, tidyIndex, DAY, type Card, type Offer } from "../../helper/sweep.ts";
 import { nativeLog } from "../../integrations/native-log.ts";
 import { MemoryStore } from "../../integrations/memory-store.ts";
@@ -17,6 +18,14 @@ import type { Deps } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store" } });
 const bad = (error: string, status = 400) => json({ error }, status);
+
+// Shorten only the displayed path. The stored target is still the absolute path that apply checks.
+function shown(o: Offer, home: string): Offer {
+  const dir = o.target.dir;
+  if (o.kind !== "tidy_index" || !dir?.startsWith(`${home}/`)) return o;
+  const short = `~${dir.slice(home.length)}`;
+  return { ...o, why: o.why.replace(dir, short), done: o.done?.replace(dir, short) };
+}
 
 // A sweep is made when the last is over this old: a day, less the slack of the check that finds it.
 const DUE_MS = DAY - 3_600_000;
@@ -65,19 +74,22 @@ export function sweepRoutes({ store, errors }: Deps, mem: MemoryStore, tacit: { 
   const done = (o: Offer, text: string) => {
     const next = sweeps.setOffer(o.id, { state: "applied", done: text, at: Date.now() })!;
     activity.record("memory", "sweep offer", null, `${o.title}: ${text}`, { offer: o.id, kind: o.kind });
-    return next;
+    return shown(next, nativeRoots().home);
+  };
+  const listing = (card = sweeps.latest(), busy = !!running) => {
+    const home = nativeRoots().home;
+    return json({ card: card && { ...card, offers: card.offers.map((o) => shown(o, home)) }, history: sweeps.history(), running: busy });
   };
 
   return {
     "/api/memory/sweep": {
-      GET: () => json({ card: sweeps.latest(), history: sweeps.history(), running: !!running }),
+      GET: () => listing(),
     },
     "/api/memory/sweep/run": {
       POST: async () => {
         const last = sweeps.latest();
-        if (!running && last && Date.now() - last.ts < MIN_GAP_MS) return json({ card: last, history: sweeps.history(), running: false });
-        const card = await run();
-        return json({ card, history: sweeps.history(), running: false });
+        if (!running && last && Date.now() - last.ts < MIN_GAP_MS) return listing(last, false);
+        return listing(await run(), false);
       },
     },
     "/api/memory/sweep/offers/:id/apply": {

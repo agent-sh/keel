@@ -64,6 +64,8 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     await expect(offer("tacit_note")).toContainText("code-word");
     await expect(offer("tidy_index")).toContainText("1 note not listed");
     await shoot(page, "memory-sweep-02-card");
+    await expect(offer("tidy_index")).toContainText("~/.claude/projects/e2e/memory");
+    await expect(offer("tidy_index")).not.toContainText(memory);
 
     // Nothing changed yet: the record and the index are as seeded.
     expect(readFileSync(join(memory, "MEMORY.md"), "utf8")).not.toContain("feedback_tests");
@@ -75,6 +77,7 @@ test("the daily sweep: a card with a figure per system, and offers applied only 
     expect((await (await fetch(`${d.url}/api/helper/memory`)).json()).items.map((r: any) => r.key)).not.toContain("pref.coffee");
     await offer("tidy_index").getByTestId("sweep-apply").click();
     await expect(offer("tidy_index")).toHaveAttribute("data-state", "applied");
+    await expect(offer("tidy_index")).toContainText("~/.claude/projects/e2e/memory/MEMORY.md");
     expect(readFileSync(join(memory, "MEMORY.md"), "utf8")).toContain("- [feedback_tests](feedback_tests.md): run the focused tests, not the suite");
 
     // A note to the memory store shows its command first; Cancel sends nothing, Send does.
