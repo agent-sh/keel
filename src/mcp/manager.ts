@@ -152,7 +152,7 @@ export type McpServerState = {
   tool_names: string[];
   // ChatGPT's app connectors (src/mcp/chatgpt-apps.ts), while the server is on: each app the account lists with
   // how many tools it has and how many only read, and the ones turned on for every session, by id.
-  apps?: { connectors: { id: string; name: string; prefix: string; tools: number; reads: number }[]; on: string[] };
+  apps?: { connectors: { id: string; name: string; prefix: string; tools: number; reads: number; fetches: number }[]; on: string[] };
   // A server Keel brings that is off until the owner turns it on (it acts with an account of the owner's).
   opt_in?: true;
   // On a scratch daemon only: the file a spec writes the address of its stand-in of ChatGPT's apps server to.

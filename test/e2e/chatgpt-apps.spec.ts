@@ -58,7 +58,7 @@ test("ChatGPT apps: off until turned on, an app by its switch, a read runs, a se
     const apps = row.getByTestId("mcp-app");
     await expect(apps).toHaveCount(3);
     // (The send its connector calls read-only is counted with what asks; so is a read that reaches outside the app.)
-    await expect(apps.getByTestId("mcp-app-counts")).toHaveText(["2 read · 4 ask you", "1 read · 1 ask you", "0 read · 2 ask you"]);
+    await expect(apps.getByTestId("mcp-app-counts")).toHaveText(["2 read · 4 ask you", "1 read · 1 ask you", "0 read · 1 read outside · 1 ask you"]);
     await expect(row.getByTestId("mcp-apps")).toHaveAttribute("data-on", "0");
     await expect(row.getByTestId("mcp-contents-toggle")).toHaveCount(0);
     await shoot(page, "chatgpt-apps-02-apps");

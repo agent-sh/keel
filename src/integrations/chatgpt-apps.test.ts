@@ -30,14 +30,14 @@ const TOOLS = [
   tool("slack.search_public", SLACK, { readOnlyHint: true, destructiveHint: false, openWorldHint: true }),
 ];
 
-const named = (name: string, annotations: Record<string, boolean> = { readOnlyHint: true }) => ({ name, annotations });
+const named = (name: string, annotations: Record<string, boolean> = { readOnlyHint: true, openWorldHint: false }) => ({ name, annotations });
 
 test("a tool is a read only when its connector says so outright, its name says so too, and it names no reach outside; of the rest one deletes, one sends, one writes", () => {
-  expect(TOOLS.map(appKind)).toEqual(["read", "send", "delete", "write", "send", "read", "fetch"]);
+  expect(TOOLS.map(appKind)).toEqual(["read", "send", "delete", "write", "send", "fetch", "fetch"]);
   // A read or a fetch is nobody's account write.
   expect([ownWhy(TOOLS[0]!), ownWhy(TOOLS[6]!)]).toEqual([undefined, undefined]);
-  // Nothing said, or a read hint that is not exactly true, is a write: it asks.
-  expect([appKind({ name: "gmail.search_emails" }), appKind({ name: "gmail.search_emails", annotations: {} }), appKind(named("gmail.search_emails", { readOnlyHint: "true" as unknown as boolean }))]).toEqual(["write", "write", "write"]);
+  // Nothing said, or a read hint that is not exactly true, is no read: it asks (open-world unless said otherwise, so it sends).
+  expect([appKind({ name: "gmail.search_emails" }), appKind({ name: "gmail.search_emails", annotations: {} }), appKind(named("gmail.search_emails", { readOnlyHint: "true" as unknown as boolean }))]).toEqual(["send", "send", "send"]);
   // A read hint beside a destructive one is no read: it deletes.
   expect(appKind(named("gmail.search_emails", { readOnlyHint: true, destructiveHint: true }))).toBe("delete");
   expect(ownWhy(TOOLS[1]!)).toBe("sends from Gmail to people or services outside it (its connector says so), as you, through your ChatGPT account: every write through a ChatGPT app is yours to allow");
@@ -56,7 +56,7 @@ test("a connector's read hint does not make a read of a tool whose own name does
   // A name that opens with no verb that reads is no read, whatever follows.
   for (const n of ["gmail.export_file", "github.download_artifact", "context7.query-docs", "atlassian.executeRead", "gmail.", "search_service.web_run", "x.research_topic", "x.listen"]) expect([n, readName(n)]).toEqual([n, false]);
   // Names that read: the verb first, in either spelling; a word that only holds a write verb is not that verb.
-  for (const n of ["gmail.search_emails", "gmail.search_email_ids", "google_calendar.list_events", "gmail.get_labels", "linear.list_comments", "atlassian.getJiraIssue", "atlassian.searchJiraIssuesUsingJql", "github.fetch_file", "x.lookup_user", "x.view_page", "x.count_rows", "x.check_status", "gmail.read_email_thread", "search_emails"]) expect([n, readName(n)]).toEqual([n, true]);
+  for (const n of ["gmail.search_emails", "gmail.search_email_ids", "google_calendar.list_events", "gmail.get_labels", "linear.list_comments", "atlassian.getJiraIssue", "atlassian.searchJiraIssuesUsingJql", "github.fetch_file", "x.lookup_user", "x.view_page", "x.count_rows", "gmail.read_email_thread", "search_emails"]) expect([n, readName(n)]).toEqual([n, true]);
   // The app's name said again in front of the verb, and a word of how many, are not the verb.
   for (const n of ["slack.slack_read_channel", "slack.slack_search_public", "gmail.batch_read_email", "google_calendar.google_calendar_list_events"]) expect([n, readName(n)]).toEqual([n, true]);
   for (const n of ["slack.slack_send_message", "gmail.batch_delete_emails", "slack.slack_slack_read", "gmail.batch"]) expect([n, readName(n)]).toEqual([n, false]);
@@ -70,11 +70,11 @@ test("a connector is turned on by its id alone; a session is offered only the on
   for (const n of ["Gmail", "gmail", "CONNECTOR_G", "connector", ""]) expect([n, TOOLS.filter(offeredTo([n])).length]).toEqual([n, 0]);
   // A tool that names no connector is nobody's.
   expect(offeredTo(["connector_g"])({ _meta: {} })).toBe(false);
-  // (A fetch is counted with what asks.)
+  // (A fetch is counted apart from the reads and from what asks.)
   expect(connectorsOf(TOOLS)).toEqual([
-    { id: "connector_g", name: "Gmail", prefix: "gmail", tools: 4, reads: 1 },
-    { id: "connector_c", name: "Google Calendar", prefix: "google_calendar", tools: 1, reads: 1 },
-    { id: "asdk_app_s", name: "Slack", prefix: "slack", tools: 2, reads: 0 },
+    { id: "connector_g", name: "Gmail", prefix: "gmail", tools: 4, reads: 1, fetches: 0 },
+    { id: "connector_c", name: "Google Calendar", prefix: "google_calendar", tools: 1, reads: 0, fetches: 1 },
+    { id: "asdk_app_s", name: "Slack", prefix: "slack", tools: 2, reads: 0, fetches: 1 },
   ]);
 });
 
@@ -311,7 +311,7 @@ test("a tool its connector calls read-only against its name is the owner's card 
     const search = tools.find((x) => x.name === "gmail.search_emails")!;
     expect([search.readOnly, search.judge]).toEqual([true, undefined]);
     // (One of the lies is counted with what asks, on the owner's page too.)
-    expect((row(m) as any).apps.connectors.find((c: any) => c.id === "connector_g")).toEqual({ id: "connector_g", name: "Gmail", prefix: "gmail", tools: 7, reads: 1 });
+    expect((row(m) as any).apps.connectors.find((c: any) => c.id === "connector_g")).toEqual({ id: "connector_g", name: "Gmail", prefix: "gmail", tools: 7, reads: 1, fetches: 0 });
   } finally { s.stop(); }
 });
 
@@ -374,4 +374,16 @@ test("not signed in, it is missing with what to do, and is found once the sign-i
     expect([row(m).state, row(m).tools]).toEqual(["ready", 7]);
     expect(s.seen.every((r) => r.account === null)).toBe(true);
   } finally { s.stop(); }
+});
+
+test("an absent open-world hint, a name of a page or an address, a look-alike letter or a verb that changes things is no plain read", () => {
+  // The MCP default for an absent openWorldHint is open-world: a read of that kind is a fetch, judged as a remote tool.
+  for (const n of ["web.fetch_url", "x.read_url", "x.get_webpage", "x.search_items"]) expect([n, appKind(named(n, { readOnlyHint: true }))]).toEqual([n, "fetch"]);
+  // Said to be closed, a name of an address still reads from outside.
+  expect(appKind(named("x.get_page", { readOnlyHint: true, openWorldHint: false }))).toBe("fetch");
+  expect(appKind(named("gmail.search_emails", { readOnlyHint: true, openWorldHint: false }))).toBe("read");
+  // The review's names that open with a read verb and change things.
+  for (const n of ["x.check_item", "x.check_out", "x.fetch_and_run", "x.get_and_clear_notifications", "gmail.get_resend", "x.list_and_sync", "x.get_or_save"]) expect([n, readName(n)]).toEqual([n, false]);
+  // A letter outside ASCII can stand for a Latin one: never a read.
+  expect(readName("gmail.get_s\u0435nd")).toBe(false);
 });

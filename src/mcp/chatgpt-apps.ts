@@ -51,15 +51,21 @@ export const slugOf = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g
 // Everything else changes things: one its connector calls destructive deletes, one it calls open-world sends, any
 // other writes. A read whose name does not pass is a write here: the cost of a wrong guess is a card, never a send.
 export type AppKind = "read" | "fetch" | "write" | "send" | "delete";
-const READS = new Set(["search", "list", "get", "read", "find", "fetch", "lookup", "view", "count", "check"]);
+// (Not "check": check_out and check_item change things.)
+const READS = new Set(["search", "list", "get", "read", "find", "fetch", "lookup", "view", "count"]);
 const WRITES = new Set([
   "send", "create", "update", "delete", "post", "reply", "share", "forward", "draft", "add", "remove", "set", "edit", "move",
   "archive", "upload", "invite", "comment", "assign", "approve", "merge", "close", "schedule", "cancel", "label", "mark", "apply",
   // (Beside the reviewed list: other words a tool that changes things is named with, and that a read's name rarely holds.)
   "write", "insert", "replace", "rename", "duplicate", "trash", "restore", "publish", "submit", "execute", "trigger", "enable",
   "disable", "grant", "revoke", "accept", "decline", "respond", "react", "subscribe", "unsubscribe", "join", "leave", "resolve",
-  "reopen", "transfer", "pay", "purchase",
+  "reopen", "transfer", "pay", "purchase", "run", "clear", "purge", "reset", "buy", "import", "sync", "save", "put", "patch",
+  "push", "start", "stop", "complete", "toggle", "modify", "change", "copy", "clone", "deploy", "generate", "confirm", "reject",
+  "dismiss", "notify", "resend",
+  // (Not email, message, call, order, book or sign: a read names them as things, get_email or list_order.)
 ]);
+// Words of a tool that reads a page or an address it is given: a fetch whatever its connector says of the open world.
+const WEB = new Set(["url", "urls", "web", "http", "https", "link", "links", "page", "webpage"]);
 // Words that say how many, in front of the verb (`batch_read_email`): not the verb.
 const MANY = new Set(["batch", "bulk", "multi"]);
 // A name as its words: split where it is not a letter or a digit, and where a lower-case letter meets an upper-case one.
@@ -76,15 +82,19 @@ function ownWords(name: string): string[] {
   return words;
 }
 export function readName(name: string): boolean {
+  // A name with a letter outside ASCII can hide a write verb behind a look-alike letter: never a read.
+  if (/[^\x00-\x7f]/.test(name)) return false;
   const words = ownWords(name);
   return words.length > 0 && READS.has(words[0]!) && !words.some((w) => WRITES.has(w));
 }
 type Judged = Pick<McpTool, "name" | "annotations">;
 export function appKind(tool: Judged): AppKind {
   const a = tool.annotations ?? {};
-  if (a.readOnlyHint === true && a.destructiveHint !== true && readName(tool.name)) return a.openWorldHint === true ? "fetch" : "read";
+  // An absent openWorldHint means open-world (the MCP default, and how Codex reads it).
+  const open = a.openWorldHint !== false || ownWords(tool.name).some((w) => WEB.has(w));
+  if (a.readOnlyHint === true && a.destructiveHint !== true && readName(tool.name)) return open ? "fetch" : "read";
   if (a.destructiveHint === true) return "delete";
-  if (a.openWorldHint === true) return "send";
+  if (open) return "send";
   return "write";
 }
 export const appReads = (tool: Judged) => appKind(tool) === "read";
@@ -109,17 +119,19 @@ export function callMeta(tool: Pick<McpTool, "_meta"> | undefined, callId?: stri
 }
 
 // The connectors of a listing, by name, each with how its tools are prefixed, how many it has and how many only
-// read (the rest are the owner's to allow: a fetch is counted with them, it asks too in the asking modes).
-export type ConnectorRow = Connector & { prefix: string; tools: number; reads: number };
+// read, how many read from outside the app (a fetch: judged as any remote server's tool), the rest the owner's to allow.
+export type ConnectorRow = Connector & { prefix: string; tools: number; reads: number; fetches: number };
 export function connectorsOf(tools: readonly McpTool[]): ConnectorRow[] {
   const by = new Map<string, ConnectorRow>();
   for (const t of tools) {
     const c = connectorOf(t);
     if (!c) continue;
     const dot = t.name.indexOf(".");
-    const row = by.get(c.id) ?? { ...c, prefix: dot > 0 ? t.name.slice(0, dot) : slugOf(c.name), tools: 0, reads: 0 };
+    const row = by.get(c.id) ?? { ...c, prefix: dot > 0 ? t.name.slice(0, dot) : slugOf(c.name), tools: 0, reads: 0, fetches: 0 };
     row.tools++;
-    if (appReads(t)) row.reads++;
+    const kind = appKind(t);
+    if (kind === "read") row.reads++;
+    else if (kind === "fetch") row.fetches++;
     by.set(c.id, row);
   }
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
