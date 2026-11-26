@@ -1225,7 +1225,7 @@ function wordStands(word: string, i: number, s: Line, home: string): string[] {
 // written one after the other.)
 type Step = { from: (dir: string) => string | null; none?: Step };
 const NOWHERE: Step = { from: () => null };
-const PLAIN = /^\/(?!.*\/\/)(?!.*\/\.\.?(\/|$))(.*[^/])?$/s;
+const PLAIN = /^(?!.*\/\/)(?!.*\/\.\.?(\/|$))\/(.*[^/])?$/s;
 function stepOf(t: string, home: string): Step {
   const up = UP.test(t), none = up ? stepOf(t.replace(/(^|\/)\.\.(?=\/|$)/g, "$1."), home) : undefined;
   const odd = /^(\/|~|\$HOME|\$\{HOME\}|["'])/.test(t) ? undefined : !t || /[$`*?\n]/.test(t) ? null : t;
