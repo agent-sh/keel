@@ -106,7 +106,7 @@ export class Fleet {
     let l = this.ssh.get(m.id);
     if (!l) {
       const alias = m.ssh_host!;
-      l = new SshLink(m.id, async () => groupOf(await hostGroups(), alias)?.routes ?? [alias], this.sockDir, (msg) => console.error(`keel fleet: ${msg}`));
+      l = new SshLink(m.id, async () => groupOf(await hostGroups(), alias)?.routes ?? [alias], this.sockDir, (msg) => console.info(`keel fleet: ${msg}`));
       this.ssh.set(m.id, l);
     }
     return l;
