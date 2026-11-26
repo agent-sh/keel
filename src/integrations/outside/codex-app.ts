@@ -528,6 +528,8 @@ export class CodexApp {
       const s = this.byId(id);
       if (!s || s.state !== "started") { run.given.delete(id); continue; }
       const held = holdsMessage(await recordsFrom(run.path, s.offset ?? 0), s.text);
+      // A daemon that stopped while the rollout was read checks nothing more (its store may be closed).
+      if (this.closed) return;
       if (this.byId(id)?.state !== "started") { run.given.delete(id); continue; }
       if (held) { this.set(id, "delivered"); run.given.delete(id); }
       else if (last) { this.set(id, "lost", { said: "Codex ended before the session held it: send it again" }); run.given.delete(id); }

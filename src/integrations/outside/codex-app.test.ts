@@ -476,6 +476,17 @@ describe("a Codex session answered in place", () => {
     expect(await recordsFrom(`${f}.none`, 0)).toEqual([]);
   });
 
+  test("a daemon that stops while a send's delivery is read checks nothing more: its store may be closed", async () => {
+    const r = rig();
+    const s = await r.session();
+    r.store.db.query("INSERT INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES ('g', ?, 'kg', 'given', 'started', 0, NULL, ?)").run(s.id, Date.now());
+    // A rollout long enough that the read takes parts (each one a turn of the loop).
+    appendFileSync(r.rollout, JSON.stringify({ type: "response_item", payload: { output: "x".repeat(4 << 20) } }) + "\n");
+    const checking = (r.app() as any).check({ path: r.rollout, given: new Set(["g"]) });
+    r.done();
+    await checking;
+  });
+
   test("who holds the rows a page shows is read from one look at /proc/locks a tick", async () => {
     const r = rig();
     try {
