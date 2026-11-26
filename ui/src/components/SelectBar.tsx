@@ -6,6 +6,7 @@ import { Archive, ArchiveRestore, CheckCheck, Pin, PinOff, SendHorizontal, Squar
 import { useEffect, useMemo, useRef, useState } from "react";
 import { announce } from "../lib/announce.ts";
 import { auto, stopHere } from "../lib/automation.ts";
+import { popupShown } from "../lib/overlay.ts";
 import { clearSelection, keepSelected, useSelection } from "../lib/select.ts";
 import { archive, archiveMany, pin } from "../lib/sessops.ts";
 import { actions, getState, reportError, useStore } from "../lib/store.ts";
@@ -27,7 +28,8 @@ export function SelectBar() {
   useEffect(() => {
     if (!picked.size) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      // (One that shows: a popup kept in the page while closed, as the message box's +, has nothing.)
+      if (e.key !== "Escape" || e.defaultPrevented || [...document.querySelectorAll('[role="dialog"], [role="menu"]')].some(popupShown)) return;
       if (text !== null) { setText(null); return; }
       clearSelection();
     };

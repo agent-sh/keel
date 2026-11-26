@@ -76,6 +76,15 @@ test("rows are marked together and archived, stopped or sent one message at once
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("sel-bar")).toBeHidden();
   await expect(row(page, marked[0]!)).not.toHaveAttribute("data-selected", "true");
+  // With a session open too: its message box keeps the closed + popup in the page, and Escape still lets go.
+  await page.goto(`/s/${calm1}`);
+  await page.getByTestId("composer").first().waitFor();
+  await space(marked[0]!);
+  await expect(page.getByTestId("sel-count")).toHaveText("1 selected");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("sel-bar")).toBeHidden();
+  await page.goto("/");
+  for (const id of marked) await expect(row(page, id)).toBeVisible();
 
   // Send to all: one message queued in each marked session, shown with its count and words before it goes.
   for (const id of marked) await space(id);
