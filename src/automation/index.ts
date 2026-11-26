@@ -404,8 +404,12 @@ function init(deps: Deps) {
         // recovery can say what became of a cut call.
         try { await deps.engine.closeCut(deps.store.bootWorking); } catch (e) { capture(e, { at: "recover", step: "close" }); }
         for (const [name, wake] of [
+          // First the pace the last daemon kept, so what the others send again keeps it.
+          ["pace", pace.recover],
           ["waits", waits.recover], ["loops", loops.recover], ["agents", agents.recover],
           ["write requests", writeAsks.recover], ["failures", failures.recover], ["goals", goals.recover],
+          // Last: what waited for the pace and has no table of its sender's own.
+          ["paced inputs", pace.restore],
         ] as const) {
           timed(() => `recovering ${name} at startup`, wake, false, "startup automation");
         }

@@ -72,7 +72,7 @@ function Host() {
           <Dialog.Title className="k-dialog-title px-[var(--k-dialog-pad)] pt-[var(--k-dialog-pad)] text-read font-semibold">Unattended pace</Dialog.Title>
           <div className="k-dialog-body mt-1.5 px-[var(--k-dialog-pad)] pb-1">
             <Dialog.Description className="text-ui text-muted">
-              Each turn nobody started (an agent's report, a wake, a loop's run, a monitor's batch, a goal's next turn) reads the whole context again. One that comes within the pace of the last such turn's end waits, and what waited goes as one input: never past its own deadline (a loop's next run, a wait's timeout) or the cache's lifetime. Your own messages, an agent's question, failure or stop, a failure notice and a timer that is up go at once and take what waits with them.
+              Each turn nobody started (an agent's report, a wake, a loop's run, a monitor's batch, a goal's next turn) reads the whole context again. One that comes within the pace of the last such turn's end waits, and what waited goes as one input: never past its own deadline (a loop's next run, a wait's timeout) or the cache's lifetime. Your own messages go at once, and what waits goes right after your turn. An agent's question, failure or stop, a failure notice and a timer that is up go at once and take what waits with them.
             </Dialog.Description>
             <div className="mt-4 flex flex-col gap-2 text-ui">
               <span>Pace for this session</span>

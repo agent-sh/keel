@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { getConcealer, setConcealer } from "../core/conceal.ts";
 import { Store } from "../core/store.ts";
-import { alertHook, flush, setDeps } from "./core.ts";
+import { alertHook, flush, lostAtExit, setDeps } from "./core.ts";
+import * as pace from "./pace.ts";
 import * as activity from "./activity.ts";
 import * as loops from "./loops.ts";
 
@@ -722,4 +723,45 @@ test("the server a loop waits on is told to the daemon, and again when it connec
   } finally { delete loops.mcpHooks.keep; }
   expect(kept).toEqual(["orders file:///a"]);
   expect(loops.watchesServer("orders")).toBe(false);
+});
+
+test("a scheduled run that waited for the session's pace when the daemon stopped goes after the restart, not skipped", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
+  at(loop.next_ms! - 1000);
+  pace.ended(s.id, false); // an unattended turn just ended: the next run waits for the pace
+  at(loop.next_ms!);
+  loops.tick();
+  expect(sent).toHaveLength(0);
+  const [run] = loops.runs(loop.id);
+  // The daemon stops while the run waits; the next one keeps the pace, and the run waits again.
+  lostAtExit();
+  restart();
+  pace.recover();
+  pace.restore();
+  expect(sent).toHaveLength(0);
+  expect(skipped(loop.id)).toEqual([]);
+  // The pace ends: the same run goes, once.
+  store.updateSession(s.id, { settings: { pace_min: 0 } });
+  pace.onSession(store.session(s.id)!);
+  expect(sent.map((x) => x.text.includes("tick"))).toEqual([true]);
+  expect(started(loop.id).map((r) => r.id)).toEqual([run!.id]);
+});
+
+test("a run that waited for the pace past its next run's due time is closed at the restart", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
+  at(loop.next_ms! - 1000);
+  pace.ended(s.id, false);
+  at(loop.next_ms!);
+  loops.tick();
+  lostAtExit();
+  at(loop.next_ms! + 61_000);
+  restart();
+  pace.recover();
+  pace.restore();
+  expect(sent).toHaveLength(0);
+  expect(skipped(loop.id)).toEqual(["the daemon stopped before the session was free"]);
 });

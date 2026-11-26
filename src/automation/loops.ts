@@ -9,6 +9,7 @@ import type { StoredEvent } from "../core/types.ts";
 import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw, stopperOf } from "./core.ts";
 import { bareMethod, checkZone, localZone, nextCron, intervalStepMs, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 import * as activity from "./activity.ts";
+import * as pace from "./pace.ts";
 import * as failures from "./failures.ts";
 import { heldSays, stopSays } from "../core/stoppers.ts";
 import { loopEndLine, loopLine, sayAt } from "../admin/daemon-log.ts";
@@ -548,18 +549,38 @@ export function start(l: LoopRecord, due: number, opts: { note?: string; body?: 
   // hand, or by a request or a server's notification, goes at once.
   const paced = !opts.manual && (l.kind === "interval" || l.kind === "cron" || l.kind === "auto");
   const next = paced && l.kind !== "auto" ? nextDue(l, due) : null;
+  // A paced run is owed in the pace's table by its run (its row here is not started yet): a restart before
+  // it goes sends it again, while its next run is not due (recover, restoreRun).
   deliver(l.session_id, runText(l, extra), { kind: "loop", loop_id: l.id, run_id: runId, loop_name: l.name }, {
     hold: cut,
-    ...(paced ? { pace: next !== null ? { by: next } : {} } : {}),
-    onSent: (ev) => {
-      patchRun(runId, { started_ms: Date.now(), first_seq: ev.seq - 1 });
-      const cur = get(l.id);
-      patch(l.id, { runs: (cur?.runs ?? 0) + 1, last_ms: Date.now(), last_status: "running" });
-      activity.record("loop", "run", l.session_id, `Loop "${l.name}" started a run${note ? ` (${note})` : ""}`, { loop_id: l.id, run_id: runId });
-    },
+    ...(paced ? { pace: { owe: `loop:${runId}`, ...(next !== null ? { by: next } : {}) } } : {}),
+    onSent: runSent(l, runId, note),
   });
   return toRun(db().query<RunRow, [string]>("SELECT * FROM loop_runs WHERE id = ?").get(runId)!);
 }
+
+// What the run's prompt being stored settles: the run started.
+const runSent = (l: Pick<LoopRecord, "id" | "name" | "session_id">, runId: string, note: string | null) => (ev: StoredEvent) => {
+  patchRun(runId, { started_ms: Date.now(), first_seq: ev.seq - 1 });
+  const cur = get(l.id);
+  patch(l.id, { runs: (cur?.runs ?? 0) + 1, last_ms: Date.now(), last_status: "running" });
+  activity.record("loop", "run", l.session_id, `Loop "${l.name}" started a run${note ? ` (${note})` : ""}`, { loop_id: l.id, run_id: runId });
+};
+
+// A run that waited for the session's pace when the last daemon stopped: sent again while its loop is on and
+// its next run is not due; else it is closed as one the session was not free for.
+const owedRuns = () => new Map(pace.owedOf("loop").map((r) => [r.key.slice("loop:".length), r.by]));
+pace.restorers.loop = (r) => {
+  const runId = String(r.meta.run_id ?? "");
+  const row = db().query<{ loop_id: string; note: string | null; started_ms: number | null; ended_ms: number | null }, [string]>("SELECT loop_id, note, started_ms, ended_ms FROM loop_runs WHERE id = ?").get(runId);
+  if (!row || row.started_ms !== null || row.ended_ms !== null) return undefined;
+  const l = get(row.loop_id);
+  if (!l?.enabled || (r.by !== null && r.by <= Date.now())) {
+    patchRun(runId, { ended_ms: Date.now(), skip_reason: "the daemon stopped before the session was free" });
+    return undefined;
+  }
+  return { onSent: runSent(l, runId, row.note) };
+};
 
 // The model's ScheduleWakeup inside a run of a self-paced loop.
 // Whether a wakeup call starts a loop (outside a self-paced run, with a prompt) and not only paces the run it is in.
@@ -1054,7 +1075,13 @@ export function recover() {
   // A daemon from before archive paused its loops may have left them enabled.
   for (const { session_id } of db().query<{ session_id: string }, []>(`
     SELECT DISTINCT l.session_id FROM loops l JOIN sessions s ON s.id = l.session_id WHERE l.enabled = 1 AND s.archived = 1 AND s.outside IS NULL`).all()) onArchived(session_id);
-  db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'the daemon stopped before the session was free' WHERE ended_ms IS NULL AND started_ms IS NULL").run(now);
+  // (Not one that waited for the pace and may still go: the pace sends it again, pace.restore.)
+  const owed = owedRuns();
+  for (const r of db().query<{ id: string }, []>("SELECT id FROM loop_runs WHERE ended_ms IS NULL AND started_ms IS NULL").all()) {
+    const by = owed.get(r.id);
+    if (owed.has(r.id) && (by === null || by! > now)) continue;
+    db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'the daemon stopped before the session was free' WHERE id = ?").run(now, r.id);
+  }
   const open = db().query<{ session_id: string; first: number | null }, []>("SELECT session_id, MAX(first_seq) AS first FROM loop_runs WHERE ended_ms IS NULL AND started_ms IS NOT NULL GROUP BY session_id").all();
   for (const { session_id, first } of open) {
     const s = D().store.session(session_id);

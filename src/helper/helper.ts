@@ -15,7 +15,7 @@
 // long term is its memory of keyed records (records.ts), looked up by key
 // or alias, and recalled per turn only where the turn names them.
 import * as alerts from "../automation/alerts.ts";
-import { deliver } from "../automation/core.ts";
+import { deliver, withdraw } from "../automation/core.ts";
 import { bareBy } from "../core/bare-index.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { isOutside } from "../core/outside.ts";
@@ -419,11 +419,16 @@ ${TOLD_SCHEMA}`);
     const list = this.unfed();
     if (!list.some((e) => e.level === "wake")) return false;
     const text = `[helper digest] What happened since you last heard (${digestZone()}):\n${digestLines(list, DIGEST_LINES, this.title)}\n\nDecide whether the owner must act or would want to know now; if so, notify them in one line. Otherwise reply with one short line.`;
-    if (!deliver(s.id, text, { kind: "helper_digest", events: list.length }, { pace: {} })) return false;
-    this.markFed(list);
-    this.save({ last_wake: Date.now() });
-    this.emit();
-    return true;
+    // The events are told when the digest's prompt is stored, not when it is lined up: it may wait for the
+    // session's pace, and a restart meanwhile leaves them unfed, for the next daemon's digest. A digest
+    // still waiting is replaced by this one, which holds its events and the new ones.
+    withdraw(s.id, (m) => m.kind === "helper_digest");
+    const onSent = () => {
+      this.markFed(list);
+      this.save({ last_wake: Date.now() });
+      this.emit();
+    };
+    return deliver(s.id, text, { kind: "helper_digest", events: list.length }, { pace: {}, onSent });
   }
 
   // --- mail --------------------------------------------------------------------

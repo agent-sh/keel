@@ -28,8 +28,10 @@ export type PaceIn = {
   paceMs: number;
   // When the session's last unattended turn ended, if one did since the daemon started.
   lastEnd?: number;
-  // How long the session's cache surely lives from its last request (0: no cache to keep).
+  // How long the session's cache surely lives from its last request (0: no cache to keep), and when that
+  // request was sent (the cache's clock starts there, as the cache plans count it; else the turn's end).
   life?: number;
+  cachedAt?: number;
   now: number;
   parts: readonly PacePart[];
 };
@@ -44,7 +46,7 @@ export function decide(p: PaceIn): PaceOut {
   if (p.parts.some((x) => !x.paced)) return { go: true };
   let at = p.lastEnd + p.paceMs;
   // Never past the cache: a wait that lapses it rewrites the whole context, which costs more than a turn.
-  if (p.life && p.life > 0) at = Math.min(at, p.lastEnd + p.life - lifeMargin(p.life));
+  if (p.life && p.life > 0) at = Math.min(at, (p.cachedAt ?? p.lastEnd) + p.life - lifeMargin(p.life));
   for (const x of p.parts) if (x.by !== undefined) at = Math.min(at, x.by);
   return at <= p.now ? { go: true } : { go: false, at };
 }

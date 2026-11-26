@@ -1268,24 +1268,32 @@ export class Engine {
     }
   }
 
-  // How long the session's cache surely lives from its last request, on its model's route (0: none to count on).
+  // How long the session's cache surely lives on its model's route (0: none to count on), and from when: the
+  // last request that used it was sent (as the cache plans count, src/engine/cache-plans.ts), else its reply.
   // Read when a turn has just ended (src/automation/pace.ts), while the session is in memory.
-  async cacheSure(id: string): Promise<number> {
+  async cacheSure(id: string): Promise<{ life: number; at: number }> {
     const s = this.store.session(id);
-    if (!s) return 0;
+    if (!s) return { life: 0, at: 0 };
     const r = await this.providers.resolve(s.model).catch(() => undefined);
-    return r ? cacheOf({ provider: r.provider, info: r.info }, this.lineage(id)).life : 0;
+    if (!r) return { life: 0, at: 0 };
+    const line = this.lineage(id);
+    const sent = this.sentAts.get(id);
+    const at = sent && sent.model === r.info.id ? sent.at : Math.max(lastWarm(line, r.info.id), this.cachePlans.warmedAt(id, r.info.id));
+    return { life: cacheOf({ provider: r.provider, info: r.info }, line).life, at };
   }
+  // When each session's last turn request that read or wrote a cache was sent, on which model.
+  private sentAts = new Map<string, { model: string; at: number }>();
 
   // The turn that runs was started, or steered into, by the owner's own words (not a loop, a wake,
   // a report or an agent): read back from the end to the last turn's end. An agent's task and the
   // messages its parent sent it carry `owned` when the parent's turn was the owner's (src/automation/agents.ts):
   // that is the owner's word reaching the agent, and what stands before the task (a forked history) is not.
-  byOwner(id: string, line = this.lineage(id)): boolean {
+  // `from`: where the search starts (the event before a turn's own end, which would close it).
+  byOwner(id: string, line = this.lineage(id), from = line.length - 1): boolean {
     // A turn a restart cut and the continued one are one turn: past the restart message the
     // end of the cut turn does not end the search, whoever started that turn counts.
     let continued = false;
-    for (let i = line.length - 1; i >= 0; i--) {
+    for (let i = from; i >= 0; i--) {
       const e = line[i]!;
       if (e.kind === "turn_end") {
         if (continued && this.store.body(e).reason === "restart") { continued = false; continue; }
@@ -3671,6 +3679,7 @@ export class Engine {
           sentAt = Date.now();
           res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st), ...(final ? { least: this.least(events, st) } : {}) });
           sentAt = answeredAt.get(res) ?? sentAt;
+          if (res.usage.cache_read + res.usage.cache_write > 0) this.sentAts.set(id, { model: st.info.id, at: sentAt });
         } catch (e) {
           // The session's model stayed overloaded: this turn goes on on its fallback, once, and the
           // next turn tries its own model first (its turn_start names it; tellSwitch tells each model).

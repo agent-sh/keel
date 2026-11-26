@@ -40,6 +40,14 @@ test("the wait ends before the cache lapses", () => {
   expect(decide({ ...base, life: 0, parts: [{ paced: true }] })).toEqual({ go: false, at: base.lastEnd + 5 * MIN });
 });
 
+test("the cache's clock starts at its last request, not at the turn's end", () => {
+  // A turn whose last request went three minutes before its end, on a five-minute cache.
+  const life = 5 * MIN, cachedAt = base.lastEnd - 3 * MIN;
+  expect(decide({ ...base, now: base.lastEnd, life, cachedAt, parts: [{ paced: true }] })).toEqual({ go: false, at: cachedAt + life - lifeMargin(life) });
+  // Its bound already passed: at once.
+  expect(decide({ ...base, life, cachedAt: base.now - life, parts: [{ paced: true }] })).toEqual({ go: true });
+});
+
 test("the session's own pace, else the default for a top session, else none for an agent", () => {
   expect(paceMsOf(undefined, 5, true)).toBe(5 * MIN);
   expect(paceMsOf(undefined, 5, false)).toBe(0);

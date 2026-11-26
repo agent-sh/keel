@@ -29,7 +29,7 @@ test("an unattended input waits for the session's pace, the dock says until when
 
     await line.click();
     const dialog = page.getByTestId("pace-dialog");
-    await expect(dialog).toContainText("go at once and take what waits with them");
+    await expect(dialog).toContainText("what waits goes right after your turn");
     await expect(dialog.getByTestId("pace-now")).toContainText("One input waits for the pace");
     await expect(dialog.getByTestId("pace-day")).toContainText("Nobody's");
     await shoot(page, "unattended-pace-02-dialog");

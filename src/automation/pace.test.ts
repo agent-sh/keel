@@ -82,3 +82,75 @@ test("after a turn of the owner's words an input goes at once, and a pace of 0 n
   pace.onSession(store.session(id)!);
   expect(await until(() => prompts(id).length === 3)).toBe(true);
 });
+
+test("an input owed by its key survives a restart while it waits, and goes once with the pace", async () => {
+  const id = open(5);
+  report(id, "first");
+  expect(await until(() => prompts(id).length === 1 && !engine.isRunning(id))).toBe(true);
+  await engine.idle(id);
+  core.deliver(id, "a command ended", { kind: "harness" }, { pace: { owe: "job:one" } });
+  await Bun.sleep(20);
+  expect(prompts(id)).toHaveLength(1);
+  // The daemon stops: what waited in memory is gone, the next one finds it and the pace it kept.
+  core.lostAtExit();
+  core.paceGate.reset?.();
+  pace.recover();
+  pace.restore();
+  await Bun.sleep(20);
+  expect(prompts(id)).toHaveLength(1);
+  expect(pace.view(id)).toMatchObject({ waiting: 1 });
+  store.updateSession(id, { settings: { pace_min: 0 } });
+  pace.onSession(store.session(id)!);
+  expect(await until(() => prompts(id).length === 2)).toBe(true);
+  expect(prompts(id)[1]).toBe("a command ended");
+  await engine.idle(id);
+  // Told once: a later restore sends nothing again.
+  pace.restore();
+  await Bun.sleep(20);
+  expect(prompts(id)).toHaveLength(2);
+  expect(engine.hasInput(id, "job:one")).toBe(true);
+});
+
+test("the cache's bound is counted from its last request, and decided again once it is known", async () => {
+  const id = open(10);
+  // The turn that ends: its cache's life is not known yet when the next input comes.
+  let known!: (c: { life: number; at: number }) => void;
+  const was = (engine as any).cacheSure;
+  (engine as any).cacheSure = () => new Promise((r) => { known = r; });
+  try {
+    report(id, "first");
+    expect(await until(() => prompts(id).length === 1 && !engine.isRunning(id))).toBe(true);
+    await engine.idle(id);
+    report(id, "held");
+    await Bun.sleep(20);
+    expect(prompts(id)).toHaveLength(1);
+    // A two-minute cache whose last request went two minutes ago: its bound has passed, so what waits goes.
+    known({ life: 2 * 60_000, at: Date.now() - 2 * 60_000 });
+    expect(await until(() => prompts(id).length === 2)).toBe(true);
+  } finally { (engine as any).cacheSure = was; }
+});
+
+test("the helper's digest tells its events only when its prompt is stored", async () => {
+  const { Helper } = await import("../helper/helper.ts");
+  const noMail = { id: "none", label: "No mail", available: () => false, account: () => undefined, can: { modify: false, send: false, calendar: false } } as any;
+  const helper = new Helper({ store, bus, providers: { defaultModel: async () => "m:x" }, workspace: dir, errors: { capture() {}, onCapture: () => () => {} } } as any, noMail);
+  try {
+    helper.configure({ mail_every_min: 0 });
+    await helper.setOn(true);
+    const id = helper.session()!.id;
+    store.updateSession(id, { settings: { ...store.session(id)!.settings, pace_min: 5 } });
+    pace.ended(id, false);
+    const unfed = () => store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM helper_events WHERE fed = 0").get()!.n;
+    helper.record("finished", null, "A build failed", "", "wake");
+    expect(helper.wake()).toBe(true);
+    await Bun.sleep(20);
+    // It waits for the pace: a restart now would find its event untold.
+    expect(prompts(id)).toHaveLength(0);
+    expect(unfed()).toBe(1);
+    store.updateSession(id, { settings: { ...store.session(id)!.settings, pace_min: 0 } });
+    pace.onSession(store.session(id)!);
+    expect(await until(() => prompts(id).length === 1)).toBe(true);
+    expect(unfed()).toBe(0);
+    await engine.idle(id);
+  } finally { helper.stop(); }
+});
