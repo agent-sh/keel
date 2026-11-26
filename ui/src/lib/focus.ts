@@ -6,8 +6,11 @@
 // owner in another session is one quiet line at the bottom edge. A side panel
 // opens only when asked for. Ctrl . (and the quiet control at the top right)
 // leaves for the full workbench and comes back; the choice is kept.
-// Focus is the default. It covers a session's page on a desk; the start
-// page, Settings and a phone keep their own layout.
+// Focus is the default. It covers a session's page on a desk and on a phone;
+// the start page and Settings keep their own layout. A phone's Focus keeps its
+// own frame (lib/phone.ts): the bar with the list's button and the conversation
+// over the box, the box one line, the agents one quiet item, and no strip of
+// marks along the bottom (what needs the owner elsewhere is a quiet line in the bar).
 import { registerCommand } from "./keys.ts";
 import { PHONE_QUERY } from "./phone.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
@@ -22,7 +25,18 @@ export function focusOn(): boolean {
   return !ui.workbench && ui.route.name === "session" && desk();
 }
 
-function useDesk(): boolean {
+// Whether the page shows a session in Focus now, on a desk or a phone.
+export function useCalm(): boolean {
+  return useUI((s) => !s.workbench && s.route.name === "session");
+}
+// A phone's Focus: the session in Focus at a phone's size.
+export function usePhoneFocus(): boolean {
+  const calm = useCalm();
+  return !useDesk() && calm;
+}
+
+// Whether the page is laid out for a desk (not a phone).
+export function useDesk(): boolean {
   const [d, setD] = useState(desk);
   useEffect(() => {
     const m = matchMedia(PHONE_QUERY);

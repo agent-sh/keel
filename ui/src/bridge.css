@@ -2046,3 +2046,33 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* The agents of the dock in Focus: one item in muted ink, the word and how many are live (AgentsDock.tsx). */
 .k-shell[data-mode="focus"] .k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }
 .k-agents-count { color: var(--muted); }
+
+/* ---------- A phone's Focus (lib/focus.ts) ----------
+   The conversation and the box, and the bar over them with the list's button: the list is one tap away, card
+   or no card. No strip of marks along the bottom: what needs the owner in other sessions is one quiet count in
+   the bar (Bridge.tsx HeadNeed), a press on which goes to the next. The bar keeps the state's dot, not its clock. */
+.k-shell[data-mode="phone-focus"] .k-dock { display: none; }
+.k-shell[data-mode="phone-focus"] .k-stations { height: 100%; }
+.k-shell[data-mode="phone-focus"] .k-dock-need.k-head-need { display: grid; align-self: center; }
+.k-shell[data-mode="phone-focus"] .k-station[data-card] .k-top-in > .k-list-button { display: grid; }
+.k-shell[data-mode="phone-focus"] .k-station-clock { display: none; }
+/* The bar's count is quiet ink in regular weight: its dot is the one mark in the owner's colour. */
+.k-head-need .k-dock-need-n { font-weight: 400; color: var(--muted); }
+/* The box is one line: the field, and beside it the plus, the queue, Stop and Send (Composer.tsx). Each is a
+   line's icon, drawn small in a finger's target; Send fills its icon's square only while there is something to send. */
+.k-composer-box[data-line] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.k-composer-box[data-line] > * { grid-column: 1 / -1; }
+.k-composer-box[data-line] > textarea { grid-column: 1; }
+.k-composer-box[data-line] > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; gap: 0; padding: 0 0.125rem 0 0; }
+.k-composer-box[data-line] .k-compose-send { gap: 0; }
+.k-composer-box[data-line] :is(.k-send, .k-stop, .k-queue, .k-box-more) { position: relative; background: transparent; border: 0; border-radius: var(--radius-md); }
+.k-composer-box[data-line] :is(.k-send, .k-stop) svg { position: relative; width: 0.875rem; height: 0.875rem; }
+.k-composer-box[data-line] .k-stop { color: var(--muted); }
+.k-composer-box[data-line] .k-send { color: var(--accent-fg); }
+.k-composer-box[data-line] .k-send::before { content: ""; position: absolute; inset: 50% auto auto 50%; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); transform: translate(-50%, -50%); border-radius: var(--radius-md); background: var(--accent); }
+.k-composer-box[data-line] .k-send:disabled { color: var(--faint); opacity: 1; }
+.k-composer-box[data-line] .k-send:disabled::before { background: transparent; }
+.k-shell[data-mode="phone-focus"] .k-composer-box { border-color: var(--line); box-shadow: none; }
+.k-shell[data-mode="phone-focus"] .k-composer-box:focus-within { border-color: var(--line-strong); box-shadow: none; }
+/* The agents over the box: one quiet item, as at a desk (AgentsDock.tsx). */
+.k-shell[data-mode="phone-focus"] .k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }

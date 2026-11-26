@@ -600,15 +600,16 @@ function FillWaiting({ skip, helm }: { skip: number; helm: string | null }) {
   return null;
 }
 
-// A phone on its side has no dock (bridge.css): the head says how many things wait on the owner, in one line
-// beside the list's button, and a press goes to the one that has waited longest, as the dock's count does.
+// A phone on its side has no dock, nor has a phone's Focus (bridge.css): the head says how many things wait on the
+// owner, its dot and its figure beside the list's button, and a press goes to the one that has waited longest, as the dock's count does.
 // Drawn only where the dock is gone (the stylesheet); with nothing waiting it is not there at all.
 function HeadNeed() {
   const need = useNeedCount();
   if (need < 1) return null;
   return (
     <button type="button" className="k-dock-need k-head-need" data-testid="head-need" title={`${countWord("need", need)}. Go to the next.`} onClick={goNextWaiting}>
-      <span className="k-dock-need-n"><span className="k-dock-need-mark" aria-hidden="true" />{countWord("need", need)}</span>
+      {/* The dot and the figure, as the dock draws it: the words are for a screen reader and the tip, so the title keeps the bar's width. */}
+      <span className="k-dock-need-n"><Mark w="need" />{need}<span className="sr-only">{countWord("need", need).slice(String(need).length)}</span></span>
     </button>
   );
 }

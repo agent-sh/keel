@@ -70,7 +70,7 @@ import { cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
 import { DESK_QUERY, PHONE_QUERY } from "../lib/phone.ts";
-import { useFocus } from "../lib/focus.ts";
+import { useCalm } from "../lib/focus.ts";
 
 const KEYS = "alt+a";
 // A phone: one page at a time, answered on the way (see the head of the file).
@@ -371,8 +371,8 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   const on = useQueue((s) => s.on && s.at === sessionId);
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
   const slot = useSyncExternalStore(slotSub, () => slots.get(sessionId) ?? null);
-  // In Focus the other sessions that wait are one line at the bottom edge (Focus.tsx).
-  const calm = useFocus();
+  // In Focus the other sessions that wait are one line at the bottom edge (Focus.tsx), on a phone in its bar (Bridge.tsx HeadNeed).
+  const calm = useCalm();
   if (!others || !helm || calm) return null;
   const said = `${others} other session${others === 1 ? " waits" : "s wait"}`;
   const n = `${said} for you`;

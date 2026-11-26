@@ -28,7 +28,7 @@ import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
 import { focusApproval } from "./lib/automation.ts";
 import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
-import { useFocus } from "./lib/focus.ts";
+import { useFocus, usePhoneFocus } from "./lib/focus.ts";
 import { FocusChrome } from "./components/Focus.tsx";
 import { chunked, preloadSettled } from "./lib/preload.ts";
 
@@ -112,6 +112,8 @@ export function App() {
   const sidebar = useUI((s) => s.sidebar);
   const rail = useRail();
   const calm = useFocus();
+  // A phone's Focus (lib/focus.ts): its own frame, said to the stylesheet as a mode of its own.
+  const phoneCalm = usePhoneFocus();
   // Escape puts a laid-over list away (and nothing else: not the running turn).
   useEffect(() => {
     if (!rail.over) return;
@@ -202,7 +204,7 @@ export function App() {
       <AnswerQueue />
       <UndoToast />
       <StartedToast />
-      <div className="k-shell" data-mode={calm ? "focus" : undefined}>
+      <div className="k-shell" data-mode={calm ? "focus" : phoneCalm ? "phone-focus" : undefined}>
         <AdminBand />
         <IncidentSlot />
         <ArchivedRefusalNotice />

@@ -24,7 +24,7 @@ import { agentSaid } from "./automation/bits.tsx";
 import { AgentLines } from "./automation/AgentLines.tsx";
 import { treeLines } from "../lib/agent-lines.ts";
 import { countWord } from "../../../src/core/state-words.ts";
-import { useFocus } from "../lib/focus.ts";
+import { useCalm } from "../lib/focus.ts";
 import { foldWords, settled } from "../lib/work-fold.ts";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
@@ -324,7 +324,7 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
     setAll((a) => ({ n: a.n + 1, open: line.getAttribute("aria-expanded") !== "true" }));
   };
   // In Focus a finished run is one quiet line; a press opens it (lib/work-fold.ts).
-  const calm = useFocus();
+  const calm = useCalm();
   const [opened, setOpened] = useState(false);
   const table = isTable(row.steps!);
   if (calm && !opened && settled(row.steps!)) {

@@ -41,7 +41,7 @@ import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
 import { DESK_QUERY } from "../lib/phone.ts";
-import { useFocus } from "../lib/focus.ts";
+import { useCalm, usePhoneFocus } from "../lib/focus.ts";
 
 // The two presses of Escape that open the rewind come within this time.
 const ESC_TWICE_MS = 700;
@@ -487,7 +487,10 @@ const SessionComposer = memo(function SessionComposer({
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   // Focus on a desk: the box is one line, the field with Send beside it; the mode, the model and the context are
   // behind its + (BoxMore, lib/focus.ts).
-  const focusMode = useFocus();
+  const focusMode = useCalm();
+  // A phone's Focus: the box is one line too, the field with the plus, the queue, Stop and Send beside it, each a
+  // line's icon (a finger's target round it). Attach and speech are behind the plus with the pickers.
+  const phoneLine = usePhoneFocus() && !!session;
   const rest = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !working && !notice && synced;
   // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
   // one line then, Stop included, until a tap brings its tools (bridge.css).
@@ -1015,6 +1018,18 @@ const SessionComposer = memo(function SessionComposer({
   const status = notice
     ? <span className={cn("min-w-0 truncate text-caption text-warn animate-in", short ? "block shrink-0 px-4 pb-1" : "ml-1")} title={notice} role="status" data-testid="composer-notice">{notice}</span>
     : !synced ? <span className={cn("truncate text-caption text-faint", short ? "block shrink-0 px-4 pb-1" : "ml-1")} role="status" data-testid="sync-state">{connected ? "Catching up" : appSays ?? "Reconnecting"}</span> : null;
+  const attach = (
+    <button
+      type="button"
+      title="Attach images or files (or paste, or drop them here)"
+      aria-label="Attach images or files"
+      data-testid="attach"
+      onClick={() => fileInput.current?.click()}
+      className="k-attach grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
+    >
+      <Paperclip className="size-4" />
+    </button>
+  );
 
   return (
     <>
@@ -1055,6 +1070,7 @@ const SessionComposer = memo(function SessionComposer({
       )}
       data-testid="composer-box"
       data-rest={rest || undefined}
+      data-line={phoneLine || undefined}
       data-calm={calm || undefined}
       ref={boxEl}
       onFocus={() => { setTapped(true); setKeysHere(true); }}
@@ -1252,27 +1268,19 @@ const SessionComposer = memo(function SessionComposer({
       )}
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
       {short && status}
-      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-1.5", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
+      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-1.5", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy && !phoneLine) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
         <div className={short ? "k-compose-scroll -my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
           <span className={cn("k-compose-lead flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
-            <button
-              type="button"
-              title="Attach images or files (or paste, or drop them here)"
-              aria-label="Attach images or files"
-              data-testid="attach"
-              onClick={() => fileInput.current?.click()}
-              className="k-attach grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
-            >
-              <Paperclip className="size-4" />
-            </button>
+            {!phoneLine && attach}
             <FileInput at={fileInput} take={takeFiles} />
-            <SpeechButtons sid={sid} />
+            {!phoneLine && <SpeechButtons sid={sid} />}
             {/* The mode, the model, the effort and the context stand in one row: what the next turn may do is read where it is asked for. */}
             {/* (In Focus they are behind the box's +: the box is one line.) */}
             {!focusMode && sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
             {!focusMode && <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />}
             {focusMode && (
               <BoxMore signal={`${modeOpen}|${pickerSignal}|${effortOpen}`}>
+                {phoneLine && <span className="flex items-center gap-x-0.5">{attach}<SpeechButtons sid={sid} /></span>}
                 {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
                 <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
                 {sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}

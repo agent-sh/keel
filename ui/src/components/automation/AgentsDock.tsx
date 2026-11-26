@@ -15,7 +15,7 @@ import { openSession } from "../../lib/automation.ts";
 import { Mark } from "../Mark.tsx";
 import { agentSaid } from "./bits.tsx";
 import { BackgroundPopup, useBackground } from "./BackgroundPopover.tsx";
-import { useFocus } from "../../lib/focus.ts";
+import { useCalm } from "../../lib/focus.ts";
 
 // The tally of the agents the session's counts name (src/core/agent-count.ts), its tree's included; null with none.
 // `shown` is what the line draws: only what is live or owed to the owner (needs you, working, waiting, and a failure
@@ -42,7 +42,7 @@ export function AgentsDock({ sessionId }: { sessionId: string }) {
   // The session's own turn is at rest and it waits on them: the line below says it, as its row's dot does.
   const waiting = backgroundOf(st) === "agents";
   // Focus: one quiet item, the word and how many are live; the names and their dots are in the popup it opens.
-  const calm = useFocus();
+  const calm = useCalm();
   if (!tally) return null;
   if (calm) {
     return (
