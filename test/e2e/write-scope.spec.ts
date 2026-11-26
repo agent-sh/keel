@@ -75,6 +75,7 @@ for (const sandbox of ["off", "workspace-write"] as const) {
     const spawned = (await events()).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => String(typeof r.content === "string" ? r.content : r.content.map((b: any) => b.text ?? "").join("\n")));
     expect(spawned.some((t) => t.includes("write_scope") && t.includes("its spawn named the paths it may write"))).toBe(true);
     const notice = page.getByTestId("write-ask-notice").first();
+    await page.getByTestId("lens-to-stream").click();
     await expect(notice).toContainText("asks to write outside the paths it was given", { timeout: 30_000 });
     await expect(notice).toContainText(x);
     await notice.scrollIntoViewIfNeeded();
