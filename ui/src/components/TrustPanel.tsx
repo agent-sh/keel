@@ -68,10 +68,13 @@ export function TrustPanel({ session }: { session: Session }) {
               {trusted.map((f) => {
                 const Icon = ICON[f.kind];
                 return (
-                  <li key={f.path} className="flex items-center gap-2 px-3 py-1 text-caption">
+                  <li key={f.path} className="flex items-center gap-2 px-3 py-1 text-caption" data-testid="trusted-file" data-landing={f.landing}>
                     <Icon className="size-3.5 shrink-0 text-faint" />
                     <span className="min-w-0 flex-1 truncate font-mono">{f.rel}</span>
-                    <span className="text-faint">{f.auto ? "pinned on first sight" : "trusted"}</span>
+                    {/* Its pin moved with a landing of the queue that a review or your own queueing vouched for: no card asked. */}
+                    <span className="text-faint" title={f.landing ? `The landing queue landed this version (commit ${f.landing}); a review that said LAND yes, or your own queueing, vouched for the change.` : undefined}>
+                      {f.landing ? <>trusted with its landing <span className="font-mono">{f.landing.slice(0, 7)}</span></> : f.auto ? "pinned on first sight" : "trusted"}
+                    </span>
                     {/* A skill pinned on first sight loads; its allowed-tools run without asking only once you trust it yourself. */}
                     {f.auto && f.kind === "skill" && (
                       <button type="button" data-testid="trust-own" className="k-btn" data-quiet title="Its allowed-tools then run without asking in the turn that loads it" onClick={async () => {

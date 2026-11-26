@@ -495,7 +495,9 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
     setErr("");
     setSaid("");
     try {
-      const r = await decide(session.id, { area: whole ? WHOLE : area!.key, action, note, agents, branches, confirmed, repo: view?.repo });
+      // (A landing says which head of each branch this page shows: the queue keeps it as the owner's own only for that commit.)
+      const heads = action === "land" ? Object.fromEntries((view?.branches ?? []).map((b) => [b.branch, b.head])) : undefined;
+      const r = await decide(session.id, { area: whole ? WHOLE : area!.key, action, note, agents, branches, confirmed, repo: view?.repo, heads });
       if (r.view) setView(r.view);
       setSaid(r.outcome ?? "");
       return true;

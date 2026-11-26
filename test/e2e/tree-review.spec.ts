@@ -163,6 +163,9 @@ test("the tree review reads every agent's branch as one diff by area and lands, 
   await expect(dlg.getByTestId("tree-said")).toContainText(`Not queued: ${beta.branch}: you sent it back in src/board`);
   const entry = async () => ((await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as any[]).find((e) => e.branch === alpha.branch);
   await expect.poll(async () => (await entry())?.state, { timeout: 90_000 }).toBe("landed");
+  // The review said which head it showed: the landing is kept as the owner's own, of that commit, from this tree.
+  const landed = await entry();
+  expect([landed.owner_tip, landed.owner_via]).toEqual([landed.tip, coord]);
   expect(((await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as any[]).some((e) => e.branch === beta.branch)).toBe(false);
 
   // Drop the top level; landing src/landing is then refused, since gamma also changes it.

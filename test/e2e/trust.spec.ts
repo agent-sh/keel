@@ -122,3 +122,49 @@ test("a skill past the scan's cap is held with its reason", async ({ page, reque
     rmSync(ws, { recursive: true, force: true });
   }
 });
+
+// An instruction file the landing queue landed for the owner, at the head their page showed, is trusted with
+// the landing: no card, the timeline says so and the Trust panel lists it with the landing. A commit made by
+// hand after it is held.
+test("an instruction file the owner's own landing changed is trusted with it", async ({ page, request }) => {
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `trust-land-${Date.now()}`);
+  const own = (...args: string[]) => git(ws, "-c", "user.name=t", "-c", "user.email=t@t", ...args);
+  mkdirSync(join(ws, ".keel"), { recursive: true });
+  git(ws, "init", "-q", "-b", "main");
+  writeFileSync(join(ws, "AGENTS.md"), "# Rules\n\nAnswer in one line.\n");
+  writeFileSync(join(ws, ".keel/checks.json"), JSON.stringify({ checks: { ok: "true" }, land: { checks: ["ok"] } }));
+  own("add", "-A");
+  own("commit", "-qm", "init");
+  const fileOf = async () => (await (await request.get(`/api/trust?cwd=${encodeURIComponent(ws)}`)).json()).files.find((f: any) => f.rel === "AGENTS.md");
+  try {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+    expect((await fileOf()).state).toBe("trusted");
+    // A branch nobody holds changes the file; the owner queues it from the session's panel, which says the head it showed.
+    own("checkout", "-q", "-b", "topic");
+    writeFileSync(join(ws, "AGENTS.md"), "# Rules\n\nAnswer in two lines.\n");
+    own("commit", "-qam", "two lines");
+    const tip = own("rev-parse", "HEAD").trim();
+    own("checkout", "-q", "main");
+    expect((await request.post(`/api/sessions/${session.id}/landing`, { data: { branches: ["topic"], heads: { topic: tip } } })).status()).toBe(200);
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/landing`)).json()).entries.find((e: any) => e.branch === "topic")?.state, { timeout: 60_000 }).toBe("landed");
+    expect(own("rev-parse", "main").trim()).toBe(tip);
+    expect(await fileOf()).toMatchObject({ state: "trusted", landing: tip });
+
+    await page.goto(`/s/${session.id}`);
+    await expect(page.getByText(`AGENTS.md changed with a landing of the queue (${tip.slice(0, 9)}: topic, which you queued) and is trusted as landed`)).toBeVisible();
+    await expect(page.getByTestId("trust-card")).toHaveCount(0);
+    await openTrust(page);
+    const panel = page.getByTestId("trust-panel");
+    await expect(panel.getByTestId("trust-clear")).toBeVisible();
+    await expect(panel.locator(`[data-testid="trusted-file"][data-landing="${tip}"]`)).toContainText(`trusted with its landing ${tip.slice(0, 7)}`);
+    await shoot(page, "trust-05-landed");
+
+    // A commit made by hand is not the queue's: held, as before.
+    writeFileSync(join(ws, "AGENTS.md"), "# Rules\n\nAnswer in three lines.\n");
+    own("commit", "-qam", "by hand");
+    expect((await fileOf()).state).toBe("changed");
+    await request.delete(`/api/sessions/${session.id}`);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});

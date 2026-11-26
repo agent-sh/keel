@@ -306,8 +306,11 @@ test("the Branches panel lands every ready branch in order and stops at the firs
     // Alpha lands; beta is checked on top of it and leaves; gamma is never asked for.
     await expect(section.getByTestId("ready-result")).toContainText(`Stopped at ${beta.replace(/^keel\//, "")}`, { timeout: 120_000 });
     await expect(section.getByTestId("ready-result")).toContainText(`Landed 1: ${alpha.replace(/^keel\//, "")}`);
-    const view = (await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as { branch: string; state: string }[];
+    const view = (await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as { branch: string; state: string; tip: string; owner_tip: string | null; owner_via: string | null }[];
     expect(view.find((e) => e.branch === alpha)?.state).toBe("landed");
+    // The page said which head it showed: the landing is kept as the owner's own, of that commit, from this session.
+    const landed = view.find((e) => e.branch === alpha)!;
+    expect([landed.owner_tip, landed.owner_via]).toEqual([landed.tip, coord]);
     expect(view.find((e) => e.branch === beta)?.state).toBe("left");
     expect(view.some((e) => e.branch === gamma)).toBe(false);
     expect(git(repo, "log", "--format=%s", "-2", "main").trim().split("\n")).toEqual(["Lane alpha", "init"]);

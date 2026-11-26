@@ -25,6 +25,7 @@ export type ProjectFile = {
   pinned_sha256?: string;
   trusted_ms?: number;
   auto?: boolean;         // pinned on first sight, not by the owner
+  landing?: string;       // the commit of the landing queue's landing the pin moved with (landed-trust.ts), not a press
   outside?: string[];     // a skill's links that land outside it: it does not load
   refused?: string;       // why a skill cannot be pinned (more than the scan reads): it does not load, and is not trusted
 };
@@ -143,6 +144,7 @@ function commandDigest(p: string): string | null {
 export class Trust {
   constructor(private store: Store) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("trust_pins", "landing")) store.migrate("ALTER TABLE trust_pins ADD COLUMN landing TEXT");
   }
 
   // "auto": new instruction files and skills are pinned on first sight; "ask": they wait too.
@@ -154,11 +156,34 @@ export class Trust {
   }
 
   private pin(path: string) {
-    return this.store.db.query<{ path: string; kind: string; root: string; sha: string; content: string | null; auto: number; trusted: number }, [string]>("SELECT * FROM trust_pins WHERE path = ?").get(path);
+    return this.store.db.query<{ path: string; kind: string; root: string; sha: string; content: string | null; auto: number; trusted: number; landing: string | null }, [string]>("SELECT * FROM trust_pins WHERE path = ?").get(path);
   }
-  private setPin(f: { path: string; kind: TrustKind; root: string }, digest: string, content: string | null, auto: boolean) {
-    this.store.db.query("INSERT INTO trust_pins (path, kind, root, sha, content, auto, trusted) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET sha = excluded.sha, content = excluded.content, auto = excluded.auto, trusted = excluded.trusted")
-      .run(f.path, f.kind, f.root, digest, content, auto ? 1 : 0, Date.now());
+  // (`landing`: the commit a pin moved with; every other pin clears it.)
+  private setPin(f: { path: string; kind: TrustKind; root: string }, digest: string, content: string | null, auto: boolean, landing: string | null = null) {
+    this.store.db.query("INSERT INTO trust_pins (path, kind, root, sha, content, auto, trusted, landing) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET sha = excluded.sha, content = excluded.content, auto = excluded.auto, trusted = excluded.trusted, landing = excluded.landing")
+      .run(f.path, f.kind, f.root, digest, content, auto ? 1 : 0, Date.now(), landing);
+  }
+
+  // The instruction files pinned for a checkout, each with the digest it is pinned at: what a landing of the
+  // queue may move (src/safety/landed-trust.ts). Skills are not listed: a skill's pin by the owner also lets
+  // its allowed-tools run unasked, which no landing gives.
+  // (Read by the root's index, as given and as its real path: a pin kept under another spelling of the
+  // folder is not found, and its file asks.)
+  instructionPins(root: string): { path: string; root: string; sha: string }[] {
+    return this.store.db.query<{ path: string; root: string; sha: string }, [string, string]>("SELECT path, root, sha FROM trust_pins WHERE root IN (?1, ?2) AND kind = 'instructions'").all(root, realOf(root));
+  }
+
+  // The pin of an instruction file moves with a landing: only from the content it is pinned at (`from`) to
+  // the text the landed commit holds (`text`), and only while the file on disk is that text. A file that was
+  // already held, one edited since, or one in a head nobody vouched for stays as it is. True when it moved.
+  landed(path: string, from: string, text: string, commit: string): boolean {
+    const p = this.pin(path);
+    if (!p || p.kind !== "instructions" || p.sha !== from || headHold.of?.(path)) return false;
+    let now: string;
+    try { now = readFileSync(path, "utf8"); } catch { return false; }
+    if (now !== text) return false;
+    this.setPin({ path, kind: "instructions", root: p.root }, sha(text), text, true, commit);
+    return true;
   }
 
   // Whether the session is owed the note about files held for the owner: not when it was already told of
@@ -229,7 +254,7 @@ export class Trust {
       out.push({
         path: f.path, kind: f.kind, root, sha256: f.digest,
         state: !p ? "new" : p.sha === f.digest ? "trusted" : "changed",
-        pinned_sha256: p?.sha, trusted_ms: p?.trusted, auto: p ? !!p.auto : undefined, ...(f.outside ? { outside: f.outside } : {}),
+        pinned_sha256: p?.sha, trusted_ms: p?.trusted, auto: p ? !!p.auto : undefined, ...(p?.landing && p.sha === f.digest ? { landing: p.landing } : {}), ...(f.outside ? { outside: f.outside } : {}),
       });
     }
     // Pinned files of the folders on the way that are gone now.

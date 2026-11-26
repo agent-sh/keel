@@ -17,9 +17,18 @@ import { fail, ok, type Tool } from "../../tools/types.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { sessionOfCaller } from "../caller.ts";
 import { overlapPassed, overlaps } from "./overlaps.ts";
+import { landedTrust } from "./trust.ts";
 import { gate, presence } from "./permissions.ts";
 
 export let landing: LandingQueue | undefined;
+
+// The heads a page says it showed the owner, by branch: full commit ids only.
+export function headsOf(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [b, h] of Object.entries(v as Record<string, unknown>).slice(0, 200)) if (typeof h === "string" && /^[0-9a-f]{40,64}$/.test(h)) out[b] = h;
+  return out;
+}
 // The pair checks of this daemon: the board reads their results (src/server/routes/board.ts).
 export let together: Together | undefined;
 // The daemon's parts the tool reads when it runs (a tool is registered once a process; the routes may be built again).
@@ -62,6 +71,8 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
       const p = sessionId ? gate?.perm(sessionId) : undefined;
       return p && p.sandbox !== "off" && !p.network ? "the session that queued it has no network in its sandbox" : undefined;
     },
+    // An instruction file a landing changed is trusted with it where the landing is vouched for (src/safety/landed-trust.ts).
+    landed: async (l) => { await landedTrust.move?.(l); },
     // A branch that conflicts with the base goes to its own agent with a rebase task (src/landing/resolve.ts).
     agents: {
       who: (e) => {
@@ -191,7 +202,8 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
         if (!branches.length) return json({ error: "branches is a list of branch names" }, 400);
         const repo = q.repoOf(req.params.id);
         if (!repo) return json({ error: "the session's folder is not in a git repository" }, 400);
-        const r = await q.add(repo, branches, null);
+        // (`heads`: each branch's head as the page showed it. A branch that is not there any more was not what they queued.)
+        const r = await q.add(repo, branches, null, req.params.id, headsOf(body?.heads));
         return json({ ...r, view: await q.view(req.params.id) }, r.queued.length ? 200 : 409);
       },
     },

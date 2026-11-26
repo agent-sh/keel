@@ -10,6 +10,7 @@ import { instructionFilter } from "../../engine/turn.ts";
 import { classifyCall } from "../../safety/gate.ts";
 import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
 import { HeadTrust } from "../../safety/head-trust.ts";
+import { landedNote, trustLanded, type Landing, type Moved } from "../../safety/landed-trust.ts";
 import { rootOf, skillDigest, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import { headHeld, setupHook } from "../../worktree/setup.ts";
@@ -39,6 +40,8 @@ const needs = (req: Request, action: string) => (!presence || presence.allows(re
 
 // The pins, for the settings pages that write a repository's files for the owner.
 export let trustRef: Trust | undefined;
+// What the landing queue calls after a batch moved a checkout (src/server/routes/landing.ts): the pins that may move with it do.
+export const landedTrust: { move?: (l: Landing) => Promise<Moved[]> } = {};
 // Who wrote the head of each session that started at a pull request (src/safety/head-trust.ts).
 export let headsRef: HeadTrust | undefined;
 
@@ -138,6 +141,17 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   const view = (cwd: string) => {
     const files = trust.files(cwd).map((f) => ({ ...f, rel: relative(f.root, f.path) || f.path }));
     return { root: rootOf(cwd), new_files: trust.newFiles(), files };
+  };
+  // A landing of the queue moved pins: said once in the timeline of each session that queued what changed
+  // the files, and the Trust panels of the checkout's sessions read again.
+  landedTrust.move = async (l) => {
+    const moved = await trustLanded(store, trust, l);
+    if (!moved.length) return moved;
+    const told = new Map<string, Moved[]>();
+    for (const m of moved) for (const id of m.tell) told.set(id, [...(told.get(id) ?? []), m]);
+    for (const [id, list] of told) notify(id, landedNote(list), "trust");
+    for (const id of sessionsIn(l.checkout)) bus.emit({ t: "feature", name: "trust", session_id: id, data: { cwd: l.checkout } });
+    return moved;
   };
   const guard = (f: () => Response | Promise<Response>) => async () => {
     try { return await f(); } catch (e) {

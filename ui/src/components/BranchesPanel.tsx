@@ -173,9 +173,9 @@ function ReadyToLand({ session, q, ready }: { session: Session; q: LandingView |
   const stop = useRef(false);
   useEffect(() => () => { stop.current = true; }, []);
   if (!ready.length && !run && !out) return null;
-  const land = (branch: string) => {
+  const land = (branch: string, head: string | null) => {
     setErr("");
-    queueBranches(session.id, [branch]).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${short(x.branch)}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "ReadyToLand" })));
+    queueBranches(session.id, [branch], { [branch]: head }).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${short(x.branch)}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "ReadyToLand" })));
   };
   const all = async () => {
     const list = ready.map((r) => r.branch!);
@@ -183,7 +183,7 @@ function ReadyToLand({ session, q, ready }: { session: Session; q: LandingView |
     setErr(""); setOut(null);
     let n = 0;
     try {
-      const done = await landInOrder(session.id, list, (at) => setRun({ at, of: list.length, n: ++n }), () => stop.current);
+      const done = await landInOrder(session.id, list, (at) => setRun({ at, of: list.length, n: ++n }), () => stop.current, Object.fromEntries(ready.map((r) => [r.branch!, r.head])));
       setOut(done);
     } catch (e) { setErr(failed(e, { at: "ReadyToLand" })); }
     setRun(null);
@@ -210,7 +210,7 @@ function ReadyToLand({ session, q, ready }: { session: Session; q: LandingView |
               <span className="min-w-0 truncate font-mono text-fg" title={r.branch ?? undefined}>{short(r.branch!)}</span>
               <button type="button" className="min-w-0 flex-1 truncate text-left text-muted hover:text-accent" onClick={() => openSession(r.session_id)}>{r.title}</button>
               {r.work?.branch && <span className="shrink-0 font-mono text-micro tabular-nums"><span className="text-ok">+{r.work.branch.added}</span> <span className="text-danger">-{r.work.branch.removed}</span></span>}
-              <button type="button" onClick={() => land(r.branch!)} disabled={!q?.rules || !!run} data-testid="ready-land" aria-label={`Queue ${short(r.branch!)} to land on ${q?.base ?? "the base"}`}
+              <button type="button" onClick={() => land(r.branch!, r.head)} disabled={!q?.rules || !!run} data-testid="ready-land" aria-label={`Queue ${short(r.branch!)} to land on ${q?.base ?? "the base"}`}
                 className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-micro text-muted hover:bg-hover hover:text-accent disabled:opacity-40"><GitMerge className="size-3" /> Land</button>
             </li>
           ))}
@@ -233,9 +233,9 @@ export function BranchesPanel({ session }: { session: Session }) {
   const board = useBoard(session.id);
   const ready = (board?.rows ?? []).filter(canLand).sort((x, y) => x.created - y.created);
   const readyBranches = new Set(ready.map((r) => r.branch));
-  const land = (branch: string) => {
+  const land = (branch: string, tip: string) => {
     setErr("");
-    queueBranches(session.id, [branch]).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${x.branch}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "BranchesPanel" })));
+    queueBranches(session.id, [branch], { [branch]: tip }).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${x.branch}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "BranchesPanel" })));
   };
   const [err, setErr] = useState("");
   useEffect(() => { loadOverlap(session.id).catch((e) => setErr(failed(e, { at: "BranchesPanel" }))); }, [session.id]);
@@ -291,7 +291,7 @@ export function BranchesPanel({ session }: { session: Session }) {
                     ? <span className="shrink-0 text-micro text-accent" data-testid="land-queued">in the queue</span>
                     : v.pairs.some((p) => p.base && p.conflict && p.a === b.branch)
                       ? <span className="shrink-0 text-micro text-faint" data-testid="land-rebase-first">rebase first</span>
-                      : <button type="button" onClick={() => land(b.branch)} data-testid="land-queue" aria-label={`Queue ${short(b.branch)} to land on ${v.base ?? "the base"}`}
+                      : <button type="button" onClick={() => land(b.branch, b.tip)} data-testid="land-queue" aria-label={`Queue ${short(b.branch)} to land on ${v.base ?? "the base"}`}
                         className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-micro text-muted hover:bg-hover hover:text-accent"><GitMerge className="size-3" /> Land</button>)}
                 </li>
               );

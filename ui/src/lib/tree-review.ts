@@ -16,7 +16,7 @@ export const readTree = (id: string, fresh = false, repo?: string | null) =>
 export const readArea = (id: string, key: string, repo?: string | null) =>
   api<AreaDetail>(`/api/sessions/${id}/tree-review/area?key=${encodeURIComponent(key)}${q(repo)}`);
 
-export type Decide = { area: string; action: "land" | "back" | "drop" | "undo"; note?: string; agents?: string[]; branches?: string[]; confirmed?: boolean; repo?: string | null };
+export type Decide = { area: string; action: "land" | "back" | "drop" | "undo"; note?: string; agents?: string[]; branches?: string[]; confirmed?: boolean; repo?: string | null; heads?: Record<string, string> };
 export const decide = (id: string, d: Decide) =>
   api<{ ok: true; outcome?: string; view?: TreeView }>(`/api/sessions/${id}/tree-review/decide`, { method: "POST", body: JSON.stringify({ ...d, repo: d.repo ?? undefined }) });
 

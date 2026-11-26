@@ -63,6 +63,7 @@ import type { Overlaps } from "../worktree/overlap-scan.ts";
 import { afterTask, baseLines, rebaseTask, TRIES, type ConflictAt, type Stop } from "./resolve.ts";
 import { buildOrder, checksToRun, failureText, leftWhy, outcomeText, queueWarning, readLand, tailOf, type LandRules, type Left, type Outcome, type Push, type ToRun } from "./rules.ts";
 import { homeDir } from "../core/paths";
+import type { Landing } from "../safety/landed-trust.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS landing_queue (
@@ -84,8 +85,11 @@ CREATE TABLE IF NOT EXISTS landing_batches (
 
 // The columns of a branch's own agent settling its conflict with the base (src/landing/resolve.ts):
 // `tries` the rebase tasks it was sent, `agent` the agent that has the newest, `agent_task` the task
-// number that ends it, `sent_tip` the branch's tip when it was sent.
-const RESOLVE_COLUMNS: [string, string][] = [["tries", "INTEGER NOT NULL DEFAULT 0"], ["agent", "TEXT"], ["agent_task", "INTEGER"], ["sent_tip", "TEXT"]];
+// number that ends it, `sent_tip` the branch's tip when it was sent. And the owner's own hand:
+// `owner_tip` the branch's tip when the owner queued it, kept only when it is the head their page
+// showed them (null: a session queued it, or the branch was not at what they saw), `owner_via` the session
+// whose panel they queued it from. (`queued_by` is no such mark: it is emptied when its session is deleted.)
+const RESOLVE_COLUMNS: [string, string][] = [["tries", "INTEGER NOT NULL DEFAULT 0"], ["agent", "TEXT"], ["agent_task", "INTEGER"], ["sent_tip", "TEXT"], ["owner_tip", "TEXT"], ["owner_via", "TEXT"]];
 
 // queued: waits for a pass; building / checking: in the pass that runs (step says what);
 // resolving: it conflicts with the base and its agent was sent a rebase task;
@@ -98,6 +102,7 @@ export type Entry = {
   tip: string; state: EntryState; step: string | null; built: string | null; landed: string | null;
   why: string | null; log: string | null; batch: string | null; owed: number; created: number; updated: number;
   tries: number; agent: string | null; agent_task: number | null; sent_tip: string | null;
+  owner_tip: string | null; owner_via: string | null;
 };
 export type QueueView = { repo: string | null; base: string | null; entries: Entry[]; running: boolean; rules?: { checks: string[]; push?: string; after?: string; method: string; problems: string[] } };
 
@@ -107,6 +112,8 @@ export type QueueView = { repo: string | null; base: string | null; entries: Ent
 // `confine`: the argv a check runs with, inside the session's sandbox when it has one.
 // `mayPush`: why the queue may not push for this session (it has no network), or nothing.
 // `agents`: the agents a conflict with the base goes to (none: the branch leaves, told).
+// `landed`: a batch moved a checkout that has the base out: the pins of its instruction files may move
+// with it (src/safety/landed-trust.ts). It never fails the landing.
 export type QueueDeps = {
   changed: (sessionIds: string[]) => void;
   error: (e: unknown, at: string) => void;
@@ -116,6 +123,7 @@ export type QueueDeps = {
   env: (sessionId: string | null) => Record<string, string>;
   mayPush: (sessionId: string | null) => string | undefined;
   agents?: AgentDeps;
+  landed?: (l: Landing) => Promise<void>;
 };
 
 // Who settles a branch's conflict: the agent that holds it, or a fresh agent
@@ -240,8 +248,11 @@ export class LandingQueue {
   // Queues branches of the repository. `by`: the session that queues (told
   // the outcome); null for the owner, who may queue any branch. A session
   // queues the branches it or one of its agents holds. A branch already in
-  // the queue keeps its place.
-  async add(repo: string, branches: string[], by: string | null): Promise<{ queued: Entry[]; refused: { branch: string; why: string }[]; warnings: string[] }> {
+  // the queue keeps its place. `via`: the session whose panel the owner
+  // queued from. `shown`: the head of each branch as the owner's page showed
+  // it. The owner's own queueing is kept with the tip they queued, only when
+  // that tip is the head they were shown.
+  async add(repo: string, branches: string[], by: string | null, via?: string, shown?: Record<string, string>): Promise<{ queued: Entry[]; refused: { branch: string; why: string }[]; warnings: string[] }> {
     const base = await this.baseOf(repo);
     const queued: Entry[] = [], refused: { branch: string; why: string }[] = [], warnings: string[] = [];
     if (!base) return { queued, refused: branches.map((b) => ({ branch: b, why: "the repository has no base branch to land on (main or master, or the branch origin/HEAD names)" })), warnings };
@@ -258,7 +269,11 @@ export class LandingQueue {
       if (by && !holder) { refused.push({ branch, why: "no session holds it: the owner queues it, from the Branches panel" }); continue; }
       if (by && holder && !this.within(holder, by)) { refused.push({ branch, why: `another session holds it (${holder}): that session queues it, or the one that started it, or the owner from the Branches panel` }); continue; }
       const had = live().find((e) => e.branch === branch);
-      if (had) { queued.push(had); continue; }
+      if (had) {
+        if (!by && shown?.[branch] === tip) this.set(had.id, { owner_tip: tip, owner_via: via ?? null });
+        queued.push(this.entry(had.id) ?? had);
+        continue;
+      }
       // The forecast already finds it conflicting with the base, at these tips: its agent is told now,
       // not after the entries ahead of it were built and checked.
       const fc = this.d.agents?.who({ holder, queued_by: by }) ? await this.ov.againstBase(repo, branch).catch(() => undefined) : undefined;
@@ -267,8 +282,8 @@ export class LandingQueue {
       const now = Date.now();
       const pos = (this.store.db.query<{ p: number | null }, [string]>("SELECT MAX(pos) AS p FROM landing_queue WHERE repo = ?").get(repo)?.p ?? 0) + 1;
       const id = newId();
-      this.store.db.query("INSERT INTO landing_queue (id, repo, branch, pos, queued_by, holder, tip, state, step, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, repo, branch, pos, by, holder, tip, toAgent ? "resolving" : "queued", toAgent ? `the forecast finds it conflicting with ${short(base)}: its agent is being sent a rebase task` : null, now, now);
+      this.store.db.query("INSERT INTO landing_queue (id, repo, branch, pos, queued_by, holder, tip, state, step, created, updated, owner_tip, owner_via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, repo, branch, pos, by, holder, tip, toAgent ? "resolving" : "queued", toAgent ? `the forecast finds it conflicting with ${short(base)}: its agent is being sent a rebase task` : null, now, now, !by && shown?.[branch] === tip ? tip : null, by ? null : via ?? null);
       if (toAgent) early.push(id);
       queued.push(this.entry(id)!);
       const w = this.warning(repo, branch, base, live().filter((e) => e.branch !== branch).map((e) => e.branch));
@@ -398,7 +413,7 @@ export class LandingQueue {
     this.d.changed([...ids]);
   }
 
-  private set(id: string, f: Partial<Pick<Entry, "state" | "step" | "built" | "landed" | "why" | "log" | "batch" | "owed" | "tip" | "holder" | "tries" | "agent" | "agent_task" | "sent_tip">>) {
+  private set(id: string, f: Partial<Pick<Entry, "state" | "step" | "built" | "landed" | "why" | "log" | "batch" | "owed" | "tip" | "holder" | "tries" | "agent" | "agent_task" | "sent_tip" | "owner_tip" | "owner_via">>) {
     const keys = Object.keys(f);
     if (!keys.length) return;
     this.store.db.query(`UPDATE landing_queue SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated = ? WHERE id = ?`).run(...(Object.values(f) as any[]), Date.now(), id);
@@ -514,6 +529,12 @@ export class LandingQueue {
         this.set(p.e.id, { state: "landed", step: null, landed: p.at, owed: p.e.queued_by && this.store.session(p.e.queued_by) ? 1 : 0 });
         this.moves.delete(p.e.id);
         outcome.landed.push({ branch: p.e.branch, tip: p.tip, at: p.at, ...(cur && cur !== p.tip ? { moved: true as const } : {}) });
+      }
+      // The checkout that followed the base: the pins of its instruction files move with what landed, where it is vouched for.
+      const followed = this.d.landed ? await this.checkoutOf(repo, base) : undefined;
+      if (followed) {
+        const landed = passed.map((p, i) => { const e = this.entry(p.e.id) ?? p.e; return { branch: e.branch, tip: p.tip, prev: i ? passed[i - 1]!.at : from, at: p.at, holder: e.holder, queued_by: e.queued_by, owner_tip: e.owner_tip, owner_via: e.owner_via, tries: e.tries }; });
+        await this.d.landed!({ repo, checkout: followed, from, to: tip, entries: landed }).catch((x) => this.d.error(x, "landing trust"));
       }
       // Pushed after the base moved here: a remote never holds what this repository does not.
       if (rules.push) outcome.push = await this.push(repo, rules.push, base, tip, who);

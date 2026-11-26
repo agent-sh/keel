@@ -107,5 +107,8 @@ test("branches ready to land are listed in Home and the Inbox, uncounted, and La
   await expect.poll(() => git(repo, "rev-parse", "main").trim(), { timeout: 90_000 }).not.toBe(base);
   await expect(part).toBeHidden({ timeout: 30_000 });
   expect(git(repo, "show", "main:notes.md")).toContain("line 1 ALPHA");
+  // The card held the head it showed: the landing is kept as the owner's own, of that commit, from the card's tree.
+  const entry = ((await (await request.get(`/api/sessions/${one}/landing`)).json()).entries as any[]).find((e) => e.branch === alpha.branch);
+  expect([entry.owner_tip, entry.owner_via]).toEqual([entry.tip, one]);
   await shoot(page, "ready-03-landed");
 });

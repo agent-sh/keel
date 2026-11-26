@@ -29,9 +29,12 @@ export function useLanding(id: string): QueueView | undefined {
   return useSyncExternalStore(subscribe, () => byId[id]);
 }
 
-// The owner queues branches of the session's repository.
-export async function queueBranches(id: string, branches: string[]): Promise<{ refused: { branch: string; why: string }[]; warnings: string[] }> {
-  const r = await api<{ refused: { branch: string; why: string }[]; warnings: string[]; view: QueueView }>(`/api/sessions/${id}/landing`, { method: "POST", body: JSON.stringify({ branches }) });
+// The owner queues branches of the session's repository. `heads`: each branch's head as the page shows it,
+// so the queue knows which commit they decided on (a branch that moved since is queued, not vouched for).
+export type Heads = Record<string, string | null | undefined>;
+export async function queueBranches(id: string, branches: string[], heads?: Heads): Promise<{ refused: { branch: string; why: string }[]; warnings: string[] }> {
+  const shown = Object.fromEntries(branches.flatMap((b) => (heads?.[b] ? [[b, heads[b]]] : [])));
+  const r = await api<{ refused: { branch: string; why: string }[]; warnings: string[]; view: QueueView }>(`/api/sessions/${id}/landing`, { method: "POST", body: JSON.stringify({ branches, heads: shown }) });
   byId = { ...byId, [id]: r.view };
   changed();
   return r;
@@ -46,13 +49,13 @@ export async function removeEntry(sessionId: string, entry: string) {
 // first that is refused or leaves the queue (what is behind it was meant to be built on it). `step` is told each
 // branch as it is queued. The queue itself decides what passes: this only decides when the next is asked for.
 export type LandRun = { landed: string[]; stopped?: { branch: string; why: string } };
-export async function landInOrder(id: string, branches: string[], step: (branch: string) => void, stop?: () => boolean): Promise<LandRun> {
+export async function landInOrder(id: string, branches: string[], step: (branch: string) => void, stop?: () => boolean, heads?: Heads): Promise<LandRun> {
   const landed: string[] = [];
   for (const branch of branches) {
     if (stop?.()) return { landed };
     step(branch);
     const had = new Set((byId[id]?.entries ?? []).map((e) => e.id));
-    const r = await queueBranches(id, [branch]);
+    const r = await queueBranches(id, [branch], heads);
     if (r.refused.length) return { landed, stopped: { branch, why: r.refused.map((x) => x.why).join("; ") } };
     // The entry this call made: one of the branch that the queue did not hold before.
     const mine = () => byId[id]?.entries.filter((e) => e.branch === branch && !had.has(e.id)).sort((a, b) => b.created - a.created)[0];

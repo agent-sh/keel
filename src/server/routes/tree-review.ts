@@ -10,7 +10,7 @@ import type { ParsedDiff } from "../../board/tree.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { sessionOfCaller } from "../caller.ts";
 import { workBoard } from "./board.ts";
-import { landing } from "./landing.ts";
+import { headsOf, landing } from "./landing.ts";
 import { overlaps } from "./overlaps.ts";
 import { presence } from "./permissions.ts";
 
@@ -60,7 +60,7 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
   };
 
   // What the owner's decision on an area does, and the words it is recorded with.
-  async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined, subset?: string[], confirmed = false): Promise<{ status: number; body: unknown }> {
+  async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined, subset?: string[], confirmed = false, shown?: Record<string, string>): Promise<{ status: number; body: unknown }> {
     // The whole tree at once ("*"): only landing, over every area's branches, recorded on each area that holds one.
     const whole = key === TREE && action === "land";
     const found = v.areas.find((a) => a.key === key);
@@ -110,7 +110,8 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
     // dialog first): a request that names no branches, or names one of them, is refused until it says so.
     const risky = wouldConflict(v, branches);
     if (risky.length && !confirmed) return { status: 409, body: { error: `${risky.join(", ")} would conflict when landing: confirm landing it, or land the others only`, would_conflict: risky, needs_confirm: true } };
-    const r = await q.add(v.repo, branches, null);
+    // (`shown`: the heads the page showed. The queue keeps the owner's landing as theirs for a branch still at that head.)
+    const r = await q.add(v.repo, branches, null, root, shown);
     const outcome = [
       r.queued.length ? `Queued in this order: ${r.queued.map((e) => `${e.branch} (${e.id})`).join(", ")}.` : "",
       ...r.refused.map((x) => `Not queued: ${x.branch}: ${x.why}.`),
@@ -155,7 +156,7 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
         try {
           const v = await tr.view(req.params.id, { fresh: true, repo: typeof body?.repo === "string" ? body.repo : undefined });
           const subset = Array.isArray(body?.branches) ? body.branches.filter((x: unknown) => typeof x === "string") : undefined;
-          const r = await decide(req.params.id, v, key, action, note, only, subset, body?.confirmed === true);
+          const r = await decide(req.params.id, v, key, action, note, only, subset, body?.confirmed === true, headsOf(body?.heads));
           return json({ ...(r.body as object), view: r.status === 200 ? await tr.view(req.params.id, { repo: v.repo ?? undefined }) : undefined }, r.status);
         } catch (e) {
           errors.capture("server", e, { at: "tree review decide", session: req.params.id });

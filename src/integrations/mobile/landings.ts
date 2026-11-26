@@ -181,7 +181,8 @@ export function landings(d: LandingsDeps) {
     if (!q || !repo) return { status: 409, error: q ? "The branch's repository is not known on this machine." : "The landing queue is not running.", card: got.card };
     // (What was live before this call: an entry it did not make is someone else's, and is not taken out below.)
     const before = new Set(entriesOf(d.store, repo, got.card.branch));
-    const r = await q.add(repo, [got.card.branch], null);
+    // (The card as the phone showed it, `fp`, holds its head: the owner's landing of that head, from the card's tree.)
+    const r = await q.add(repo, [got.card.branch], null, key.slice(0, Math.max(0, key.lastIndexOf("."))), { [got.card.branch]: got.card.head });
     const e = r.queued[0];
     if (!e) return { status: 409, error: `Not queued: ${r.refused[0]?.why ?? "the queue took nothing"}.`, card: got.card };
     // The queue took the branch as it is now: a head that moved since the card was read is not what was decided.

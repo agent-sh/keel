@@ -705,6 +705,19 @@ under `~/.cache/keel-work/bun/research/`.
   pattern of the setting `worktree_setup.env` matches it (empty by default: nothing is taken; Settings > Safety),
   and never a name on the floor (`refusedName`: `KEEL_*`, `PATH`, `LD_*`, `BASH_ENV`...) even when allowed. The
   note names what was left out, never a value. Its folder goes with the worktree.
+- An instruction file the landing queue itself landed is trusted on sight (`src/safety/landed-trust.ts`): right
+  after the queue fast-forwards a checkout that has the base out, the pin of each instruction file the batch
+  changed moves with it, said once in the timeline of the session that queued it and shown in the Trust panel
+  with the landing. Only when the pin was at the content the base held before, the file on disk is the landed
+  commit's text, nobody's verdict refuses the tip that was built, and every entry that changed the file is
+  vouched for at that tip: the owner queued it with their own hand at the head their page showed (`owner_tip`:
+  the Branches panel, the work board, the tree review and a card send the head), or a top-level session queued
+  it and its own agent, started as the branch's reviewer at that tip (its spawn's `reviews`), recorded LAND yes
+  on that commit with `keel__verdict`. An agent picks no voucher: not an agent's landing, not a reviewer below
+  or beside the tree, not the holder's own, not a commit the reviewer added. The queue asks for no review to
+  land, so a session's unreviewed landing still asks; so does every other change (a commit made outside the
+  queue, a pull, a checkout, an edit), since only the queue's own pass moves a pin. Skills, command files, the
+  hooks file, the worktree setup and the MCP file are never moved this way: they run commands or grant tools.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

@@ -281,7 +281,7 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
   const land = () => {
     setLanding(true);
     setErr("");
-    queueBranches(coord, [r.branch!])
+    queueBranches(coord, [r.branch!], { [r.branch!]: r.head })
       .then((q) => { if (q.refused.length) setErr(q.refused.map((x) => x.why).join("; ")); })
       .catch((e) => setErr(failed(e, { at: "WorkBoard land" })))
       .finally(() => setLanding(false));
