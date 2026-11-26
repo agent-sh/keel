@@ -91,3 +91,18 @@ test("the cgroup is read from the attributes after the record, wherever it is am
   v.setUint32(0, at + 20, true); v.setUint16(at + 8, 40, true);
   expect(factsIn(b, at + 20, 3, 40001, 8080)).toEqual({ uid: 1000, inode: 99, cgroup: null });
 });
+
+// Reading every open file of a session's processes can be long on a busy machine: a stall it makes is named by it.
+test("the look for a socket's holder is a timed section a stall names", async () => {
+  const { StallMonitor } = await import("../admin/stall.ts");
+  // (Named as what held the loop, or as the section it was in when the process was not on a processor for most of it.)
+  const stalls: { during?: { label: string }; within?: { label: string } }[] = [];
+  const m = new StallMonitor({ report: (s) => void stalls.push(s), note: (s) => void stalls.push(s), turns: () => [], thresholdMs: 100 });
+  m.start();
+  m.stop();
+  m.tick();
+  const slow = () => { const until = performance.now() + 400; while (performance.now() < until) {} return []; };
+  expect(holderOf(7, [1], slow)).toBeUndefined();
+  m.tick();
+  expect(stalls.map((s) => s.during?.label ?? s.within?.label)).toContain("finding which session's process holds a request's socket");
+});

@@ -11,6 +11,7 @@
 // kernel records it was made in, else by its inode: the one an open file of the
 // calling process links to (`socket:[N]` under /proc/PID/fd).
 import { readdirSync, readlinkSync } from "node:fs";
+import { timed } from "../admin/stall.ts";
 import { sessionCallerPids, sessionCgroups, sessionCommandPids, sessionLooseProcesses } from "../tools/jobs.ts";
 import { callerSession, useSessionScopes } from "./admission.ts";
 import type { ListReach } from "./peer-scope.ts";
@@ -18,8 +19,11 @@ import type { ListReach } from "./peer-scope.ts";
 // The process whose open files hold socket `inode`, among `pids`.
 export function holderOf(inode: number, pids: Iterable<number>, fdsOf: (pid: number) => string[] = fds): number | undefined {
   const want = `socket:[${inode}]`;
-  for (const pid of pids) if (fdsOf(pid).includes(want)) return pid;
-  return undefined;
+  // (Every open file of each process is read: a timed section a stall names.)
+  return timed(() => "finding which session's process holds a request's socket", () => {
+    for (const pid of pids) if (fdsOf(pid).includes(want)) return pid;
+    return undefined;
+  });
 }
 function fds(pid: number): string[] {
   let names: string[];

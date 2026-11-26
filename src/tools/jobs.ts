@@ -18,6 +18,7 @@ import { contains, realOf } from "../core/paths.ts";
 import { tempEnv } from "../core/temp.ts";
 import { readStat } from "../core/pid.ts";
 import { readText } from "../core/proc.ts";
+import { timed } from "../admin/stall.ts";
 import { RESTART_RAN } from "../core/stops.ts";
 import { lastDown, whileDown } from "../core/late.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
@@ -1260,16 +1261,19 @@ function procTable(fresh = false): Map<number, Row> {
   // (A table stamped after now was read before the clock was set back: it is as old as the clock's step back, and is not shared.)
   const age = table ? Date.now() - table.at : -1;
   if (!fresh && table && age >= 0 && age < TABLE_MS) return table.rows;
-  const rows = new Map<number, Row>();
-  let names: string[] = [];
-  try { names = readdirSync("/proc"); } catch {}
-  for (const n of names) {
-    if (!/^\d+$/.test(n)) continue;
-    const r = rowOf(Number(n));
-    if (r) rows.set(Number(n), r);
-  }
-  table = { at: Date.now(), rows };
-  return rows;
+  // (A read of every process's stat file: on a busy machine thousands, a timed section a stall names.)
+  return timed(() => `reading the table of processes (${table?.rows.size ?? "?"} last time)`, () => {
+    const rows = new Map<number, Row>();
+    let names: string[] = [];
+    try { names = readdirSync("/proc"); } catch {}
+    for (const n of names) {
+      if (!/^\d+$/.test(n)) continue;
+      const r = rowOf(Number(n));
+      if (r) rows.set(Number(n), r);
+    }
+    table = { at: Date.now(), rows };
+    return rows;
+  });
 }
 function rowOf(pid: number): Row | undefined {
   try {
@@ -1339,6 +1343,9 @@ function marksNow(fresh = false): Map<string, number[]> {
   // (As the table of processes: one stamped after now is not shared.)
   const age = marks ? Date.now() - marks.at : -1;
   if (!fresh && marks && age >= 0 && age < MARKS_MS) return marks.by;
+  return timed(() => "reading every process's environment for jobs' marks", () => readMarks());
+}
+function readMarks(): Map<string, number[]> {
   const by = new Map<string, number[]>();
   const head = Buffer.from(`${MARK}=`);
   let names: string[] = [];
