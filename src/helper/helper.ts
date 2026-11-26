@@ -516,7 +516,8 @@ ${TOLD_SCHEMA}`);
       for (const h of e.data?.helper?.hints ?? []) hinted.add(h);
     }
     const told = this.unfed();
-    const query = `${prompt}\n${told.map((e) => `${e.title} ${e.body}`).join("\n")}`;
+    // Recalled for what the note shows: the prompt and the digest's lines, not the older events it only counts.
+    const query = `${prompt}\n${told.slice(-DIGEST_LINES).map((e) => `${e.title} ${e.body}`).join("\n")}`;
     const found = this.records.index.recall(query, seen, RECALL_CHARS);
     const items = found.records;
     const hints = found.hints.filter((h) => !hinted.has(h));
