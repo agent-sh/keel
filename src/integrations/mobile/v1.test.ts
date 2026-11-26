@@ -898,6 +898,12 @@ describe("plans", () => {
     const aid = `plan-${s.id}.call-fresh-1`;
     // An approval key's signature over a plain approval does not send the work elsewhere.
     expect((await signedApprove(aid, { choice: "session", seen: "whole", fresh: true })).status).toBe(403);
+    // A version 1 signature signs no answer: it never starts a fresh session.
+    {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const asig = sign("sha256", Buffer.from(approvalMessage(aid, "session", ts, false, "")), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+      expect((await call("POST", `/v1/approvals/${aid}`, { choice: "session", seen: "whole", fresh: true }, { "x-hm-asig": asig })).status).toBe(403);
+    }
     const ok = await signedApprove(aid, { choice: "session", seen: "whole", fresh: true }, FRESH);
     expect(ok.status).toBe(200);
     const to = ok.body.approval.fresh_chat as string;

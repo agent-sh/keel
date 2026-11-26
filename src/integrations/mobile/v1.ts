@@ -758,6 +758,8 @@ export function mobileApi(ctx: MobileCtx) {
     const text = fresh ? FRESH : byId ? answersText(byId) : typeof b.answer === "string" ? b.answer.trim() : "";
     if (choice !== "deny") {
       const v2 = req.headers.get("x-hm-asig-v")?.trim() === "2";
+      // A version 1 signature covers no answer, so it cannot say where the work goes.
+      if (fresh && !v2) return err("an approval into a fresh session is signed with the answer (x-hm-asig-v: 2)", 403);
       if (!(await approvalSigned(req, dev, approvalMessage(aid, choice, req.headers.get("x-hm-ts") ?? "", v2, text), "approval")))
         return err("biometric signature required", 403);
     }
