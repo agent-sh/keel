@@ -123,7 +123,8 @@ fetch("/api/sessions").then(() => document.body.append(" reached the daemon"), (
 
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(`/s/${s.id}`);
-  await openPanel(page, "artifacts");
+  await page.getByTestId("session-menu").click();
+  await page.getByTestId("menu-panel-artifacts").click();
   const panel = page.getByTestId("artifacts-panel");
   const list = panel.getByTestId("artifact-list");
   const rows = panel.getByTestId("artifact-row");

@@ -25,6 +25,7 @@ test("a paused session shows its waiting reports; a loop run brings one, Resume 
     await page.getByTestId("composer").press("Enter");
     await expect.poll(async () => (await agents()).length, { timeout: 30_000 }).toBe(2);
     await page.getByTestId("stop").click();
+    await page.getByTestId("lens-to-stream").click();
     await expect.poll(() => status("Quick helper"), { timeout: 30_000 }).toBe("completed");
 
     // Paused, nothing queued, one report waiting: the line says so and no turn started for it.
@@ -82,6 +83,7 @@ test("a coordinator's Stop says its agents go on, and stops them too on asking",
   await expect(stop).toHaveAttribute("data-leaves", "its 2 agents go on");
   await stop.click();
   await expect(page.getByTestId("composer-notice")).toContainText("its 2 agents go on");
+  await page.getByTestId("lens-to-stream").click();
   const end = page.getByTestId("turn-end").last();
   await expect(end.getByTestId("turn-reason")).toHaveText("Stopped by you");
   await expect(end.getByTestId("agents-go-on")).toHaveText("its 2 agents go on");
