@@ -688,15 +688,23 @@ function awkReadOnly(args: string[]): boolean {
 // substitutions written in it. With a word an expansion makes, only the forms
 // whose operator is written out: one operand, a unary test, a binary test.
 function testReadOnly(prog: string, args: string[], dyn: number[], splits: boolean): boolean {
-  let a = args.map((w, k) => ({ w, made: dyn.includes(k + 1) }));
-  if (prog === "[" && a.at(-1)?.w === "]") a = a.slice(0, -1);
-  if (a.some((x) => !x.made && (x.w === "-v" || x.w === "-R"))) return false;
-  if (!a.some((x) => x.made)) return true;
+  // Membership and stripping the leading negations must not rescan the
+  // arguments: a bracket pattern can mark every other word dynamic.
+  const dynamic = new Set(dyn);
+  const end = args.length - (prog === "[" && args.at(-1) === "]" ? 1 : 0);
+  let made = false;
+  for (let i = 0; i < end; i++) {
+    if (dynamic.has(i + 1)) made = true;
+    else if (args[i] === "-v" || args[i] === "-R") return false;
+  }
+  if (!made) return true;
   if (splits) return false;
-  while (a[0] && !a[0].made && a[0].w === "!") a = a.slice(1);
-  if (a.length === 2) return !a[0]!.made;
-  if (a.length === 3) return !a[1]!.made && /^(=|==|!=|-eq|-ne|-lt|-le|-gt|-ge|-nt|-ot|-ef)$/.test(a[1]!.w);
-  return a.length < 2;
+  let from = 0;
+  while (from < end && args[from] === "!" && !dynamic.has(from + 1)) from++;
+  const n = end - from;
+  if (n === 2) return !dynamic.has(from + 1);
+  if (n === 3) return !dynamic.has(from + 2) && /^(=|==|!=|-eq|-ne|-lt|-le|-gt|-ge|-nt|-ot|-ef)$/.test(args[from + 1]!);
+  return n < 2;
 }
 
 const GIT_VALUE = /^(-C|--git-dir|--work-tree|--namespace|--super-prefix|--attr-source)$/; // their value is the next word
@@ -849,8 +857,9 @@ function findReadOnly(args: string[]): boolean {
 // [[ ... ]]: no word is split and no expansion is read as an operator there, so its operands may be anything.
 // -v and -R evaluate a subscript, and the arithmetic comparisons evaluate both sides: either runs a substitution a value holds.
 function condReadOnly(args: string[], dyn: number[]): boolean {
-  if (args.at(-1) !== "]]" || dyn.includes(args.length)) return false;
-  return !args.some((w, k) => !dyn.includes(k + 1) && /^-(v|R|eq|ne|lt|le|gt|ge)$/.test(w));
+  const dynamic = new Set(dyn);
+  if (args.at(-1) !== "]]" || dynamic.has(args.length)) return false;
+  return !args.some((w, k) => !dynamic.has(k + 1) && /^-(v|R|eq|ne|lt|le|gt|ge)$/.test(w));
 }
 
 // A command that cannot change anything (files, processes, the network state).
