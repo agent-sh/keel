@@ -1036,18 +1036,20 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   if (!shell || sev >= 3 || ("ask" in d && d.ask.ownerOnly) || !command.includes("$")) return d;
   const u = unspelt(command, f, cwd);
   if (!u) return d;
+  // (A standing rule of the owner's that names a command of the line does not cover what is asked here: the card says so.)
+  const noticed = (as: Decision, why: string): Decision => { const parts = writesNothing(f.mode) ? null : splitCommand(command); return parts ? uncoveredBy(as, why, parts, f.rules.filter((r) => r.kind === "shell")) : as; };
   // A path the line's words show whole is the one the written-out line names, and is answered as it is: a
   // credential refused to an agent and the owner's elsewhere, a file that is the owner's alone to change his.
   if (u !== "over" && u.shown) {
     const named = `${u.shown.why} (the line names it as ${u.word})`;
-    const as = u.reads ? credentialRead(named, f, u.shown.by, u.shown.api) : f.mode === "full-auto" ? { ask: { risk: "high" as const, why: `the command: ${named}`, rule: u.rule, suggest: [] } } : onlyOwner(`the command: ${named}`, u.rule);
+    const as = u.reads ? credentialRead(named, f, u.shown.by, u.shown.api) : noticed(f.mode === "full-auto" ? { ask: { risk: "high" as const, why: `the command: ${named}`, rule: u.rule, suggest: [] } } : onlyOwner(`the command: ${named}`, u.rule), named);
     return "deny" in as || ("ask" in as && as.ask.ownerOnly) || sev < 2 ? as : d;
   }
   if (sev >= 2) return d;
   // (More than is read: asked about as a command with more files than the rules read is.)
-  if (u === "over") return { ask: { risk: "high", why: `the command names files through names it sets in more ways than the rules read (${PATHS} paths, a word of ${WORD} characters): write the paths into the command`, rule: RULE_WORDS.hidden, suggest: [] } };
-  const why = `${u.reads ? "reads" : "writes"} a path it does not spell out (${u.word}), which may be ${u.path}: write the path into the command`;
-  return { ask: { risk: "high", why: `the command ${why}`, rule: u.rule, suggest: [] } };
+  if (u === "over") { const many = "names files through names it sets in more ways than the rules read"; return noticed({ ask: { risk: "high", why: `the command ${many}: write the paths into the command`, rule: RULE_WORDS.hidden, suggest: [] } }, many); }
+  const may = `${u.reads ? "reads" : "writes"} a path it does not spell out (${u.word}), which may be ${u.path}`;
+  return noticed({ ask: { risk: "high", why: `the command ${may}: write the path into the command`, rule: u.rule, suggest: [] } }, may);
 }
 function decideBoth(command: string, written: string, f: Facts, cwd: string, interpreter?: string): Decision {
   const beside = !!f.shared;
@@ -1354,6 +1356,16 @@ function gitConfigured(words: string[]): string[] {
   return plain.length >= 2 || rest.some((a) => /^(--add|--unset|--unset-all|--replace-all|--rename-section|--remove-section|-e|--edit)$/.test(a)) ? files : [];
 }
 
+// A standing rule of the owner's that names a command of the line and does not cover what is asked: the card says so.
+function uncoveredBy(d: Decision, why: string, parts: Simple[], shellRules: Rule[]): Decision {
+  if (!("ask" in d) || !shellRules.length) return d;
+  const stands = shellRules.find((r) => parts.some((p) => !p.heredoc && p.words.length && matchRule(r.pattern, p)));
+  if (!stands) return d;
+  const away = /^on ([^,]{1,80}), (.*)$/s.exec(why);
+  const said = /^it /.test(why) ? why : away ? `on ${away[1]}, it ${away[2]}` : `it ${why}`;
+  return { ask: { ...d.ask, notice: `Your rule "${stands.pattern}" does not cover this one: ${said}.` } };
+}
+
 function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: string, resolved = false): Decision {
   const parts = splitCommand(command);
   const home = f.home ?? homeOf();
@@ -1369,14 +1381,7 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   const shellRules = writesNothing(f.mode) ? [] : f.rules.filter((r) => r.kind === "shell");
   // A standing rule of the owner's that names this command and does not cover it: the card says so.
   // `why`: the reason, as "deletes ..." or, for another machine, "on HOST, deletes ...".
-  const uncovered = (d: Decision, why: string): Decision => {
-    if (!("ask" in d) || !parts || !shellRules.length) return d;
-    const stands = shellRules.find((r) => parts.some((p) => !p.heredoc && p.words.length && matchRule(r.pattern, p)));
-    if (!stands) return d;
-    const away = /^on ([^,]{1,80}), (.*)$/s.exec(why);
-    const said = /^it /.test(why) ? why : away ? `on ${away[1]}, it ${away[2]}` : `it ${why}`;
-    return { ask: { ...d.ask, notice: `Your rule "${stands.pattern}" does not cover this one: ${said}.` } };
-  };
+  const uncovered = (d: Decision, why: string): Decision => (parts ? uncoveredBy(d, why, parts, shellRules) : d);
   if (!parts) return unparsed(f, undefined, f.mode === "read-only" ? null : neverAllowedText(command, home));
   // A script we could not read does not take away a refusal the rest of the line already earned.
   const unread: Unread[] = [];

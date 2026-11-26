@@ -131,6 +131,11 @@ test("a protected file named through a name the line sets is a path the command 
   for (const command of [
     "D=$(pwd); printf x > $D/.git/config", "D=`pwd`; echo x >> $D/.envrc", "read D < f; cat $D/.ssh/id_rsa", "D=$(echo /home/u/.bashrc); printf x >> $D", "D=/home/u; cat \"${D%/}/.ssh/id_rsa\"",
   ]) for (const mode of ["ask", "auto-edits", "auto", "reviewer", "full-auto"] as Mode[]) expect([command, mode, shell(command, mode)]).toEqual([command, mode, "ask-high"]);
+  // A standing rule of the owner's that names the command does not cover the file: the card says so, as the written-out line's does.
+  const notice = (command: string, pattern: string) => { const d = decide({ kind: "shell", command, cwd: ws }, facts("ask", { rules: [{ id: "r", kind: "shell", pattern, scope: ws, lifetime: "always", created: 0 }] })); return "ask" in d ? d.ask.notice : undefined; };
+  expect(notice(`${two}echo x > $D/.git/config`, "echo *")).toBe('Your rule "echo *" does not cover this one: it writes ../../home/u/own/.git/config, which runs or configures things outside the sandbox later (the line names it as $D/.git/config).');
+  expect(notice("D=$(pwd); echo x > $D/.git/config", "echo *")).toBe('Your rule "echo *" does not cover this one: it writes a path it does not spell out ($D/.git/config), which may be /w/repo/.git/config.');
+  expect(notice("D=$(pwd); echo x > $D/notes.txt", "echo *")).toBeUndefined();
   // The written-out line, and a name the rules do read, are the owner's as they were.
   for (const command of ["printf x > /home/u/own/.git/config", "cat /home/u/own/../.ssh/id_rsa", "D=/home/u/own; printf x > $D/.git/config", "D=/home/u/own; cat $D/../.ssh/id_rsa"]) {
     expect([command, shell(command)]).toEqual([command, "owner"]);
@@ -201,7 +206,7 @@ test("a line that names files through its names in more ways than the rules read
   // (Each candidate path is a look at the disk: the looks are counted through the credential callback.)
   let looks = 0;
   const judged = (command: string, mode: Mode = "ask") => { looks = 0; const d = decide({ kind: "shell", command, cwd: ws }, facts(mode, { credential: () => { looks++; return null; } })); return [how(d), "ask" in d ? d.ask.why : ""] as const; };
-  const over = "the command names files through names it sets in more ways than the rules read (2000 paths, a word of 4096 characters): write the paths into the command";
+  const over = "the command names files through names it sets in more ways than the rules read: write the paths into the command";
   for (const command of [
     // Eight folders a `cd` may lead to by eight values of a name, for each of thousands of words.
     `for A in a b c d e f g h; do true; done; for D in a b c d e f g h; do true; done; cd $A; cat ${rep(3000, (i) => `$D/f${i} `)}`,
