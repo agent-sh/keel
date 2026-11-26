@@ -1,4 +1,4 @@
-import { expect, test } from "./isolate.ts";
+import { expect, test, type Page } from "./isolate.ts";
 import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
@@ -37,6 +37,10 @@ const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== nul
 const script = (calls: unknown[], word = "script:calls") => `${word} ${JSON.stringify(calls)}`;
 // Words of prompts, commands and notes: none may reach the timeline.
 const PRIVATE = ["timeline-prompt-marker", "timeline-tool-marker", "timeline-note-marker", "timeline-agent-marker", "script:"];
+
+// Each fixture daemon is a different origin. The runner's workbench preference
+// only applies to the shared daemon, and Focus hides the panel picker.
+const useWorkbench = (page: Page) => page.addInitScript(() => localStorage.setItem("keel.workbench", "true"));
 
 const made: string[] = [];
 test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
@@ -224,8 +228,12 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(branched.map((r) => r.turn?.branch)).toEqual([undefined, "other", "other"]);
 
     // --- the panel
-    await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
+    await useWorkbench(page);
     await page.goto(`${d.url}/s/${id}`);
+    // The receipt's prompt jump is in the full stream. Sessions with agents
+    // default to Conversation instead.
+    await page.getByTestId("lens-to-stream").click({ timeout: 30_000 });
+    await expect(page.getByTestId("panel-menu")).toBeVisible();
     await page.getByTestId("panel-menu").click();
     await page.getByTestId("panel-search").fill("timeline");
     await page.getByTestId("panel-pick-timeline").click();
@@ -514,6 +522,7 @@ test("the timeline of a session of forty thousand notes opens at once and the da
     // The machine may be busy: the quickest of the reads is the read's own time.
     expect(Math.min(...reads), `timeline reads took ${reads.map((m) => m.toFixed(0)).join(", ")} ms`).toBeLessThan(100);
 
+    await useWorkbench(page);
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${d.url}/s/${id}`);
     await page.getByTestId("panel-menu").click();
@@ -559,6 +568,7 @@ test("a turn far up a long session says its branch is not placed yet, and is pla
     await exited(d.proc);
     const again = await daemon(state);
     d.proc = again.proc; d.url = again.url;
+    await useWorkbench(page);
     await page.setViewportSize({ width: 1920, height: 1040 });
     const reads: boolean[] = [];
     page.on("response", async (r) => { if (/\/timeline\?/.test(r.url())) reads.push(!!(await r.json().catch(() => ({}))).partial); });
