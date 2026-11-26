@@ -159,12 +159,12 @@ test("after a restart a transcript is found as it was left: nothing is written f
     const kept = JSON.parse(readFileSync(markPath, "utf8"));
     expect(kept.format).toBe(RECORD_FORMAT);
     expect(readdirSync(join(dir, "transcripts")).sort()).toEqual([`${s.id}.jsonl`, `${s.id}.mark`]);
-    // A mark from before the format was kept is of the first format: the file is used as it is.
+    // A mark from before the format was kept is of the first format, which is not this one: written whole.
     const { format: _f, ...old } = kept;
     writeFileSync(markPath, JSON.stringify(old));
     const fifth = new Tacit(store, new Bus(), errors, null);
     fifth.transcript(s);
-    expect(fifth.stats().transcript).toMatchObject({ rebuilt: 0, reused: 1 });
+    expect(fifth.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0, reused: 0 });
     // A file whose records are of another format is not appended to: written whole, in this one.
     writeFileSync(markPath, JSON.stringify({ ...kept, format: RECORD_FORMAT + 1 }));
     const sixth = new Tacit(store, new Bus(), errors, null);

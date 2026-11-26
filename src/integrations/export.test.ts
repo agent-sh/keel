@@ -288,6 +288,30 @@ test("round trips through Claude Code's and Codex's files keep ids, outcomes, no
   }
 });
 
+test("a handoff to Claude Code writes the harness's inputs as turns no person typed, and the owner's prompts as they were", async () => {
+  const evs = [
+    ev("user", { text: "Fix the flaky test" }),
+    ev("user", { text: "and the docs", origin: "steer" }),
+    ev("user", { kind: "wake", text: "[harness] Your background command `make` exited with code 0." }),
+    ev("user", { kind: "subagent", text: "Reports from agents you started follow." }),
+    ev("user", { text: '<external_input source="peer_session" from="other">hi</external_input>' }),
+    ev("user", { origin: "momentum", text: "[momentum] Your last turn ended early." }),
+  ];
+  const users = toClaudeRecords(s, forClaude(evs), "c9").filter((r: any) => r.type === "user") as any[];
+  expect(users.map((r) => r.origin?.kind ?? null)).toEqual([null, null, "task-notification", "task-notification", "peer", "task-notification"]);
+  expect(users.map((r) => r.promptSource ?? null)).toEqual([null, null, "system", "system", "system", "system"]);
+  expect(users[4].turnOrigin).toBe("peer");
+  // Keel reads the file back with the same words, none of them the owner's typing.
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "", "keel-export-"));
+  try {
+    writeFileSync(join(dir, "c9.jsonl"), toJsonl(users));
+    const back = (await readClaude(join(dir, "c9.jsonl"))).events.filter((e) => e.kind === "user");
+    expect(back.map((e) => e.data.text)).toEqual(evs.map((e) => e.data.text));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a tool result's image goes to Codex and Claude Code byte for byte and comes back under its call", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? "", "keel-export-"));
   const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQcGgAAAFkAOHHE8n2AAAAAElFTkSuQmCC";
