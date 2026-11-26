@@ -5,6 +5,7 @@ import type { PressReport } from "../../src/admin/presses.ts";
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page } from "./isolate.ts";
 import { ask, calls, colors, create, folder, pending, settle } from "./answering.ts";
 import { SHOTS, inHead, leaveHead, shoot } from "./shots.ts";
+import { observerWrites, watchWindowErrors } from "./loops.ts";
 
 // Feature: the surfaces that landed after the phone page was last checked fit a phone and are
 // reached by a finger: the session menu's rows and what opens from them, the dollar cap, the
@@ -1931,23 +1932,29 @@ for (const size of SIZES) {
         await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 25; echo finished-phone" } }])}` } });
         for (const scale of [1, 1.5]) {
           const { ctx, page } = await atScale(browser, size, scale);
+          const errors = await watchWindowErrors(page);
           try {
             await page.goto(`/s/${id}`);
             const card = page.getByTestId("tool-call").last();
             const move = card.getByTestId("move-to-background");
             // (A command that runs is one line: its card opens with a tap.)
             await expect(card).toHaveAttribute("data-state", "running", { timeout: 30_000 });
-            await card.locator(".k-line").tap();
+            await card.locator(".k-line").tap({ timeout: 10_000 });
             await expect(move).toBeVisible({ timeout: 30_000 });
             expect(await phoneProblems(card.getByTestId("move-bar")), `the move bar at ${scale * 100}% text`).toEqual([]);
             await expect(card.getByTestId("move-keys"), "no key to name on a touch screen").toBeHidden();
             await inside(page, move);
             await shoot(page, `phone-surfaces-51-move-to-background-${size.width}-${scale}`);
             if (scale === 1.5) {
-              await move.tap();
+              await move.tap({ timeout: 10_000 });
               await expect(card).toHaveAttribute("data-state", "ok", { timeout: 10_000 });
             }
-          } finally { await ctx.close(); }
+          } finally {
+            const loops = errors.filter((m) => /ResizeObserver loop/.test(m));
+            const writes = loops.length ? await observerWrites(page).catch(() => []) : [];
+            await ctx.close();
+            expect(loops, `Observer writes: ${writes.join("; ")}`).toEqual([]);
+          }
         }
       } finally {
         await drop(request, id);

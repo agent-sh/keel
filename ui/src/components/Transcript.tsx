@@ -52,6 +52,7 @@ import { attemptWords, CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, 
 import { agentLive, hhmm, LIMIT_WAIT, limitText } from "../../../src/core/watch.ts";
 import { probeWords } from "../../../src/engine/trail.ts";
 import { appSaysNow } from "./Stale.tsx";
+import { afterSize } from "../lib/after-size.ts";
 
 // The find bar is drawn on the find key only: its code is its own chunk, fetched once the page has settled,
 // so the first press finds it there (lib/preload.ts).
@@ -1553,29 +1554,23 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     const c = content.current;
     if (!c) return;
-    let late = 0, lateUnder = 0;
-    const ro = new ResizeObserver(() => {
+    // The style writes and the block-window redraw can resize observed elements.
+    // Do those in the next frame, outside the observer's delivery pass.
+    const fit = afterSize(() => {
       // A size change queued before the transcript left the page lands after it: nothing to measure.
       const el = scroller.current;
       if (!el) return;
       // The message box keeps the column's edges: it gets the scroll bar's width as padding.
       // Set on this session's own column, and only when it changes: a write on the
       // document restyled every station's transcript at each streamed line.
-      // It is written a frame later: it changes the width of what other observers watch (the
-      // message box's tray, the list of requests), and a size changed from inside an observer's
-      // call, which they cannot be told of in the same pass, is reported by the browser as an error.
-      const size = el.clientWidth * 100_000 + el.clientHeight;
-      if (size !== viewSize.current) { viewSize.current = size; lookSoon(); }
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
-      if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
+      if (box && box.style.getPropertyValue("--sbw") !== sbw) box.style.setProperty("--sbw", sbw);
       // The room under the last row of a conversation that does not fill its view: a card that waits on the
       // owner (the tray over the message box) stands that much higher, right under its step (bridge.css).
       // None where the conversation fills the view: the card is at the box then, as it was.
       const rest = el.scrollHeight > el.clientHeight + 1 ? 0 : Math.max(0, Math.floor(el.clientHeight - (c.offsetHeight - parseFloat(getComputedStyle(c).paddingBottom)) - parseFloat(getComputedStyle(document.documentElement).fontSize)));
-      if (box && box.style.getPropertyValue("--k-under") !== `${rest}px`) { cancelAnimationFrame(lateUnder); lateUnder = requestAnimationFrame(() => box.style.setProperty("--k-under", `${rest}px`)); }
-      standing(c);
-      hold(el);
+      if (box && box.style.getPropertyValue("--k-under") !== `${rest}px`) box.style.setProperty("--k-under", `${rest}px`);
       // Then which blocks to draw, with the view where it now stands. (Here the layout is done:
       // where the blocks stand is read for nothing.)
       measures.current();
@@ -1612,6 +1607,17 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       remember();
     };
     holdView.current = hold;
+    const ro = new ResizeObserver(() => {
+      const el = scroller.current;
+      if (!el) return;
+      const size = el.clientWidth * 100_000 + el.clientHeight;
+      if (size !== viewSize.current) { viewSize.current = size; lookSoon(); }
+      standing(c);
+      // Scroll before paint. A reply that reflows between deltas must not draw
+      // one frame with the last line below the view.
+      hold(el);
+      fit();
+    });
     ro.observe(c);
     // The view's own height too: the message box under it grows with a draft, and a transcript
     // that follows its end keeps the end in view (its last lines would go under the box).
@@ -1631,7 +1637,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // End is for the pane worked in: the command names its session.
     const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
-    return () => { ro.disconnect(); dockChanged.disconnect(); cancelAnimationFrame(late); cancelAnimationFrame(lateUnder); removeEventListener("keel:end", onEnd); };
+    return () => { ro.disconnect(); fit.stop(); dockChanged.disconnect(); removeEventListener("keel:end", onEnd); };
   }, [!!events, sessionId]);
 
   // History read away from the end stays whole in the store meanwhile, also under a cover (a

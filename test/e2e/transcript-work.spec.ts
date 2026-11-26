@@ -920,6 +920,71 @@ const DOT = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwA
 const paragraphs = (n: number) => Array.from({ length: n }, (_, i) => `Line ${i + 1} of the reply says something of its own about part ${i + 1}.`).join("\n\n");
 // (The scripted model reads its words from one line: a line break is written out.)
 const say = (text: string) => `script:say ${text.replaceAll("\n", "\\n")}`;
+
+test("the newest streaming line is in view before each resized frame paints", async ({ page, request }) => {
+  const model = "scripted:stand-in";
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === model), "requires the scripted provider");
+  const { session: { id } } = await (await request.post("/api/sessions", { data: { model, title: "Follow the streamed reply" } })).json();
+  let paused = false;
+  const pending: (() => void)[] = [];
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((message) => {
+      if (paused) pending.push(() => ws.send(message));
+      else ws.send(message);
+    });
+  });
+  const resume = () => { paused = false; for (const send of pending.splice(0)) send(); };
+  try {
+    await page.goto(`/s/${id}`);
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `${say(paragraphs(70))}\nscript:pace 50` } });
+    const draft = page.getByTestId("draft");
+    await expect(draft.locator("p").nth(24)).toBeAttached();
+    // No delta can mask the resize by also pinning the draft in the same frame.
+    paused = true;
+    const measure = await draft.evaluateHandle(async (el) => {
+      const draft = el as HTMLElement;
+      const transcript = draft.closest('[data-testid="transcript"]')!;
+      const view = draft.closest<HTMLElement>(".k-reading")!;
+      await new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+      const first = transcript.getBoundingClientRect().height;
+      let grown = 0, largestClip = 0, frames = 0;
+      // Resize delivery is after animation callbacks and layout, before paint.
+      // The application's observer is already registered on this transcript.
+      let resized!: () => void;
+      const firstResize = new Promise<void>((done) => { resized = done; });
+      const ro = new ResizeObserver(() => {
+        const last = [...draft.querySelectorAll("p")].at(-1);
+        if (!last || !draft.isConnected || !draft.style.maxWidth) return;
+        grown = Math.max(grown, transcript.getBoundingClientRect().height - first);
+        largestClip = Math.max(largestClip, last.getBoundingClientRect().bottom - view.getBoundingClientRect().bottom);
+        frames++;
+        resized();
+      });
+      ro.observe(transcript);
+      // Resize the rendered reply between deltas, as a reflow would. The delta's layout
+      // effect does not run for this change; the size observer must keep the end in view.
+      requestAnimationFrame(() => { draft.style.maxWidth = "12rem"; });
+      await firstResize;
+      return () => { ro.disconnect(); draft.style.removeProperty("max-width"); return { grown, largestClip, frames }; };
+    });
+    resume();
+    await expect(draft.locator("p").nth(32)).toBeAttached();
+    await shoot(page, "work-follow-streamed-end");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1);
+    await expect(page.getByTestId("assistant-text")).toContainText("about part 70.");
+    const seen = await measure.evaluate((stop) => stop());
+    await measure.dispose();
+    expect(seen.frames).toBeGreaterThan(2);
+    expect(seen.grown).toBeGreaterThan(100);
+    expect(seen.largestClip, `after ${seen.frames} resized frames`).toBeLessThanOrEqual(1);
+  } finally {
+    resume();
+    await request.delete(`/api/sessions/${id}`);
+  }
+});
+
 const mixed = `${paragraphs(30)}\n\n| File | Change |\n| --- | ---: |\n${Array.from({ length: 14 }, (_, i) => `| \`src/part-${i}.ts\` | +${i * 3} |`).join("\n")}\n\n\`\`\`ts\n${Array.from({ length: 30 }, (_, i) => `export const part${i} = ${i};`).join("\n")}\n\`\`\`\n\n![a dot](data:image/png;base64,${DOT})\n\nThe last words of the mixed reply.`;
 // `slow`: the pace at which it streams for about three seconds.
 const REPLIES: { name: string; prompt: string; needle: string; last: string; slow: number }[] = [
