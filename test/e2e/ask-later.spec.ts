@@ -45,7 +45,11 @@ test("an approval put away with Later waits in the head, and the count brings it
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(card).toBeVisible();
     await shoot(page, "ask-later-06-phone-card");
-    await card.getByTestId("ask-later").click();
+    const later = card.getByRole("button", { name: "Later", exact: true });
+    // Measure the pointer target after the phone's layout is in use.
+    await expect(page.getByRole("navigation", { name: "Panes" })).toBeVisible();
+    await expect(later).toBeInViewport();
+    await later.click();
     await expect(pill).toBeVisible();
     await shoot(page, "ask-later-07-phone-away");
     expect(await pill.evaluate((el) => el.getBoundingClientRect().right <= innerWidth)).toBe(true);
