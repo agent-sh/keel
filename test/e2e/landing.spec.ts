@@ -52,9 +52,16 @@ test("a queue lands what passed on the exact tree, and a branch that fails or co
   const step = page.getByTestId("land-after-step");
   await expect(step).toHaveAttribute("data-state", "new");
   await expect(step).toContainText("KEEL_LANDED");
+  // Where it stands is a dot and plain words, not a tag; its button is the toolkit's.
+  const state = step.getByTestId("land-after-state");
+  await expect(state).toHaveText("Held: not trusted");
+  expect(await state.evaluate((e) => getComputedStyle(e).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  await expect(step.getByTestId("trust-land-after")).toHaveClass(/\bk-btn\b/);
   await shoot(page, "landing-00-after-step-held");
   await step.getByTestId("trust-land-after").click();
   await expect(step).toHaveAttribute("data-state", "pinned");
+  await expect(state).toHaveText("Runs after each landing");
+  await expect(step).not.toContainText("While it is held");
   const lane = (title: string, sed: string) => ({ name: "spawn_agent", input: { message: `${title}\n${scriptBash(commit(sed, title))}` } });
   await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start two agents.", `script:batch ${JSON.stringify([lane("Lane alpha", "s/^line 1$/line 1 ALPHA/"), lane("Lane beta", "s/^line 12$/line 12 BETA/")])}`) } });
   const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];

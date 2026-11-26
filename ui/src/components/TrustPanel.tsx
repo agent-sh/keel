@@ -8,6 +8,7 @@ import { machineApi, ownId } from "../lib/fleet-ids.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
+import { Status } from "./settings/kit.tsx";
 import { DiffView } from "./DiffView.tsx";
 
 type File = ProjectFile & { rel: string };
@@ -166,7 +167,7 @@ function WorktreeSetupFile({ session }: { session: Session }) {
 }
 
 type AfterView = { path: string; state: "none" | "new" | "changed" | "pinned" | "refused"; command?: string; sha256?: string; covers?: string[]; texts?: { path: string; text: string }[]; land?: { push?: string; setup?: string; checks: string[] }; problems: string[] };
-const AFTER_STATE = { new: "held: not trusted", changed: "held: changed since you trusted it", pinned: "runs after each landing", refused: "cannot run", none: "" } as const;
+const AFTER_STATE = { new: "Held: not trusted", changed: "Held: changed since you trusted it", pinned: "Runs after each landing", refused: "Cannot run", none: "" } as const;
 
 // The repository's after-land step (land.after in .keel/checks.json): it runs in this checkout after the landing
 // queue moved the base, where a repository deploys or restarts what it ships, so it is read and trusted like a hooks file.
@@ -181,16 +182,15 @@ function LandAfterStep({ session }: { session: Session }) {
     <section className="flex flex-col gap-2" data-testid="land-after-step" data-state={v.state}>
       <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><GitMerge className="size-4 text-accent" /> After a landing</h3>
       <div className="rounded-xl border border-line bg-raised px-3 py-2 text-caption">
-        <div className="flex items-start gap-2">
-          <span className={cn("mt-0.5 rounded px-1.5 text-micro font-medium", v.state === "pinned" ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")}>{v.state === "pinned" ? "runs" : "held"}</span>
-          <pre data-testid="land-after-command" className="min-w-0 flex-1 font-mono text-faint whitespace-pre-wrap break-all">{v.command}</pre>
-        </div>
-        <p className="mt-1 text-muted">{AFTER_STATE[v.state]}. It runs once after each batch the landing queue lands, in the checkout that has the base out, as the queueing session's commands run. The trust holds the command, the files of .keel/ it runs and the landing it comes after only: what they read from the rest of the tree is not held. While it is held, branches still land and are pushed; the step waits.</p>
+        {/* Where it stands, as a dot and plain words; the command under it breaks between its words, not inside them. */}
+        <Status bare tone={v.state === "pinned" ? "ok" : "warn"} testid="land-after-state">{AFTER_STATE[v.state]}</Status>
+        <pre data-testid="land-after-command" className="mt-1 font-mono text-faint whitespace-pre-wrap [overflow-wrap:anywhere]">{v.command}</pre>
+        <p className="mt-1 text-muted">It runs once after each batch the landing queue lands, in the checkout that has the base out, as the queueing session's commands run. The trust holds the command, the files of .keel/ it runs and the landing it comes after only: what they read from the rest of the tree is not held.{v.state !== "pinned" && " While it is held, branches still land and are pushed; the step waits."}</p>
         {v.covers && v.covers.length > 0 && <p className="mt-0.5 text-muted">The trust also covers: {v.covers.join(", ")}</p>}
         {v.land && (
           <div className="mt-1 text-muted" data-testid="land-after-block">
             <p>And the landing it comes after{v.land.push ? `, pushed to ${v.land.push}` : ", with no push"}:</p>
-            <pre className="mt-0.5 font-mono text-micro text-faint whitespace-pre-wrap break-all">{[...(v.land.setup ? [`setup: ${v.land.setup}`] : []), ...v.land.checks.map((c) => `check ${c}`)].join("\n") || "no checks"}</pre>
+            <pre className="mt-0.5 font-mono text-micro text-faint whitespace-pre-wrap [overflow-wrap:anywhere]">{[...(v.land.setup ? [`setup: ${v.land.setup}`] : []), ...v.land.checks.map((c) => `check ${c}`)].join("\n") || "no checks"}</pre>
           </div>
         )}
         {v.problems.map((p, i) => <p key={i} className="mt-0.5 text-warn">{p}</p>)}
@@ -202,7 +202,7 @@ function LandAfterStep({ session }: { session: Session }) {
                 <pre className="mt-0.5 max-h-64 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{t.text}</pre>
               </div>
             ))}
-            <button data-testid="trust-land-after" className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90"
+            <button type="button" data-testid="trust-land-after" data-ink="" className="k-btn k-btn-lg mt-2"
               onClick={() => api(on("/api/landing/after/trust"), { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: v.sha256 }) }).then(() => { setErr(""); load(); }).catch((e) => setErr(failed(e, { at: "TrustPanel" })))}>Trust this version</button>
             {err && <p className="mt-1 text-danger">{err}</p>}
           </>
