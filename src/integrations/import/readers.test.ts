@@ -394,3 +394,24 @@ test("an OpenCode image is read once however many parts name it, fitted to what 
   expect(r.notes.join(" ")).toContain(`skipped: images past ${OWNER_MEDIA_BYTES / 1024 / 1024} MB of images in one copy`);
   expect(r.notes.join(" ")).toContain("1 skipped: images Keel could not fit to its image limits (its data is damaged or cut short)");
 });
+
+test("a Claude Code session is named by a prompt a person wrote, not by a notice before it; one with none is still listed", () => {
+  const p = join(dir, "named.jsonl");
+  const base = { sessionId: "named", cwd: dir, isSidechain: false, timestamp: new Date().toISOString() };
+  const user = (uuid: string, parent: string | null, text: string, marks: object = {}) => ({ ...base, ...marks, type: "user", uuid, parentUuid: parent, message: { role: "user", content: text } });
+  const notice = { origin: { kind: "task-notification" }, promptSource: "system", turnOrigin: "task_notification" };
+  const write = (r: any[]) => writeFileSync(p, r.map((x) => JSON.stringify(x)).join("\n") + "\n");
+  write([
+    user("n1", null, "<task-notification>\n<task-id>b1</task-id>\n</task-notification>"),
+    user("n2", "n1", "[harness] Your background command `make` exited with code 0."),
+    user("n3", "n2", "Background work finished.", notice),
+    user("u1", "n3", "Why did the build fail?", { origin: { kind: "human" }, promptSource: "typed", turnOrigin: "human" }),
+    user("n4", "u1", "Another session sent a message", { origin: { kind: "peer" }, promptSource: "system", turnOrigin: "peer" }),
+  ]);
+  const found = claudeFound(p, 0, 0)!;
+  expect(found.title).toBe("Why did the build fail?");
+  expect(found.first_prompt).toBe("Why did the build fail?");
+  expect(found.last_prompt).toBe("Why did the build fail?");
+  write([user("n1", null, "Background work finished.", notice)]);
+  expect(claudeFound(p, 0, 0)?.title).toBe("Background work finished.");
+});

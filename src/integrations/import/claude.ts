@@ -48,6 +48,15 @@ function promptOf(r: any): string | null {
   if (/^<(local-command|command-stdout|bash-stdout|system-reminder)/.test(text.trim())) return null;
   return text;
 }
+
+// Whether a prompt is a person's, for what names a session in a list (its title, first and last prompt): not one
+// Claude Code marks as started by no person (a task's notification, another session's message, a scheduled or a
+// system turn: origin.kind, turnOrigin, promptSource "system"), nor a task notification of a version that marked
+// none, nor a notice of Keel's own in a file a Keel handoff wrote before it marked them (claude-format.ts notTyped).
+// A session with no prompt of a person's is still listed, by the prompts it has.
+const personal = (r: any, text: string): boolean =>
+  !(typeof r.origin?.kind === "string" && r.origin.kind !== "human") && !(typeof r.turnOrigin === "string" && r.turnOrigin !== "human") &&
+  r.promptSource !== "system" && !/^<task-notification>/.test(text.trim()) && !/^\[harness\] /.test(text);
 const IMAGE_PROMPT = "Image prompt";
 
 // How Claude Code (or a writer of its format) recorded a reply that did not
@@ -74,11 +83,16 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
   const { head, tail } = headTail(path, 48 * 1024);
   let perm: Found["perm_mode"];
   let cwd: string | undefined, model: string | undefined, first: string | undefined, entry: string | undefined, sid: string | undefined;
+  // (The first and last prompt of any kind, for a session with none of a person's.)
+  let firstAny: string | undefined, lastAny: string | undefined;
   for (const r of head) {
     cwd ??= r.cwd;
     sid ??= r.sessionId;
     entry ??= r.entrypoint;
-    if (!first) { const p = promptOf(r); if (p && !/^\/(clear|exit|resume)\b/.test(commandText(p))) first = commandText(p); }
+    if (!first) {
+      const p = promptOf(r);
+      if (p && !/^\/(clear|exit|resume)\b/.test(commandText(p))) { firstAny ??= commandText(p); if (personal(r, p)) first = commandText(p); }
+    }
   }
   let title: string | undefined, last: string | undefined;
   for (const r of tail) {
@@ -86,13 +100,15 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
     else if (!title && r.type === "ai-title" && r.aiTitle) title = r.aiTitle;
     else if (!title && r.type === "summary" && r.summary) title = r.summary;
     if (r.type === "last-prompt" && r.lastPrompt) last = r.lastPrompt;
-    else { const p = promptOf(r); if (p) last = commandText(p); }
+    else { const p = promptOf(r); if (p) { lastAny = commandText(p); if (personal(r, p)) last = commandText(p); } }
     cwd ??= r.cwd;
     model = modelOf(r) ?? model; // the latest reply's model: a session can switch models
     perm = permOf(r) ?? perm;
   }
   // A Claude Code transcript whose head and tail hold no prompt (long tool
   // outputs around it) is read through for its first one.
+  first ??= firstAny;
+  last ??= lastAny;
   if (!first && !last) {
     const hit = scanFor(path, (r) => { const p = promptOf(r); return p && !/^\/(clear|exit|resume)\b/.test(commandText(p)) ? { text: commandText(p), r } : undefined; });
     if (hit) { first = hit.text; cwd ??= hit.r.cwd; sid ??= hit.r.sessionId; }
