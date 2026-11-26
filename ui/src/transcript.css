@@ -229,8 +229,10 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-agent-line:hover { background: var(--hover); }
 .k-agent-line:focus-visible { outline-offset: -2px; }
 .k-agent-line-name { flex: 0 1 auto; min-width: 4rem; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--fg); }
+/* At work is the normal case: the dot says it, still, and the word is in the line's own ink. A run of agents
+   under a step is a list beside the reply, not a row of beacons; colour is for the one that asks or failed. */
 .k-agent-line-word { flex-shrink: 0; font-weight: 400; white-space: nowrap; color: var(--muted); }
-.k-agent-line-word[data-watch="work"] { color: var(--st-work-ink); }
+.k-agent-line .k-mark[data-watch="work"]::after { display: none; }
 .k-agent-line-word[data-watch="need"] { color: var(--st-need-ink); }
 .k-agent-line-word:is([data-watch="fail"], [data-watch="declined"]) { color: var(--danger-ink); }
 .k-agent-line-step { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted); }

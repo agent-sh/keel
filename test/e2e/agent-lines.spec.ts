@@ -77,6 +77,39 @@ test("under the step that started them, a line per agent of the whole tree", asy
   await expect(step.getByTestId("agent-lines")).toHaveCount(0, { timeout: 30_000 });
 });
 
+test("agents at work under their step are quiet lines: a still dot, a word in the line's ink, one live mark", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await skipless(request);
+  const id = await session(request, "Port the importer");
+  await page.setViewportSize({ width: 1320, height: 860 });
+  const worker = (name: string) => spawn(`${name}\n${calls([bash(`sleep 300; echo ${name}`)])}`);
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify([worker("Reader"), worker("Writer")])}` } });
+  await expect.poll(async () => (await treeOf(request, id)).filter((a) => a.status === "running").length, { timeout: 30_000 }).toBe(2);
+  try {
+    await page.goto(`/s/${id}`);
+    // (A session with agents opens on its conversation; the step and its lines are in the full stream.)
+    await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
+    const step = page.locator('[data-testid="work-step"][data-family="agents"]').first();
+    const lines = step.getByTestId("agent-lines").getByTestId("agent-line");
+    await expect(lines).toHaveCount(2, { timeout: 30_000 });
+    await expect(lines.first().getByTestId("agent-line-state")).toHaveText("Working", { timeout: 20_000 });
+    // The dot says it works, with no halo breathing around it; the word is in the line's muted ink, not the
+    // colour of work; and while the lines stand under the step, the step's own line carries no second live mark.
+    const quiet = await lines.evaluateAll((els) => els.map((el) => {
+      const probe = document.createElement("i"); probe.style.color = "var(--muted)"; el.append(probe);
+      const muted = getComputedStyle(probe).color; probe.remove();
+      const mark = el.querySelector(".k-mark")!;
+      return { watch: mark.getAttribute("data-watch"), halo: getComputedStyle(mark, "::after").display, word: getComputedStyle(el.querySelector('[data-testid="agent-line-state"]')!).color === muted };
+    }));
+    expect(quiet).toEqual([{ watch: "work", halo: "none", word: true }, { watch: "work", halo: "none", word: true }]);
+    await expect(step.locator(".k-line[data-step] .k-line-run")).toHaveCount(0);
+    await shoot(page, "agent-lines-04-quiet-at-work");
+  } finally {
+    const left = await treeOf(request, id);
+    await Promise.all(left.map((a) => request.post(`/api/sessions/${id}/agents/${a.id}/stop`)));
+  }
+});
+
 test("the home screen at a desk lists the sessions at work, with the step and its time", async ({ page, request }) => {
   test.setTimeout(90_000);
   await skipless(request);

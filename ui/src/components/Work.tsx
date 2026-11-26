@@ -286,7 +286,8 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
         <Collapsible.Root open={open} onOpenChange={(to) => setOpen(to)} data-testid="work-step" data-family="agents" data-state={edge} data-calls={calls.length}>
           <Collapsible.Trigger className="k-line" data-all="" data-step="" aria-label={sentence(s, words)}>
             <StepLine s={s} words={words} />
-            <span className="k-line-end">{running && <span className="k-line-run" aria-hidden="true" />}</span>
+            {/* While its agents' lines stand under it, each with its own dot, the step's line carries no second live mark. */}
+            <span className="k-line-end">{running && !shown && <span className="k-line-run" aria-hidden="true" />}</span>
           </Collapsible.Trigger>
           {shown && <AgentLines from={from} sid={sid} />}
           {!open && under.length > 0 && (
