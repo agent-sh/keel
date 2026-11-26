@@ -92,9 +92,25 @@ export function setSkillOff(name: string, off: boolean) {
 // A carried plugin's folder now: Claude Code's installed_plugins.json (v2:
 // { plugins: { "<name>@<marketplace>": [{ scope, installPath }] } }), the
 // user-scope install first. Null when it is no longer installed.
+// The list is read as Claude Code left it last: a file that does not parse now (a write under way, or
+// another program's bytes put there for a while) gives its last good reading, so the carried plugins'
+// skills do not leave every session's prompt for as long as it lasts and come back with another rewrite.
+const lastInstalled = new Map<string, any>();
+function installedList(claude: string): any {
+  const file = join(claude, "plugins", "installed_plugins.json");
+  let text: string;
+  try { text = readFileSync(file, "utf8"); } catch { lastInstalled.delete(file); return null; } // gone: no longer installed
+  try {
+    const parsed = JSON.parse(text);
+    lastInstalled.set(file, parsed);
+    return parsed;
+  } catch {
+    return lastInstalled.get(file) ?? null;
+  }
+}
 export function pluginDir(p: PluginRef): { name: string; dir: string } | null {
   try {
-    const all = JSON.parse(readFileSync(join(p.claude, "plugins", "installed_plugins.json"), "utf8")).plugins?.[p.id];
+    const all = installedList(p.claude)?.plugins?.[p.id];
     const hit = (Array.isArray(all) ? all : []).sort((a: any, b: any) => (a.scope === "user" ? -1 : 0) - (b.scope === "user" ? -1 : 0))[0];
     if (!hit?.installPath || !existsSync(hit.installPath)) return null;
     return { name: p.id.split("@")[0]!, dir: hit.installPath };
