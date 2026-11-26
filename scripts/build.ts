@@ -141,7 +141,9 @@ try {
     // The binary reads nothing from the folder it starts in: a .env there could set KEEL_* or a provider's base URL,
     // and a bunfig.toml preload would run its code in the daemon.
     compile: { outfile: out, ...(target ? { target } : {}), autoloadDotenv: false, autoloadBunfig: false, autoloadTsconfig: false, autoloadPackageJson: false },
-    minify: true,
+    // Names are kept: the daemon's own profile of its main thread (src/admin/stall-profile.ts) and its stack
+    // traces name the functions they were in.
+    minify: { whitespace: true, syntax: true, identifiers: false },
     splitting: true,
     sourcemap: "none",
     plugins: [embeddedPage],

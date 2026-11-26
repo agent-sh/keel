@@ -22,6 +22,8 @@ import { ranWords } from "./activity.ts";
 import { describeStall, Recurrence, type Stall, stallCapture, StallMonitor, timed, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
+import { StallProfiler } from "./stall-profile.ts";
+import { join } from "node:path";
 import { liveJobs } from "../tools/jobs.ts";
 import { COMMAND_WAIT_MS, commandsBegin, commandsEnd, type Front, waitForCommands } from "./drain-commands.ts";
 
@@ -184,9 +186,15 @@ export class Daemon {
     sight.start();
     // A shorter stall whose cause keeps coming back is a row too (Recurrence).
     const recur = new Recurrence();
+    // A run of stalls in code nothing times samples the main thread once (src/admin/stall-profile.ts).
+    const profiler = new StallProfiler({
+      dir: join(this.deps.store.stateDir, "profiles"),
+      say: (text, context) => void this.deps.errors.capture("server", Object.assign(new Error(text), { stack: undefined }), context, { group: "stall profile" }),
+    });
     const told = async (stall: Stall, row: boolean) => {
       const ended = Date.now();
       const d = describeStall({ ...stall, cause: await sight.ask(stall.ms, stall.window_ms ?? stall.ms) });
+      if (d.what.includes("outside anything it times")) profiler.stall(ended);
       const c = stallCapture(d, row, recur.add(d.group, ended), ended);
       if (!c) {
         // Under the row's mark: the log line and the stall's own row, so a trend of short stalls can be read.
