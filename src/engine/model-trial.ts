@@ -21,7 +21,8 @@ export type Trial = { role: Role; model: string; exp: string };
 
 // Whether an experiment is running: the experiments' answer, set when they are made (src/admin/experiments.ts).
 let running: (exp: string) => boolean = () => false;
-export const registerTrialRunning = (f: (exp: string) => boolean) => void (running = f);
+// The answer it replaced comes back, so a test can put it back.
+export const registerTrialRunning = (f: (exp: string) => boolean): ((exp: string) => boolean) => { const was = running; running = f; return was; };
 
 export const ROLE_WORDS: Record<Role, string> = {
   reader: "the readers that read long material",

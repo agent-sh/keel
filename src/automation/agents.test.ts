@@ -21,6 +21,7 @@ import { Worktrees } from "../worktree/manager.ts";
 import * as writeAsks from "./write-asks.ts";
 import { scopes } from "../safety/write-scope.ts";
 import { patchSettings } from "../admin/settings.ts";
+import { registerTrialRunning } from "../engine/model-trial.ts";
 
 // Agents get git worktrees here, several git commands each, and on a busy disk one git
 // command takes half a second: the 5 s default was passed in whole-suite runs.
@@ -1967,6 +1968,7 @@ test("a spawn with no model starts on the owner's tier, falls to the next one wh
     "m:z": { id: "m:z", provider: "m", model: "z", name: "z", efforts: ["high"] },
   };
   setDeps({ ...baseDeps, providers: { ...baseDeps.providers, models: async () => Object.values(infos), resolve: async (id: string) => ({ info: infos[id] }) } });
+  let wasRunning: ((exp: string) => boolean) | undefined;
   try {
     expect(patchSettings({ agents: { tiers: [
       { name: "build", model: "m:y", effort: "medium", use: ["default"] },
@@ -2000,10 +2002,29 @@ test("a spawn with no model starts on the owner's tier, falls to the next one wh
     expect(on(d)).toEqual(["m:x", "low"]);
     expect(agents.tierNote(d.id)).toBe("");
     await expect(own({ tier: "fastest" })).rejects.toThrow(/no tier "fastest".*build, research, simple, reader/);
-    for (const x of [a, b, c, d]) end(x, "end_turn");
+    // A named model with a tier named too: the tier is dropped, and the result says so.
+    const e = await own({ model: "m:x", tier: "simple" });
+    expect(on(e)[0]).toBe("m:x");
+    expect(agents.tierNote(e.id)).toBe("Tier simple is not used: the spawn names the model m:x");
+    // A tree trying a builder model: the tier for every other agent gives way to the trial's arm; a tier named still goes first.
+    wasRunning = registerTrialRunning((x) => x === "exp-tiers");
+    const t = store.createSession({ model: "m:x", workspace: dir, title: "trial", settings: { trial: { role: "builder", model: "m:z", exp: "exp-tiers" } as any } });
+    store.append(t.id, "assistant", { blocks: [] });
+    const inTrial = async (o: Partial<agents.SpawnInput> = {}) => {
+      const x = await agents.spawn(t.id, { prompt: "do it", isolation: "none", background: true, ...o });
+      bus.emit({ t: "event", event: { session_id: x.session_id, kind: "assistant" } } as any);
+      return x;
+    };
+    const f = await inTrial();
+    expect(on(f)[0]).toBe("m:z");
+    expect(agents.tierNote(f.id)).toBe("Tier build is not used: this tree is trying a builder model");
+    const g = await inTrial({ tier: "build" });
+    expect(on(g)).toEqual(["m:y", "medium"]);
+    for (const x of [a, b, c, d, e, f, g]) end(x, "end_turn");
     await settled();
   } finally {
     patchSettings({ agents: { tiers: null } });
+    if (wasRunning) registerTrialRunning(wasRunning);
     setDeps(baseDeps);
   }
 });

@@ -7,8 +7,9 @@
 // POST /api/agent-tiers/import/dismiss       he put the card away: it does not show again
 import { patchSettings, settings } from "../../admin/settings.ts";
 import type { StoredEvent } from "../../core/types.ts";
-import { asTiers, DRAFT_OUT, draftRows, IMPORT_DAYS, modelWords, TIERS_SYSTEM, tiersPrompt, wordsFor, type DraftRow } from "../../engine/tiers-import.ts";
+import { asTiers, DRAFT_OUT, draftRows, IMPORT_DAYS, modelWords, oneRoute, TIERS_SYSTEM, tiersPrompt, wordsFor, type DraftRow } from "../../engine/tiers-import.ts";
 import { tiersProblem } from "../../engine/tiers.ts";
+import { routeOf } from "../../safety/content-routes.ts";
 import { typedText } from "../../safety/public-send.ts";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
@@ -31,17 +32,22 @@ export const tierRoutes: RouteModule = ({ store, engine, providers, errors }) =>
       [since, since, SCAN],
     );
     const listed = await providers.models();
-    const texts: string[] = [];
-    let at: { id: string; model: string } | undefined;
+    const typed: { text: string; session: string; route: ReturnType<typeof routeOf> }[] = [];
+    const routes = new Map<string, ReturnType<typeof routeOf>>();
+    const models = new Map<string, string>();
     for (const r of rows) {
       let data: any;
       try { data = JSON.parse(r.data); } catch { continue; }
       const t = typedText({ kind: "user", data } as StoredEvent);
       if (!t) continue;
-      texts.push(t);
-      at ??= { id: r.session_id, model: r.model };
+      if (!routes.has(r.session_id)) routes.set(r.session_id, routeOf(store, r.session_id));
+      models.set(r.session_id, r.model);
+      typed.push({ text: t, session: r.session_id, route: routes.get(r.session_id)! });
     }
-    const said = wordsFor(texts, modelWords(listed));
+    // One request carries only words its route may carry: the newest such session's folder rule, and folders with none.
+    const one = oneRoute(typed, modelWords(listed));
+    const said = one ? wordsFor(one.texts, modelWords(listed)) : [];
+    const at = one ? { id: one.at, model: models.get(one.at)! } : undefined;
     if (!said.length || !at) return json({ error: `None of your messages of the last ${IMPORT_DAYS} days speaks of models, tiers or effort.` }, 404);
     // Counted on his newest session that holds such words, on its model.
     const got = await engine.small(at.id, at.model, { system: TIERS_SYSTEM, prompt: tiersPrompt(said, listed), out: DRAFT_OUT, signal: AbortSignal.timeout(DRAFT_MS), at: "the tiers' import", holds: (t) => !!draftRows(t, listed) });

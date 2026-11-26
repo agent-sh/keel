@@ -100,7 +100,7 @@ export function AgentTiers() {
     <Group
       testid="agent-tiers" title="Agent tiers" count={tiers.length || undefined} pad
       hint="An agent started with no model runs on its tier's model and effort."
-      help="A spawn can name a tier, or a task kind a tier lists. Without one, an agent takes the tier its type's definition names, else a tier that lists its type, else the reader tier for Explore agents, else the tier that lists default. Readers read through the reader tier's model first. A tier whose model is not listed gives way to the next one down, and the spawn's result says which tier it took and why."
+      help="A spawn can name a tier, or a task kind a tier lists. Without one, an agent takes the tier its type's definition names, else a tier that lists its type, else the reader tier for Explore agents, else the tier that lists default. Readers read through the reader tier's model first, at their own low effort: they take only its model. A tier whose model is not listed gives way to the next one down (an agent that does more than read never falls to the reader tier), the tier for every other agent gives way to a model a trial is trying, and the spawn's result says which tier it took and why."
     >
       <ImportCard onUsed={() => { patch({}).catch(reportError); }} />
       {tiers.length > 0 && (

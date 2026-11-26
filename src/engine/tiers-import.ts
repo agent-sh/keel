@@ -14,27 +14,50 @@ export const DRAFT_OUT = 2_000;
 export const TIERS_SYSTEM = "You turn what an owner said about which models his coding agents should run on into a table of tiers. Answer only with JSON.";
 
 export type DraftRow = Tier & { words: string; listed: boolean };
-type Listed = { id: string; model: string; name: string };
+type Listed = { id: string; model: string; name: string; provider?: string; family?: string };
 
-// Words of a model's name that say nothing of which model it is.
-const GENERIC = new Set(["model", "models", "preview", "latest", "instruct", "chat", "thinking", "fast", "mini", "turbo", "large", "small", "claude", "gemini", "openai", "anthropic", "google"]);
+const wordsOf = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && /[a-z]/.test(w));
 
-// The words a listed model is spoken of by: its name's and id's own words of four or more characters.
+// The words a listed model is spoken of by: its name's and id's own words of four or more characters, less
+// the words that say nothing of which model it is, taken from the listing itself: its providers' and
+// families' names, and a word most of the listed models share.
 export function modelWords(listed: readonly Listed[]): Set<string> {
+  const ignore = new Set<string>();
+  for (const m of listed) for (const w of wordsOf(`${m.provider ?? ""} ${m.family ?? ""} ${m.id.split(":")[0] ?? ""}`)) ignore.add(w);
+  const count = new Map<string, number>();
+  for (const m of listed) for (const w of new Set(wordsOf(`${m.name} ${m.model}`))) count.set(w, (count.get(w) ?? 0) + 1);
   const out = new Set<string>();
-  for (const m of listed) for (const w of `${m.name} ${m.model}`.toLowerCase().split(/[^a-z0-9]+/)) if (w.length >= 4 && /[a-z]/.test(w) && !GENERIC.has(w)) out.add(w);
+  for (const [w, n] of count) if (!ignore.has(w) && !(listed.length >= 4 && n * 2 > listed.length)) out.add(w);
   return out;
 }
 
 // His messages that speak of tiers, effort or a listed model, the newest first, within the bounds.
+export function speaks(m: string, words: ReadonlySet<string>): boolean {
+  const lower = m.trim().toLowerCase();
+  return !!lower && (/\b(tiers?|effort)\b/.test(lower) || lower.split(/[^a-z0-9]+/).some((w) => words.has(w)));
+}
+
+// The same allowed providers (src/safety/content-routes.ts): null is every provider.
+type Route = { providers: string[] } | null;
+const routeKey = (r: Route) => (r ? [...new Set(r.providers)].sort().join(" ") : "");
+
+// Of his messages that speak of tiers (each with its session's folder rule, newest first), the ones that may
+// go in one request: those of the newest one's rule, and those of folders with no rule. His words never
+// reach a provider another folder's rule keeps them from. `at`: the session the request is counted on.
+export function oneRoute<T extends { text: string; route: Route; session: string }>(said: readonly T[], words: ReadonlySet<string>): { at: string; texts: string[] } | undefined {
+  const hits = said.filter((m) => speaks(m.text, words));
+  const first = hits[0];
+  if (!first) return undefined;
+  const key = routeKey(first.route);
+  return { at: first.session, texts: hits.filter((m) => !m.route || routeKey(m.route) === key).map((m) => m.text) };
+}
+
 export function wordsFor(messages: readonly string[], words: ReadonlySet<string>): string[] {
   const out: string[] = [];
   let total = 0;
   for (const m of messages) {
     const t = m.trim();
-    if (!t) continue;
-    const lower = t.toLowerCase();
-    if (!/\b(tiers?|effort)\b/.test(lower) && !lower.split(/[^a-z0-9]+/).some((w) => words.has(w))) continue;
+    if (!t || !speaks(t, words)) continue;
     const cut = t.slice(0, MESSAGE_CHARS);
     if (total + cut.length > PROMPT_CHARS || out.length >= WORDS_MAX) break;
     out.push(cut);

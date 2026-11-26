@@ -18,7 +18,7 @@ const LISTED = [
 
 describe("pickTier", () => {
   test("the spawn's tier, by name or by a kind it lists, goes first", () => {
-    expect(pickTier(TABLE, { asked: "simple", type: "general-purpose" }, LISTED)).toEqual({ pick: { tier: "simple", model: "q:small", effort: "high", why: "the spawn names tier simple", passed: [] } });
+    expect(pickTier(TABLE, { asked: "simple", type: "general-purpose" }, LISTED)).toEqual({ pick: { tier: "simple", model: "q:small", effort: "high", why: "the spawn names tier simple", passed: [] }, by: "asked" });
     const r = pickTier(TABLE, { asked: "Survey", type: "general-purpose" }, LISTED) as any;
     expect(r.pick.tier).toBe("research");
     expect(r.pick.why).toBe("the spawn names the kind Survey, which tier research lists");
@@ -44,13 +44,32 @@ describe("pickTier", () => {
     expect(tierLine(r.pick)).toBe("Tier research: q:deep at high effort, because tier build is for every other agent, in place of tier build. Not taken: tier build's model p:mid is not listed now.");
   });
   test("a model that takes no work now gives way too; none left says why each did not", () => {
-    const r = pickTier(TABLE, { asked: "simple", type: "x" }, LISTED, (id) => (id === "q:small" ? "is out of credit" : undefined)) as any;
+    const r = pickTier(TABLE, { asked: "simple", type: "x", readOnly: true }, LISTED, (id) => (id === "q:small" ? "is out of credit" : undefined)) as any;
     expect(r).toEqual({ none: ["tier simple's model q:small is out of credit", "tier reader's model q:small is out of credit"] });
   });
   test("an effort the model does not list is left off and said", () => {
     const r = pickTier([{ name: "a", model: "q:deep", effort: "medium", use: ["default"] }], { type: "x" }, LISTED) as any;
     expect(r.pick.effort).toBeUndefined();
     expect(r.pick.passed).toEqual(["tier a's effort medium: q:deep does not list it"]);
+  });
+  test("an agent that does more than read never falls to the reader tier", () => {
+    const r = pickTier(TABLE, { asked: "simple", type: "x" }, LISTED, (id) => (id === "q:small" ? "is out of credit" : undefined)) as any;
+    expect(r).toEqual({ none: ["tier simple's model q:small is out of credit", "tier reader is for agents that only read"] });
+    const table: Tier[] = [{ name: "build", model: "p:gone", use: ["default"] }, { name: "reader", model: "q:small" }, { name: "simple", model: "q:deep" }];
+    expect((pickTier(table, { type: "x" }, LISTED) as any).pick).toMatchObject({ tier: "simple", passed: ["tier build's model p:gone is not listed now", "tier reader is for agents that only read"] });
+    expect((pickTier(table, { type: "Explore", explore: true, readOnly: true }, LISTED) as any).pick.tier).toBe("reader");
+  });
+  test("the row's kind is told, so the tier for every other agent can give way to a trial", () => {
+    expect((pickTier(TABLE, { type: "general-purpose" }, LISTED) as any).by).toBe("every");
+    expect((pickTier(TABLE, { type: "Review" }, LISTED) as any).by).toBe("type");
+    expect((pickTier(TABLE, { type: "Explore", explore: true }, LISTED) as any).by).toBe("explore");
+  });
+  test("a model several providers list is tried on each, past the ones that take no work", () => {
+    const listed = [{ id: "a:twin", model: "twin" }, { id: "b:twin", model: "twin" }];
+    const r = pickTier([{ name: "t", model: "twin", use: ["default"] }], { type: "x" }, listed, (id) => (id === "a:twin" ? "is out of credit" : undefined)) as any;
+    expect(r.pick.model).toBe("b:twin");
+    const none = pickTier([{ name: "t", model: "twin", use: ["default"] }], { type: "x" }, listed, () => "is shut") as any;
+    expect(none).toEqual({ none: ["tier t's model twin is shut"] });
   });
   test("a model is named by id or as its provider names it", () => {
     expect((pickTier([{ name: "a", model: "deep", use: ["default"] }], { type: "x" }, LISTED) as any).pick.model).toBe("q:deep");

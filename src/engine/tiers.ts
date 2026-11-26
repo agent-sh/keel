@@ -45,56 +45,69 @@ export type TierAsk = {
   defTier?: string;    // the tier its type's definition names
   type: string;        // its agent type, as its definition names it
   explore?: boolean;   // a built-in Explore agent
+  readOnly?: boolean;  // an agent that only reads (Explore, a read-only type): only such a one falls to the reader tier
 };
+
+// How a row was found: `every` is the tier for every other agent, which gives way to a trial's model (the caller's).
+export type TierBy = "asked" | "def" | "type" | "explore" | "every";
 
 // The row a spawn starts from, with why; undefined when the table says nothing of it. A tier the spawn
 // names that the table lacks is an error the caller sees (it named it, as it would a model).
-export function tierRow(tiers: readonly Tier[], o: TierAsk): { at: number; why: string } | { error: string } | undefined {
+export function tierRow(tiers: readonly Tier[], o: TierAsk): { at: number; why: string; by: TierBy } | { error: string } | undefined {
   const find = (f: (t: Tier) => boolean) => tiers.findIndex(f);
   if (o.asked?.trim()) {
     const byName = find((t) => same(t.name, o.asked!));
-    if (byName >= 0) return { at: byName, why: `the spawn names tier ${tiers[byName]!.name}` };
+    if (byName >= 0) return { at: byName, by: "asked", why: `the spawn names tier ${tiers[byName]!.name}` };
     const byKind = find((t) => uses(t, o.asked!));
-    if (byKind >= 0) return { at: byKind, why: `the spawn names the kind ${o.asked.trim()}, which tier ${tiers[byKind]!.name} lists` };
+    if (byKind >= 0) return { at: byKind, by: "asked", why: `the spawn names the kind ${o.asked.trim()}, which tier ${tiers[byKind]!.name} lists` };
     return { error: `no tier "${o.asked.trim()}" in agents.tiers; the tiers are ${tiers.length ? tiers.map((t) => t.name).join(", ") : "none (the owner has set none)"}. Omit tier, or name one of them` };
   }
   if (o.defTier?.trim()) {
     const at = find((t) => same(t.name, o.defTier!) || uses(t, o.defTier!));
-    if (at >= 0) return { at, why: `its type ${o.type} names tier ${tiers[at]!.name}` };
+    if (at >= 0) return { at, by: "def", why: `its type ${o.type} names tier ${tiers[at]!.name}` };
   }
   const byType = find((t) => uses(t, o.type));
-  if (byType >= 0) return { at: byType, why: `tier ${tiers[byType]!.name} lists the type ${o.type}` };
+  if (byType >= 0) return { at: byType, by: "type", why: `tier ${tiers[byType]!.name} lists the type ${o.type}` };
   if (o.explore) {
     const at = find((t) => same(t.name, READER_TIER));
-    if (at >= 0) return { at, why: `Explore agents use the ${READER_TIER} tier` };
+    if (at >= 0) return { at, by: "explore", why: `Explore agents use the ${READER_TIER} tier` };
   }
   const every = find((t) => (t.use ?? []).some((u) => EVERY.has(u.trim().toLowerCase())));
-  if (every >= 0) return { at: every, why: `tier ${tiers[every]!.name} is for every other agent` };
+  if (every >= 0) return { at: every, by: "every", why: `tier ${tiers[every]!.name} is for every other agent` };
   return undefined;
 }
 
 type Listed = { id: string; model: string; efforts?: string[] };
 
-// The listed model a tier's model names: its id, or its model as the provider names it.
-export const listedOf = (listed: readonly Listed[], model: string) => listed.find((m) => m.id === model.trim()) ?? listed.find((m) => m.model === model.trim());
+// The listed models a tier's model names: its id, else every provider's listing of its model as the provider names it.
+export function listedOf(listed: readonly Listed[], model: string): Listed[] {
+  const w = model.trim();
+  const byId = listed.filter((m) => m.id === w);
+  return byId.length ? byId : listed.filter((m) => m.model === w);
+}
 
 // The tier a spawn starts on: its row, else the next one down whose model lists and takes work
 // (`blocked` says why one does not). Each row passed over is a line. Undefined: no row applies, or
 // none from it down can take the work (`passed` then says why, for the caller's line).
 export function pickTier(tiers: readonly Tier[], o: TierAsk, listed: readonly Listed[], blocked: (id: string) => string | undefined = () => undefined):
-  { pick: TierPick } | { error: string } | { none: string[] } | undefined {
+  { pick: TierPick; by: TierBy } | { error: string } | { none: string[] } | undefined {
   const row = tierRow(tiers, o);
   if (!row || "error" in row) return row;
   const passed: string[] = [];
   for (let i = row.at; i < tiers.length; i++) {
     const t = tiers[i]!;
-    const m = listedOf(listed, t.model);
-    const why = !m ? "is not listed now" : blocked(m.id);
+    // Falling down the table stops before the reader tier for an agent that does more than read.
+    if (i > row.at && !o.readOnly && same(t.name, READER_TIER)) { passed.push(`tier ${t.name} is for agents that only read`); continue; }
+    const all = listedOf(listed, t.model);
+    const whys = all.map((x) => blocked(x.id));
+    const k = whys.findIndex((w) => !w);
+    const m = k >= 0 ? all[k] : undefined;
+    const why = !all.length ? "is not listed now" : !m ? [...new Set(whys)].join("; ") : undefined;
     if (why) { passed.push(`tier ${t.name}'s model ${t.model} ${why}`); continue; }
     const effort = t.effort?.trim() && (!m!.efforts || m!.efforts.includes(t.effort.trim())) ? t.effort.trim() : undefined;
     if (t.effort?.trim() && !effort) passed.push(`tier ${t.name}'s effort ${t.effort.trim()}: ${m!.id} does not list it`);
     const fell = i > row.at ? `, in place of tier ${tiers[row.at]!.name}` : "";
-    return { pick: { tier: t.name, model: m!.id, ...(effort ? { effort } : {}), why: `${row.why}${fell}`, passed } };
+    return { pick: { tier: t.name, model: m!.id, ...(effort ? { effort } : {}), why: `${row.why}${fell}`, passed }, by: row.by };
   }
   return { none: passed };
 }

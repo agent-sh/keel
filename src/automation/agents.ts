@@ -1078,21 +1078,32 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // model either. Rows whose model does not list, takes no work now or is not allowed in the folder give way to the next.
   const tierWords: string[] = [];
   let tiered: TierPick | undefined;
-  if (!input.fork && !input.model && (input.tier?.trim() || !def.model)) {
-    const got = pickTier(agentTiers(), { asked: input.tier, defTier: def.tier, type: def.name, explore }, await D().providers.models(),
-      (m) => routeShut(m) ?? (crossingIn(route, "agent", m) ? "is not allowed for this folder" : undefined));
-    if (got && "error" in got) throw new Error(got.error);
-    if (got && "pick" in got) tiered = got.pick;
-    if (got && "none" in got) tierWords.push(`No tier of agents.tiers could take it (${got.none.join("; ")}), so it starts as it would with no tiers`);
+  const askedBudget = mergeBudget(def.budget, parseBudget(input.budget));
+  // A model the spawn names drops the tier it names too, and the result says so.
+  if (!input.fork && input.model && input.tier?.trim()) tierWords.push(`Tier ${input.tier.trim()} is not used: the spawn names the model ${input.model}`);
+  // The builder trial's arm and an Explore agent's reader arm (src/engine/model-trial.ts, src/engine/read-run.ts)
+  // go before the tier for every other agent: that row would make both arms the same. A tier the spawn, its
+  // type or the table names for it goes first, as a model named would.
+  const plain = !input.fork && !input.model && !def.model;
+  const got = !input.fork && !input.model && (input.tier?.trim() || !def.model)
+    ? pickTier(agentTiers(), { asked: input.tier, defTier: def.tier, type: def.name, explore, readOnly: explore || !!def.readOnly }, await D().providers.models(),
+      (m) => routeShut(m) ?? (crossingIn(route, "agent", m) ? "is not allowed for this folder" : undefined))
+    : undefined;
+  if (got && "error" in got) throw new Error(got.error);
+  const named = !!got && "pick" in got && got.by !== "every";
+  const tried = plain && !explore && !named ? await trialBuilder(parent, askedBudget) : undefined;
+  const readerArm = plain && explore && !named && readRunsOf(parent, (id) => D().store.session(id)) === "reader";
+  if (got && "pick" in got) {
+    if (!named && (tried || readerArm)) tierWords.push(`Tier ${got.pick.tier} is not used: ${tried ? "this tree is trying a builder model" : "this tree's Explore agents are trying the reader model"}`);
+    else tiered = got.pick;
   }
+  if (got && "none" in got) tierWords.push(`No tier of agents.tiers could take it (${got.none.join("; ")}), so it starts as it would with no tiers`);
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
-  const tried = !tiered && !input.fork && !input.model && !def.model && !explore ? await trialBuilder(parent, mergeBudget(def.budget, parseBudget(input.budget))) : undefined;
   let model = input.fork ? parent.model
     : tiered ? tiered.model
     : tried ? tried
     : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
-    : !input.model && !def.model && def.name === "Explore" && def.source === "built-in" && readRunsOf(parent, (id) => D().store.session(id)) === "reader"
-      ? await exploreModel(parent).catch(() => parent.model)
+    : readerArm ? await exploreModel(parent).catch(() => parent.model)
     : await pickModel(parent, input.model ?? def.model);
   // The agent reads its parent's content: its model's provider must be one the parent's folder allows
   // (src/safety/content-routes.ts). A model the caller named is refused; a type's own model gives way
