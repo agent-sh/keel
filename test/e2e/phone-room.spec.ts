@@ -286,7 +286,7 @@ test.describe("on a phone", () => {
   });
 
   // Feature: on a phone the session list has the screen. The tabs and the counts scroll away with the
-  // rows; the find stays at the top, also when the list opens on a session far down it. What failed and
+  // rows; the find stays at the top, and opening on a session far down the list does not skip the top. What failed and
   // is out of view is named at the list's foot, which stands under the rows and never over one: at every
   // place of the scroll, a failed row is either seen whole or named.
   test("the list has the screen: the find stays, and a failed row is seen or named", async ({ page, request }) => {
@@ -311,7 +311,7 @@ test.describe("on a phone", () => {
         else await make(`List ${tag} filler ${i}`, "script:say Done.");
       }
       for (const id of made) await expect.poll(() => ended(id), { timeout: 60_000 }).toBe(true);
-      // Opened from the session lowest in the list: its row in view, and the find above it. (A filler:
+      // Open from the session lowest in the list: focus its row without scrolling past the top. (A filler:
       // a failure looked at is not news, and not named.)
       const fillers = made.filter((id) => !failed.includes(id));
       const rows = page.getByTestId("session-list").locator('[data-testid="session-row"]');
@@ -325,11 +325,12 @@ test.describe("on a phone", () => {
       await page.goto(`/s/${lowest}`);
       await page.getByRole("button", { name: "All sessions" }).first().tap();
       const current = page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${lowest}"]`);
-      await expect(current).toBeInViewport();
       const find = page.getByTestId("list-find");
+      const scroll = page.locator(".k-list-scroll");
+      await expect(current).toBeFocused();
+      await expect(current).not.toBeInViewport();
       await expect(find).toBeInViewport();
-      const [f, c] = [(await find.boundingBox())!, (await current.boundingBox())!];
-      expect(c.y, "the open session's row stands under the find, not behind it").toBeGreaterThanOrEqual(f.y + f.height - 0.5);
+      expect(await scroll.evaluate((el) => el.scrollTop), "the drawer opens at the top").toBe(0);
       await shoot(page, "phone-list-open");
 
       // Step through the whole scroll: at each place a failed row is seen whole (nothing over it)
@@ -383,6 +384,7 @@ test.describe("on a phone", () => {
         await expect.poll(unseen, { timeout: 3000, message: `at ${y} px of the scroll` }).toEqual([]);
       }
       await expect(page.getByTestId("need-strip")).toBeVisible();
+      await expect(find).toBeInViewport();
       await shoot(page, "phone-list-foot");
       // A short screen (a smaller phone, or the keyboard up): the strip holds fewer names, and the
       // rest are behind its "+N".

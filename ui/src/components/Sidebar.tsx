@@ -734,7 +734,9 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     const seen = new Map<Element, boolean>();
     let at: (Element | null)[] = [], frame = 0;
     const say = () => { const next = ids.filter((_, i) => (at[i] ? seen.get(at[i]!) === false : true)); setOut((was) => (was.join(" ") === next.join(" ") ? was : next)); };
-    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio > 0.99); say(); }, { root, rootMargin: cover, threshold: [0, 1] });
+    // Use the observer's own threshold for "whole". A row can dip just below 1, then
+    // scroll far under the find without another report until it leaves the view.
+    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio === 1); say(); }, { root, rootMargin: cover, threshold: [0, 1] });
     // The rows are looked for again when the list draws others (a fold, a group, a row that came).
     const watch = () => {
       frame = 0;
