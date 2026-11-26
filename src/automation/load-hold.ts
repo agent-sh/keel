@@ -2,13 +2,19 @@ import { registerSettings, settings } from "../admin/settings.ts";
 import type { Row } from "../admin/health-rows.ts";
 import type { Session } from "../core/types.ts";
 import { machine } from "../tools/heavy.ts";
+import type { WaitShape } from "../engine/cache-plan.ts";
 import { capture, D } from "./core.ts";
-import { decide, IDLE, loadWhy, over, SAMPLE_MS, SETTLE_MS, type LoadState, type Reading, type Tree } from "./load-rules.ts";
+import * as failures from "./failures.ts";
+import { decide, IDLE, loadWhy, MAX_WAIT_MS, over, SAMPLE_MS, SETTLE_MS, type LoadState, type Reading, type Tree } from "./load-rules.ts";
+import { blocksOnAgents } from "./tools.ts";
 
 // Agent trees wait while the machine is over its thread count (the decision is pure, in ./load-rules.ts). It is
 // one of the engine's `stepHold`s, beside the fleet pause: a held tree's turns wait before their next model step,
 // so a running turn stops at its step boundary and a new agent of the tree waits before its first one. A top
-// session's turn that the owner's own words started or steered is no tree and always goes on. The reading is the
+// session's turn that the owner's own words started or steered is no tree and always goes on, and so is an agent
+// whose turn carries the owner's word (his turn started it, he wrote to it from its card), an agent such a turn
+// waits on (wait_agent, an Agent call in the foreground) and one whose tools run on another machine, which adds
+// nothing to this one's load. The reading is the
 // heavy pool's (`machine.read` in src/tools/heavy.ts), taken every five seconds on the automation's pulse.
 
 registerSettings("load_hold", { on: true, threads: null }, (v) => {
@@ -45,20 +51,52 @@ export function treeOf(s: Session): string {
   return cur.id;
 }
 
-// The trees with unattended work now: every running turn that is not a top session's turn the owner started.
+// Whether a session's steps go on whatever the load: its turn carries the owner's word, or an owner's turn above
+// it waits on it, or its tools run on another machine.
+export function exempt(s: Session, byOwner: (id: string) => boolean = (id) => D().engine.byOwner(id)): boolean {
+  if (s.machine) return true;
+  const { store } = D();
+  let cur: Session | undefined = s;
+  for (let i = 0; i < 32 && cur; i++) {
+    if (byOwner(cur.id)) return true;
+    const up: Session | undefined = cur.parent_id ? store.session(cur.parent_id) : undefined;
+    // Only through a parent that blocks on its agents now: a parent that goes on working does not wait on this one.
+    if (!up || !blocksOnAgents(up.id)) return false;
+    cur = up;
+  }
+  return false;
+}
+
+// The trees with unattended work now: every running turn that is not exempt.
 function trees(): Map<string, Tree & { title: string }> {
   const { engine, store } = D();
   const out = new Map<string, Tree & { title: string }>();
   for (const id of engine.runningIds()) {
     const s = store.session(id);
     if (!s) continue;
-    if (!s.parent_id && engine.byOwner(id)) continue;
+    if (exempt(s)) continue;
     const key = treeOf(s);
     if (out.has(key)) continue;
     const root = key === s.id ? s : store.session(key);
     out.set(key, { key, started: root?.created ?? s.created, title: root?.title || "an agent" });
   }
   return out;
+}
+
+// A tree the cap let go is told to its parent once (the top session that started it; a top session's own
+// unattended turn is told to itself), riding its next input.
+const capTold = new Set<string>();
+export const CAP_CLS = "machine busy";
+function toldCap(key: string, r: Reading) {
+  if (capTold.has(key)) return;
+  capTold.add(key);
+  try {
+    const s = D().store.session(key);
+    if (!s) return;
+    const to = s.parent_id ?? s.id;
+    const mins = Math.round(MAX_WAIT_MS / 60_000);
+    failures.record(to, { kind: "wait", cls: CAP_CLS, message: `${s.title || "An agent"} waited ${mins} min for the machine (load ${Math.round(r.load1)} on ${r.threads} threads) and goes on now: a wait for the load is capped at ${mins} min so no tree waits for good.`, ...(s.parent_id ? { ref: { id: s.id, label: s.title || "an agent" } } : {}), tell: "ride" }, s.id);
+  } catch (e) { capture(e, { at: "load hold" }); }
 }
 
 const release = (key: string) => { const w = waiters.get(key); waiters.delete(key); for (const go of w ?? []) go(); };
@@ -101,7 +139,9 @@ export function tick(now = Date.now()) {
     readings = prev && now - prev.at <= 3 * SAMPLE_MS ? [...readings.filter((x) => now - x.at <= SETTLE_MS + SAMPLE_MS), r] : [r];
     account(r, gap);
     known = trees();
-    settle(decide(st, readings, [...known.values()], now), now);
+    const next = decide(st, readings, [...known.values()], now);
+    settle(next, now);
+    for (const k of next.capped) toldCap(k, r);
     tell();
   } catch (e) { capture(e, { at: "load hold" }); }
 }
@@ -145,16 +185,22 @@ function tell() {
 }
 
 // What a model step of a session waits for while its tree is held (the engine's `stepHold`).
-export function hold(s: Session, byOwner: () => boolean): { why: string; kind: "load"; note: string; wait: (signal: AbortSignal) => Promise<void> } | undefined {
+export function hold(s: Session, byOwner: () => boolean): { why: string; kind: "load"; note: string; shape: WaitShape; wait: (signal: AbortSignal) => Promise<void> } | undefined {
   if (!st.held.length) return undefined;
-  if (!s.parent_id && byOwner()) return undefined;
+  if (byOwner()) return undefined;
   const key = treeOf(s);
   if (!st.held.includes(key)) return undefined;
+  if (exempt(s, (id) => id !== s.id && D().engine.byOwner(id))) return undefined;
+  const at = st.at[key] ?? Date.now();
+  // The cache plan's wait: it began when the tree was held and ends at the cap at the latest.
+  const past = waited.map((w) => w.ms).slice(0, 20);
+  const shape: WaitShape = { kind: "load", since: at, deadline: at + MAX_WAIT_MS, ...(past.length ? { past } : {}) };
   const r = readings.at(-1) ?? { load1: 0, threads: 0 };
   const why = loadWhy(r);
   return {
     why,
     kind: "load",
+    shape,
     note: `The machine is busy (load ${Math.round(r.load1)} on ${r.threads} threads): this work waits until the machine has room. The owner's own turns go on.`,
     wait: (signal) => new Promise<void>((go) => {
       if (signal.aborted) return go();
@@ -184,4 +230,4 @@ export function healthRows(now = Date.now()): Row[] {
 }
 
 // For a test: nothing held, nothing read.
-export function reset() { releaseAll(); readings = []; st = IDLE; lastAt = 0; known = new Map(); heldAt.clear(); waited = []; overByHour.clear(); printed = ""; }
+export function reset() { releaseAll(); readings = []; st = IDLE; lastAt = 0; known = new Map(); heldAt.clear(); capTold.clear(); waited = []; overByHour.clear(); printed = ""; }

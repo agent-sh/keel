@@ -251,10 +251,16 @@ under `~/.cache/keel-work/bun/research/`.
   Resuming frees what waits. `keel pause`, `keel resume --fleet`, a row in the pane's menu.
 - Agent trees wait for the machine (`src/automation/load-hold.ts`, the pure rule in `load-rules.ts`, settings
   `load_hold`): when every reading of the last minute has the 1-minute load over the thread count, the same
-  `stepHold` holds the newest trees' next model steps (as many as the load over the line is tree shares), and a tree
-  that starts while the machine has no room waits from its first step; the oldest held go first once the load plus
-  their share fits under the line, one change a minute. The owner's own turns are never held. The status says the
-  load, the rail has one quiet line while trees wait, and Settings > Health has the row with the day's account.
+  `stepHold` holds the newest trees' next model steps (as many as the load over the line is shares of a working
+  tree: held trees add no load and are not counted), and a tree that starts while the machine has no room waits
+  from its first step; the oldest held go first once the load plus their share fits under the line (with every
+  tree held, the oldest goes once the load is under the line), one change a minute. A wait is capped at
+  `MAX_WAIT_MS` (ten minutes): the tree goes on, the newest working tree takes its place while the machine is still
+  over, it rests as long before it can be held again, and its parent is told once. Never held: a turn that carries
+  the owner's word (`Engine.byOwner`, agents included: one his turn started, one he wrote to from its card), an
+  agent an owner's turn blocks on (wait_agent), and a session whose tools run on another machine. A held step
+  keeps its cache by the cache plan (`CachePlans.held`, the wait's shape from the hold). The status says the load,
+  the rail has one quiet line while trees wait, and Settings > Health has the row with the day's account.
 - A turn ends as "interrupted" only when `Engine.interrupt` was called for it,
   and every caller says who it is with a word of `src/core/stoppers.ts`, kept
   on the turn's end (`stopped_by`). What is said of the stop and what follows

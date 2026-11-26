@@ -1051,10 +1051,13 @@ export class Engine {
 
   // The spend window's hold (src/automation/window-cap.ts) before a model step: waits while a hook says so,
   // with the reason in the turn's status and once in its notes. Returns whether the owner's note was told.
-  private async holdForSpend(id: string, model: string, signal: AbortSignal, noted: boolean): Promise<boolean> {
+  // A hold with a wait's shape (the load hold) keeps the session's cache by its plan while it waits.
+  private async holdForSpend(id: string, st: Step, signal: AbortSignal, noted: boolean): Promise<boolean> {
+    const model = st.info.name;
     let told = false;
+    let planned: (() => void) | undefined;
     const running = this.running.get(id);
-    const done = (v: boolean) => { if (told && !signal.aborted) this.status(id, { kind: "idle" }); return v; };
+    const done = (v: boolean) => { planned?.(); planned = undefined; if (told && !signal.aborted) this.status(id, { kind: "idle" }); return v; };
     for (;;) {
       const s = this.store.session(id);
       if (!s) return done(noted);
@@ -1074,13 +1077,17 @@ export class Engine {
       }
       this.status(id, { kind: "model", since: Date.now(), model, limit: { ...(held.until ? { until: held.until } : {}), why: held.why, spend: held.kind ?? true } });
       if (running) running.providerWaiting = true;
+      if (held.shape && !planned && cachePlanOn(s, (sid) => this.store.session(sid))) {
+        const events = this.lineage(id);
+        planned = this.cachePlans.held(id, st, events, held.shape, this.used(events, st), (seq) => toMessages(this.lineage(id).filter((e) => e.seq < seq)));
+      }
       // Asked again every few seconds: the owner's own words steered into this turn end its wait.
       const asked = new AbortController();
       const off = () => asked.abort();
       signal.addEventListener("abort", off, { once: true });
       const tick = setTimeout(off, SPEND_RECHECK_MS);
       try { await held.wait(asked.signal); } finally { clearTimeout(tick); signal.removeEventListener("abort", off); if (running) running.providerWaiting = false; }
-      if (signal.aborted) return noted;
+      if (signal.aborted) { planned?.(); return noted; }
       for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
     }
   }
@@ -3330,7 +3337,7 @@ export class Engine {
         if (running) running.betweenParts = true;
         // The daemon's spend cap over a window: a step of a turn the owner did not start waits until the
         // window rolls under it; the owner's own turn goes on with a note, once.
-        if (!signal.aborted) windowNoted = await this.holdForSpend(id, st.info.name, signal, windowNoted);
+        if (!signal.aborted) windowNoted = await this.holdForSpend(id, st, signal, windowNoted);
         if (signal.aborted) throw abortError();
         // A budget of the session's own (an agent's steps, minutes or dollars) that is spent: one
         // more step, in words, then the turn ends. Asked before each step, so a turn a wake starts

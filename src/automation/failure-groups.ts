@@ -335,6 +335,8 @@ function headOf(g: FailureGroup, refs: FailureRef[]): string {
   if (g.kind === "provider" && g.cls === "overloaded") return `${plural(n, "agent")} still waiting on a model at capacity`;
   if (g.kind === "message") return `${g.owed === 1 ? "A message this session sent was" : `${g.owed} messages this session sent were`} not delivered`;
   if (g.kind === "budget") return n ? `${plural(n, "agent")} at ${g.cls} of ${n === 1 ? "its" : "their"} dollar budget` : `This session is at ${g.cls} of its dollar cap`;
+  // The load hold's cap let a tree go on (src/automation/load-hold.ts CAP_CLS).
+  if (g.kind === "wait" && g.cls === "machine busy") return `${n ? plural(n, "agent") : "This session's work"} waited for the machine past the cap and went on`;
   if (g.kind === "pair") return `${g.owed === 1 ? "A branch fails" : `${g.owed} branches fail`} together with another live branch, and pass alone`;
   if (g.kind === "plan") return `${g.owed === 1 ? "A lane" : `${g.owed} lanes`} of a plan of lanes ${g.cls === "lane not started" ? "did not start" : "will not start by itself"}`;
   if (g.kind === "land") return `${g.owed === 1 ? "A branch" : `${g.owed} branches`} left the landing queue${g.cls ? ` (${g.cls})` : ""}`;

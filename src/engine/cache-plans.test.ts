@@ -159,3 +159,36 @@ test("a wait kept warm is told by what the next request read", async () => {
   expect([e.plans.owes(e.id), failed]).toEqual([false, []]);
   for (const p of [a, b, c, d, e, f, g]) p.plans.stopAll();
 });
+
+// A step the load hold keeps waiting: its turn runs, but the wait is a long one the session set, so its cache is
+// kept by its plan, the warm read sent with the history before the last reply (where that request's cache is).
+test("a step held for the machine keeps its cache warm while its turn waits", async () => {
+  const id = store.createSession({ model: MODEL, workspace: dir, title: "held" }).id;
+  const w: World = { held: false, calls: [] };
+  const sent: unknown[][] = [];
+  const plans = new CachePlans({
+    store, errors: { capture: () => ({}) } as any,
+    append: (sid, kind, data) => store.append(sid, kind, data as any),
+    isRunning: () => true, isHeld: () => false, draining: () => false,
+    waitShape: () => undefined, replan: () => {},
+    call: async (_sid, _st, messages) => {
+      w.calls.push(Date.now());
+      sent.push(messages);
+      return { blocks: [], usage: { input: 0, cache_read: TOKENS, cache_write: 0, output: 0, cost: 0.05 }, stop: "max_tokens", model: "m" };
+    },
+    prepare: () => {},
+  });
+  const asked: number[] = [];
+  const before = (seq: number) => { asked.push(seq); return [{ role: "user", content: [{ type: "text", text: "the task" }] }] as any; };
+  const done = plans.held(id, st, replied(Date.now()), { kind: "load", since: Date.now(), deadline: Date.now() + 600_000 }, TOKENS, before);
+  await Bun.sleep(1_400);
+  expect(w.calls).toHaveLength(1);
+  expect(asked).toEqual([1]);
+  expect(JSON.stringify(sent[0])).toContain("the task");
+  done();
+  expect(plans.owes(id)).toBe(true);
+  // A session with no reply yet (a new agent held before its first step) has no cache to keep.
+  const none = plans.held(store.createSession({ model: MODEL, workspace: dir, title: "new" }).id, st, [], { kind: "load" }, TOKENS, before);
+  none();
+  plans.stopAll();
+});

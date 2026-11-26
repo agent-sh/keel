@@ -3,6 +3,7 @@ import type { Message, QueueItem, Session, StoredEvent, ToolResultBlock, TurnSta
 import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import type { Crossing } from "../safety/route-rule.ts";
+import type { WaitShape } from "./cache-plan.ts";
 
 // One tool call as the turn is about to run it.
 // `hook`: what the owner's PreToolUse hooks did to the call before any gate saw
@@ -168,7 +169,8 @@ export type TurnHooks = {
   // Before each model step: the daemon's spend cap over a rolling window (src/automation/window-cap.ts). `note`
   // alone: the step goes on and the turn carries the note once (the owner's own turn past the cap). `wait`
   // too: the step does not start until the wait settles, and `why` says why in the turn's status.
-  stepHold?: (s: Session, byOwner: () => boolean) => { why: string; kind?: "pause" | "load"; until?: number; note?: string; wait?: (signal: AbortSignal) => Promise<void> } | undefined;
+  // `shape`: the wait as the cache plan reads it (a long wait the session set), so the held step keeps its cache by its plan.
+  stepHold?: (s: Session, byOwner: () => boolean) => { why: string; kind?: "pause" | "load"; until?: number; note?: string; shape?: WaitShape; wait?: (signal: AbortSignal) => Promise<void> } | undefined;
   // An input from another session (kind "peer") that must wait for a reason the hook keeps (a reached
   // dollar cap): stored in the session's queue, and not started while this says so. Asked when the
   // input comes to an idle session and again when the queue would start it; the owner's own words

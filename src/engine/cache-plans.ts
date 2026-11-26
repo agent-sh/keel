@@ -148,6 +148,20 @@ export class CachePlans {
     return () => this.end(id, "tool");
   }
 
+  // A step held before its request (a stepHold with a wait's shape: the load hold): the session set the wait, as
+  // a park, but its turn runs, so it is planned as a tool step is and ended by the returned function. The cache
+  // it keeps is the last request's: the history before that request's reply, at the context it used.
+  // `before`: the history before an event, as the session's requests project it.
+  held(id: string, st: PlanStep, events: readonly StoredEvent[], shape: WaitShape, tokens: number, before: (seq: number) => Message[]): () => void {
+    const touched = Math.max(lastWarm(events, st.info.id), this.warmedAt(id, st.info.id));
+    const reply = events.findLast((e) => e.kind === "assistant");
+    if (!touched || !reply || tokens <= 0) return () => {};
+    const extra = Math.ceil(utf8Bytes(WARM_TEXT) / bytesPerToken(st.info.id));
+    const messages = () => before(reply.seq);
+    this.start({ id, kind: "tool", shape, touched, tokens, extra, st, events, step: async () => st, messages });
+    return () => this.end(id, "tool");
+  }
+
   private start(o: { id: string; kind: Run["kind"]; shape: WaitShape; touched: number; tokens: number; extra: number; st: PlanStep; events: readonly StoredEvent[]; step: Run["step"]; messages: Run["messages"]; summaryTokens?: { out: number; after: number } }): Plan | undefined {
     this.end(o.id, o.kind === "tool" ? "replaced" : "park");
     const price = o.st.info.price;

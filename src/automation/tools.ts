@@ -394,7 +394,9 @@ export const waitAckHooks: TurnHooks = {
 
 // The calls that block until agents end (wait_agent, an Agent call that is not in the background), while they wait.
 const blocking = new Set<string>();
-async function blocks<T>(ctx: ToolContext, run: () => Promise<T>): Promise<T> {
+// Whether a call of this session blocks on its agents now (the load hold lets go what an owner's turn waits on).
+export const blocksOnAgents = (sessionId: string) => { for (const k of blocking) if (k.startsWith(`${sessionId}\u0000`)) return true; return false; };
+export async function blocks<T>(ctx: Pick<ToolContext, "sessionId" | "callId">, run: () => Promise<T>): Promise<T> {
   const key = waitKey(ctx.sessionId, ctx.callId ?? "");
   blocking.add(key);
   try { return await run(); } finally { blocking.delete(key); }
