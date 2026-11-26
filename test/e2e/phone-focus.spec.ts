@@ -139,5 +139,44 @@ for (const size of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         await drop(request, asker, ...resting);
       }
     });
+
+    // A running step beside the words it was given is one line, the command cut at its end with a mark;
+    // a tap on it shows the whole command. (It was three columns, the command wrapped into the last.)
+    test("a running step is one line, its command whole on a tap", async ({ page, request }) => {
+      await scripted(request);
+      const id = await create(request, "Run the slow suite", folder(`phone-focus-step-${size.width}`));
+      const command = "echo starting the integration suite for the importer and the exporter; sleep 60; echo the integration suite is done";
+      try {
+        await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command } }]) } });
+        await page.goto(`/s/${id}`);
+        const pane = page.locator(".k-station[data-helm]");
+        const call = pane.locator('[data-testid="tool-call"][data-state="running"]');
+        await expect(call).toBeVisible({ timeout: 30_000 });
+        await expect(call.getByTestId("call-clock")).toBeVisible();
+        const px = await rootPx(page);
+        await shoot(page, `phone-focus-04-step-${size.width}`);
+        const step = pane.locator(".k-step").filter({ has: page.locator('[data-testid="tool-call"][data-state="running"]') });
+        const said = (await step.locator(".k-said").boundingBox())!, line = (await call.locator(".k-line").boundingBox())!;
+        expect(line.height, "the step's line is a finger's row, not two").toBeLessThan(3 * px);
+        expect(Math.abs(said.y - line.y), "the words and the line stand on one row").toBeLessThan(0.8 * px);
+        const what = call.locator(".k-line-what");
+        const words = await call.locator(".k-line-text").evaluate((e) => ({ cut: e.scrollWidth > e.clientWidth + 1, mark: getComputedStyle(e).textOverflow, lines: Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)) }));
+        expect(words, "the command is one row, cut with a mark").toEqual({ cut: true, mark: "ellipsis", lines: 1 });
+        // The verb and the command it ran stand together: no column of verbs between them.
+        const verbEnd = await call.locator(".k-line-verb").evaluate((e) => { const r = document.createRange(); r.selectNodeContents(e); return r.getBoundingClientRect().right; });
+        const w = (await what.boundingBox())!;
+        expect(w.x - verbEnd, "the command follows its verb").toBeLessThan(0.75 * px);
+        await call.locator(".k-line").tap();
+        await expect(call.getByText(command, { exact: true }).first()).toBeVisible();
+        // Opened, the call has the pane's width under the words it was given.
+        const above = (await step.locator(".k-said").boundingBox())!, opened = (await call.boundingBox())!;
+        expect(opened.y, "the opened call stands under the words").toBeGreaterThanOrEqual(above.y + above.height - 1);
+        await call.getByTestId("terminal").scrollIntoViewIfNeeded();
+        await shoot(page, `phone-focus-05-step-open-${size.width}`);
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }

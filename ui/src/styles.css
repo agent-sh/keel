@@ -774,7 +774,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-copyable { position: relative; }
 .k-copy-corner { position: absolute; top: 0.25rem; right: 0.25rem; z-index: 1; background: var(--code-bg); opacity: 0; transition: opacity var(--dur-quick); }
 .k-copyable:hover > .k-copy-corner, .k-copy-corner:focus-visible, .k-copy-corner[data-copied], .k-copy-corner[data-failed] { opacity: 1; }
-@media (hover: none) { .k-copy-corner { opacity: 1; } }
+@media (hover: none) { .k-copy-corner { opacity: 1; } .k-copyable > pre { padding-right: calc(var(--spacing-tap) + 0.25rem); } } /* (shown at all times there, it stands beside the text, not on it) */
 .code-block pre { margin: 0; padding: 0.75rem 0.875rem; overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-ui); line-height: 1.6; tab-size: 2; }
 .code-block pre code { font-family: inherit; }
 
