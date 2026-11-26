@@ -351,7 +351,8 @@ test("a long plan counts only painted lines, and a refused press moves nothing",
     await recording();
     await page.keyboard.press("End");
     await expect(card).toHaveAttribute("data-read", "true", { timeout: 20_000 });
-    expect(await missed()).toEqual([]);
+    // (The recorder keeps what was missed at its next paint after the card says it was read: asked until it has.)
+    await expect.poll(missed).toEqual([]);
     // Page Down pressed fast, forty times: whatever it counts, it painted.
     const second = await plan();
     await page.goto(`/s/${second}`);
@@ -362,7 +363,7 @@ test("a long plan counts only painted lines, and a refused press moves nothing",
     for (let i = 0; i < 40; i++) await page.keyboard.press("PageDown");
     for (let i = 0; i < 80 && !(await card.getAttribute("data-read")); i++) await page.keyboard.press("PageDown");
     await expect(card).toHaveAttribute("data-read", "true", { timeout: 20_000 });
-    expect(await missed()).toEqual([]);
+    await expect.poll(missed).toEqual([]);
     // A press on Approve of a plan not read is refused, and the foot keeps its height and Approve its place.
     const third = await plan();
     await page.goto(`/s/${third}`);
