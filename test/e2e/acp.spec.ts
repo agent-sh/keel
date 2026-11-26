@@ -598,13 +598,22 @@ test("acp agent twins and unavailable", async ({ page, request }) => {
     const [name, why] = [(await out.getByTestId("model-name").boundingBox())!, (await out.getByTestId("model-unavailable").boundingBox())!];
     expect(why.y).toBeGreaterThanOrEqual(name.y + name.height - 1);
     expect(await out.getByTestId("model-unavailable").evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
-    await shoot(page, "acp-20-twins-unavailable");
-    await page.keyboard.press("Escape");
+    await page.getByPlaceholder("Search models").fill("twin-out");
+    await expect(page.getByTestId("model-option")).toHaveCount(1);
+    await expect.soft(out).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await shoot(page, "acp-out-picker-desktop");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.getByTestId("model-picker").first().click();
+    await page.getByPlaceholder("Search models").fill("twin-out");
+    await expect(out).toBeVisible();
+    await shoot(page, "acp-out-picker-phone");
     // Settings names the later entry as the same program.
     await page.goto("/settings/acp-agents");
     await expect(page.getByTestId("acp-agent-same")).toHaveCount(1);
     await expect(page.getByTestId("acp-agent-same")).toContainText("same models, modes and commands");
     const row = page.locator(".k-setting").filter({ has: page.getByTestId("acp-agent-twin-out") });
+    await row.scrollIntoViewIfNeeded();
     await shoot(page, "acp-out-settings");
     await expect.soft(row).toContainText("Unavailable: it needs its own sign-in first");
     await expect.soft(row.getByTestId("acp-agent-start")).toHaveCount(0);

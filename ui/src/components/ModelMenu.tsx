@@ -166,8 +166,8 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   const trigger = useRef<HTMLButtonElement>(null);
   const [stays, setStays] = useState<{ getBoundingClientRect: () => DOMRect }>();
   const shut = () => { const at = trigger.current?.getBoundingClientRect(); setStays(at && { getBoundingClientRect: () => at }); setOpen(false); setQuery(""); };
-  const choose = (i: Item, compactFirst?: boolean) => { notePick(i.value); onChange(i.value, compactFirst ? { ...pickOf(i), compactFirst } : pickOf(i)); shut(); };
-  const canCompact = (i: Item) => !!facts?.can_compact && !!lossOf(i);
+  const choose = (i: Item, compactFirst?: boolean) => { if (i.unavailable) return; notePick(i.value); onChange(i.value, compactFirst ? { ...pickOf(i), compactFirst } : pickOf(i)); shut(); };
+  const canCompact = (i: Item) => !i.unavailable && !!facts?.can_compact && !!lossOf(i);
 
   return (
     <Combobox.Root
@@ -180,7 +180,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
       inputValue={query}
       onInputValueChange={(v, d) => { if (d.reason !== "item-press") { release(); setQuery(v); } }}
       value={selected}
-      onValueChange={(v: Item | null) => { if (!v) return; notePick(v.value); onChange(v.value, pickOf(v)); }}
+      onValueChange={(v: Item | null) => { if (!v || v.unavailable) return; notePick(v.value); onChange(v.value, pickOf(v)); }}
       onItemHighlighted={(v: Item | undefined, d) => {
         // The row index Base UI kept across a listing change: not the owner's move.
         if (d.reason === "none" && renderedAll.current !== seenAll.current) return;
@@ -333,7 +333,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                           // Fixed columns: each fact sits at the same place on every row, whatever the row has or lacks.
                           "group/row relative grid min-h-8 cursor-default items-center gap-x-1.5 rounded-md px-2 py-1 text-ui select-none outline-none [--act:3rem] [--eff:6.5rem] pointer-coarse:[--act:5.8rem] pointer-coarse:[--eff:9.3rem]",
                           NARROW.row,
-                          held ? "data-held:bg-hover" : "data-highlighted:bg-hover",
+                          !item.unavailable && (held ? "data-held:bg-hover" : "data-highlighted:bg-hover"),
                           item.hidden && "text-muted",
                           item.unavailable && "text-faint",
                         )}
