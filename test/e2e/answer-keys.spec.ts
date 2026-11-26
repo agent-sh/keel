@@ -245,7 +245,8 @@ test("nothing answers and no command key acts under a dialog", async ({ page, re
   await open(page, [quiet]);
   await expect(row(page, asks)).toHaveAttribute("data-watch", "need");
   const sheet = page.getByTestId("shortcuts");
-  const dialogs = () => page.locator('[role="dialog"]').count();
+  // (The dialogs that show: the message box keeps its closed + popup in the page.)
+  const dialogs = () => page.locator('[role="dialog"]:visible').count();
 
   // The shortcut sheet is open: the keys that go somewhere go nowhere, and no second dialog opens over it.
   await page.keyboard.press("Control+/");
@@ -928,7 +929,7 @@ test("an approval taller than the room above the message box gets the keyboard o
   await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command } }]) } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals.length).toBe(1);
   // (A window short enough that the card is taller than its region, the running line under it gone.)
-  await page.setViewportSize({ width: 1280, height: 470 });
+  await page.setViewportSize({ width: 1280, height: 400 });
   await page.goto(`/s/${id}`);
   const card = page.getByTestId("approval");
   const allow = card.getByTestId("allow-once");
