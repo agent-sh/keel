@@ -631,8 +631,13 @@ export class CodexApp {
         case "item/fileChange/requestApproval": {
           const changes = run.changes.get(String(p?.itemId)) ?? [];
           const paths = changes.map((c) => String(c.path));
-          const shown = changes.length ? changes.map((c) => `${c.path}\n${c.diff ?? ""}`.trim()).join("\n\n") : `Codex asks to change files${p?.grantRoot ? ` under ${p.grantRoot}` : ""}`;
-          const ok = await ask({ name: "Codex file change", kind: "edit" }, { file_path: paths[0] ?? p?.grantRoot ?? cwd, paths, diff: changes.map((c) => c.diff ?? "").join("\n") }, "Codex file change", "Codex writes these changes if you allow them", shown);
+          // (A root it asks for is writes under it for the rest of the session: more than these changes, the owner's
+          // to weigh, judged as more permissions are.)
+          const root = typeof p?.grantRoot === "string" && p.grantRoot ? p.grantRoot : undefined;
+          const grant = root ? `Codex asks to write anywhere under ${root} for the rest of the session` : "";
+          const shown = [changes.length ? changes.map((c) => `${c.path}\n${c.diff ?? ""}`.trim()).join("\n\n") : "", grant].filter(Boolean).join("\n\n") || "Codex asks to change files it does not name";
+          const ok = await ask({ name: "Codex file change", ...(root || !paths.length ? {} : { kind: "edit" as const }) }, { file_path: paths[0] ?? root ?? cwd, paths, diff: changes.map((c) => c.diff ?? "").join("\n"), ...(root ? { root } : {}) }, "Codex file change",
+            root ? `${grant} if you allow it` : "Codex writes these changes if you allow them", shown);
           return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
         }
         case "item/permissions/requestApproval": {

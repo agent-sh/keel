@@ -2244,7 +2244,10 @@ export class Gate {
   // A command it does not name, and anything that is neither a command nor a file change (more permissions), is
   // the owner's to weigh: high, with the asker's words.
   private harnessRisk(session: Session, call: ToolCall): { risk: "high" | "low"; why?: string } {
-    const c = callClass(call, null);
+    const named = callClass(call, null);
+    // (A change of several files is judged by every one of them.)
+    const listed = named.kind === "edit" && Array.isArray(call.input?.paths) ? (call.input.paths as unknown[]).filter((x): x is string => typeof x === "string" && !!x) : [];
+    const c: CallClass = named.kind === "edit" && listed.length ? { ...named, paths: [...new Set([...named.paths, ...listed])] } : named;
     if (c.kind === "shell" ? !c.command.trim() : c.kind !== "edit") return { risk: "high" };
     // (A harness sends its command as its shell runs it, `/bin/bash -lc '<script>'`: the script is what is judged,
     // read as a line of its own, so what the rules read at a line's top (credential reads, writes) is read in it.)

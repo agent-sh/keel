@@ -247,6 +247,10 @@ describe("a Codex session answered in place", () => {
       // A command it does not name, and more permissions, are the owner's to weigh: high.
       expect((await command("")).risk).toBe("high");
       expect((await asks("Codex permissions", { network: { enabled: true } })).risk).toBe("high");
+      // A change of several files is judged by each: one in the folder and one that runs at every login is high.
+      const mine = join(r.cwd, "a.ts"), rc = join(homeDir(), ".bashrc");
+      expect((await asks("Codex file change", { file_path: mine, paths: [mine] }, "edit")).risk).toBe("low");
+      expect((await asks("Codex file change", { file_path: mine, paths: [mine, rc] }, "edit")).risk).toBe("high");
     } finally { r.done(); }
   });
 
