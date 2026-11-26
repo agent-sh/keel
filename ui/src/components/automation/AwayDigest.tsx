@@ -69,7 +69,7 @@ export function AwayDigest({ onClose }: { onClose: () => void }) {
           className="flex h-ctl-lg min-w-0 flex-1 items-center gap-2 rounded-lg pl-2 pr-1 text-left outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ChevronRight className={cn("size-3.5 shrink-0 text-faint transition-transform", open && "rotate-90")} aria-hidden />
-          <span className="shrink-0 text-caption font-semibold text-fg">While you were away</span>
+          <span className="shrink-0 text-caption text-fg" data-testid="away-lead">While you were away</span>
           <span className="min-w-0 flex-1 truncate text-caption text-muted tabular-nums" data-testid="away-line">
             {dur(d.away_ms)}{open ? `, ${range(d)}` : `: ${digestBrief(d)}`}
           </span>
