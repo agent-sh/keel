@@ -10,12 +10,15 @@
 // send, on the page's one clock; when the page is hidden what is left goes at
 // once. The page also tells which controls it drew (in the view, a moment
 // after it changes and after a press), so "never pressed" has something to be
-// measured against.
+// measured against. Each session opened is told with its time to text
+// (lib/open-mark.ts), with no word of it.
 import { every } from "./clock.ts";
 import { actsOn, Batcher, isDrawn, nameOf, type Body } from "./press-batch.ts";
 import { keyRan } from "./keys.ts";
 import { shell } from "./shell.ts";
-import { whileLinked } from "./store.ts";
+import { keptLens } from "./lens-data.ts";
+import { onShown } from "./open-mark.ts";
+import { getState, whileLinked } from "./store.ts";
 import { getUI, onUI, phone } from "./ui.ts";
 
 const CONTROL = "button, a[href], summary, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=radio], [role=switch], [role=checkbox], [role=option], input[type=checkbox], input[type=radio], input[type=button], input[type=submit]";
@@ -98,5 +101,10 @@ export function installPresses() {
   });
   addEventListener("pagehide", () => void batcher.flush(true));
   keyRan.add((id) => notePress(`key:${id}`));
+  // Each session opened: how long its text took, its size and whether the page held it (lib/open-mark.ts).
+  onShown({
+    held: (id) => !!getState().events[id] || !!keptLens(id),
+    events: (id) => Math.max(getState().events[id]?.at(-1)?.seq ?? 0, keptLens(id)?.last?.seq ?? 0),
+  }, (o) => batcher.open({ ms: Math.round(o.ms), n: o.events, cold: o.cold, v: o.view }));
   scanSoon();
 }

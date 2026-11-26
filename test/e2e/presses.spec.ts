@@ -185,3 +185,42 @@ test("telemetry: a page inside the desktop app is recorded as the desktop app", 
   await expect.poll(async () => (await (await request.get("/api/presses")).json()).surfaces.map((s: any) => s.surface), { timeout: 30_000 }).toEqual(["desktop"]);
   await request.delete("/api/sessions/" + session.id);
 });
+
+// Each session opened is recorded with its time from the press to its text, its size and whether the page held its
+// text (warm) or read it (cold); Settings > Telemetry shows p50 and p95 of them by size.
+test("telemetry: a session's open is timed, cold then warm, and the panel shows p50 and p95", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await request.delete("/api/presses");
+  const tag = Math.random().toString(36).slice(2, 7);
+  const make = async (title: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title, text: `script:say The answer for ${title} is here.` } })).json();
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+    return session.id as string;
+  };
+  const a = await make(`Open A ${tag}`), b = await make(`Open B ${tag}`);
+  await page.goto("/");
+  const row = (id: string) => page.locator(`[data-testid="session-row"][data-session="${id}"]`).locator("visible=true").first();
+  await row(a).click();
+  await expect(page.getByTestId("transcript")).toContainText(`The answer for Open A ${tag}`);
+  await page.goBack();
+  await row(b).click();
+  await expect(page.getByTestId("transcript")).toContainText(`The answer for Open B ${tag}`);
+  await page.goBack();
+  await row(a).click(); // held by the page still: warm
+  await expect(page.getByTestId("transcript")).toContainText(`The answer for Open A ${tag}`);
+  const opens = async () => (await (await request.get("/api/presses")).json()).opens ?? [];
+  await expect.poll(async () => (await opens()).map((o: any) => `${o.size}:${o.cold}:${o.opens}`).sort(), { timeout: 30_000 }).toEqual(["0:false:1", "0:true:2"]);
+  for (const o of await opens()) expect(o.p95).toBeGreaterThanOrEqual(o.p50);
+  await page.goto("/settings/telemetry");
+  const group = page.getByTestId("press-opens");
+  await expect(group.getByTestId("press-open-row")).toHaveCount(2);
+  await expect(group.locator('[data-testid="press-open-row"][data-cold]')).toContainText("under 1k events");
+  await expect(group).toContainText(/p95/);
+  await shoot(page, "presses-04-opens");
+  // Nothing of the session (its id, its words) is in the record.
+  const all = JSON.stringify(await (await request.get("/api/presses?days=90")).json());
+  expect(all).not.toContain(`Open A ${tag}`);
+  await request.delete("/api/sessions/" + a);
+  await request.delete("/api/sessions/" + b);
+});

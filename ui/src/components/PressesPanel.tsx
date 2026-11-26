@@ -10,7 +10,7 @@ import { api, reportError } from "../lib/store.ts";
 import { clock, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Segmented } from "./Settings.tsx";
-import { Disclosure, Empty, Group, Item, List, More, Page, SettingRow } from "./settings/kit.tsx";
+import { Cell, Disclosure, Empty, Group, Item, List, More, Page, Row, SettingRow, Table, type Col } from "./settings/kit.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 
 type Report = PressReport & { record: boolean };
@@ -20,6 +20,9 @@ type Days = "7" | "30" | "90";
 const VIEW: Record<string, string> = { new: "Start page", session: "A session", project: "A project" };
 export const viewName = (v: string) => VIEW[v] ?? (v.startsWith("settings/") ? `Settings: ${v.slice(9)}` : v.startsWith("customize/") ? `Customize: ${v.slice(10)}` : v);
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+// A size class by the bound it starts at (src/admin/presses.ts OPEN_SIZES).
+const sizeName = (n: number) => (n ? `${(n / 1000).toLocaleString()}k events or more` : "under 1k events");
+const OPEN_COLS: Col[] = [{ head: "Size", grow: true }, { head: "Text", minor: true }, { head: "Opens", end: true }, { head: "p50", end: true }, { head: "p95", end: true }];
 const SURFACE: Record<string, string> = { page: "browser", desktop: "desktop app", phone: "phone" };
 
 export default function PressesPanel() {
@@ -78,6 +81,21 @@ export default function PressesPanel() {
           <Stat testid="press-surfaces" label="Where" value={r.surfaces[0] ? `${r.surfaces[0].presses.toLocaleString()} ${SURFACE[r.surfaces[0].surface] ?? r.surfaces[0].surface}` : "none yet"} sub={r.surfaces.length > 1 ? r.surfaces.slice(1).map((x) => `${x.presses.toLocaleString()} ${SURFACE[x.surface] ?? x.surface}`).join(", ") : "no other surface"} />
           <Stat label="Never pressed" value={r.never.length.toLocaleString()} sub="drawn, not pressed" />
         </Stats>
+      </Group>
+
+      <Group testid="press-opens" title="Opening a session" hint="From the press or key to the paint of the conversation's newest part. Cold: the page read the text; warm: it held it.">
+        {!r.opens?.length ? <Empty>No session opened in this range.</Empty> : (
+          <Table cols={OPEN_COLS} label="Opening a session">
+            {r.opens.map((o) => (
+              <Row key={`${o.size}:${o.cold}`} testid="press-open-row" data-size={o.size} data-cold={o.cold || undefined} name={sizeName(o.size)}>
+                <Cell col={OPEN_COLS[1]!}>{o.cold ? "cold" : "warm"}</Cell>
+                <Cell col={OPEN_COLS[2]!}>{o.opens.toLocaleString()}</Cell>
+                <Cell col={OPEN_COLS[3]!}>{`${o.p50} ms`}</Cell>
+                <Cell col={OPEN_COLS[4]!}>{`${o.p95} ms`}</Cell>
+              </Row>
+            ))}
+          </Table>
+        )}
       </Group>
 
       {!r.views.length ? <Group><Empty testid="press-empty">{r.record ? "Nothing pressed yet in this range." : "Recording is off."}</Empty></Group> : r.views.map((v) => (

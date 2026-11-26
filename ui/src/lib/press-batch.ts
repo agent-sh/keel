@@ -37,7 +37,9 @@ export function actsOn(el: { closest(selector: string): { getAttribute(name: str
 
 export type Pressed = { c: string; v: string; s?: string; t: number };
 export type Drawn = { c: string; v: string };
-export type Body = { surface: "page" | "desktop" | "phone"; presses: Pressed[]; seen: Drawn[] };
+// A session opened: ms from the press to its text's paint, its events (n), whether the page held its text, the view.
+export type Opened = { ms: number; n: number; cold: boolean; v: "lens" | "stream"; t: number };
+export type Body = { surface: "page" | "desktop" | "phone"; presses: Pressed[]; seen: Drawn[]; opens?: Opened[] };
 // What a page needs to tell of a control to know it is drawn: a hidden or disabled one is not.
 export type Control = { disabled?: boolean; getAttribute(name: string): string | null; getClientRects(): { length: number } };
 export const isDrawn = (el: Control): boolean => el.disabled !== true && el.getAttribute("aria-disabled") !== "true" && el.getClientRects().length > 0;
@@ -47,6 +49,7 @@ export type Send = (b: Body, last: boolean) => Promise<{ record: boolean } | voi
 export class Batcher {
   private queue: Pressed[] = [];
   private drawn: Drawn[] = [];
+  private opened: Opened[] = [];
   private sent = new Map<string, number>();
   private stop: (() => void) | undefined;
   private busy = false;
@@ -60,7 +63,7 @@ export class Batcher {
   set recording(v: boolean) {
     this.on = v;
     if (v) { this.asking?.(); this.asking = undefined; return; }
-    this.queue = []; this.drawn = [];
+    this.queue = []; this.drawn = []; this.opened = [];
     this.stop?.(); this.stop = undefined;
     this.asking ??= this.every(ASK_MS, () => void this.ask());
   }
@@ -73,7 +76,15 @@ export class Batcher {
     } catch { /* asked again on the next beat */ }
   }
 
-  get waiting() { return this.queue.length + this.drawn.length; }
+  get waiting() { return this.queue.length + this.drawn.length + this.opened.length; }
+
+  // A session's text was painted after its press (lib/open-mark.ts).
+  open(o: Omit<Opened, "t">) {
+    if (!this.recording) return;
+    this.opened.push({ ...o, t: this.now() });
+    if (this.opened.length > QUEUE_MAX) this.opened.splice(0, this.opened.length - QUEUE_MAX);
+    this.arm();
+  }
 
   press(c: string, v: string, s?: string) {
     if (!this.recording) return;
@@ -103,13 +114,15 @@ export class Batcher {
     this.busy = true;
     const presses = this.queue.splice(0, BATCH_MAX);
     const seen = this.drawn.splice(0, 4 * BATCH_MAX);
+    const opens = this.opened.splice(0, BATCH_MAX);
     try {
-      const r = await this.send({ surface: this.surface(), presses, seen }, last);
+      const r = await this.send({ surface: this.surface(), presses, seen, ...(opens.length ? { opens } : {}) }, last);
       if (r && r.record === false) this.recording = false;
     } catch {
       // Not sent: put back in front, within the bound.
       this.queue = [...presses, ...this.queue].slice(-QUEUE_MAX);
       this.drawn = [...seen, ...this.drawn].slice(0, 4 * QUEUE_MAX);
+      this.opened = [...opens, ...this.opened].slice(-QUEUE_MAX);
     } finally {
       this.busy = false;
     }

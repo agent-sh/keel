@@ -160,3 +160,16 @@ test("a press on a row's action is the row's session: its id, never a title", ()
   expect(actsOn(row("Fix the login bug"))).toBeUndefined();
   expect(actsOn(row(""))).toBeUndefined();
 });
+
+test("a session's open goes with the next batch, and is put back when the batch is not sent", async () => {
+  let fail = true;
+  const r = rig(async () => { if (fail) throw new Error("down"); return { record: true }; });
+  r.b.open({ ms: 120, n: 27_000, cold: true, v: "lens" });
+  await r.tick();
+  fail = false;
+  await r.tick();
+  expect(r.sent.map((s) => s.opens)).toEqual([[{ ms: 120, n: 27_000, cold: true, v: "lens", t: 1_000_000 }], [{ ms: 120, n: 27_000, cold: true, v: "lens", t: 1_000_000 }]]);
+  r.b.recording = false;
+  r.b.open({ ms: 5, n: 1, cold: false, v: "stream" });
+  expect(r.b.waiting).toBe(0);
+});

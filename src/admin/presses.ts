@@ -11,13 +11,20 @@
 //   presses       one row per press. Kept PRESS_DAYS days and at most PRESS_ROWS rows.
 //   press_seen    one row per control and view the page has drawn, with when it was first and last seen:
 //                 what "never pressed" is measured against. At most SEEN_ROWS rows.
-// Both are pruned when a batch is stored (at most once a minute). The owner
+//   opens         one row per session the page opened: how long from the press (or key) to the paint of
+//                 its conversation's newest part, the session's size by its events, whether the page held
+//                 its text already (warm) or read it (cold), and the view (the lens or the stream).
+//                 Kept PRESS_DAYS days and at most OPEN_ROWS rows. Settings > Telemetry shows p50 and p95.
+// They are pruned when a batch is stored (at most once a minute). The owner
 // can turn recording off (setting `presses.record`) and clear the tables.
 import type { Database } from "bun:sqlite";
 
 export const PRESS_DAYS = 90;
 export const PRESS_ROWS = 50_000;
 export const SEEN_ROWS = 4_000;
+export const OPEN_ROWS = 20_000;
+// An open longer than this was not a wait for the text (the tab was hidden, the daemon away): not kept.
+export const OPEN_MAX_MS = 60_000;
 export const BATCH_MAX = 200;
 export const SEEN_BATCH_MAX = 400;
 // The window "what you press" and "never pressed" are read over.
@@ -44,6 +51,16 @@ CREATE TABLE IF NOT EXISTS press_seen (
   PRIMARY KEY (control, view)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS press_seen_last ON press_seen(last_ts);
+CREATE TABLE IF NOT EXISTS opens (
+  id INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  ms INTEGER NOT NULL,
+  events INTEGER NOT NULL,
+  cold INTEGER NOT NULL,
+  view TEXT NOT NULL,
+  surface TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS opens_ts ON opens(ts);
 `;
 
 export const SURFACES = ["page", "desktop", "phone"] as const;
@@ -51,7 +68,8 @@ export type Surface = (typeof SURFACES)[number];
 
 export type Press = { control: string; view: string; session: string | null; ts: number };
 export type Seen = { control: string; view: string };
-export type Batch = { surface: Surface; presses: Press[]; seen: Seen[] };
+export type Open = { ms: number; events: number; cold: boolean; view: "lens" | "stream"; ts: number };
+export type Batch = { surface: Surface; presses: Press[]; seen: Seen[]; opens?: Open[] };
 
 // A name the page's source gave a control or a view: letters, digits and . _ : / * -, at most 64 (the * stands for a digit run the page took out).
 // Anything else (a space, a quote, a long run of digits or hex that is an id) is not a name and is dropped.
@@ -63,8 +81,8 @@ const sessionOf = (v: unknown): string | null => (typeof v === "string" && /^[A-
 
 // A posted body as a batch: what is not a name is dropped, never repaired; the counts are held to
 // the batch limits; a time from the future or from before the last day is the receipt's.
-export function cleanBatch(body: unknown, now: number): Batch {
-  const b = (body && typeof body === "object" ? body : {}) as { surface?: unknown; presses?: unknown; seen?: unknown };
+export function cleanBatch(body: unknown, now: number): Batch & { opens: Open[] } {
+  const b = (body && typeof body === "object" ? body : {}) as { surface?: unknown; presses?: unknown; seen?: unknown; opens?: unknown };
   const surface = SURFACES.find((s) => s === b.surface) ?? "page";
   const presses: Press[] = [];
   for (const p of (Array.isArray(b.presses) ? b.presses : []).slice(0, BATCH_MAX)) {
@@ -78,7 +96,13 @@ export function cleanBatch(body: unknown, now: number): Batch {
     const control = nameOf(s?.c), view = nameOf(s?.v);
     if (control && view) seen.push({ control, view });
   }
-  return { surface, presses, seen };
+  const opens: Open[] = [];
+  for (const o of (Array.isArray(b.opens) ? b.opens : []).slice(0, BATCH_MAX)) {
+    const ms = Number(o?.ms), events = Number(o?.n), t = Number(o?.t);
+    if (!Number.isFinite(ms) || ms < 0 || ms > OPEN_MAX_MS || !Number.isInteger(events) || events < 0 || typeof o?.cold !== "boolean") continue;
+    opens.push({ ms: Math.round(ms), events, cold: o.cold, view: o?.v === "lens" ? "lens" : "stream", ts: Number.isFinite(t) && t <= now && t > now - DAY ? Math.round(t) : now });
+  }
+  return { surface, presses, seen, opens };
 }
 
 const pruned = new WeakMap<Database, number>();
@@ -93,8 +117,11 @@ export function storePresses(db: Database, b: Batch, now: number) {
       see.run(p.control, p.view, p.ts, p.ts);
     }
     for (const s of b.seen) see.run(s.control, s.view, now, now);
+    const open = db.prepare("INSERT INTO opens (ts, ms, events, cold, view, surface) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const o of b.opens ?? []) open.run(o.ts, o.ms, o.events, o.cold ? 1 : 0, o.view, b.surface);
     put.finalize();
     see.finalize();
+    open.finalize();
   })();
   if (now - (pruned.get(db) ?? 0) >= PRUNE_EVERY_MS) { pruned.set(db, now); prunePresses(db, now); }
 }
@@ -104,10 +131,12 @@ export function prunePresses(db: Database, now: number) {
   db.run("DELETE FROM presses WHERE ts < ?", [now - PRESS_DAYS * DAY]);
   db.run("DELETE FROM presses WHERE id <= (SELECT id FROM presses ORDER BY id DESC LIMIT 1 OFFSET ?)", [PRESS_ROWS]);
   db.run("DELETE FROM press_seen WHERE last_ts < ?", [now - PRESS_DAYS * DAY]);
+  db.run("DELETE FROM opens WHERE ts < ?", [now - PRESS_DAYS * DAY]);
+  db.run("DELETE FROM opens WHERE id <= (SELECT id FROM opens ORDER BY id DESC LIMIT 1 OFFSET ?)", [OPEN_ROWS]);
   db.run("DELETE FROM press_seen WHERE (control, view) IN (SELECT control, view FROM press_seen ORDER BY last_ts DESC LIMIT -1 OFFSET ?)", [SEEN_ROWS]);
 }
 
-export const clearPresses = (db: Database) => void db.transaction(() => { db.run("DELETE FROM presses"); db.run("DELETE FROM press_seen"); })();
+export const clearPresses = (db: Database) => void db.transaction(() => { db.run("DELETE FROM presses"); db.run("DELETE FROM press_seen"); db.run("DELETE FROM opens"); })();
 
 export type ControlRow = { control: string; presses: number; last_ms: number; surfaces: string };
 export type ViewRow = { view: string; presses: number; controls: ControlRow[] };
@@ -117,7 +146,30 @@ export type PressReport = {
   views: ViewRow[]; never: NeverRow[];
   // The window's presses by where the page ran: a browser tab, the desktop app, a phone.
   surfaces: { surface: string; presses: number }[];
+  // The window's session opens by size and whether the page held the text, each with p50 and p95 in ms.
+  opens?: OpenRow[];
 };
+
+// Sizes of a session by its events: the bounds a class starts at.
+export const OPEN_SIZES = [0, 1_000, 10_000, 30_000] as const;
+export type OpenRow = { size: number; cold: boolean; opens: number; p50: number; p95: number };
+// The value under which q of the sorted values fall (nearest rank).
+export const rank = (sorted: readonly number[], q: number): number => sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)] ?? 0;
+export const sizeOf = (events: number): number => OPEN_SIZES.findLast((b) => events >= b) ?? 0;
+
+// The opens of rows (ms, events, cold) grouped by size class and cold or warm, the largest size first, cold before warm.
+export function openRows(rows: readonly { ms: number; events: number; cold: number | boolean }[]): OpenRow[] {
+  const by = new Map<string, number[]>();
+  for (const r of rows) {
+    const k = `${sizeOf(r.events)}:${r.cold ? 1 : 0}`;
+    (by.get(k) ?? by.set(k, []).get(k)!).push(r.ms);
+  }
+  return [...by].map(([k, ms]) => {
+    const [size, cold] = k.split(":");
+    ms.sort((x, y) => x - y);
+    return { size: Number(size), cold: cold === "1", opens: ms.length, p50: rank(ms, 0.5), p95: rank(ms, 0.95) };
+  }).sort((x, y) => y.size - x.size || Number(y.cold) - Number(x.cold));
+}
 
 const PER_VIEW = 30;
 const NEVER_MAX = 200;
@@ -143,10 +195,12 @@ export function pressReport(db: Database, a: { now?: number; days?: number } = {
       GROUP BY control ORDER BY since, control LIMIT ?`).all(since, since, NEVER_MAX);
   const surfaces = db.query<{ surface: string; n: number }, [number]>("SELECT surface, COUNT(*) AS n FROM presses WHERE ts >= ? GROUP BY surface ORDER BY n DESC, surface").all(since);
   const total = db.query<{ n: number; first: number | null }, []>("SELECT COUNT(*) AS n, MIN(ts) AS first FROM presses").get()!;
+  const opens = openRows(db.query<{ ms: number; events: number; cold: number }, [number]>("SELECT ms, events, cold FROM opens WHERE ts >= ?").all(since));
   return {
     since_ms: since, days, presses: [...byView.values()].reduce((n, v) => n + v.presses, 0), first_ms: total.first, rows: total.n, row_cap: PRESS_ROWS, kept_days: PRESS_DAYS,
     views: [...byView.values()].sort((x, y) => y.presses - x.presses || x.view.localeCompare(y.view)),
     surfaces: surfaces.map((r) => ({ surface: r.surface, presses: r.n })),
+    opens,
     never: never.map((r) => ({ control: r.control, views: r.views, seen_since_ms: r.since })),
   };
 }

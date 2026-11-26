@@ -305,7 +305,7 @@ export function Lens({ sessionId }: { sessionId: string }) {
 
   // ---------- The end is followed while the reader is at it ----------
   useLayoutEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [items, awaited]);
-  useLayoutEffect(() => { if (data) textShown(sessionId); }, [!!data, sessionId]);
+  useLayoutEffect(() => { if (data) textShown(sessionId, "lens"); }, [!!data, sessionId]);
   // Older items drawn above a reader who left the end keep what they read where it was.
   const tall = useRef(0);
   useLayoutEffect(() => {

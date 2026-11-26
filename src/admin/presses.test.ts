@@ -1,7 +1,7 @@
 // What the daemon keeps of the owner's presses: only names, within the bounds.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { BATCH_MAX, cleanBatch, clearPresses, PRESS_DAYS, PRESS_ROWS, PRESS_SCHEMA, pressReport, prunePresses, SEEN_ROWS, storePresses } from "./presses.ts";
+import { BATCH_MAX, cleanBatch, clearPresses, PRESS_DAYS, PRESS_ROWS, PRESS_SCHEMA, openRows, pressReport, prunePresses, SEEN_ROWS, storePresses } from "./presses.ts";
 
 const DAY = 86_400_000;
 const NOW = 1_800_000_000_000;
@@ -26,7 +26,7 @@ test("a posted batch keeps names only: a word, a value or an id never gets in", 
     { control: "ok", view: "new", session: null, ts: NOW }, // a time from the future is the receipt's
   ]);
   expect(b.seen).toEqual([{ control: "a", view: "new" }]);
-  expect(cleanBatch("nonsense", NOW)).toEqual({ surface: "page", presses: [], seen: [] });
+  expect(cleanBatch("nonsense", NOW)).toEqual({ surface: "page", presses: [], seen: [], opens: [] });
   expect(cleanBatch({ presses: Array.from({ length: BATCH_MAX + 50 }, () => ({ c: "a", v: "new", t: NOW })) }, NOW).presses).toHaveLength(BATCH_MAX);
 });
 
@@ -91,4 +91,29 @@ test("the report splits the presses by where the page ran", () => {
   one("desktop", 9, NOW - 40 * DAY); // outside the range
   expect(pressReport(d, { now: NOW }).surfaces).toEqual([{ surface: "page", presses: 5 }, { surface: "desktop", presses: 3 }, { surface: "phone", presses: 1 }]);
   expect(pressReport(d, { now: NOW, days: 90 }).surfaces.find((s) => s.surface === "desktop")!.presses).toBe(12);
+});
+
+test("a session open keeps its time, size and warmth, and the report gives p50 and p95 by size, cold and warm", () => {
+  const b = cleanBatch({ opens: [
+    { ms: 120.4, n: 31_000, cold: true, v: "lens", t: NOW - 1000 },
+    { ms: 90, n: 2_500, cold: false, v: "stream", t: NOW },
+    { ms: 61_000, n: 10, cold: true, v: "stream", t: NOW }, // not a wait for the text
+    { ms: 50, n: 10, cold: "yes", v: "stream", t: NOW }, // not a word for cold or warm
+    { ms: 50, n: 1.5, cold: true, t: NOW },
+  ] }, NOW);
+  expect(b.opens).toEqual([
+    { ms: 120, events: 31_000, cold: true, view: "lens", ts: NOW - 1000 },
+    { ms: 90, events: 2_500, cold: false, view: "stream", ts: NOW },
+  ]);
+  const d = db();
+  const opens = Array.from({ length: 20 }, (_, i) => ({ ms: (i + 1) * 10, events: 27_000, cold: true, view: "lens" as const, ts: NOW - DAY }));
+  storePresses(d, { surface: "desktop", presses: [], seen: [], opens: [...opens, { ms: 40, events: 3_000, cold: false, view: "stream", ts: NOW - DAY }] }, NOW);
+  storePresses(d, { surface: "page", presses: [], seen: [], opens: [{ ms: 999, events: 27_000, cold: true, view: "lens", ts: NOW - 40 * DAY }] }, NOW); // outside the range
+  expect(pressReport(d, { now: NOW }).opens).toEqual([
+    { size: 10_000, cold: true, opens: 20, p50: 100, p95: 190 },
+    { size: 1_000, cold: false, opens: 1, p50: 40, p95: 40 },
+  ]);
+  expect(openRows([{ ms: 5, events: 40_000, cold: 0 }, { ms: 7, events: 0, cold: 1 }]).map((r) => [r.size, r.cold])).toEqual([[30_000, false], [0, true]]);
+  clearPresses(d);
+  expect(pressReport(d, { now: NOW }).opens).toEqual([]);
 });
