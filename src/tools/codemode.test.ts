@@ -48,3 +48,21 @@ test("a program that has exited is ended even when a child it left holds its out
   expect(o.printed).toContain("left a child");
   expect(Date.now() - started).toBeLessThan(5000);
 }, 20_000);
+
+// What the daemon does on its loop for a program's call (storing it, sending its result back) is a timed
+// section: a stall it makes is named by it, not "outside anything it times".
+test("storing a program's call and sending its result are timed sections a stall names", async () => {
+  const { StallMonitor } = await import("../admin/stall.ts");
+  // (Named as what held the loop, or as the section it was in when the process was not on a processor for most of it.)
+  const stalls: { during?: { label: string }; within?: { label: string } }[] = [];
+  const m = new StallMonitor({ report: (s) => void stalls.push(s), note: (s) => void stalls.push(s), turns: () => [], thresholdMs: 100 });
+  m.start();
+  m.stop();
+  const c = { ...ctx(), callTool: async () => { m.tick(); return { type: "tool_result" as const, tool_use_id: "x", content: "fine" }; } } as ToolContext;
+  let spun = false;
+  const slow = { start() {}, end() { if (spun) return; spun = true; const until = performance.now() + 400; while (performance.now() < until) {} } };
+  const o = await runProgram(`return await tools.Probe({});`, c, slow);
+  expect(o.finished).toBe(true);
+  m.tick();
+  expect(stalls.map((s) => s.during?.label ?? s.within?.label)).toContain("run_code: storing a call's result (Probe)");
+}, 20_000);

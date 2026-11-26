@@ -1250,11 +1250,16 @@ export class Store {
       this.forget(k.id);
       throw new Error(`events ${k.all[i * RUN]!.seq} to ${k.all[end - 1]!.seq} of session ${k.id} are not stored as they were read`);
     }
-    const run: Run = { data: [], bytes: 0, used: ++this.tick };
+    const data: unknown[] = [];
+    let bytes = 0;
     for (const r of rows) {
-      run.data.push(parsedBody(r.data));
-      run.bytes += r.data.length * BODY_COST;
+      data.push(parsedBody(r.data));
+      bytes += r.data.length * BODY_COST;
     }
+    return this.installParsed(k, i, data, bytes);
+  }
+  private installParsed(k: Kept, i: number, data: unknown[], bytes: number): Run {
+    const run: Run = { data, bytes, used: ++this.tick };
     if (k.gone) {
       k.runs = [];
       k.runs[i] = run;
@@ -1602,8 +1607,27 @@ export class Store {
       }
       if (k.gone) return;
       if (k.runs[i]) continue;
-      if (rows && rows.length === end - i * RUN) { this.install(k, i, rows); this.bodiesOff++; }
-      else this.read(k, i);
+      if (!rows || rows.length !== end - i * RUN) this.read(k, i);
+      else {
+        // Parsed a body at a time, the loop free between them once a slice of time is used: a run of large
+        // tool results parsed in one piece held the loop for as long as all of it took. Each body is a timed
+        // section, so a stall one makes is named by what it was.
+        const data: unknown[] = [];
+        let bytes = 0;
+        for (const r of rows) {
+          data.push(this.timed ? this.timed(() => `parsing an event body read off the loop (${Math.round(r.data.length / 1024)} KB)`, () => parsedBody(r.data), false, "event bodies") : parsedBody(r.data));
+          bytes += r.data.length * BODY_COST;
+          if (performance.now() - t0 < 4) continue;
+          await pause();
+          t0 = performance.now();
+          if (k.gone) return;
+        }
+        // (The run as it stands now: an event stored while its bodies were parsed is in it, and was not read.)
+        if (!k.runs[i]) {
+          if (Math.min(k.all.length, (i + 1) * RUN) === end) { this.installParsed(k, i, data, bytes); this.bodiesOff++; }
+          else this.read(k, i);
+        }
+      }
       if (performance.now() - t0 < 4) continue;
       await pause();
       t0 = performance.now();

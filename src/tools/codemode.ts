@@ -23,6 +23,7 @@ import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.
 import { appendFileSync } from "node:fs";
 import { pump } from "../core/proc.ts";
 import { begin } from "../admin/activity.ts";
+import { timed } from "../admin/stall.ts";
 
 export const RUN_CODE = "run_code";
 
@@ -169,7 +170,7 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
       const n = ++calls;
       void (async () => {
         const c: CodeCall = { id: `${ctx.callId}~${n}`, parent: ctx.callId ?? "", seq: n, tool: String(m.tool), input: m.input ?? {}, started: Date.now() };
-        rec.start(ctx.sessionId, c);
+        timed(() => `run_code: storing a call of the program (${c.tool})`, () => rec.start(ctx.sessionId, c));
         let r: ToolResultBlock;
         if (c.tool === RUN_CODE) r = { type: "tool_result", tool_use_id: c.id, is_error: true, content: "A program cannot start another program." };
         else if (!ctx.callTool) r = { type: "tool_result", tool_use_id: c.id, is_error: true, content: "Tools cannot be called from here." };
@@ -191,9 +192,11 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
         }
         c.result = r;
         c.ended = Date.now();
-        rec.end(ctx.sessionId, c);
-        // A program that already ended reads no answers.
-        try { proc.send({ id: m.call, ok: !r.is_error, output: resultText(r) }); } catch {}
+        timed(() => `run_code: storing a call's result (${c.tool})`, () => rec.end(ctx.sessionId, c));
+        // A program that already ended reads no answers. (The message is written out on the loop: a long result is a stall
+        // of its own, named by its size.)
+        const output = resultText(r);
+        timed(() => `run_code: sending a call's result to the program (${c.tool}, ${Math.round(output.length / 1024)} KB)`, () => { try { proc.send({ id: m.call, ok: !r.is_error, output }); } catch {} });
       })();
     },
   });
