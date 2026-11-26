@@ -227,6 +227,20 @@ cd android
 
 A release build without signing fails; there is no debug-key fallback.
 
+## Install
+
+The release build is `dist/android/Keel-0.1.1.apk` (version 0.1.1, made by the
+release build above; its checksum is beside it in `Keel-0.1.1.apk.sha256`). It is signed with the same key as
+0.1.0, so it installs over 0.1.0 and keeps its pairing and settings:
+
+```bash
+(cd dist/android && sha256sum -c Keel-0.1.1.apk.sha256)
+adb install -r dist/android/Keel-0.1.1.apk
+```
+
+Or copy the file to the phone and open it there; Android asks once to allow
+installs from the app that opens it, then offers Update.
+
 ## The QA build
 
 ```bash
