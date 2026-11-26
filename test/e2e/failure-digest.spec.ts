@@ -113,12 +113,13 @@ test("an agent that repeated a shared cause is told with its own failure, not th
   const miss = (path: string) => ({ name: "Read", input: { file_path: path } });
   const pause = (seconds: number, word: string) => ({ name: "Bash", input: { command: `sleep ${seconds}; echo ${word}` } });
   const lane = (title: string, calls: unknown[]) => spawn(`${title}\nscript:calls ${JSON.stringify(calls)}`);
+  const shared = "/nonexistent/digest/shared.txt";
   const id = await start(request, "Failure digest, shared cause", [
-    miss("/nonexistent/digest/own/earlier.txt"),
-    lane("Early lane", [miss("/nonexistent/digest/early/one.txt")]),
+    miss(shared),
+    lane("Early lane", [miss(shared)]),
     pause(2, "one"),
     lane("Twice lane", [miss("/nonexistent/digest/twice/b1.txt"), miss("/nonexistent/digest/twice/b2.txt"), pause(12, "twice")]),
-    lane("Loop lane", [miss("/nonexistent/digest/loop/c.txt"), miss("/nonexistent/digest/loop/c.txt"), miss("/nonexistent/digest/loop/c.txt"), pause(12, "loop")]),
+    lane("Loop lane", [miss(shared), miss(shared), miss(shared), pause(12, "loop")]),
     pause(4, "two"),
   ]);
   try {
@@ -129,8 +130,8 @@ test("an agent that repeated a shared cause is told with its own failure, not th
     const loop = agents.find((a) => a.title.startsWith("Loop"));
     const entries = notice.slice(notice.indexOf("<failures>\n") + 11, notice.indexOf("\n</failures>")).split("\n");
     expect(entries).toHaveLength(2);
-    expect(entries[0]).toMatch(/^- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents (in the last minute|over the last \d+ min)$/);
-    expect(entries[1]).toMatch(new RegExp(`^    ${loop.id} "Loop lane", 3 times${WHEN}: File does not exist: /nonexistent/digest/loop/c\\.txt$`));
+    expect(entries[0]).toMatch(/^- Read failed 3 times on one cause in 1 agent; 5 by this session and all its agents (in the last minute|over the last \d+ min)$/);
+    expect(entries[1]).toMatch(new RegExp(`^    ${loop.id} "Loop lane", 3 times${WHEN}: File does not exist: /nonexistent/digest/shared\\.txt$`));
     expect(notice).toContain(`\nkeel__session_timeline with session: ${loop.id} tells what that agent did and where it failed.`);
     // The agent still works: its running turn says what failed in it.
     const timeline = await (await request.get(`/api/sessions/${loop.session_id}/timeline?only=failures&since=40m&format=text`)).text();
@@ -138,13 +139,17 @@ test("an agent that repeated a shared cause is told with its own failure, not th
 
     const events = await settled(request, id, 3);
     expect(events.filter((e) => e.kind === "user" && e.data.kind).map((e) => String(e.data.text)).join("\n").match(/<failures>/g)).toHaveLength(1);
-    // The record: one cause, each of the four with its own count and its own latest failure.
-    const group = ((await (await request.get(`/api/errors?session=${id}`)).json()).failures as any[]).find((g) => g.kind === "tool" && g.cls === "Read");
-    expect([group.count, group.owed, group.sample.split("\n")[0]]).toEqual([7, 0, "File does not exist: /nonexistent/digest/own/earlier.txt"]);
-    expect(group.refs.map((r: any) => [r.label ?? r.id, r.n, r.eg])).toEqual([
-      ["self", 1, "File does not exist: /nonexistent/digest/own/earlier.txt"], ["Early lane", 1, "File does not exist: /nonexistent/digest/early/one.txt"],
-      ["Twice lane", 2, "File does not exist: /nonexistent/digest/twice/b2.txt"], ["Loop lane", 3, "File does not exist: /nonexistent/digest/loop/c.txt"],
-    ]);
+    // The record groups the same missing path, not every failure of Read.
+    const groups = ((await (await request.get(`/api/errors?session=${id}`)).json()).failures as any[]).filter((g) => g.kind === "tool" && g.cls === "Read");
+    expect(groups.map((g) => [g.sample.split("\n")[0], g.count, g.owed])).toEqual(expect.arrayContaining([
+      [`File does not exist: ${shared}`, 5, 0],
+      ["File does not exist: /nonexistent/digest/twice/b1.txt", 1, 0],
+      ["File does not exist: /nonexistent/digest/twice/b2.txt", 1, 0],
+    ]));
+    const group = groups.find((g) => g.sample.startsWith(`File does not exist: ${shared}`));
+    expect(group.refs.map((r: any) => [r.label ?? r.id, r.n, r.eg])).toEqual(
+      [["self", 1], ["Early lane", 1], ["Loop lane", 3]].map(([who, n]) => [who, n, `File does not exist: ${shared}`]),
+    );
 
     await page.goto(`/s/${id}`);
     await page.getByTestId("lens-to-stream").click({ timeout: 60_000 });
