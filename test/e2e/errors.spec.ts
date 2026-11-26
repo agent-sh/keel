@@ -42,6 +42,8 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await expect(row.getByTestId("error-site")).toHaveCount(1);
   await expect(row.getByTestId("error-site")).toContainText("Error tracker check");
   await expect(row.getByTestId("error-site-count")).toHaveText("3x");
+  // Unread is a small dot in the row's faintest ink, as in the Inbox: a list of errors is not a column of black dots.
+  expect(await row.getByTestId("error-dot").evaluate((el) => { const probe = Object.assign(document.createElement("i"), { className: "text-faint" }); el.parentElement!.append(probe); const same = getComputedStyle(el).backgroundColor === getComputedStyle(probe).color; probe.remove(); return [same, el.getBoundingClientRect().width < 7]; })).toEqual([true, true]);
   await shoot(page, "errors-01-open");
 
   // Mark read: out of the badge, still listed, hidden by Unread only; kept by the daemon.

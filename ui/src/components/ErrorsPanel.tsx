@@ -209,7 +209,8 @@ function Row({ e }: { e: ErrorRecord }) {
             onClick={(ev) => { ev.preventDefault(); actions.readError(e.id, unread).catch(reportError); }}
             data-testid="error-read"
           >
-            {unread ? <span className="size-2 rounded-full bg-fg" /> : <Check className="size-3.5" />}
+            {/* (Unread is the small dot in the row's faintest ink, as in the Inbox: a list of them is not a column of black.) */}
+            {unread ? <span className="size-1.5 rounded-full bg-faint" data-testid="error-dot" /> : <Check className="size-3.5" />}
           </button>
         )}
         </span>
