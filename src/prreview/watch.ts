@@ -11,6 +11,7 @@
 // poll finds it and starts nothing.
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bareBy } from "../core/bare-index.ts";
 import { FETCH_KEYS, git } from "../core/git.ts";
 import { alertHook } from "../automation/core.ts";
 import { parseAnswer, reviewTask, type Finding, type Review } from "../safety/review.ts";
@@ -476,19 +477,32 @@ export class PrWatcher {
     }
   }
 
+  // Read the newest event of this kind on any branch, without bringing in the
+  // reviewer's history. The index finds its id before the body is fetched.
+  private async latestEvent(sessionId: string, kind: "assistant" | "turn_end", below = Number.MAX_SAFE_INTEGER) {
+    type Row = { seq: number; data: string };
+    const sql = `SELECT seq, data FROM events WHERE id = (SELECT id FROM events ${bareBy(this.db)} WHERE session_id = ? AND kind = ? AND seq < ? ORDER BY seq DESC LIMIT 1)`;
+    const params: [string, string, number] = [sessionId, kind, below];
+    const rows = await this.d.store.readOff?.(sql, params).catch(() => undefined) as Row[] | undefined;
+    return rows ? rows[0] : this.db.query<Row, typeof params>(sql).get(...params) ?? undefined;
+  }
+
   // The reviewer's turn ended: its answer is the draft.
-  turnEnded(sessionId: string, reason: string) {
+  async turnEnded(sessionId: string, reason: string) {
     const r = this.bySession(sessionId);
     if (!r || r.state !== "running") return;
     if (reason === "restart") return; // parked for a daemon stop: the next daemon continues the turn
     if (reason === "interrupted" || reason === "error" || reason === "refusal" || reason === "max_tokens")
       return this.fail(r, reason === "interrupted" ? "the reviewer's turn was stopped" : `the reviewer's turn ended: ${reason}`);
-    const evs = this.d.store.events(sessionId);
     let text = "";
-    for (let i = evs.length - 1; i >= 0 && !text; i--) {
-      const e = evs[i]!;
-      if (e.kind === "assistant") text = (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    for (let below = Number.MAX_SAFE_INTEGER; !text; ) {
+      const e = await this.latestEvent(sessionId, "assistant", below);
+      if (!e) break;
+      text = (JSON.parse(e.data).blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+      below = e.seq;
     }
+    // Recovery and the live turn's hook can have been reading the same review.
+    if (this.review(r.id)?.state !== "running") return;
     let a;
     try { a = parseAnswer(text); } catch (e) { return this.fail(r, (e as Error).message); }
     // The checkout stays while this is the newest review of the pull request: its session can still be asked about the code.
@@ -555,9 +569,13 @@ export class PrWatcher {
     setTimeout(async () => {
       for (const r of this.db.query<{ data: string }, []>("SELECT data FROM pr_reviews WHERE state = 'running'").all().map((x) => JSON.parse(x.data) as PrReview)) {
         if (!r.session_id || this.d.engine.isRunning(r.session_id) || !this.d.store.session(r.session_id)) continue;
-        await this.d.store.warm(r.session_id); // off the loop, before the session is read
-        const last = this.d.store.events(r.session_id).findLast((e) => e.kind === "turn_end");
-        this.turnEnded(r.session_id, last?.data?.reason === "end_turn" ? "end_turn" : "interrupted");
+        try {
+          const last = await this.latestEvent(r.session_id, "turn_end");
+          if (this.d.engine.isRunning(r.session_id) || !this.d.store.session(r.session_id)) continue;
+          await this.turnEnded(r.session_id, last && JSON.parse(last.data)?.reason === "end_turn" ? "end_turn" : "interrupted");
+        } catch (e) {
+          this.d.errors.capture("server", e, { at: "recover pull request review", review: r.id });
+        }
       }
     }, 30_000).unref?.();
   }

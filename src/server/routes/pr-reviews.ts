@@ -39,7 +39,7 @@ export const prReviewRoutes: RouteModule = (deps: Deps) => {
   g.__keelPrWatcher?.stop(); // a hot reload: the module's new watcher takes over
   const w = new PrWatcher(deps);
   g.__keelPrWatcher = w;
-  registerHooks({ turnEnd(s, reason) { if (g.__keelPrWatcher === w) w.turnEnded(s.id, reason); } });
+  registerHooks({ turnEnd(s, reason) { if (g.__keelPrWatcher === w) return w.turnEnded(s.id, reason); } });
   // The end of a review's own turn is told by its own alert (ready, posted,
   // failed), not as a finished turn too. A later turn of the session (the
   // owner asks the reviewer something) is told as any other.

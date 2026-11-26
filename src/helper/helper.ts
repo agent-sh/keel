@@ -16,6 +16,7 @@
 // or alias, and recalled per turn only where the turn names them.
 import * as alerts from "../automation/alerts.ts";
 import { deliver } from "../automation/core.ts";
+import { bareBy } from "../core/bare-index.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { isOutside } from "../core/outside.ts";
 import { lineage } from "../core/tree.ts";
@@ -23,6 +24,7 @@ import { checkpointAt } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import type { Deps } from "../server/app.ts";
+import { readsOf } from "../server/reads.ts";
 import { mailSource, type MailMsg, type MailSource } from "./mail.ts";
 import { Memory } from "./memory.ts";
 import { digestLines, digestZone, isNotice, levelOfAlert, nextWakeAt, spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts, type DigestEvent, type Level } from "./policy.ts";
@@ -331,15 +333,36 @@ ${TOLD_SCHEMA}`);
     const s = this.session();
     if (!s) return undefined;
     const { store, engine } = this.deps;
-    await store.warm(s.id);
-    const line = store.lineage(s.id);
-    // A queued question is found by its row once it was delivered.
-    const ev = id.startsWith("q:") ? line.find((e) => e.kind === "user" && e.data.queue_id === id.slice(2)) : line.find((e) => e.id === id);
-    if (!ev) {
-      if (id.startsWith("q:") && store.queueItem(id.slice(2))?.session_id === s.id) return { id, chat_id: s.id, state: "waiting", question: store.queueItem(id.slice(2))!.text, text: "", read: [], looked: [], ts: Date.now(), waits: {} };
-      return undefined;
+    let prompts: Set<string> | undefined;
+    if (id.startsWith("q:")) {
+      const qid = id.slice(2);
+      // Delivery removes the queue row and stores the prompt in the same write.
+      const q = store.queueItem(qid);
+      if (q?.session_id === s.id) return { id, chat_id: s.id, state: "waiting", question: q.text, text: "", read: [], looked: [], ts: Date.now(), waits: {} };
+      if (q) return undefined;
+      // Resolve a delivered queue id from user bodies only, off the loop. The
+      // prompt still has to be on the branch the helper shows.
+      const rows = await readsOf(store).run("sql", {
+        sql: `SELECT id FROM events WHERE id IN (SELECT id FROM events ${bareBy(store.db)} WHERE session_id = ? AND kind = 'user') AND json_extract(data, '$.queue_id') = ?`,
+        params: [s.id, qid],
+      }, true) as { id: string }[];
+      if (!rows.length) return undefined;
+      prompts = new Set(rows.map((r) => r.id));
     }
-    const a = answerOf(line, ev.id, store.sessions(), engine.isRunning(s.id))!;
+    await store.warm(s.id, false);
+    const line = store.lineage(s.id);
+    const at = line.findIndex((e) => prompts ? prompts.has(e.id) : e.id === id);
+    if (at < 0) return undefined;
+    // A restart is not the end of an answer. Read just the end markers to
+    // bound the range before warming the bodies of the answer itself.
+    let to = at + 1;
+    while (to < line.length) {
+      const e = line[to++]!;
+      if (e.kind === "turn_end" && store.body(e)?.reason !== "restart") break;
+    }
+    const answer = line.slice(at, to);
+    await store.warmBodies(s.id, answer[0]!.seq, answer.at(-1)!.seq);
+    const a = answerOf(answer, answer[0]!.id, store.sessions(), engine.isRunning(s.id))!;
     // What each session it read waits on the owner for now: its approvals and questions, its agents' too.
     const approvals = perm.gate?.approvals({ pending: true }) ?? [];
     const waits: Record<string, number> = {};

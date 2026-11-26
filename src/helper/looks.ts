@@ -105,8 +105,11 @@ export class Looks {
     let lines: string[] = [];
     if (s) {
       try {
-        await this.deps.store.warm(s.id);
-        lines = this.deps.store.lineage(s.id).slice(-80).flatMap((e) => { const l = eventLine(e); return l ? [l] : []; }).slice(-8);
+        const { store } = this.deps;
+        await store.warm(s.id, false);
+        const tail = store.lineage(s.id).slice(-80);
+        if (tail.length) await store.warmBodies(s.id, tail[0]!.seq, tail.at(-1)!.seq);
+        lines = tail.flatMap((e) => { const l = eventLine(e); return l ? [l] : []; }).slice(-8);
       } catch {}
     }
     let log: string[] = [];
