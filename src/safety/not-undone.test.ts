@@ -1,6 +1,7 @@
 // What a command does that a restore of files leaves alone, read from its words (src/safety/not-undone.ts).
 import { expect, test } from "bun:test";
-import { shellReach } from "./not-undone.ts";
+import { Database } from "bun:sqlite";
+import { ledgerOf, shellReach } from "./not-undone.ts";
 
 const W = "/w/repo", HOME = "/home/u";
 const reach = (command: string) => shellReach(command, W, { workspace: W, own: [W, "/scratch"], home: HOME, scratch: ["/scratch"] });
@@ -34,4 +35,28 @@ test("paths outside the folder are named, paths inside are candidates, a scratch
   expect(reach("cd /tmp/other && rm -f x").out).toEqual([{ kind: "outside", line: "deleted /tmp/other/x" }]);
   expect(reach("echo hi > /dev/null").out).toEqual([]);
   expect(reach("rm -rf $dir").touched).toEqual([]);
+});
+
+test("the ledger reads its calls' ids and inputs from the rows, not the tool results' bodies", () => {
+  const db = new Database(":memory:");
+  db.run("CREATE TABLE events (session_id TEXT, seq INTEGER, kind TEXT, data TEXT)");
+  db.run("CREATE INDEX events_bare ON events (session_id, seq, kind)");
+  const add = (seq: number, kind: string, data: unknown) => db.run("INSERT INTO events VALUES ('s', ?, ?, ?)", [seq, kind, typeof data === "string" ? data : JSON.stringify(data)]);
+  const big = "x".repeat(2_000_000);
+  add(1, "turn_start", {});
+  add(2, "assistant", { blocks: [{ type: "text", text: "two calls" }, { type: "tool_use", id: "c1", name: "mcp__srv__send", input: { to: "a" } }, { type: "tool_use", id: "c2", name: "mcp__srv__send", input: { to: "b" } }] });
+  add(3, "tool_result", { results: [{ tool_use_id: "c1", content: big }, { tool_use_id: "c2", is_error: true, content: "refused" }], images: [{ data: big }] });
+  add(4, "assistant", "not json");
+  add(5, "turn_end", {});
+  const real = JSON.parse;
+  let longest = 0;
+  JSON.parse = ((t: string, r?: any) => { if (typeof t === "string") longest = Math.max(longest, t.length); return real(t, r); }) as typeof JSON.parse;
+  let got;
+  try {
+    got = ledgerOf(db, { session: "s", from: 1, workspace: "/w", scope: { workspace: "/w", scratch: [] }, machine: false, home: "/h", tools: [], runCode: "run_code", mcpCall: "mcp_call", mcp: [], spawned: [] } as any);
+  } finally { JSON.parse = real; }
+  // The call that failed is no item; the one that ran is, and the turn is read to its end.
+  expect(got.items.map((i) => [i.call, i.kind, i.seq, i.n])).toEqual([["c1", "mcp", 2, 1]]);
+  expect(got.through).toBe(5);
+  expect(longest < 10_000).toBe(true);
 });

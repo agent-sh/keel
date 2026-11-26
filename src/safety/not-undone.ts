@@ -131,11 +131,23 @@ export function shellReach(command: string, cwd: string, a: { workspace: string;
 
 // ---- the stored calls ----
 
-type Row = { seq: number; kind: string; data: string };
+type Row = { seq: number; kind: string; data: string | null };
+
+// The calls' rows of a session, each with only what the ledger reads of its body, taken out by the
+// database: a result's failed call ids, a reply's tool_use blocks. The bodies are the tool results
+// whole (screenshots, long outputs): read as text and parsed, a long session's were hundreds of MB
+// on the read thread when a page opened its checkpoints. A body that is not JSON gives null, skipped
+// as before.
+const LEDGER_ROWS = `SELECT seq, kind, CASE
+    WHEN kind = 'tool_result' AND json_valid(data) THEN (SELECT json_group_array(json_extract(r.value, '$.tool_use_id')) FROM json_each(data, '$.results') r WHERE json_type(r.value) = 'object' AND json_extract(r.value, '$.is_error'))
+    WHEN kind = 'assistant' AND json_valid(data) THEN (SELECT json_group_array(json(b.value)) FROM json_each(data, '$.blocks') b WHERE json_type(b.value) = 'object' AND json_extract(b.value, '$.type') = 'tool_use')
+    WHEN kind IN ('turn_start', 'turn_end') THEN '[]'
+  END AS data
+  FROM events WHERE session_id = ? AND seq >= ? AND kind IN ('turn_start', 'turn_end', 'assistant', 'tool_result') ORDER BY seq`;
 
 export function ledgerOf(db: Database, a: LedgerAsk): Ledger {
   const empty: Ledger = { items: [], touched: [], through: a.from - 1, more: false };
-  const rows = db.query<Row, [string, number]>("SELECT seq, kind, data FROM events WHERE session_id = ? AND seq >= ? AND kind IN ('turn_start', 'turn_end', 'assistant', 'tool_result') ORDER BY seq").all(a.session, a.from);
+  const rows = db.query<Row, [string, number]>(LEDGER_ROWS).all(a.session, a.from);
   if (!rows.length) return empty;
   // The turn's place among the session's turns.
   let n = db.query<{ n: number }, [string, number]>("SELECT COUNT(*) AS n FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_start' AND seq < ?").get(a.session, a.from)?.n ?? 0;
@@ -147,12 +159,13 @@ export function ledgerOf(db: Database, a: LedgerAsk): Ledger {
     last = r.seq;
     if (r.kind === "turn_start") { turn = r.seq; lastStart = r.seq; n++; closed = false; continue; }
     if (r.kind === "turn_end") { closed = true; continue; }
+    if (r.data === null) continue;
     let data: any;
     try { data = JSON.parse(r.data); } catch { continue; }
     if (r.kind === "tool_result") {
-      for (const x of data?.results ?? []) if (x?.is_error && typeof x.tool_use_id === "string") failed.add(x.tool_use_id);
+      for (const id of data ?? []) if (typeof id === "string") failed.add(id);
     } else if (turn) {
-      for (const b of data?.blocks ?? []) if (b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+      for (const b of data ?? []) if (b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
         if (uses.length >= CALLS_MAX) { more = true; break; }
         uses.push({ id: b.id, name: b.name, input: b.input ?? {}, seq: r.seq, turn, n });
       }
